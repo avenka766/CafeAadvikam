@@ -1,0 +1,68 @@
+import { useAuthStore } from '@/stores/authStore';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { ClipboardList, Receipt, UtensilsCrossed, History, BarChart3, LayoutDashboard, Users } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+interface NavItem {
+  label: string;
+  icon: React.ReactNode;
+  path: string;
+}
+
+export default function BottomNav() {
+  const { currentUser } = useAuthStore();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  if (!currentUser) return null;
+
+  const navItems: NavItem[] = [];
+
+  if (currentUser.role === 'order_taker') {
+    navItems.push(
+      { label: 'Order Pad', icon: <ClipboardList className="size-5" />, path: '/order-pad' },
+      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+    );
+  } else if (currentUser.role === 'billing') {
+    navItems.push(
+      { label: 'Orders', icon: <Receipt className="size-5" />, path: '/billing' },
+      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+    );
+  } else if (currentUser.role === 'admin') {
+    navItems.push(
+      { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
+      { label: 'Menu', icon: <UtensilsCrossed className="size-5" />, path: '/menu-management' },
+      { label: 'Reports', icon: <BarChart3 className="size-5" />, path: '/sales-report' },
+      { label: 'Staff', icon: <Users className="size-5" />, path: '/staff-management' },
+      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+    );
+  }
+
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 z-40 bg-background border-t border-border safe-area-bottom">
+      <div className="flex items-stretch">
+        {navItems.map((item) => {
+          const isActive = location.pathname === item.path;
+          return (
+            <button
+              key={item.path}
+              onClick={() => navigate(item.path)}
+              className={cn(
+                'flex-1 flex flex-col items-center gap-0.5 py-2 px-1 transition-colors min-h-[56px] justify-center relative',
+                isActive
+                  ? 'text-primary'
+                  : 'text-muted-foreground active:text-foreground'
+              )}
+            >
+              {item.icon}
+              <span className="text-[10px] font-body font-semibold">{item.label}</span>
+              {isActive && (
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 h-0.5 w-8 rounded-full bg-primary" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}

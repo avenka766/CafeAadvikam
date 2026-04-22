@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Cafe Aadvikam Brand - Teal & Gold on Warm Cream */
+    --background: 38 50% 97%;
+    --foreground: 20 40% 12%;
+    --card: 38 40% 95%;
+    --card-foreground: 20 40% 12%;
+    --popover: 38 50% 97%;
+    --popover-foreground: 20 40% 12%;
+    --primary: 164 52% 28%;
+    --primary-foreground: 38 50% 97%;
+    --secondary: 38 35% 90%;
+    --secondary-foreground: 20 40% 18%;
+    --muted: 38 25% 92%;
+    --muted-foreground: 20 15% 46%;
+    --accent: 36 55% 50%;
+    --accent-foreground: 38 50% 97%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 38 25% 85%;
+    --input: 38 25% 85%;
+    --ring: 164 52% 28%;
+    --radius: 0.625rem;
+    --sidebar-background: 164 52% 24%;
+    --sidebar-foreground: 38 50% 97%;
+    --sidebar-primary: 36 55% 50%;
+    --sidebar-primary-foreground: 38 50% 97%;
+    --sidebar-accent: 164 52% 32%;
+    --sidebar-accent-foreground: 38 50% 97%;
+    --sidebar-border: 164 40% 30%;
+    --sidebar-ring: 36 55% 50%;
+
+    /* Custom brand tokens */
+    --cafe-teal: 164 52% 28%;
+    --cafe-teal-light: 164 40% 92%;
+    --cafe-gold: 36 55% 50%;
+    --cafe-gold-light: 36 50% 88%;
+    --cafe-cream: 38 50% 97%;
+    --cafe-brown: 20 40% 12%;
+    --cafe-warm: 28 35% 94%;
+    --cafe-success: 142 60% 40%;
+    --cafe-warning: 38 92% 50%;
+    --cafe-error: 0 72% 51%;
+    --cafe-info: 200 80% 50%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Source Sans 3', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Cormorant Garamond', serif;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Cormorant Garamond', serif;
+  }
+  .font-body {
+    font-family: 'Source Sans 3', sans-serif;
+  }
+  .cafe-gradient {
+    background: linear-gradient(135deg, hsl(164 52% 28%) 0%, hsl(164 52% 20%) 100%);
+  }
+  .gold-gradient {
+    background: linear-gradient(135deg, hsl(36 55% 50%) 0%, hsl(36 65% 42%) 100%);
+  }
+  .chevron-pattern {
+    background-image: repeating-linear-gradient(
+      60deg,
+      transparent,
+      transparent 8px,
+      hsla(164, 40%, 40%, 0.08) 8px,
+      hsla(164, 40%, 40%, 0.08) 9px
+    ),
+    repeating-linear-gradient(
+      -60deg,
+      transparent,
+      transparent 8px,
+      hsla(164, 40%, 40%, 0.08) 8px,
+      hsla(164, 40%, 40%, 0.08) 9px
+    );
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
