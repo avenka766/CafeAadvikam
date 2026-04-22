@@ -27,7 +27,16 @@ export default function Login() {
     setLoading(true);
     const ok = await login(username.trim(), password);
     if (ok) {
-      navigate(username.toLowerCase() === 'admin' ? '/admin-dashboard' : username.toLowerCase() === 'staff1' ? '/order-pad' : '/billing', { replace: true });
+      // Find this block inside handleSubmit after "if (ok) {"
+// REPLACE this:
+navigate(username.toLowerCase() === 'admin' ? '/admin-dashboard' : username.toLowerCase() === 'staff1' ? '/order-pad' : '/billing', { replace: true });
+
+// WITH this (uses the actual role from the database):
+const { currentUser } = useAuthStore.getState();
+const path = currentUser?.role === 'admin' ? '/admin-dashboard'
+  : currentUser?.role === 'order_taker' ? '/order-pad'
+  : '/billing';
+navigate(path, { replace: true });
     } else {
       setError('Invalid username or password');
       setLoading(false);
