@@ -108,7 +108,7 @@ export const useAuthStore = create<AuthState>()(
       removeStaff: async (userId: string) => {
         const { error } = await supabase
           .from('staff_users')
-          .update({ is_active: false })
+          .delete()
           .eq('id', userId);
 
         if (!error) {
