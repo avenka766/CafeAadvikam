@@ -1,6 +1,6 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ClipboardList, Receipt, UtensilsCrossed, History, BarChart3, LayoutDashboard, Users } from 'lucide-react';
+import { ClipboardList, Receipt, UtensilsCrossed, History, BarChart3, LayoutDashboard, Users, QrCode } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
@@ -32,6 +32,7 @@ export default function BottomNav() {
     navItems.push(
       { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
       { label: 'Menu', icon: <UtensilsCrossed className="size-5" />, path: '/menu-management' },
+      { label: 'QR Code', icon: <QrCode className="size-5" />, path: '/qr-menu' },
       { label: 'Reports', icon: <BarChart3 className="size-5" />, path: '/sales-report' },
       { label: 'Staff', icon: <Users className="size-5" />, path: '/staff-management' },
       { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
