@@ -13,6 +13,8 @@ import OrderHistory from '@/pages/OrderHistory';
 import SalesReport from '@/pages/SalesReport';
 import AdminDashboard from '@/pages/AdminDashboard';
 import StaffManagement from '@/pages/StaffManagement';
+import QRMenuPage from '@/pages/QRMenuPage';
+import DigitalMenu from '@/pages/DigitalMenu';
 
 function AppRoutes() {
   const { currentUser } = useAuthStore();
@@ -31,6 +33,7 @@ function AppRoutes() {
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         <Route path="/menu" element={<MenuPage />} />
+        <Route path="/digital-menu" element={<DigitalMenu />} />
         <Route
           path="/order-pad"
           element={
@@ -76,6 +79,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['admin']}>
               <StaffManagement />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/qr-menu"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <QRMenuPage />
             </ProtectedRoute>
           }
         />
