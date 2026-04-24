@@ -2,72 +2,95 @@ import { useState, useEffect, useRef } from 'react';
 import { QrCode, Download, ExternalLink, RefreshCw } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
 
-declare const QRCode: {
-  toCanvas: (canvas: HTMLCanvasElement, text: string, options: object, cb: (err: unknown) => void) => void;
-};
-
 export default function QRMenuPage() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const qrContainerRef = useRef<HTMLDivElement>(null);
   const [menuUrl, setMenuUrl] = useState('');
   const [qrReady, setQrReady] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [scriptLoaded, setScriptLoaded] = useState(false);
 
   useEffect(() => {
-    const url = `${window.location.origin}/digital-menu`;
-    setMenuUrl(url);
+    setMenuUrl(`${window.location.origin}/digital-menu`);
   }, []);
 
   useEffect(() => {
-    if (document.getElementById('qrcode-script')) {
-      setScriptLoaded(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.id = 'qrcode-script';
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-    script.onload = () => setScriptLoaded(true);
-    document.head.appendChild(script);
-  }, []);
+    if (!menuUrl || !qrContainerRef.current) return;
 
-  useEffect(() => {
-    if (!scriptLoaded || !menuUrl || !canvasRef.current) return;
-    setLoading(true);
+    // Clear any previous QR
+    qrContainerRef.current.innerHTML = '';
     setQrReady(false);
-    const tryGenerate = () => {
-      if (typeof QRCode === 'undefined') { setTimeout(tryGenerate, 100); return; }
-      QRCode.toCanvas(canvasRef.current!, menuUrl, {
-        width: 280, margin: 2,
-        color: { dark: '#1a1a1a', light: '#ffffff' },
-      }, (err) => {
-        if (!err) { setQrReady(true); setLoading(false); }
-      });
+    setLoading(true);
+
+    const loadAndGenerate = () => {
+      // Remove old script if present so onload fires again
+      const existing = document.getElementById('qrcode-script');
+      if (existing) existing.remove();
+
+      const script = document.createElement('script');
+      script.id = 'qrcode-script';
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+      script.onload = () => {
+        if (!qrContainerRef.current) return;
+        qrContainerRef.current.innerHTML = '';
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        new (window as any).QRCode(qrContainerRef.current, {
+          text: menuUrl,
+          width: 256,
+          height: 256,
+          colorDark: '#1a1a1a',
+          colorLight: '#ffffff',
+          correctLevel: (window as any).QRCode.CorrectLevel.H,
+        });
+        // QRCode renders synchronously — small delay for DOM paint
+        setTimeout(() => {
+          setQrReady(true);
+          setLoading(false);
+        }, 150);
+      };
+      script.onerror = () => setLoading(false);
+      document.head.appendChild(script);
     };
-    tryGenerate();
-  }, [scriptLoaded, menuUrl]);
+
+    loadAndGenerate();
+  }, [menuUrl]);
 
   const downloadQR = () => {
-    if (!canvasRef.current || !qrReady) return;
-    const canvas = canvasRef.current;
+    if (!qrContainerRef.current || !qrReady) return;
+    const img = qrContainerRef.current.querySelector('img') as HTMLImageElement | null;
+    const canvas = qrContainerRef.current.querySelector('canvas') as HTMLCanvasElement | null;
+
     const pad = 32;
+    const size = 256;
     const out = document.createElement('canvas');
-    out.width = canvas.width + pad * 2;
-    out.height = canvas.height + pad * 2 + 80;
+    out.width = size + pad * 2;
+    out.height = size + pad * 2 + 80;
     const ctx = out.getContext('2d')!;
+
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, out.width, out.height);
-    ctx.drawImage(canvas, pad, pad);
-    ctx.fillStyle = '#1a1a1a';
-    ctx.font = 'bold 20px serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(CAFE_CONFIG.name, out.width / 2, canvas.height + pad + 30);
-    ctx.font = '14px sans-serif';
-    ctx.fillStyle = '#666';
-    ctx.fillText('Scan to view our menu', out.width / 2, canvas.height + pad + 56);
-    const link = document.createElement('a');
-    link.download = 'cafe-aadvikam-menu-qr.png';
-    link.href = out.toDataURL('image/png');
-    link.click();
+
+    const draw = (source: CanvasImageSource) => {
+      ctx.drawImage(source, pad, pad, size, size);
+      ctx.fillStyle = '#1a1a1a';
+      ctx.font = 'bold 20px serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#666666';
+      ctx.fillText('Scan to view our menu', out.width / 2, size + pad + 56);
+      const link = document.createElement('a');
+      link.download = 'cafe-aadvikam-menu-qr.png';
+      link.href = out.toDataURL('image/png');
+      link.click();
+    };
+
+    if (canvas) {
+      draw(canvas);
+    } else if (img) {
+      const tmp = new Image();
+      tmp.crossOrigin = 'anonymous';
+      tmp.onload = () => draw(tmp);
+      tmp.src = img.src;
+    }
   };
 
   return (
@@ -91,10 +114,14 @@ export default function QRMenuPage() {
             <p className="font-display text-lg font-bold text-foreground">{CAFE_CONFIG.name}</p>
             <p className="text-xs font-body text-muted-foreground -mt-3">{CAFE_CONFIG.tagline}</p>
 
-            <div className="relative size-[280px] bg-white rounded-2xl border-2 border-border flex items-center justify-center shadow-sm">
-              <canvas ref={canvasRef} className={qrReady ? 'rounded-xl' : 'hidden'} />
+            <div className="relative size-[260px] bg-white rounded-2xl border-2 border-border flex items-center justify-center shadow-sm overflow-hidden">
+              {/* QRCode renders into this div */}
+              <div
+                ref={qrContainerRef}
+                className={qrReady ? 'flex items-center justify-center' : 'hidden'}
+              />
               {loading && (
-                <div className="flex flex-col items-center gap-3">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <RefreshCw className="size-8 text-muted-foreground animate-spin" />
                   <p className="text-xs font-body text-muted-foreground">Generating QR code...</p>
                 </div>
