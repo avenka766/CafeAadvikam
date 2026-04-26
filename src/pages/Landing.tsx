@@ -17,7 +17,7 @@ const CAFE = {
   hours: '6 AM – 10 PM Daily',
   type: 'Pure Vegetarian',
   mapsUrl: 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9628595,17z',
-  waWhatsapp: '919XXXXXXXXX', // ← update this with actual number
+  waWhatsapp: '917667117803', // ← update this with actual number
   waPretext: 'Hi, I need to enquire and book the Party Hall.',
 };
 
