@@ -143,6 +143,28 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                   <div className="relative">
                     <StickyNote className="absolute left-3 top-3 size-4 text-muted-foreground" />
                     <textarea placeholder="Order notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full pl-9 pr-4 py-2.5 bg-card border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground resize-none" />
+                    {/* Quick note chips */}
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {[
+                        'Less spicy',
+                        'Extra spicy',
+                        'No onion',
+                        'No garlic',
+                        'Less oil',
+                        'Extra chutney',
+                        'Pack separately',
+                        'Allergy – check ingredients',
+                      ].map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          type="button"
+                          onClick={() => setNotes(prev => prev ? `${prev}, ${suggestion}` : suggestion)}
+                          className="px-2 py-1 rounded-md text-[11px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all"
+                        >
+                          + {suggestion}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
