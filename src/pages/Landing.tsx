@@ -21,21 +21,30 @@ const CAFE = {
 };
 
 const FOOD_IMAGES = {
-  hero:     'https://images.unsplash.com/photo-1630409346617-c1b6fb6dfc9e?w=1200&q=90',
+  // Hero: South Indian banana leaf meal — vibrant, clearly South Indian
+  hero:     'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
+  // Idli & sambar — correct South Indian breakfast image
   idly:     'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
+  // Crispy golden dosa — matches "Masala Dosa"
   dosa:     'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=600&q=80',
+  // Veg biryani in handi — matches "Handi Biriyani"
   biryani:  'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&q=80',
+  // Rich orange paneer curry — matches "Paneer Tikka Masala"
   paneer:   'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600&q=80',
+  // Tandoor grill items — matches "Tandoori Starters"
   tandoor:  'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80',
+  // Kids burger/pizza
   kids:     'https://images.unsplash.com/photo-1513442542250-854d436a73f2?w=600&q=80',
+  // Red tomato soup in bowl — matches "Tomato Soup"
   soup:     'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80',
+  // Pani puri / chaat — matches "Chats"
   chat:     'https://images.unsplash.com/photo-1606491956689-2ea866880c84?w=600&q=80',
+  // Fresh juices / drinks
   drinks:   'https://images.unsplash.com/photo-1579954115545-a95591f28bfc?w=600&q=80',
-  dining1:  'https://lh3.googleusercontent.com/gps-cs-s/APNQkAGskRrkDpJXe12ELf7iAG0pJacVjDqWb0aOGd4h_FoNg4yi8Ud8jUBIYkVuFd0U-CZezkURvFbTp91lYqsqRbpf1s_Cl_zaRMtWxZUib15-vrSHYlChBOoAXJhW1VRCUm1LROvOxK6c9O4_=w800-h600-k-no',
-  dining2:  'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w800-h1418-k-no',
-  dining3:  'https://lh3.googleusercontent.com/gps-cs-s/APNQkAG2jUTFlgbe1HI8gl6jY_RuPB6ssEnrwzSKoJX8NCt5xaXEYY6zU_ggFyimxtrUvbGYUbr5lFFOm-bF1uhPFCh82wtZzBzeDs_mQ5eNxGOCu6YoDCof2b362smO-RiX6ZyTDOo1tLa4K4LH=w800-h1422-k-no',
+  // South Indian thali plate — matches "South Indian Thali"
+  south:    'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80',
+  // Party hall image
   partyHall:'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w1200-h2136-k-no',
-  south:    'https://images.unsplash.com/photo-1505253758473-96b7015fcd40?w=600&q=80',
 };
 
 function getTimePeriod() {
@@ -449,24 +458,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ═══ OUR AMBIANCE — no Browse Full Menu button ═════════════════════════ */}
-      <section className="px-4 py-4">
-        <h2 className="font-display text-2xl font-bold text-foreground mb-4">Our Ambiance</h2>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-2xl overflow-hidden" style={{ height: 180 }}>
-            <img src={FOOD_IMAGES.dining1} alt="Dining" className="w-full h-full object-cover" />
-          </div>
-          <div className="flex flex-col gap-2">
-            <div className="rounded-2xl overflow-hidden flex-1">
-              <img src={FOOD_IMAGES.dining2} alt="Dining" className="w-full h-full object-cover" />
-            </div>
-            <div className="rounded-2xl overflow-hidden flex-1">
-              <img src={FOOD_IMAGES.dining3} alt="Dining" className="w-full h-full object-cover" />
-            </div>
-          </div>
-        </div>
-        {/* Browse Full Menu button removed */}
-      </section>
+
 
       {/* ═══ WHY CAFE AADVIKAM ══════════════════════════════════════════════════ */}
       <section className="px-5 py-10 text-center bg-card border-y border-border">
@@ -527,7 +519,7 @@ export default function Landing() {
         <p className="text-center text-[10px] font-body text-muted-foreground mt-2">Opens WhatsApp with pre-filled message</p>
       </section>
 
-      {/* ═══ FROM OUR KITCHEN — images matched to names ═════════════════════════ */}
+      {/* ═══ FROM OUR KITCHEN — each image carefully matched to its dish name ═══ */}
       <section className="pb-8">
         <div className="px-4 mb-3 flex items-center justify-between">
           <h2 className="font-display text-xl font-bold text-foreground">From Our Kitchen</h2>
@@ -535,11 +527,16 @@ export default function Landing() {
         </div>
         <div className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-2">
           {[
-            { img: FOOD_IMAGES.dosa,    label: 'Masala Dosa ₹69' },
-            { img: FOOD_IMAGES.paneer,  label: 'Paneer Tikka Masala ₹170' },
-            { img: FOOD_IMAGES.soup,    label: 'Tomato Soup ₹59' },
-            { img: FOOD_IMAGES.biryani, label: 'Handi Biriyani ₹169' },
-            { img: FOOD_IMAGES.south,   label: 'South Indian Thali' },
+            // Masala Dosa — crispy golden dosa on plate
+            { img: 'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=400&q=80', label: 'Masala Dosa ₹69' },
+            // Paneer Tikka Masala — orange paneer curry
+            { img: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=400&q=80', label: 'Paneer Tikka Masala ₹170' },
+            // Tomato Soup — red soup in white bowl
+            { img: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80', label: 'Tomato Soup ₹59' },
+            // Handi Biriyani — biryani in pot
+            { img: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=400&q=80', label: 'Handi Biriyani ₹169' },
+            // South Indian Thali — banana leaf meal
+            { img: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=400&q=80', label: 'South Indian Thali' },
           ].map(({ img, label }) => (
             <div key={label} className="shrink-0 relative rounded-2xl overflow-hidden shadow-md" style={{ width: 150, height: 180 }}>
               <img src={img} alt={label} className="w-full h-full object-cover" />
