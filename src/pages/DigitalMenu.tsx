@@ -5,7 +5,7 @@ import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { BellRing, X, ChevronDown, Send, MessageCircle, Clock, Leaf } from 'lucide-react';
 
-const WAITER_WHATSAPP = '919XXXXXXXXX';
+const WAITER_WHATSAPP = '917667117803';
 
 // ── Hero food photo (high-quality South Indian spread) ─────────────────────
 // Using a reliable Unsplash South Indian food image as the hero background
