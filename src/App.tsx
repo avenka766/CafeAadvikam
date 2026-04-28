@@ -17,6 +17,7 @@ import QRMenuPage from '@/pages/QRMenuPage';
 import QROrderPage from '@/pages/QROrderPage';
 import KitchenDashboard from '@/pages/KitchenDashboard';
 import DigitalMenu from '@/pages/DigitalMenu';
+import OrderTrackingPage from '@/pages/OrderTrackingPage';
 
 function AppRoutes() {
   const { currentUser } = useAuthStore();
@@ -25,6 +26,7 @@ function AppRoutes() {
     if (!currentUser) return '/';
     if (currentUser.role === 'order_taker') return '/order-pad';
     if (currentUser.role === 'admin') return '/admin-dashboard';
+    if (currentUser.role === 'kitchen') return '/kitchen';
     return '/billing';
   };
 
@@ -37,6 +39,7 @@ function AppRoutes() {
         <Route path="/menu" element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
         <Route path="/order" element={<QROrderPage />} />
+        <Route path="/order/track" element={<OrderTrackingPage />} />
         <Route
           path="/order-pad"
           element={
@@ -56,7 +59,7 @@ function AppRoutes() {
         <Route
           path="/kitchen"
           element={
-            <ProtectedRoute allowedRoles={['billing', 'admin']}>
+            <ProtectedRoute allowedRoles={['kitchen']}>
               <KitchenDashboard />
             </ProtectedRoute>
           }
@@ -104,7 +107,7 @@ function AppRoutes() {
         <Route
           path="/order-history"
           element={
-            <ProtectedRoute allowedRoles={['order_taker', 'billing', 'admin']}>
+            <ProtectedRoute allowedRoles={['order_taker', 'billing', 'admin', 'kitchen']}>
               <OrderHistory />
             </ProtectedRoute>
           }

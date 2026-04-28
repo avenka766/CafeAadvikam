@@ -52,6 +52,13 @@ export const USERS: User[] = [
     role: 'admin',
     displayName: 'Administrator',
   },
+  {
+    id: 'u6',
+    username: 'Cheff',
+    password: 'SNBcafe1',
+    role: 'kitchen',
+    displayName: 'Kitchen Chef',
+  },
 ];
 
 export const TABLE_NUMBERS = Array.from({ length: 20 }, (_, i) => i + 1);

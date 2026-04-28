@@ -15,7 +15,8 @@ export default function Login() {
 
   if (currentUser) {
     const path = currentUser.role === 'order_taker' ? '/order-pad'
-      : currentUser.role === 'admin' ? '/admin-dashboard' : '/billing';
+      : currentUser.role === 'admin' ? '/admin-dashboard'
+      : currentUser.role === 'kitchen' ? '/kitchen' : '/billing';
     navigate(path, { replace: true });
     return null;
   }
@@ -30,6 +31,7 @@ export default function Login() {
       const user = useAuthStore.getState().currentUser;
       const path = user?.role === 'admin' ? '/admin-dashboard'
         : user?.role === 'order_taker' ? '/order-pad'
+        : user?.role === 'kitchen' ? '/kitchen'
         : '/billing';
       navigate(path, { replace: true });
     } else {

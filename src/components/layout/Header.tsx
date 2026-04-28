@@ -9,14 +9,15 @@ export default function Header() {
   const location = useLocation();
   const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
   const isQROrder = location.pathname === '/order';
+  const isTracking = location.pathname === '/order/track';
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
 
-  // Hide header completely on QR order page — it has its own header
-  if (isQROrder) return null;
+  // Hide header on QR order page and tracking page — they have their own headers
+  if (isQROrder || isTracking) return null;
 
   if (isPublic) {
     return (

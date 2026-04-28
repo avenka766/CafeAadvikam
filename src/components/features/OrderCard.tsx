@@ -3,16 +3,14 @@ import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency, formatTime } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
-import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck } from 'lucide-react';
-import type { Order, OrderStatus, PaymentType, PaymentBreakdown } from '@/types';
+import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell } from 'lucide-react';
+import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 
 interface OrderCardProps {
   order: Order;
   showActions?: boolean;
 }
-
-const STATUS_FLOW: OrderStatus[] = ['pending', 'preparing', 'ready', 'served'];
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
   cash: '💵 Cash',
@@ -43,9 +41,13 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [splitCard, setSplitCard] = useState('');
   const [splitError, setSplitError] = useState('');
 
-  const currentIdx = STATUS_FLOW.indexOf(order.status);
-  const nextStatus = currentIdx < STATUS_FLOW.length - 1 ? STATUS_FLOW[currentIdx + 1] : null;
   const billerName = currentUser?.displayName || currentUser?.username || '';
+
+  // Biller can ONLY collect payment — they cannot advance status
+  const isBiller = currentUser?.role === 'billing';
+  const isReadyOrder = order.status === 'ready';
+  const canCollectPayment = showActions && isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const canAdvanceNonBiller = showActions && !isBiller && order.status !== 'served' && order.status !== 'cancelled';
 
   const handleApplyDiscount = () => {
     const val = parseFloat(discValue);
@@ -139,12 +141,20 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     setSplitError('');
   };
 
-  const canAdvance = showActions && order.status !== 'served' && order.status !== 'cancelled';
-  const isPaymentStep = nextStatus === 'served';
+  // Ready notification badge for billers
+  const showReadyBadge = isBiller && isReadyOrder && order.paymentType === 'unpaid';
 
   return (
     <>
-      <div className="bg-card rounded-xl border border-border overflow-hidden">
+      <div className={`bg-card rounded-xl border overflow-hidden ${showReadyBadge ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg' : 'border-border'}`}>
+        {/* Ready notification for biller */}
+        {showReadyBadge && (
+          <div className="px-3.5 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center gap-2">
+            <Bell className="size-4 text-emerald-600 animate-bounce" />
+            <span className="text-xs font-body font-bold text-emerald-700">Order Ready — Collect Payment</span>
+          </div>
+        )}
+
         {/* Header */}
         <div className="px-3.5 py-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -154,7 +164,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
             <span className={`text-[10px] font-body font-bold px-2 py-0.5 rounded-full border ${ORDER_STATUS_COLORS[order.status]}`}>
               {ORDER_STATUS_LABELS[order.status]}
             </span>
-            {/* Order source badge */}
             <span className={`text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${
               order.orderSource === 'qr'
                 ? 'bg-violet-100 text-violet-700 border border-violet-200'
@@ -234,18 +243,43 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           </div>
         )}
 
-        {/* Actions */}
-        {canAdvance && (
+        {/* Biller Actions — Only collect payment on ready orders */}
+        {canCollectPayment && (
           <div className="px-3.5 py-2.5 border-t border-border flex gap-2">
-            {nextStatus && !isPaymentStep && (
+            <button
+              onClick={() => setShowPayment(true)}
+              className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-[0.97] transition-transform"
+            >
+              💰 Collect Payment
+            </button>
+            <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-2.5 rounded-lg bg-accent/20 text-accent-foreground text-sm font-body font-semibold active:scale-95">💰</button>
+            <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
+              <Printer className="size-4" />
+            </button>
+            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+          </div>
+        )}
+
+        {/* Non-biller Actions (admin etc — full status control) */}
+        {canAdvanceNonBiller && (
+          <div className="px-3.5 py-2.5 border-t border-border flex gap-2">
+            {order.status === 'pending' && (
               <button
-                onClick={() => updateOrderStatus(order.id, nextStatus)}
+                onClick={() => updateOrderStatus(order.id, 'preparing')}
                 className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-[0.97] transition-transform"
               >
-                Mark as {ORDER_STATUS_LABELS[nextStatus]}
+                Mark as {ORDER_STATUS_LABELS['preparing']}
               </button>
             )}
-            {isPaymentStep && (
+            {order.status === 'preparing' && (
+              <button
+                onClick={() => updateOrderStatus(order.id, 'ready')}
+                className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-[0.97] transition-transform"
+              >
+                Mark as {ORDER_STATUS_LABELS['ready']}
+              </button>
+            )}
+            {order.status === 'ready' && (
               <button
                 onClick={() => setShowPayment(true)}
                 className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-[0.97] transition-transform"
@@ -260,6 +294,18 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
               <Printer className="size-4" />
             </button>
             <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+          </div>
+        )}
+
+        {/* Biller: show pending/preparing status without actions */}
+        {showActions && isBiller && !isReadyOrder && order.status !== 'served' && order.status !== 'cancelled' && (
+          <div className="px-3.5 py-2.5 border-t border-border flex items-center gap-2">
+            <div className="flex-1 py-2 rounded-lg bg-muted/50 text-center text-xs font-body font-semibold text-muted-foreground">
+              {order.status === 'pending' ? '⏳ Waiting for kitchen to start' : '🍳 Kitchen is preparing'}
+            </div>
+            <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
+              <Printer className="size-4" />
+            </button>
           </div>
         )}
 

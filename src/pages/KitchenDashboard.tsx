@@ -1,12 +1,12 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { formatCurrency, formatTime, cn } from '@/lib/utils';
-import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
-import type { OrderStatus } from '@/types';
+import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
+import type { OrderStatus, Order } from '@/types';
 import {
   Wifi, Inbox, Clock, MapPin, User as UserIcon,
   ChefHat, Bell, CheckCircle2, QrCode, UserCheck,
-  Volume2, VolumeX,
+  Volume2, VolumeX, Printer,
 } from 'lucide-react';
 
 const KITCHEN_TABS: { key: OrderStatus | 'active'; label: string; icon: React.ReactNode; color: string }[] = [
@@ -32,11 +32,59 @@ function playNewOrderSound() {
   } catch { /* ignore audio errors */ }
 }
 
+function printKitchenReceipt(order: Order) {
+  const win = window.open('', '_blank', 'width=320,height=600');
+  if (!win) return;
+
+  const items = order.items.map(ci =>
+    `<tr><td style="font-size:14px;font-weight:700;padding:2px 0">${ci.quantity}×</td><td style="font-size:14px;padding:2px 8px">${ci.menuItem.name}</td></tr>`
+  ).join('');
+
+  const html = `<!DOCTYPE html>
+<html><head><title>Kitchen Order #${String(order.orderNumber).padStart(3, '0')}</title>
+<style>
+  @page { margin: 4mm; size: 80mm auto; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Courier New', monospace; width: 72mm; margin: 0 auto; padding: 2mm; }
+  .center { text-align: center; }
+  .bold { font-weight: 700; }
+  .divider { border-top: 1px dashed #000; margin: 4px 0; }
+  .big { font-size: 28px; font-weight: 900; }
+  .med { font-size: 16px; }
+  .sm { font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  .notes { background: #f0f0f0; padding: 4px 6px; border-radius: 4px; font-size: 13px; margin-top: 4px; }
+</style></head><body>
+  <div class="center bold med" style="margin-bottom:2px">${CAFE_CONFIG.name}</div>
+  <div class="center sm">KITCHEN ORDER</div>
+  <div class="divider"></div>
+  <div class="center big" style="margin:6px 0">
+    #${String(order.orderNumber).padStart(3, '0')}
+  </div>
+  <div class="divider"></div>
+  <div style="display:flex;justify-content:space-between;font-size:12px;margin:4px 0">
+    <span>${order.orderType === 'dine_in' && order.tableNumber ? 'Table ' + order.tableNumber : '📦 Takeaway'}</span>
+    <span>${formatTime(order.createdAt)}</span>
+  </div>
+  ${order.customerName ? `<div style="font-size:12px;margin-bottom:2px">Customer: ${order.customerName}</div>` : ''}
+  <div style="font-size:11px;color:#666;margin-bottom:2px">${order.orderSource === 'qr' ? '🔳 QR Order' : '👤 Staff Order'}</div>
+  <div class="divider"></div>
+  <table style="margin:4px 0">${items}</table>
+  ${order.notes ? `<div class="divider"></div><div class="notes">⚠️ ${order.notes}</div>` : ''}
+  <div class="divider"></div>
+  <div class="center sm" style="margin-top:6px">Printed: ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+</body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => { win.print(); win.close(); }, 400);
+}
+
 export default function KitchenDashboard() {
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [lastOrderCount, setLastOrderCount] = useState(0);
+  const lastOrderCountRef = useRef(0);
 
   useEffect(() => {
     startPolling();
@@ -52,11 +100,11 @@ export default function KitchenDashboard() {
 
   // Sound alert for new orders
   const checkNewOrders = useCallback(() => {
-    if (soundEnabled && pendingCount > lastOrderCount && lastOrderCount > 0) {
+    if (soundEnabled && pendingCount > lastOrderCountRef.current && lastOrderCountRef.current > 0) {
       playNewOrderSound();
     }
-    setLastOrderCount(pendingCount);
-  }, [pendingCount, lastOrderCount, soundEnabled]);
+    lastOrderCountRef.current = pendingCount;
+  }, [pendingCount, soundEnabled]);
 
   useEffect(() => { checkNewOrders(); }, [checkNewOrders]);
 
@@ -186,12 +234,22 @@ export default function KitchenDashboard() {
                         </span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className={cn('flex items-center gap-1 text-xs font-body font-bold', isUrgent || isOld ? 'text-red-600' : 'text-muted-foreground')}>
-                        <Clock className="size-3" />
-                        {elapsed}m ago
+                    <div className="text-right flex items-center gap-2">
+                      <div>
+                        <div className={cn('flex items-center gap-1 text-xs font-body font-bold', isUrgent || isOld ? 'text-red-600' : 'text-muted-foreground')}>
+                          <Clock className="size-3" />
+                          {elapsed}m ago
+                        </div>
+                        <p className="text-[10px] font-body text-muted-foreground">{formatTime(order.createdAt)}</p>
                       </div>
-                      <p className="text-[10px] font-body text-muted-foreground">{formatTime(order.createdAt)}</p>
+                      {/* Print button */}
+                      <button
+                        onClick={() => printKitchenReceipt(order)}
+                        className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground active:scale-90 transition-all"
+                        aria-label="Print kitchen receipt"
+                      >
+                        <Printer className="size-4" />
+                      </button>
                     </div>
                   </div>
 
@@ -255,6 +313,13 @@ export default function KitchenDashboard() {
                         Ready for Pickup
                       </div>
                     )}
+                    {/* Print button in action row too for quick access */}
+                    <button
+                      onClick={() => printKitchenReceipt(order)}
+                      className="px-4 py-3 rounded-xl bg-muted text-foreground font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-transform"
+                    >
+                      <Printer className="size-4" />
+                    </button>
                   </div>
                 </div>
               );

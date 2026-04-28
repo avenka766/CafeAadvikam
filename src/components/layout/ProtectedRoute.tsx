@@ -18,6 +18,7 @@ export default function ProtectedRoute({ children, allowedRoles }: ProtectedRout
     const defaultPath =
       currentUser.role === 'order_taker' ? '/order-pad'
       : currentUser.role === 'admin' ? '/admin-dashboard'
+      : currentUser.role === 'kitchen' ? '/kitchen'
       : '/billing';
     return <Navigate to={defaultPath} replace />;
   }

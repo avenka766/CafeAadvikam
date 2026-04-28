@@ -26,6 +26,10 @@ export default function BottomNav() {
   } else if (currentUser.role === 'billing') {
     navItems.push(
       { label: 'Orders', icon: <Receipt className="size-5" />, path: '/billing' },
+      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+    );
+  } else if (currentUser.role === 'kitchen') {
+    navItems.push(
       { label: 'Kitchen', icon: <ChefHat className="size-5" />, path: '/kitchen' },
       { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
     );
@@ -33,7 +37,6 @@ export default function BottomNav() {
     navItems.push(
       { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
       { label: 'Menu', icon: <UtensilsCrossed className="size-5" />, path: '/menu-management' },
-      { label: 'Kitchen', icon: <ChefHat className="size-5" />, path: '/kitchen' },
       { label: 'QR Code', icon: <QrCode className="size-5" />, path: '/qr-menu' },
       { label: 'Reports', icon: <BarChart3 className="size-5" />, path: '/sales-report' },
       { label: 'Staff', icon: <Users className="size-5" />, path: '/staff-management' },

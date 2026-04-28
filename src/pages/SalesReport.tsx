@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import {
   TrendingUp, ShoppingBag, IndianRupee,
-  Download, CalendarDays,
+  Download, CalendarDays, QrCode, UserCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PaymentType } from '@/types';
@@ -16,6 +16,7 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
   cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
 };
 const PIE_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#999'];
+const SOURCE_COLORS = ['#3B82F6', '#8B5CF6'];
 
 function getDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -46,7 +47,6 @@ export default function SalesReport() {
       const today = getDateStr(new Date());
       return orders.filter((o) => getDateStr(new Date(o.createdAt)) === today);
     }
-    // Custom date range
     return orders.filter((o) => {
       const d = getDateStr(new Date(o.createdAt));
       return d >= startDate && d <= endDate;
@@ -60,6 +60,46 @@ export default function SalesReport() {
   const orderCount = dayOrders.length;
   const avgOrderValue = orderCount > 0 ? Math.round(totalRevenue / orderCount) : 0;
   const totalDiscount = dayOrders.reduce((s, o) => s + o.discount, 0);
+
+  // --- Source breakdown ---
+  const staffOrders = useMemo(() => dayOrders.filter(o => o.orderSource === 'staff'), [dayOrders]);
+  const qrOrders = useMemo(() => dayOrders.filter(o => o.orderSource === 'qr'), [dayOrders]);
+  const staffRevenue = staffOrders.reduce((s, o) => s + o.total, 0);
+  const qrRevenue = qrOrders.reduce((s, o) => s + o.total, 0);
+
+  const sourceChartData = useMemo(() => {
+    const data = [];
+    if (staffOrders.length > 0) data.push({ name: 'Staff', orders: staffOrders.length, revenue: staffRevenue });
+    if (qrOrders.length > 0) data.push({ name: 'QR', orders: qrOrders.length, revenue: qrRevenue });
+    return data;
+  }, [staffOrders, qrOrders, staffRevenue, qrRevenue]);
+
+  // Peak QR ordering hours
+  const qrHourlyData = useMemo(() => {
+    const hours: Record<number, number> = {};
+    for (let h = 6; h <= 22; h++) hours[h] = 0;
+    qrOrders.forEach((o) => {
+      const h = new Date(o.createdAt).getHours();
+      if (hours[h] !== undefined) hours[h] += 1;
+    });
+    return Object.entries(hours).map(([h, count]) => ({
+      hour: `${Number(h) > 12 ? Number(h) - 12 : h}${Number(h) >= 12 ? 'PM' : 'AM'}`,
+      orders: count,
+    }));
+  }, [qrOrders]);
+
+  // Top QR items
+  const topQrItems = useMemo(() => {
+    const map = new Map<string, { name: string; qty: number; revenue: number }>();
+    qrOrders.forEach((o) =>
+      o.items.forEach((ci) => {
+        const ex = map.get(ci.menuItem.id);
+        if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
+        else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
+      })
+    );
+    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 5);
+  }, [qrOrders]);
 
   const itemSales = useMemo(() => {
     const map = new Map<string, { name: string; qty: number; revenue: number }>();
@@ -123,6 +163,7 @@ export default function SalesReport() {
       return {
         'S.No': i + 1,
         'Order ID': `#${String(o.orderNumber).padStart(3, '0')}`,
+        'Source': o.orderSource === 'qr' ? 'QR' : 'Staff',
         'Date': new Date(o.createdAt).toLocaleDateString('en-IN'),
         'Time': new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
         'Order Type': o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
@@ -187,6 +228,12 @@ export default function SalesReport() {
       { 'Metric': 'CGST (2.5%)', 'Value': Math.round((gstCollected / 2) * 100) / 100 },
       { 'Metric': 'SGST (2.5%)', 'Value': Math.round((gstCollected / 2) * 100) / 100 },
       { 'Metric': 'Total Discounts', 'Value': totalDiscount },
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'SOURCE BREAKDOWN', 'Value': '' },
+      { 'Metric': 'Staff Orders', 'Value': staffOrders.length },
+      { 'Metric': 'Staff Revenue', 'Value': staffRevenue },
+      { 'Metric': 'QR Orders', 'Value': qrOrders.length },
+      { 'Metric': 'QR Revenue', 'Value': qrRevenue },
       { 'Metric': '', 'Value': '' },
       { 'Metric': 'PAYMENT BREAKDOWN', 'Value': '' },
       { 'Metric': 'Total Cash', 'Value': totalCash },
@@ -277,6 +324,7 @@ export default function SalesReport() {
           <KPICard icon={<IndianRupee className="size-4" />} label="Discounts Given" value={formatCurrency(totalDiscount)} color="bg-red-50 text-red-600" />
         </div>
 
+        {/* Order Type breakdown */}
         <div className="flex gap-3">
           <div className="flex-1 bg-card border border-border rounded-xl p-3 text-center">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Dine In</p>
@@ -288,9 +336,98 @@ export default function SalesReport() {
           </div>
         </div>
 
+        {/* === SOURCE BREAKDOWN === */}
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-lg font-bold text-foreground mb-3 flex items-center gap-2">
+            📊 Order Source Breakdown
+          </h3>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <UserCheck className="size-3.5 text-blue-600" />
+                <p className="text-[10px] font-body font-bold text-blue-700 uppercase">Staff Orders</p>
+              </div>
+              <p className="font-display text-xl font-bold text-blue-800">{staffOrders.length}</p>
+              <p className="text-xs font-body text-blue-600 tabular-nums">{formatCurrency(staffRevenue)}</p>
+            </div>
+            <div className="bg-violet-50 border border-violet-200 rounded-xl p-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <QrCode className="size-3.5 text-violet-600" />
+                <p className="text-[10px] font-body font-bold text-violet-700 uppercase">QR Orders</p>
+              </div>
+              <p className="font-display text-xl font-bold text-violet-800">{qrOrders.length}</p>
+              <p className="text-xs font-body text-violet-600 tabular-nums">{formatCurrency(qrRevenue)}</p>
+            </div>
+          </div>
+
+          {/* Revenue comparison chart */}
+          {sourceChartData.length > 0 ? (
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={sourceChartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(38 25% 85%)" />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fontFamily: 'Source Sans 3' }} />
+                  <YAxis tick={{ fontSize: 10, fontFamily: 'Source Sans 3' }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ fontFamily: 'Source Sans 3', fontSize: 12, borderRadius: 8 }} formatter={(value: number, name: string) => [name === 'revenue' ? formatCurrency(value) : value, name === 'revenue' ? 'Revenue' : 'Orders']} />
+                  <Bar dataKey="orders" fill="#3B82F6" radius={[4, 4, 0, 0]} name="Orders" />
+                  <Bar dataKey="revenue" fill="#8B5CF6" radius={[4, 4, 0, 0]} name="Revenue" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <EmptyChart message="No source data" />
+          )}
+        </div>
+
+        {/* Peak QR Ordering Times */}
+        {qrOrders.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-4">
+            <h3 className="font-display text-lg font-bold text-foreground mb-1 flex items-center gap-2">
+              <QrCode className="size-4 text-violet-600" />Peak QR Ordering Times
+            </h3>
+            <p className="text-xs font-body text-muted-foreground mb-3">QR orders by hour</p>
+            <div className="h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={qrHourlyData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(38 25% 85%)" />
+                  <XAxis dataKey="hour" tick={{ fontSize: 10, fontFamily: 'Source Sans 3' }} interval={1} />
+                  <YAxis tick={{ fontSize: 10, fontFamily: 'Source Sans 3' }} allowDecimals={false} />
+                  <Tooltip contentStyle={{ fontFamily: 'Source Sans 3', fontSize: 12, borderRadius: 8 }} />
+                  <Bar dataKey="orders" fill="#8B5CF6" radius={[4, 4, 0, 0]} name="QR Orders" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Top QR Ordered Items */}
+        {topQrItems.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-4">
+            <h3 className="font-display text-lg font-bold text-foreground mb-1 flex items-center gap-2">
+              <QrCode className="size-4 text-violet-600" />Most Popular QR Items
+            </h3>
+            <div className="space-y-2 mt-3">
+              {topQrItems.map((item, i) => (
+                <div key={item.name} className="flex items-center gap-3">
+                  <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'bg-violet-600 text-white' : i < 3 ? 'bg-violet-100 text-violet-700' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p>
+                    <div className="w-full bg-muted rounded-full h-1.5 mt-1"><div className="h-full rounded-full bg-violet-500" style={{ width: `${(item.qty / (topQrItems[0]?.qty || 1)) * 100}%` }} /></div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-body font-bold tabular-nums">{item.qty}</p>
+                    <p className="text-[10px] font-body text-muted-foreground tabular-nums">{formatCurrency(item.revenue)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Peak Hours (all orders) */}
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-lg font-bold text-foreground mb-1">Peak Hours</h3>
-          <p className="text-xs font-body text-muted-foreground mb-3">Orders by hour of day</p>
+          <p className="text-xs font-body text-muted-foreground mb-3">All orders by hour of day</p>
           {orderCount === 0 ? <EmptyChart message="No orders for this period" /> : (
             <div className="h-52">
               <ResponsiveContainer width="100%" height="100%">

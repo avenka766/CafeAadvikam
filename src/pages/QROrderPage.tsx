@@ -28,6 +28,7 @@ export default function QROrderPage() {
   const [submitting, setSubmitting] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [orderNumber, setOrderNumber] = useState<number | null>(null);
+  const [trackingId, setTrackingId] = useState<string | null>(null);
   const [orderType, setOrderType] = useState<OrderType>(tableNum ? 'dine_in' : 'dine_in');
   const [tableNumber, setTableNumber] = useState<number | null>(tableNum);
   const [showTableSelect, setShowTableSelect] = useState(false);
@@ -70,8 +71,11 @@ export default function QROrderPage() {
       orderSource: 'qr',
     });
 
-    const orders = useOrderStore.getState().orders;
-    if (orders.length > 0) setOrderNumber(orders[0].orderNumber);
+    const storeOrders = useOrderStore.getState().orders;
+    if (storeOrders.length > 0) {
+      setOrderNumber(storeOrders[0].orderNumber);
+      setTrackingId(storeOrders[0].id);
+    }
 
     setSubmitting(false);
     setOrderPlaced(true);
@@ -101,8 +105,16 @@ export default function QROrderPage() {
           <p className="text-sm font-body text-muted-foreground mb-8">
             Your order is being prepared. Please wait at your table.
           </p>
+          {trackingId && (
+            <a
+              href={`/order/track?id=${trackingId}`}
+              className="w-full py-4 rounded-2xl bg-blue-600 text-white font-body font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.97] transition-transform mb-3"
+            >
+              📍 Track Your Order
+            </a>
+          )}
           <button
-            onClick={() => { setOrderPlaced(false); setOrderNumber(null); clearCart(); }}
+            onClick={() => { setOrderPlaced(false); setOrderNumber(null); setTrackingId(null); clearCart(); }}
             className="w-full py-4 rounded-2xl cafe-gradient text-primary-foreground font-body font-bold text-sm active:scale-[0.97] transition-transform shadow-lg"
           >
             Place Another Order
