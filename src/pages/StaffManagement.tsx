@@ -8,12 +8,14 @@ const ROLE_LABELS: Record<UserRole, string> = {
   order_taker: 'Order Taker',
   billing: 'Billing Staff',
   admin: 'Administrator',
+  kitchen: 'Kitchen / Chef',
 };
 
 const ROLE_COLORS: Record<UserRole, string> = {
   order_taker: 'bg-blue-100 text-blue-800',
   billing: 'bg-emerald-100 text-emerald-800',
   admin: 'bg-amber-100 text-amber-800',
+  kitchen: 'bg-orange-100 text-orange-800',
 };
 
 export default function StaffManagement() {
