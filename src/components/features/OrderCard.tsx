@@ -3,7 +3,7 @@ import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency, formatTime } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
-import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer } from 'lucide-react';
+import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck } from 'lucide-react';
 import type { Order, OrderStatus, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 
@@ -36,7 +36,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
 
-  // Split payment state
   const [splitMode, setSplitMode] = useState(false);
   const [splitMethods, setSplitMethods] = useState<SplitMethod[]>([]);
   const [splitCash, setSplitCash] = useState('');
@@ -63,12 +62,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     setShowPayment(false);
   };
 
-  // Toggle a split method on/off
   const toggleSplitMethod = (method: SplitMethod) => {
     setSplitError('');
     setSplitMethods((prev) => {
       const newMethods = prev.includes(method) ? prev.filter((m) => m !== method) : [...prev, method];
-      // Reset amounts when methods change
       if (!newMethods.includes('cash')) setSplitCash('');
       if (!newMethods.includes('upi')) setSplitUpi('');
       if (!newMethods.includes('card')) setSplitCard('');
@@ -76,7 +73,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     });
   };
 
-  // Auto-fill remaining amount for the last empty field
   const getAutoFillAmount = (field: SplitMethod): string => {
     const cashAmt = field === 'cash' ? 0 : parseFloat(splitCash) || 0;
     const upiAmt = field === 'upi' ? 0 : parseFloat(splitUpi) || 0;
@@ -92,13 +88,11 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     if (field === 'upi') setSplitUpi(value);
     if (field === 'card') setSplitCard(value);
 
-    // Auto-fill the remaining field
     const numVal = parseFloat(value) || 0;
     const otherFields = splitMethods.filter((m) => m !== field);
 
     if (otherFields.length === 1) {
       const otherField = otherFields[0];
-      // Calculate what the third field already has
       const thirdField = splitMethods.find((m) => m !== field && m !== otherField);
       let thirdAmt = 0;
       if (thirdField) {
@@ -145,7 +139,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     setSplitError('');
   };
 
-  // Workflow: pending→preparing→ready (advance buttons), ready→served needs payment
   const canAdvance = showActions && order.status !== 'served' && order.status !== 'cancelled';
   const isPaymentStep = nextStatus === 'served';
 
@@ -160,6 +153,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
             </span>
             <span className={`text-[10px] font-body font-bold px-2 py-0.5 rounded-full border ${ORDER_STATUS_COLORS[order.status]}`}>
               {ORDER_STATUS_LABELS[order.status]}
+            </span>
+            {/* Order source badge */}
+            <span className={`text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${
+              order.orderSource === 'qr'
+                ? 'bg-violet-100 text-violet-700 border border-violet-200'
+                : 'bg-blue-50 text-blue-600 border border-blue-200'
+            }`}>
+              {order.orderSource === 'qr' ? <><QrCode className="size-2.5" />QR</> : <><UserCheck className="size-2.5" />Staff</>}
             </span>
           </div>
           <button onClick={() => setExpanded(!expanded)} className="size-8 flex items-center justify-center rounded-md active:bg-muted">
@@ -311,7 +312,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                   <p className="text-xs font-body font-bold text-primary tabular-nums">Total: {formatCurrency(order.total)}</p>
                 </div>
 
-                {/* Method selection chips */}
                 <p className="text-[10px] font-body text-muted-foreground uppercase font-semibold">Select payment methods</p>
                 <div className="flex gap-2">
                   {(['cash', 'upi', 'card'] as SplitMethod[]).map((m) => (
@@ -329,7 +329,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                   ))}
                 </div>
 
-                {/* Amount inputs for selected methods */}
                 {splitMethods.length >= 2 && (
                   <div className="space-y-2">
                     {splitMethods.map((m) => (
@@ -358,7 +357,6 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                   </p>
                 )}
 
-                {/* Running total */}
                 {splitMethods.length >= 2 && (
                   <div className="flex justify-between text-xs font-body bg-card rounded-lg px-3 py-2">
                     <span className="text-muted-foreground">Entered total</span>

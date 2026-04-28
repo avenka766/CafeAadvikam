@@ -7,12 +7,16 @@ export default function Header() {
   const { currentUser, logout } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const isPublic = ['/', '/login', '/menu'].includes(location.pathname);
+  const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
+  const isQROrder = location.pathname === '/order';
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
+
+  // Hide header completely on QR order page — it has its own header
+  if (isQROrder) return null;
 
   if (isPublic) {
     return (

@@ -1,27 +1,32 @@
 import { useState, useEffect, useRef } from 'react';
-import { QrCode, Download, ExternalLink, RefreshCw } from 'lucide-react';
-import { CAFE_CONFIG } from '@/constants/config';
+import { QrCode, Download, ExternalLink, RefreshCw, ChevronDown } from 'lucide-react';
+import { CAFE_CONFIG, TABLE_NUMBERS } from '@/constants/config';
+import { cn } from '@/lib/utils';
 
 export default function QRMenuPage() {
   const qrContainerRef = useRef<HTMLDivElement>(null);
+  const [selectedTable, setSelectedTable] = useState<number | 'general'>('general');
   const [menuUrl, setMenuUrl] = useState('');
   const [qrReady, setQrReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [showTablePicker, setShowTablePicker] = useState(false);
 
   useEffect(() => {
-    setMenuUrl(`${window.location.origin}/digital-menu`);
-  }, []);
+    if (selectedTable === 'general') {
+      setMenuUrl(`${window.location.origin}/order`);
+    } else {
+      setMenuUrl(`${window.location.origin}/order?table=${selectedTable}`);
+    }
+  }, [selectedTable]);
 
   useEffect(() => {
     if (!menuUrl || !qrContainerRef.current) return;
 
-    // Clear any previous QR
     qrContainerRef.current.innerHTML = '';
     setQrReady(false);
     setLoading(true);
 
     const loadAndGenerate = () => {
-      // Remove old script if present so onload fires again
       const existing = document.getElementById('qrcode-script');
       if (existing) existing.remove();
 
@@ -40,7 +45,6 @@ export default function QRMenuPage() {
           colorLight: '#ffffff',
           correctLevel: (window as any).QRCode.CorrectLevel.H,
         });
-        // QRCode renders synchronously — small delay for DOM paint
         setTimeout(() => {
           setQrReady(true);
           setLoading(false);
@@ -76,9 +80,12 @@ export default function QRMenuPage() {
       ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
       ctx.font = '14px sans-serif';
       ctx.fillStyle = '#666666';
-      ctx.fillText('Scan to view our menu', out.width / 2, size + pad + 56);
+      const label = selectedTable === 'general' ? 'Scan to order' : `Table ${selectedTable} · Scan to order`;
+      ctx.fillText(label, out.width / 2, size + pad + 56);
       const link = document.createElement('a');
-      link.download = 'cafe-aadvikam-menu-qr.png';
+      link.download = selectedTable === 'general'
+        ? 'cafe-aadvikam-order-qr.png'
+        : `cafe-aadvikam-table-${selectedTable}-qr.png`;
       link.href = out.toDataURL('image/png');
       link.click();
     };
@@ -93,6 +100,50 @@ export default function QRMenuPage() {
     }
   };
 
+  const downloadAllTables = () => {
+    TABLE_NUMBERS.forEach((tableNum, idx) => {
+      setTimeout(() => {
+        const tempDiv = document.createElement('div');
+        document.body.appendChild(tempDiv);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        new (window as any).QRCode(tempDiv, {
+          text: `${window.location.origin}/order?table=${tableNum}`,
+          width: 256,
+          height: 256,
+          colorDark: '#1a1a1a',
+          colorLight: '#ffffff',
+          correctLevel: (window as any).QRCode.CorrectLevel.H,
+        });
+        setTimeout(() => {
+          const canvas = tempDiv.querySelector('canvas') as HTMLCanvasElement | null;
+          if (canvas) {
+            const pad = 32;
+            const size = 256;
+            const out = document.createElement('canvas');
+            out.width = size + pad * 2;
+            out.height = size + pad * 2 + 80;
+            const ctx = out.getContext('2d')!;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, out.width, out.height);
+            ctx.drawImage(canvas, pad, pad, size, size);
+            ctx.fillStyle = '#1a1a1a';
+            ctx.font = 'bold 20px serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
+            ctx.font = '14px sans-serif';
+            ctx.fillStyle = '#666666';
+            ctx.fillText(`Table ${tableNum} · Scan to order`, out.width / 2, size + pad + 56);
+            const link = document.createElement('a');
+            link.download = `cafe-aadvikam-table-${tableNum}-qr.png`;
+            link.href = out.toDataURL('image/png');
+            link.click();
+          }
+          document.body.removeChild(tempDiv);
+        }, 200);
+      }, idx * 300);
+    });
+  };
+
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
       <div className="px-4 pt-6 pb-4">
@@ -101,25 +152,55 @@ export default function QRMenuPage() {
             <QrCode className="size-5 text-primary" />
           </div>
           <div>
-            <h1 className="font-display text-2xl font-bold text-foreground">Menu QR Code</h1>
-            <p className="text-xs font-body text-muted-foreground">Customers scan this to view the digital menu</p>
+            <h1 className="font-display text-2xl font-bold text-foreground">QR Code Ordering</h1>
+            <p className="text-xs font-body text-muted-foreground">Generate QR codes for each table</p>
           </div>
         </div>
       </div>
 
       <div className="px-4 space-y-4">
+        {/* Table selector */}
+        <div className="bg-card border border-border rounded-2xl p-4">
+          <p className="text-xs font-body font-semibold text-foreground mb-2 uppercase tracking-wide">Select Table</p>
+          <div className="relative">
+            <button
+              onClick={() => setShowTablePicker(!showTablePicker)}
+              className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-border bg-background text-sm font-body font-semibold"
+            >
+              {selectedTable === 'general' ? '📋 General (No table)' : `🪑 Table ${selectedTable}`}
+              <ChevronDown className={cn('size-4 transition-transform', showTablePicker && 'rotate-180')} />
+            </button>
+            {showTablePicker && (
+              <div className="mt-2 grid grid-cols-5 gap-2">
+                <button
+                  onClick={() => { setSelectedTable('general'); setShowTablePicker(false); }}
+                  className={cn('col-span-5 py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
+                    selectedTable === 'general' ? 'cafe-gradient text-primary-foreground border-transparent' : 'bg-background border-border text-foreground')}
+                >
+                  📋 General (No table)
+                </button>
+                {TABLE_NUMBERS.map(n => (
+                  <button key={n} onClick={() => { setSelectedTable(n); setShowTablePicker(false); }}
+                    className={cn('py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
+                      selectedTable === n ? 'cafe-gradient text-primary-foreground border-transparent shadow-sm' : 'bg-background border-border text-foreground')}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* QR Card */}
         <div className="bg-card border border-border rounded-2xl overflow-hidden">
           <div className="flex flex-col items-center py-8 px-6 gap-4">
             <p className="font-display text-lg font-bold text-foreground">{CAFE_CONFIG.name}</p>
-            <p className="text-xs font-body text-muted-foreground -mt-3">{CAFE_CONFIG.tagline}</p>
+            <p className="text-xs font-body text-muted-foreground -mt-3">
+              {selectedTable === 'general' ? 'Order from any table' : `Table ${selectedTable}`}
+            </p>
 
             <div className="relative size-[260px] bg-white rounded-2xl border-2 border-border flex items-center justify-center shadow-sm overflow-hidden">
-              {/* QRCode renders into this div */}
-              <div
-                ref={qrContainerRef}
-                className={qrReady ? 'flex items-center justify-center' : 'hidden'}
-              />
+              <div ref={qrContainerRef} className={qrReady ? 'flex items-center justify-center' : 'hidden'} />
               {loading && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <RefreshCw className="size-8 text-muted-foreground animate-spin" />
@@ -128,14 +209,12 @@ export default function QRMenuPage() {
               )}
             </div>
 
-            <p className="text-xs font-body text-muted-foreground text-center">
-              {CAFE_CONFIG.type} • {CAFE_CONFIG.hours}
-            </p>
+            <p className="text-xs font-body text-muted-foreground text-center">{CAFE_CONFIG.type} • {CAFE_CONFIG.hours}</p>
             <p className="text-[10px] font-body text-muted-foreground text-center">{CAFE_CONFIG.address}</p>
           </div>
 
           <div className="border-t border-border px-4 py-3 bg-muted/30">
-            <p className="text-[10px] font-body text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Menu URL</p>
+            <p className="text-[10px] font-body text-muted-foreground mb-1 font-semibold uppercase tracking-wide">Order URL</p>
             <p className="text-xs font-body text-foreground break-all">{menuUrl}</p>
           </div>
         </div>
@@ -151,24 +230,34 @@ export default function QRMenuPage() {
             Download QR
           </button>
           <a
-            href="/digital-menu"
+            href={menuUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 py-3.5 rounded-xl border border-border bg-card text-foreground font-body font-bold text-sm active:scale-95 transition-transform"
           >
             <ExternalLink className="size-4" />
-            Preview Menu
+            Preview
           </a>
         </div>
 
+        {/* Download all tables */}
+        <button
+          onClick={downloadAllTables}
+          className="w-full py-3.5 rounded-xl gold-gradient text-white font-body font-bold text-sm active:scale-95 transition-transform shadow-md flex items-center justify-center gap-2"
+        >
+          <Download className="size-4" />
+          Download All Table QR Codes ({TABLE_NUMBERS.length} tables)
+        </button>
+
         {/* Instructions */}
         <div className="bg-card border border-border rounded-2xl p-4 space-y-3">
-          <p className="text-sm font-body font-semibold text-foreground">How to use</p>
+          <p className="text-sm font-body font-semibold text-foreground">How QR Ordering Works</p>
           {[
-            ['Download QR', 'Save the QR code image to your device'],
-            ['Print & Display', 'Print and place on tables or at the entrance'],
-            ['Customers Scan', 'They scan with any phone camera to see the menu'],
-            ['Always Updated', 'Menu changes reflect instantly — no reprinting needed'],
+            ['Generate QR', 'Select a table above and download its unique QR code'],
+            ['Print & Place', 'Print QR codes and place on each table'],
+            ['Customer Scans', 'Customer scans QR → sees menu → adds items → places order'],
+            ['Kitchen Gets Order', 'Order appears instantly on Kitchen & Billing dashboards'],
+            ['Track Source', 'QR orders are tagged so you know the source'],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3">
               <div className="size-1.5 rounded-full bg-primary mt-2 shrink-0" />

@@ -7,6 +7,7 @@ import {
   Inbox, Wifi, Plus, Minus, Search, X,
   ShoppingBag, MapPin, User as UserIcon, StickyNote,
   ChevronDown, AlertCircle, Trash2, Receipt,
+  QrCode, UserCheck,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
@@ -27,6 +28,8 @@ const QUICK_NOTES = [
   'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
   'Less oil', 'Extra chutney', 'Pack separately', 'Allergy – check ingredients',
 ];
+
+type SourceFilter = 'all' | 'staff' | 'qr';
 
 // ── Inline billing cart (no drawer, rendered in page) ─────────────────────────
 function NewBillPanel() {
@@ -79,6 +82,7 @@ function NewBillPanel() {
       notes: notes || undefined,
       customerName: customerName || undefined,
       createdBy: currentUser.username,
+      orderSource: 'staff',
     });
     setSubmitting(false);
     setShowSuccess(true);
@@ -99,36 +103,22 @@ function NewBillPanel() {
   }
 
   return (
-    // Two-column layout on md+, stacked on mobile
     <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
-
-      {/* ── LEFT: Menu browser ──────────────────────────────────────── */}
+      {/* LEFT: Menu browser */}
       <div className="flex-1 min-w-0">
-        {/* Search */}
         <div className="px-4 md:px-0 pt-3 pb-1">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search menu items..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-            />
+            <input type="text" placeholder="Search menu items..." value={search} onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50" />
             {search && (
-              <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                <X className="size-4" />
-              </button>
+              <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>
             )}
           </div>
         </div>
-
-        {/* Categories */}
         <div className="border-b border-border">
           <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
         </div>
-
-        {/* Items grid */}
         <div className="px-4 md:px-0 py-3">
           {filteredItems.length === 0 ? (
             <div className="text-center py-12">
@@ -138,23 +128,16 @@ function NewBillPanel() {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3">
               {filteredItems.map(item => (
-                <MenuItemCard
-                  key={item.id}
-                  item={item}
-                  quantity={getQty(item.id)}
-                  onAdd={() => addToCart(item)}
-                  onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)}
-                />
+                <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)} onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
               ))}
             </div>
           )}
         </div>
       </div>
 
-      {/* ── RIGHT: Bill summary ─────────────────────────────────────── */}
+      {/* RIGHT: Bill summary */}
       <div className="w-full md:w-80 lg:w-96 shrink-0">
         <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-sm overflow-hidden">
-          {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border bg-muted/40">
             <div className="flex items-center gap-2">
               <ShoppingBag className="size-4 text-primary" />
@@ -164,13 +147,10 @@ function NewBillPanel() {
               )}
             </div>
             {cartCount > 0 && (
-              <button onClick={clearCart} className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95">
-                Clear
-              </button>
+              <button onClick={clearCart} className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95">Clear</button>
             )}
           </div>
 
-          {/* Cart items */}
           <div className="max-h-52 overflow-y-auto px-4 py-2 space-y-2">
             {cart.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
@@ -193,30 +173,25 @@ function NewBillPanel() {
             ))}
           </div>
 
-          {/* Order details */}
           {cartCount > 0 && (
             <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/30">
-              {/* Dine in / Takeaway */}
               <div className="flex gap-2">
-                <button
-                  onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}
-                >🍽️ Dine In</button>
-                <button
-                  onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}
-                >📦 Takeaway</button>
+                <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
+                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  🍽️ Dine In
+                </button>
+                <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
+                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  📦 Takeaway
+                </button>
               </div>
 
-              {/* Table / Customer */}
               {orderType === 'dine_in' ? (
                 <div>
                   <div className="relative">
                     <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <button
-                      onClick={() => setShowTableSelect(!showTableSelect)}
-                      className={cn('w-full pl-8 pr-8 py-2 bg-card border rounded-lg text-left text-xs font-body', tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}
-                    >
+                    <button onClick={() => setShowTableSelect(!showTableSelect)}
+                      className={cn('w-full pl-8 pr-8 py-2 bg-card border rounded-lg text-left text-xs font-body', tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
                       {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
                     </button>
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -224,17 +199,14 @@ function NewBillPanel() {
                       <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-36 overflow-y-auto">
                         {TABLE_NUMBERS.map(num => (
                           <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
-                            className={cn('py-1.5 rounded-md text-xs font-body font-medium', tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted')}>
-                            {num}
-                          </button>
+                            className={cn('py-1.5 rounded-md text-xs font-body font-medium', tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted')}>{num}</button>
                         ))}
                       </div>
                     )}
                   </div>
                   {tableError && (
                     <div className="flex items-center gap-1 mt-1 text-destructive">
-                      <AlertCircle className="size-3" />
-                      <span className="text-[11px] font-body">Table number required for Dine In</span>
+                      <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table number required for Dine In</span>
                     </div>
                   )}
                 </div>
@@ -246,7 +218,6 @@ function NewBillPanel() {
                 </div>
               )}
 
-              {/* Notes */}
               <div>
                 <div className="relative">
                   <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
@@ -255,8 +226,7 @@ function NewBillPanel() {
                 </div>
                 <div className="flex flex-wrap gap-1 mt-1">
                   {QUICK_NOTES.map(n => (
-                    <button key={n} type="button"
-                      onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
+                    <button key={n} type="button" onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
                       className="px-2 py-0.5 rounded text-[10px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
                       + {n}
                     </button>
@@ -264,7 +234,6 @@ function NewBillPanel() {
                 </div>
               </div>
 
-              {/* Total + submit */}
               <div className="pt-1 border-t border-border">
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-body text-xs text-muted-foreground">Total</span>
@@ -287,6 +256,7 @@ function NewBillPanel() {
 export default function BillingDashboard() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill'>('pending');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
     startPolling();
@@ -299,24 +269,58 @@ export default function BillingDashboard() {
   }, [orders]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'all' || activeTab === 'new_bill') return todayOrders;
-    return todayOrders.filter(o => o.status === activeTab);
-  }, [todayOrders, activeTab]);
+    let result = todayOrders;
+    if (activeTab !== 'all' && activeTab !== 'new_bill') {
+      result = result.filter(o => o.status === activeTab);
+    }
+    if (sourceFilter !== 'all') {
+      result = result.filter(o => o.orderSource === sourceFilter);
+    }
+    return result;
+  }, [todayOrders, activeTab, sourceFilter]);
+
+  const qrCount = todayOrders.filter(o => o.orderSource === 'qr').length;
+  const staffCount = todayOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
       {/* Sync indicator */}
-      <div className="px-4 pt-2 pb-1 flex items-center gap-1.5">
-        <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
-        <span className="text-[10px] font-body text-muted-foreground">
-          {polling ? 'Live syncing every 3s' : 'Offline'}
-        </span>
+      <div className="px-4 pt-2 pb-1 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
+          <span className="text-[10px] font-body text-muted-foreground">
+            {polling ? 'Live syncing every 3s' : 'Offline'}
+          </span>
+        </div>
+        {/* Source filter */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setSourceFilter('all')}
+            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all',
+              sourceFilter === 'all' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground')}
+          >
+            All ({todayOrders.length})
+          </button>
+          <button
+            onClick={() => setSourceFilter('staff')}
+            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
+              sourceFilter === 'staff' ? 'bg-blue-600 text-white' : 'bg-muted text-muted-foreground')}
+          >
+            <UserCheck className="size-2.5" />Staff ({staffCount})
+          </button>
+          <button
+            onClick={() => setSourceFilter('qr')}
+            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
+              sourceFilter === 'qr' ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground')}
+          >
+            <QrCode className="size-2.5" />QR ({qrCount})
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
       <div className="sticky top-14 z-30 bg-background border-b border-border">
         <div className="flex gap-1 overflow-x-auto scrollbar-hide px-4 py-2">
-          {/* New Bill tab */}
           <button
             onClick={() => setActiveTab('new_bill')}
             className={cn(
@@ -326,16 +330,15 @@ export default function BillingDashboard() {
                 : 'bg-emerald-50 border border-emerald-200 text-emerald-700 active:scale-95'
             )}
           >
-            <Plus className="size-3.5" />
-            New Bill
+            <Plus className="size-3.5" />New Bill
           </button>
-
-          {/* Status tabs */}
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = tab.key === 'all'
-              ? todayOrders.length
-              : todayOrders.filter(o => o.status === tab.key).length;
+              ? (sourceFilter === 'all' ? todayOrders.length : todayOrders.filter(o => o.orderSource === sourceFilter).length)
+              : (sourceFilter === 'all'
+                  ? todayOrders.filter(o => o.status === tab.key).length
+                  : todayOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
             return (
               <button
                 key={tab.key}
@@ -370,7 +373,7 @@ export default function BillingDashboard() {
               <Inbox className="size-16 mb-4 opacity-30" />
               <p className="font-body font-semibold text-lg">No orders here</p>
               <p className="text-sm font-body mt-1">
-                {activeTab === 'pending' ? 'Waiting for new orders from staff...' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
+                {activeTab === 'pending' ? 'Waiting for new orders from staff or QR...' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
               </p>
             </div>
           ) : (

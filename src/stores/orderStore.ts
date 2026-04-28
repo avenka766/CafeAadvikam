@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
-import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown } from '@/types';
+import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 import { generateId } from '@/lib/utils';
 
 interface OrderState {
@@ -27,6 +27,7 @@ interface OrderState {
     notes?: string;
     customerName?: string;
     createdBy: string;
+    orderSource?: OrderSource;
   }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
@@ -59,6 +60,7 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     paymentBreakdown: row.payment_breakdown as PaymentBreakdown | undefined,
     billedBy: row.billed_by as string | undefined,
     cancelReason: row.cancel_reason as string | undefined,
+    orderSource: (row.order_source as OrderSource) || 'staff',
   };
 }
 
@@ -98,7 +100,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
   // === Orders (DB-synced) ===
   loadOrders: async () => {
-    // Load last 60 days of orders
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 60);
 
@@ -118,6 +119,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
+    const orderSource = params.orderSource || 'staff';
 
     // Get next order number atomically
     const { data: numData } = await supabase.rpc('get_next_order_number');
@@ -141,9 +143,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: params.notes,
       customerName: params.customerName,
       paymentType: 'unpaid',
+      orderSource,
     };
 
-    // Insert into DB
     const { error } = await supabase.from('orders').insert({
       id: orderId,
       order_number: orderNumber,
@@ -160,6 +162,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: params.notes || null,
       customer_name: params.customerName || null,
       payment_type: 'unpaid',
+      order_source: orderSource,
       created_at: now,
       updated_at: now,
     });
@@ -179,7 +182,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const updates: Record<string, unknown> = { status, updated_at: now };
     if (cancelReason) updates.cancel_reason = cancelReason;
 
-    // Optimistic update
     set((state) => ({
       orders: state.orders.map((o) =>
         o.id === orderId ? { ...o, status, updatedAt: now, ...(cancelReason ? { cancelReason } : {}) } : o
@@ -230,12 +232,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const { pollTimer } = get();
     if (pollTimer) return;
 
-    // Load immediately
     get().loadOrders();
 
     const timer = setInterval(() => {
       get().loadOrders();
-    }, 3000); // Poll every 3 seconds
+    }, 3000);
 
     set({ polling: true, pollTimer: timer });
   },

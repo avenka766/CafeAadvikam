@@ -44,6 +44,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
       notes: notes || undefined,
       customerName: customerName || undefined,
       createdBy: currentUser.username,
+      orderSource: 'staff',
     });
 
     setSubmitting(false);
@@ -66,7 +67,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
               <ShoppingBag className="size-10 text-emerald-600" />
             </div>
             <h2 className="font-display text-2xl font-bold text-foreground">Order Sent!</h2>
-            <p className="text-muted-foreground font-body mt-1">The billing counter has received your order.</p>
+            <p className="text-muted-foreground font-body mt-1">The billing counter and kitchen have received your order.</p>
           </div>
         ) : (
           <>
@@ -143,24 +144,14 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                   <div className="relative">
                     <StickyNote className="absolute left-3 top-3 size-4 text-muted-foreground" />
                     <textarea placeholder="Order notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full pl-9 pr-4 py-2.5 bg-card border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground resize-none" />
-                    {/* Quick note chips */}
                     <div className="flex flex-wrap gap-1.5 mt-1.5">
                       {[
-                        'Less spicy',
-                        'Extra spicy',
-                        'No onion',
-                        'No garlic',
-                        'Less oil',
-                        'Extra chutney',
-                        'Pack separately',
-                        'Allergy – check ingredients',
+                        'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
+                        'Less oil', 'Extra chutney', 'Pack separately', 'Allergy – check ingredients',
                       ].map((suggestion) => (
-                        <button
-                          key={suggestion}
-                          type="button"
+                        <button key={suggestion} type="button"
                           onClick={() => setNotes(prev => prev ? `${prev}, ${suggestion}` : suggestion)}
-                          className="px-2 py-1 rounded-md text-[11px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all"
-                        >
+                          className="px-2 py-1 rounded-md text-[11px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
                           + {suggestion}
                         </button>
                       ))}
@@ -174,7 +165,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                     <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                   </div>
                   <button onClick={handleSubmit} disabled={submitting} className="w-full py-3.5 rounded-xl cafe-gradient text-primary-foreground font-body font-bold text-base active:scale-[0.98] transition-transform shadow-lg disabled:opacity-60">
-                    {submitting ? 'Sending...' : 'Send to Billing Counter'}
+                    {submitting ? 'Sending...' : 'Send to Kitchen & Billing'}
                   </button>
                 </div>
               </>

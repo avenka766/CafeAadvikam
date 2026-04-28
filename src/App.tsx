@@ -14,6 +14,8 @@ import SalesReport from '@/pages/SalesReport';
 import AdminDashboard from '@/pages/AdminDashboard';
 import StaffManagement from '@/pages/StaffManagement';
 import QRMenuPage from '@/pages/QRMenuPage';
+import QROrderPage from '@/pages/QROrderPage';
+import KitchenDashboard from '@/pages/KitchenDashboard';
 import DigitalMenu from '@/pages/DigitalMenu';
 
 function AppRoutes() {
@@ -34,6 +36,7 @@ function AppRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/menu" element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
+        <Route path="/order" element={<QROrderPage />} />
         <Route
           path="/order-pad"
           element={
@@ -47,6 +50,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['billing']}>
               <BillingDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/kitchen"
+          element={
+            <ProtectedRoute allowedRoles={['billing', 'admin']}>
+              <KitchenDashboard />
             </ProtectedRoute>
           }
         />

@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
-import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle } from 'lucide-react';
+import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Cookie } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
 const CAFE = {
@@ -21,29 +21,17 @@ const CAFE = {
 };
 
 const FOOD_IMAGES = {
-  // Hero: South Indian banana leaf meal — vibrant, clearly South Indian
   hero:     'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
-  // Idli & sambar — correct South Indian breakfast image
   idly:     'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
-  // Crispy golden dosa — matches "Masala Dosa"
   dosa:     'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=600&q=80',
-  // Veg biryani in handi — matches "Handi Biriyani"
   biryani:  'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&q=80',
-  // Rich orange paneer curry — matches "Paneer Tikka Masala"
   paneer:   'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600&q=80',
-  // Tandoor grill items — matches "Tandoori Starters"
   tandoor:  'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80',
-  // Kids burger/pizza
   kids:     'https://images.unsplash.com/photo-1513442542250-854d436a73f2?w=600&q=80',
-  // Red tomato soup in bowl — matches "Tomato Soup"
   soup:     'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80',
-  // Pani puri / chaat — matches "Chats"
   chat:     'https://images.unsplash.com/photo-1606491956689-2ea866880c84?w=600&q=80',
-  // Fresh juices / drinks
   drinks:   'https://images.unsplash.com/photo-1579954115545-a95591f28bfc?w=600&q=80',
-  // South Indian thali plate — matches "South Indian Thali"
   south:    'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80',
-  // Party hall image
   partyHall:'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w1200-h2136-k-no',
 };
 
@@ -252,85 +240,38 @@ function FloatingSpiceDots() {
   );
 }
 
-export default function Landing() {
+/* ── Cafe Content (original landing) ─── */
+function CafeContent({
+  setShowMenu, setDrawerCat, setPartyFullscreen,
+}: {
+  setShowMenu: (v: boolean) => void;
+  setDrawerCat: (v: string | null) => void;
+  setPartyFullscreen: (v: boolean) => void;
+}) {
   const navigate = useNavigate();
-  const { currentUser } = useAuthStore();
-  const { loadMenu } = useMenuStore();
-  const [showMenu, setShowMenu] = useState(false);
-  const [drawerCat, setDrawerCat] = useState<string | null>(null);
-  const [partyFullscreen, setPartyFullscreen] = useState(false);
   const [timePeriod] = useState(getTimePeriod);
 
-  useEffect(() => { loadMenu(); }, [loadMenu]);
-
-  if (currentUser) {
-    const path = currentUser.role === 'order_taker' ? '/order-pad' : currentUser.role === 'admin' ? '/admin-dashboard' : '/billing';
-    navigate(path, { replace: true }); return null;
-  }
+  const openDirections = () => {
+    const ua = navigator.userAgent.toLowerCase();
+    if (/iphone|ipad|ipod/.test(ua)) window.open(`maps://maps.apple.com/?daddr=12.808481,77.9628595&q=Cafe+Aadvikam`, '_blank');
+    else if (/android/.test(ua)) window.open(`geo:12.808481,77.9628595?q=12.808481,77.9628595(Cafe+Aadvikam)`, '_blank');
+    else window.open(CAFE.mapsUrl, '_blank');
+  };
 
   const bookPartyHall = () => {
     window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
   };
 
-  const openDirections = () => {
-    const ua = navigator.userAgent.toLowerCase();
-    if (/iphone|ipad|ipod/.test(ua)) {
-      window.open(`maps://maps.apple.com/?daddr=12.808481,77.9628595&q=Cafe+Aadvikam`, '_blank');
-    } else if (/android/.test(ua)) {
-      window.open(`geo:12.808481,77.9628595?q=12.808481,77.9628595(Cafe+Aadvikam)`, '_blank');
-    } else {
-      window.open(CAFE.mapsUrl, '_blank');
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-background pt-14 overflow-x-hidden">
-      <style>{`
-        @keyframes spiceDrift {
-          from { transform: translateY(0px) rotate(0deg); }
-          to   { transform: translateY(-18px) rotate(15deg); }
-        }
-        @keyframes shimmer {
-          0%   { background-position: -200% center; }
-          100% { background-position:  200% center; }
-        }
-        @keyframes fadeSlideUp {
-          from { opacity: 0; transform: translateY(24px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes pulseGlow {
-          0%, 100% { box-shadow: 0 0 16px rgba(255,215,0,0.25); }
-          50%       { box-shadow: 0 0 32px rgba(255,215,0,0.55); }
-        }
-        .snb-badge {
-          background: linear-gradient(90deg, #b8860b, #ffd700, #daa520, #ffd700, #b8860b);
-          background-size: 200% auto;
-          animation: shimmer 2.5s linear infinite;
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-          font-weight: 900;
-        }
-        .hero-content  { animation: fadeSlideUp 0.8s ease-out both; }
-        .hero-c-d1     { animation: fadeSlideUp 0.8s 0.15s ease-out both; }
-        .hero-c-d2     { animation: fadeSlideUp 0.8s 0.30s ease-out both; }
-        .hero-c-d3     { animation: fadeSlideUp 0.8s 0.45s ease-out both; }
-        .time-badge    { animation: pulseGlow 2s ease-in-out infinite; }
-      `}</style>
-
-      {/* ═══ HERO ══════════════════════════════════════════════════════════════ */}
+    <>
+      {/* HERO */}
       <section className="relative overflow-hidden" style={{ height: '92vh', minHeight: 560 }}>
         <HeroBackground />
         <FloatingSpiceDots />
-        <div className="absolute inset-0" style={{
-          background: 'linear-gradient(170deg, rgba(0,0,0,0.1) 0%, rgba(20,8,0,0.45) 38%, rgba(10,4,0,0.86) 72%, rgba(5,2,0,0.97) 100%)'
-        }} />
-        <div className="absolute inset-0" style={{
-          background: 'radial-gradient(ellipse at center, transparent 35%, rgba(5,2,0,0.5) 100%)'
-        }} />
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(170deg, rgba(0,0,0,0.1) 0%, rgba(20,8,0,0.45) 38%, rgba(10,4,0,0.86) 72%, rgba(5,2,0,0.97) 100%)' }} />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at center, transparent 35%, rgba(5,2,0,0.5) 100%)' }} />
 
         <div className="relative h-full flex flex-col justify-end px-5 pb-10">
-          {/* Time badge */}
           <div className="mb-4 hero-content">
             <span className="time-badge inline-flex items-center gap-2 px-4 py-2 rounded-full text-[11px] font-body font-bold tracking-wide"
               style={{ background: 'rgba(255,215,0,0.12)', border: '1px solid rgba(255,215,0,0.4)', color: '#FFD700' }}>
@@ -338,7 +279,6 @@ export default function Landing() {
             </span>
           </div>
 
-          {/* Logo + SNB Since 1988 */}
           <div className="flex items-center gap-3 mb-4 hero-c-d1">
             <img src={cafeLogo} alt="logo" className="size-16 rounded-2xl border-2 object-cover shadow-2xl" style={{ borderColor: 'rgba(255,215,0,0.4)' }} />
             <div>
@@ -354,7 +294,6 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* Name */}
           <div className="hero-c-d2 mb-3">
             <h1 className="font-display font-bold text-white leading-[0.92] drop-shadow-2xl" style={{ fontSize: 'clamp(46px, 12vw, 68px)' }}>
               Cafe<br />
@@ -364,14 +303,12 @@ export default function Landing() {
             <p className="font-body text-xs text-white/45 mt-1">🌿 Pure Vegetarian · Restaurant &amp; Party Hall</p>
           </div>
 
-          {/* Hours + location */}
           <div className="flex items-center gap-3 mb-6 hero-c-d2" style={{ color: 'rgba(255,255,255,0.5)' }}>
             <span className="flex items-center gap-1.5 text-xs font-body"><Clock className="size-3.5" />{CAFE.hours}</span>
             <span className="text-white/25">·</span>
             <span className="flex items-center gap-1.5 text-xs font-body"><MapPin className="size-3.5" />Berikai, Hosur</span>
           </div>
 
-          {/* CTAs */}
           <div className="flex gap-3 hero-c-d3">
             <button onClick={() => setShowMenu(true)}
               className="flex-1 py-4 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 relative overflow-hidden"
@@ -387,7 +324,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ═══ INFO STRIP ════════════════════════════════════════════════════════ */}
+      {/* INFO STRIP */}
       <section className="bg-primary text-primary-foreground px-5 py-4">
         <div className="grid grid-cols-2 gap-2 text-sm font-body">
           <div className="flex items-center gap-2"><Clock className="size-4 opacity-80" /><span className="font-semibold text-xs">{CAFE.hours}</span></div>
@@ -396,7 +333,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ═══ FOOD PHOTO STRIP ══════════════════════════════════════════════════ */}
+      {/* FOOD PHOTO STRIP */}
       <section className="py-6 overflow-hidden">
         <div className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-2">
           {[
@@ -416,7 +353,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ═══ SPECIALTY CARDS ═══════════════════════════════════════════════════ */}
+      {/* SPECIALTY CARDS */}
       <section className="px-4 py-6">
         <div className="mb-5">
           <h2 className="font-display text-2xl font-bold text-foreground">Specialty Menu</h2>
@@ -458,9 +395,7 @@ export default function Landing() {
         </div>
       </section>
 
-
-
-      {/* ═══ WHY CAFE AADVIKAM ══════════════════════════════════════════════════ */}
+      {/* WHY CAFE AADVIKAM */}
       <section className="px-5 py-10 text-center bg-card border-y border-border">
         <div className="flex flex-col items-center gap-4">
           <img src={cafeLogo} alt="logo" className="size-16 rounded-2xl object-cover border-2 border-border shadow-md" />
@@ -479,7 +414,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ═══ PARTY HALL ════════════════════════════════════════════════════════ */}
+      {/* PARTY HALL */}
       <section className="px-4 py-8">
         <div className="flex items-center gap-2 mb-2">
           <PartyPopper className="size-5 text-primary" />
@@ -487,7 +422,6 @@ export default function Landing() {
         </div>
         <p className="text-sm font-body text-muted-foreground mb-4">Perfect for birthdays, family gatherings &amp; corporate events. Tap to view in full.</p>
 
-        {/* Tapping opens fullscreen image viewer */}
         <div className="relative rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-all shadow-xl border border-border"
           style={{ height: 220 }}
           onClick={() => setPartyFullscreen(true)}>
@@ -519,7 +453,7 @@ export default function Landing() {
         <p className="text-center text-[10px] font-body text-muted-foreground mt-2">Opens WhatsApp with pre-filled message</p>
       </section>
 
-      {/* ═══ FROM OUR KITCHEN — each image carefully matched to its dish name ═══ */}
+      {/* FROM OUR KITCHEN */}
       <section className="pb-8">
         <div className="px-4 mb-3 flex items-center justify-between">
           <h2 className="font-display text-xl font-bold text-foreground">From Our Kitchen</h2>
@@ -527,15 +461,10 @@ export default function Landing() {
         </div>
         <div className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-2">
           {[
-            // Masala Dosa — crispy golden dosa on plate
             { img: 'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=400&q=80', label: 'Masala Dosa ₹69' },
-            // Paneer Tikka Masala — orange paneer curry
             { img: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=400&q=80', label: 'Paneer Tikka Masala ₹170' },
-            // Tomato Soup — red soup in white bowl
             { img: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=400&q=80', label: 'Tomato Soup ₹59' },
-            // Handi Biriyani — biryani in pot
             { img: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=400&q=80', label: 'Handi Biriyani ₹169' },
-            // South Indian Thali — banana leaf meal
             { img: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=400&q=80', label: 'South Indian Thali' },
           ].map(({ img, label }) => (
             <div key={label} className="shrink-0 relative rounded-2xl overflow-hidden shadow-md" style={{ width: 150, height: 180 }}>
@@ -546,15 +475,162 @@ export default function Landing() {
           ))}
         </div>
       </section>
+    </>
+  );
+}
 
-      {/* ═══ FOOTER ════════════════════════════════════════════════════════════ */}
+/* ── Bakery Content (iframe) ─── */
+function BakeryContent() {
+  const [iframeLoaded, setIframeLoaded] = useState(false);
+  const [iframeError, setIframeError] = useState(false);
+
+  return (
+    <div className="min-h-[80vh]">
+      {!iframeLoaded && !iframeError && (
+        <div className="flex flex-col items-center justify-center py-20 gap-4">
+          <div className="size-12 rounded-full border-3 border-primary border-t-transparent animate-spin" />
+          <p className="font-body text-sm text-muted-foreground">Loading SNB Bakery...</p>
+        </div>
+      )}
+      {iframeError && (
+        <div className="flex flex-col items-center justify-center py-16 px-6 text-center gap-4">
+          <div className="size-16 rounded-2xl bg-amber-100 flex items-center justify-center">
+            <Cookie className="size-8 text-amber-700" />
+          </div>
+          <div>
+            <h3 className="font-display text-xl font-bold text-foreground mb-1">SNB Bakery</h3>
+            <p className="text-sm font-body text-muted-foreground">Fresh baked goods, cakes, and sweets from SNB Bakery</p>
+          </div>
+          <a
+            href="https://www.snbbakery.in/index.php"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-6 py-3 rounded-xl cafe-gradient text-primary-foreground font-body font-bold text-sm flex items-center gap-2 active:scale-95 transition-transform shadow-lg"
+          >
+            <Cookie className="size-4" />
+            Visit SNB Bakery Website
+            <ChevronRight className="size-4" />
+          </a>
+          <p className="text-[10px] font-body text-muted-foreground">Opens in a new tab</p>
+        </div>
+      )}
+      <iframe
+        src="https://www.snbbakery.in/index.php"
+        title="SNB Bakery"
+        className={cn('w-full border-0', iframeLoaded ? 'block' : 'hidden')}
+        style={{ minHeight: '80vh', height: '100vh' }}
+        onLoad={() => setIframeLoaded(true)}
+        onError={() => setIframeError(true)}
+        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+      />
+    </div>
+  );
+}
+
+export default function Landing() {
+  const navigate = useNavigate();
+  const { currentUser } = useAuthStore();
+  const { loadMenu } = useMenuStore();
+  const [showMenu, setShowMenu] = useState(false);
+  const [drawerCat, setDrawerCat] = useState<string | null>(null);
+  const [partyFullscreen, setPartyFullscreen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'cafe' | 'bakery'>('cafe');
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  if (currentUser) {
+    const path = currentUser.role === 'order_taker' ? '/order-pad' : currentUser.role === 'admin' ? '/admin-dashboard' : '/billing';
+    navigate(path, { replace: true }); return null;
+  }
+
+  const bookPartyHall = () => {
+    window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
+  };
+
+  return (
+    <div className="min-h-screen bg-background pt-14 overflow-x-hidden">
+      <style>{`
+        @keyframes spiceDrift {
+          from { transform: translateY(0px) rotate(0deg); }
+          to   { transform: translateY(-18px) rotate(15deg); }
+        }
+        @keyframes shimmer {
+          0%   { background-position: -200% center; }
+          100% { background-position:  200% center; }
+        }
+        @keyframes fadeSlideUp {
+          from { opacity: 0; transform: translateY(24px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulseGlow {
+          0%, 100% { box-shadow: 0 0 16px rgba(255,215,0,0.25); }
+          50%       { box-shadow: 0 0 32px rgba(255,215,0,0.55); }
+        }
+        .snb-badge {
+          background: linear-gradient(90deg, #b8860b, #ffd700, #daa520, #ffd700, #b8860b);
+          background-size: 200% auto;
+          animation: shimmer 2.5s linear infinite;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          font-weight: 900;
+        }
+        .hero-content  { animation: fadeSlideUp 0.8s ease-out both; }
+        .hero-c-d1     { animation: fadeSlideUp 0.8s 0.15s ease-out both; }
+        .hero-c-d2     { animation: fadeSlideUp 0.8s 0.30s ease-out both; }
+        .hero-c-d3     { animation: fadeSlideUp 0.8s 0.45s ease-out both; }
+        .time-badge    { animation: pulseGlow 2s ease-in-out infinite; }
+      `}</style>
+
+      {/* ═══ CAFE / BAKERY TAB SWITCHER ═══ */}
+      <div className="sticky top-14 z-30 bg-background border-b border-border px-4 py-2">
+        <div className="flex gap-2 bg-muted rounded-xl p-1">
+          <button
+            onClick={() => setActiveTab('cafe')}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-body font-bold transition-all',
+              activeTab === 'cafe'
+                ? 'cafe-gradient text-primary-foreground shadow-md'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <UtensilsCrossed className="size-4" />
+            Cafe
+          </button>
+          <button
+            onClick={() => setActiveTab('bakery')}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-body font-bold transition-all',
+              activeTab === 'bakery'
+                ? 'gold-gradient text-white shadow-md'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Cookie className="size-4" />
+            Bakery
+          </button>
+        </div>
+      </div>
+
+      {/* ═══ CONTENT ═══ */}
+      {activeTab === 'cafe' ? (
+        <CafeContent
+          setShowMenu={setShowMenu}
+          setDrawerCat={setDrawerCat}
+          setPartyFullscreen={setPartyFullscreen}
+        />
+      ) : (
+        <BakeryContent />
+      )}
+
+      {/* ═══ FOOTER ═══ */}
       <footer className="bg-foreground text-primary-foreground px-5 py-8 text-center">
         <img src={cafeLogo} alt="logo" className="size-12 rounded-xl object-cover mx-auto mb-3 border border-white/20" />
         <p className="font-display text-lg font-bold text-white mb-0.5">{CAFE.name}</p>
         <p className="text-[10px] font-body font-bold mb-1" style={{ color: '#FFD700' }}>SNB · Since 1988</p>
         <p className="text-xs font-body text-white/60 mb-3">{CAFE.address}</p>
         <div className="flex gap-3 justify-center mb-5">
-          <button onClick={openDirections}
+          <button onClick={() => window.open(CAFE.mapsUrl, '_blank')}
             className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70">
             <MapPin className="size-3" />Directions
           </button>
