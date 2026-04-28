@@ -2,11 +2,14 @@ import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { LogOut, User, Leaf } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
+import { useVenueStore } from '@/stores/venueStore';
 
 export default function Header() {
   const { currentUser, logout } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const { activeVenue } = useVenueStore();
+  const headerName = activeVenue === 'bakery' ? 'SNB Bakery' : CAFE_CONFIG.name;
   const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
   const isQROrder = location.pathname === '/order';
   const isTracking = location.pathname === '/order/track';
@@ -27,8 +30,8 @@ export default function Header() {
             <div className="size-8 rounded-full cafe-gradient flex items-center justify-center">
               <Leaf className="size-4 text-primary-foreground" />
             </div>
-            <span className="font-display text-lg font-semibold text-foreground">
-              {CAFE_CONFIG.name}
+            <span className="font-display text-lg font-semibold text-foreground transition-all duration-300">
+              {headerName}
             </span>
           </button>
           <button
