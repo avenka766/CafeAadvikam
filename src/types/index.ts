@@ -56,7 +56,7 @@ export interface Order {
   paymentBreakdown?: PaymentBreakdown;
   billedBy?: string;
   cancelReason?: string;
-  orderSource: OrderSource;
+  orderSource?: OrderSource;  // optional — column may not exist in older DB
 }
 
 export interface MenuCategory {
