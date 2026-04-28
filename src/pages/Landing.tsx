@@ -203,7 +203,7 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
   const navigate = useNavigate();
   const bookPartyHall = () => window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
   const openDirections = () => {
-    window.open('https://www.google.com/maps/dir/?api=1&destination=12.808481,77.9628595', '_blank');
+    window.open('https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p', '_blank');
   };
   return (
     <>
@@ -621,7 +621,7 @@ export default function Landing() {
         <p className="text-[10px] font-body font-bold mb-2" style={{ color: '#FFD700' }}>A Unit of SNB · VRSNB Foods LLP · Since 1988</p>
         <p className="text-xs font-body text-white/50 mb-4">{CAFE.address}</p>
         <div className="flex gap-3 justify-center mb-5">
-          <button onClick={() => window.open('https://www.google.com/maps/dir/?api=1&destination=12.808481,77.9628595','_blank')} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MapPin className="size-3" />Directions</button>
+          <button onClick={() => window.open('https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p','_blank')} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MapPin className="size-3" />Directions</button>
           <button onClick={bookPartyHall} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MessageCircle className="size-3" />Book Hall</button>
         </div>
         <button onClick={() => navigate('/login')} className="text-xs font-body font-semibold text-white/40 underline underline-offset-4 mb-4 active:opacity-70">Staff Login</button>
