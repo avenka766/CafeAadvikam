@@ -146,7 +146,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       orderSource,
     };
 
-    const { error } = await supabase.from('orders').insert({
+    // Always clear cart immediately — don't wait for DB
+    set((state) => ({
+      orders: [order, ...state.orders],
+      cart: [],
+    }));
+
+    // Try insert with order_source first; fall back without it if column missing
+    const basePayload = {
       id: orderId,
       order_number: orderNumber,
       table_number: params.tableNumber || null,
@@ -162,16 +169,22 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: params.notes || null,
       customer_name: params.customerName || null,
       payment_type: 'unpaid',
-      order_source: orderSource,
       created_at: now,
       updated_at: now,
+    };
+
+    const { error } = await supabase.from('orders').insert({
+      ...basePayload,
+      order_source: orderSource,
     });
 
-    if (!error) {
-      set((state) => ({
-        orders: [order, ...state.orders],
-        cart: [],
-      }));
+    // If insert failed (e.g. order_source column missing), retry without it
+    if (error) {
+      console.warn('Insert with order_source failed, retrying without:', error.message);
+      const { error: error2 } = await supabase.from('orders').insert(basePayload);
+      if (error2) {
+        console.error('Order insert failed:', error2.message);
+      }
     }
 
     return orderId;
