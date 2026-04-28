@@ -539,7 +539,7 @@ export default function Landing() {
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
   if (currentUser) {
-    const path = currentUser.role === 'order_taker' ? '/order-pad' : currentUser.role === 'admin' ? '/admin-dashboard' : '/billing';
+    const path = currentUser.role === 'order_taker' ? '/order-pad' : currentUser.role === 'admin' ? '/admin-dashboard' : currentUser.role === 'kitchen' ? '/kitchen' : '/billing';
     navigate(path, { replace: true }); return null;
   }
 
