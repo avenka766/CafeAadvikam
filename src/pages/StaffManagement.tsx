@@ -78,8 +78,8 @@ export default function StaffManagement() {
             <input placeholder="Display Name" value={newDisplayName} onChange={(e) => setNewDisplayName(e.target.value)} className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground" />
             <input placeholder="Username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground" />
             <input placeholder="Password" type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground" />
-            <div className="flex gap-2">
-              {(['order_taker', 'billing', 'admin'] as UserRole[]).map((r) => (
+            <div className="flex gap-2 flex-wrap">
+              {(['order_taker', 'billing', 'kitchen', 'admin'] as UserRole[]).map((r) => (
                 <button key={r} onClick={() => setNewRole(r)} className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold border transition-all', newRole === r ? 'cafe-gradient text-primary-foreground border-transparent' : 'bg-card border-border text-foreground')}>{ROLE_LABELS[r]}</button>
               ))}
             </div>
