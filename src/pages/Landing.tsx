@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
+import { useVenueStore } from '@/stores/venueStore';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, ExternalLink, Star, ShoppingBag } from 'lucide-react';
@@ -497,57 +498,79 @@ function BakeryContent() {
   );
 }
 
-// ─── 3D Flip Toggle ───────────────────────────────────────────────────────────
-function TabSwitcher({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
+// ─── Compact Floating Side Toggle ────────────────────────────────────────────
+function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
   return (
-    <div className="sticky top-14 z-30 px-4 py-3 bg-background/80 backdrop-blur-xl border-b border-border/60">
-      <div className="relative flex rounded-2xl overflow-hidden p-1" style={{
-        background: 'linear-gradient(135deg,rgba(20,8,2,0.08),rgba(180,100,20,0.06))',
-        border: '1px solid rgba(180,120,40,0.2)',
-        boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.12), 0 1px 0 rgba(255,255,255,0.06)',
-      }}>
-        {/* Sliding 3D pill */}
-        <div className="absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-xl transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          style={{
-            left: active === 'cafe' ? 4 : 'calc(50% + 0px)',
-            background: active === 'cafe'
-              ? 'linear-gradient(135deg,#E07A3A,#C84B0A)'
-              : 'linear-gradient(135deg,#b8860b,#8B5E04)',
-            boxShadow: active === 'cafe'
-              ? '0 4px 16px rgba(200,75,10,0.45), 0 1px 0 rgba(255,255,255,0.15) inset, 0 -1px 0 rgba(0,0,0,0.2) inset'
-              : '0 4px 16px rgba(180,140,0,0.4), 0 1px 0 rgba(255,255,255,0.15) inset, 0 -1px 0 rgba(0,0,0,0.2) inset',
-            transform: 'translateZ(0)',
-          }}
-        />
-        {/* Cafe button */}
-        <button onClick={() => onChange('cafe')} className="relative flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl transition-all duration-200 z-10">
-          <div className={cn('transition-all duration-200', active === 'cafe' ? 'scale-110' : 'scale-100')}>
-            <UtensilsCrossed className={cn('size-4 transition-all', active === 'cafe' ? 'text-white drop-shadow' : 'text-muted-foreground')} />
-          </div>
-          <span className={cn('font-body font-bold text-sm tracking-wide transition-all', active === 'cafe' ? 'text-white drop-shadow' : 'text-muted-foreground')}>
-            Cafe
-          </span>
-          {active === 'cafe' && (
-            <span className="absolute top-1.5 right-2 size-1.5 rounded-full bg-white/60 animate-pulse" />
-          )}
-        </button>
-        {/* Bakery button */}
-        <button onClick={() => onChange('bakery')} className="relative flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl transition-all duration-200 z-10">
-          <div className={cn('transition-all duration-200', active === 'bakery' ? 'scale-110' : 'scale-100')}>
-            <span className={cn('text-base transition-all', active === 'bakery' ? 'drop-shadow-[0_0_6px_rgba(255,215,0,0.8)]' : 'opacity-50')}>🥐</span>
-          </div>
-          <span className={cn('font-body font-bold text-sm tracking-wide transition-all', active === 'bakery' ? 'text-white drop-shadow' : 'text-muted-foreground')}>
-            Bakery
-          </span>
-          {active === 'bakery' && (
-            <span className="absolute top-1.5 right-2 size-1.5 rounded-full bg-white/60 animate-pulse" />
-          )}
-        </button>
-      </div>
-      {/* Tagline */}
-      <p className="text-center text-[10px] font-body text-muted-foreground mt-1.5">
-        {active === 'cafe' ? '🌿 Pure Veg · Dine In & Takeaway' : '🎂 Fresh Daily · Order Online or Call'}
-      </p>
+    <div
+      className="fixed right-3 z-50 flex flex-col gap-1.5 p-1.5 rounded-2xl shadow-2xl"
+      style={{
+        top: '72px',
+        background: 'rgba(15,6,2,0.85)',
+        backdropFilter: 'blur(16px)',
+        border: '1px solid rgba(180,120,40,0.3)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,215,0,0.08)',
+      }}
+    >
+      {/* Cafe button */}
+      <button
+        onClick={() => onChange('cafe')}
+        aria-label="Switch to Cafe Aadvikam"
+        className="relative flex flex-col items-center justify-center gap-1 px-2.5 py-2.5 rounded-xl transition-all duration-300 active:scale-90"
+        style={
+          active === 'cafe'
+            ? {
+                background: 'linear-gradient(135deg,#E07A3A,#C84B0A)',
+                boxShadow: '0 4px 16px rgba(200,75,10,0.55), inset 0 1px 0 rgba(255,255,255,0.18)',
+                minWidth: 52,
+              }
+            : {
+                background: 'rgba(255,255,255,0.05)',
+                minWidth: 52,
+              }
+        }
+      >
+        <UtensilsCrossed className={cn('size-4 transition-all', active === 'cafe' ? 'text-white' : 'text-white/40')} />
+        <span
+          className={cn('text-[9px] font-body font-bold tracking-wide leading-none transition-all', active === 'cafe' ? 'text-white' : 'text-white/35')}
+        >
+          Cafe
+        </span>
+        {active === 'cafe' && (
+          <span className="absolute top-1 right-1 size-1.5 rounded-full bg-white/70 animate-pulse" />
+        )}
+      </button>
+
+      {/* Divider */}
+      <div className="h-px mx-1.5" style={{ background: 'rgba(255,215,0,0.15)' }} />
+
+      {/* Bakery button */}
+      <button
+        onClick={() => onChange('bakery')}
+        aria-label="Switch to SNB Bakery"
+        className="relative flex flex-col items-center justify-center gap-1 px-2.5 py-2.5 rounded-xl transition-all duration-300 active:scale-90"
+        style={
+          active === 'bakery'
+            ? {
+                background: 'linear-gradient(135deg,#b8860b,#8B5E04)',
+                boxShadow: '0 4px 16px rgba(180,140,0,0.5), inset 0 1px 0 rgba(255,255,255,0.18)',
+                minWidth: 52,
+              }
+            : {
+                background: 'rgba(255,255,255,0.05)',
+                minWidth: 52,
+              }
+        }
+      >
+        <span className={cn('text-base transition-all leading-none', active === 'bakery' ? 'drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')}>🥐</span>
+        <span
+          className={cn('text-[9px] font-body font-bold tracking-wide leading-none transition-all', active === 'bakery' ? 'text-white' : 'text-white/35')}
+        >
+          Bakery
+        </span>
+        {active === 'bakery' && (
+          <span className="absolute top-1 right-1 size-1.5 rounded-full bg-white/70 animate-pulse" />
+        )}
+      </button>
     </div>
   );
 }
@@ -557,10 +580,10 @@ export default function Landing() {
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
   const { loadMenu } = useMenuStore();
+  const { activeVenue, setVenue } = useVenueStore();
   const [showMenu, setShowMenu] = useState(false);
   const [drawerCat, setDrawerCat] = useState<string | null>(null);
   const [partyFullscreen, setPartyFullscreen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'cafe' | 'bakery'>('cafe');
   const [timePeriod] = useState(getTimePeriod);
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
@@ -583,12 +606,12 @@ export default function Landing() {
         .time-badge { animation:pulseGlow 2s ease-in-out infinite; }
       `}</style>
 
-      {/* 3D Tab switcher */}
-      <TabSwitcher active={activeTab} onChange={setActiveTab} />
+      {/* Floating side venue toggle */}
+      <VenueToggle active={activeVenue} onChange={setVenue} />
 
       {/* Page content — slides in on switch */}
-      <div key={activeTab} style={{ animation: 'fadeUp 0.35s ease-out both' }}>
-        {activeTab === 'cafe' ? (
+      <div key={activeVenue} style={{ animation: 'fadeUp 0.35s ease-out both' }}>
+        {activeVenue === 'cafe' ? (
           <CafeContent setShowMenu={setShowMenu} setDrawerCat={setDrawerCat} setPartyFullscreen={setPartyFullscreen} />
         ) : (
           <BakeryContent />
