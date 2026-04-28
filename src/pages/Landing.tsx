@@ -5,7 +5,7 @@ import { useMenuStore } from '@/stores/menuStore';
 import { useVenueStore } from '@/stores/venueStore';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
-import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, ExternalLink, Star, ShoppingBag } from 'lucide-react';
+import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -203,10 +203,7 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
   const navigate = useNavigate();
   const bookPartyHall = () => window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
   const openDirections = () => {
-    const ua = navigator.userAgent.toLowerCase();
-    if (/iphone|ipad|ipod/.test(ua)) window.open(`maps://maps.apple.com/?daddr=12.808481,77.9628595`, '_blank');
-    else if (/android/.test(ua)) window.open(`geo:12.808481,77.9628595?q=Cafe+Aadvikam`, '_blank');
-    else window.open(CAFE.mapsUrl, '_blank');
+    window.open('https://www.google.com/maps/dir/?api=1&destination=12.808481,77.9628595', '_blank');
   };
   return (
     <>
@@ -456,8 +453,7 @@ function BakeryContent() {
       {/* Product grid — 3D tilt cards */}
       <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
         {filtered.map(product => (
-          <TiltCard key={product.name}
-            onClick={() => window.open(`${BAKERY.website}`, '_blank')}>
+          <TiltCard key={product.name}>
             <div className="bg-card rounded-2xl overflow-hidden border border-border shadow-sm" style={{ transformStyle: 'preserve-3d' }}>
               {/* Product image */}
               <div className="relative overflow-hidden" style={{ height: 140 }}>
@@ -471,28 +467,24 @@ function BakeryContent() {
               {/* Info */}
               <div className="p-3">
                 <p className="font-body font-bold text-foreground text-xs leading-tight mb-1.5 line-clamp-2">{product.name}</p>
-                <div className="flex items-center justify-between">
-                  <span className="font-display font-bold text-base tabular-nums" style={{ color: '#C84B0A' }}>₹{product.price}</span>
-                  <div className="size-7 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)' }}>
-                    <ShoppingBag className="size-3.5 text-white" />
-                  </div>
-                </div>
+                <span className="font-display font-bold text-base tabular-nums" style={{ color: '#C84B0A' }}>₹{product.price}</span>
               </div>
             </div>
           </TiltCard>
         ))}
       </div>
 
-      {/* Visit website CTA */}
-      <div className="mx-4 mt-6">
-        <a href={BAKERY.website} target="_blank" rel="noopener noreferrer"
-          className="w-full py-4 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
-          style={{ background: 'linear-gradient(135deg,#1a0800,#3d1500)', color: '#FFD700', border: '1px solid rgba(255,215,0,0.3)', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}>
-          <ExternalLink className="size-4" />
-          Visit Full SNB Bakery Website
-          <ChevronRight className="size-4" />
+      {/* Contact CTA */}
+      <div className="mx-4 mt-6 flex gap-3">
+        <a href={`tel:${BAKERY.phone}`} className="flex-1 py-4 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+          style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white', boxShadow: '0 4px 20px rgba(224,122,58,0.3)' }}>
+          <Phone className="size-4" />Call to Order
         </a>
-        <p className="text-center text-[10px] font-body text-muted-foreground mt-2">Online ordering available at snbbakery.in</p>
+        <a href={`https://wa.me/${BAKERY.waPhone}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noopener noreferrer"
+          className="flex-1 py-4 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+          style={{ background: 'linear-gradient(135deg,#0F6E56,#1D9E75)', color: 'white', boxShadow: '0 4px 20px rgba(29,158,117,0.3)' }}>
+          <MessageCircle className="size-4" />WhatsApp
+        </a>
       </div>
     </div>
   );
@@ -629,9 +621,8 @@ export default function Landing() {
         <p className="text-[10px] font-body font-bold mb-2" style={{ color: '#FFD700' }}>A Unit of SNB · VRSNB Foods LLP · Since 1988</p>
         <p className="text-xs font-body text-white/50 mb-4">{CAFE.address}</p>
         <div className="flex gap-3 justify-center mb-5">
-          <button onClick={() => window.open(CAFE.mapsUrl,'_blank')} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MapPin className="size-3" />Directions</button>
+          <button onClick={() => window.open('https://www.google.com/maps/dir/?api=1&destination=12.808481,77.9628595','_blank')} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MapPin className="size-3" />Directions</button>
           <button onClick={bookPartyHall} className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><MessageCircle className="size-3" />Book Hall</button>
-          <a href={BAKERY.website} target="_blank" rel="noopener noreferrer" className="px-4 py-2 rounded-xl text-xs font-body font-semibold text-white border border-white/20 flex items-center gap-1.5 active:opacity-70"><ExternalLink className="size-3" />Bakery</a>
         </div>
         <button onClick={() => navigate('/login')} className="text-xs font-body font-semibold text-white/40 underline underline-offset-4 mb-4 active:opacity-70">Staff Login</button>
         <p className="text-[10px] font-body text-white/25">© 2025 VRSNB Foods LLP. All rights reserved.</p>
