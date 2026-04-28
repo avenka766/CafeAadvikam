@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { formatCurrency, formatTime, cn } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
@@ -19,16 +19,20 @@ const KITCHEN_TABS: { key: OrderStatus | 'active'; label: string; icon: React.Re
 function playNewOrderSound() {
   try {
     const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = 880;
-    osc.type = 'sine';
-    gain.gain.value = 0.3;
-    osc.start();
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-    osc.stop(ctx.currentTime + 0.5);
+    // Play 3 urgent beeps
+    [0, 0.35, 0.7].forEach(offset => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 960;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0, ctx.currentTime + offset);
+      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.28);
+      osc.start(ctx.currentTime + offset);
+      osc.stop(ctx.currentTime + offset + 0.3);
+    });
   } catch { /* ignore audio errors */ }
 }
 
@@ -84,10 +88,15 @@ export default function KitchenDashboard() {
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const lastOrderCountRef = useRef(0);
+  const lastOrderIdsRef = useRef<Set<string>>(new Set());
+  const alertIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     startPolling();
+    // Request browser notification permission on mount
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
@@ -96,17 +105,44 @@ export default function KitchenDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
-  const pendingCount = todayOrders.filter(o => o.status === 'pending').length;
+  const pendingOrders = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
+  const pendingCount = pendingOrders.length;
 
-  // Sound alert for new orders
-  const checkNewOrders = useCallback(() => {
-    if (soundEnabled && pendingCount > lastOrderCountRef.current && lastOrderCountRef.current > 0) {
-      playNewOrderSound();
+  // Fire sound + browser notification for genuinely new pending orders
+  useEffect(() => {
+    const currentIds = new Set(pendingOrders.map(o => o.id));
+    const newOrders = pendingOrders.filter(o => !lastOrderIdsRef.current.has(o.id));
+
+    if (newOrders.length > 0 && lastOrderIdsRef.current.size > 0) {
+      if (soundEnabled) playNewOrderSound();
+      newOrders.forEach(o => {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`🔔 New Order #${String(o.orderNumber).padStart(3, '0')}`, {
+            body: o.items.map(ci => `${ci.quantity}× ${ci.menuItem.name}`).join(', '),
+            tag: o.id,
+          });
+        }
+      });
     }
-    lastOrderCountRef.current = pendingCount;
-  }, [pendingCount, soundEnabled]);
 
-  useEffect(() => { checkNewOrders(); }, [checkNewOrders]);
+    lastOrderIdsRef.current = currentIds;
+  }, [pendingOrders, soundEnabled]);
+
+  // Persistent alert: keep beeping every 8s as long as there are pending orders and sound is on
+  useEffect(() => {
+    if (alertIntervalRef.current) {
+      clearInterval(alertIntervalRef.current);
+      alertIntervalRef.current = null;
+    }
+    if (pendingCount > 0 && soundEnabled) {
+      alertIntervalRef.current = setInterval(() => {
+        playNewOrderSound();
+      }, 8000);
+    }
+    return () => {
+      if (alertIntervalRef.current) clearInterval(alertIntervalRef.current);
+    };
+  }, [pendingCount, soundEnabled]);
 
   const filtered = useMemo(() => {
     if (activeTab === 'active') {
