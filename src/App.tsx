@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import Header from '@/components/layout/Header';
@@ -22,17 +22,26 @@ import OrderTrackingPage from '@/pages/OrderTrackingPage';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 
 function AppRoutes() {
-  const { currentUser, sessionChecked, restoreSession } = useAuthStore();
+  const { currentUser } = useAuthStore();
+  const [hydrated, setHydrated] = useState(
+    // Zustand persist may already be done synchronously on first call
+    () => useAuthStore.persist.hasHydrated()
+  );
 
   useEffect(() => {
-    restoreSession();
-  }, []);
+    if (!hydrated) {
+      const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
+      // Double-check in case it fired before we subscribed
+      if (useAuthStore.persist.hasHydrated()) setHydrated(true);
+      return unsub;
+    }
+  }, [hydrated]);
 
-  // Wait for DB session check before rendering any routes
-  if (!sessionChecked) return null;
+  // Show nothing until localStorage is read — prevents flash to login on reload
+  if (!hydrated) return null;
 
   const getDefaultRoute = () => {
-    if (!currentUser) return '/';
+    if (!currentUser) return '/login';
     if (currentUser.role === 'order_taker') return '/order-pad';
     if (currentUser.role === 'admin') return '/admin-dashboard';
     if (currentUser.role === 'kitchen') return '/kitchen';
@@ -43,7 +52,7 @@ function AppRoutes() {
     <>
       <Header />
       <Routes>
-        <Route path="/" element={currentUser ? <Navigate to={getDefaultRoute()} replace /> : <Landing />} />
+        <Route path="/" element={<Navigate to={getDefaultRoute()} replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/menu" element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
