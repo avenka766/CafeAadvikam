@@ -1,10 +1,11 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
-  Download, UserPlus, X, Pencil,
+  Download, UserPlus, X, Pencil, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Branch = 'VRSNB' | 'Cafe Aadvikam' | 'SNB';
@@ -31,6 +32,7 @@ interface DayAttendance {
   dinner: boolean;
 }
 
+// attendance keyed by "employeeId_day"
 type MonthAttendance = Record<string, DayAttendance>;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ const DAYS_IN_MONTH = 30;
 const MONTH_LABEL = 'April 2026';
 const YEAR = 2026;
 const MONTH_IDX = 3; // April = index 3
+const DB_MONTH = 4;  // 1-based month for DB
 const SUNDAYS = Array.from({ length: DAYS_IN_MONTH }, (_, i) => i + 1)
   .filter(d => new Date(YEAR, MONTH_IDX, d).getDay() === 0);
 
@@ -53,120 +56,122 @@ const BRANCH_SHORT: Record<Branch, string> = {
   SNB: 'SNB',
 };
 
-const EMP_STORAGE_KEY = 'cafe_employees_v3';
-const ATT_STORAGE_KEY = 'cafe_attendance_april2026';
-
-// ─── Seed data from Excel ─────────────────────────────────────────────────────
-const SEED: Employee[] = [
-  { id: 'e1', name: 'Harshawardini S', branch: 'VRSNB', department: 'Admin Office', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '41938132346', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0012245' },
-  { id: 'e2', name: 'Muniratnam M', branch: 'VRSNB', department: 'Admin Office', grossSalary: 60000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '32070316447', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0008114' },
-  { id: 'e3', name: 'Rajesh M', branch: 'VRSNB', department: 'Admin Office', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e4', name: 'Shilpa K', branch: 'VRSNB', department: 'Admin Office', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6391131749', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e5', name: 'Sivaranjani R', branch: 'VRSNB', department: 'Admin Office', grossSalary: 25000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '44573403374', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0000962' },
-  { id: 'e6', name: 'Yasodharan A', branch: 'VRSNB', department: 'Admin Office', grossSalary: 29000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '50100220445050', bankName: 'HDFC BANK', ifscCode: 'HDFC0001278' },
-  { id: 'e7', name: 'Sekar S', branch: 'VRSNB', department: 'Admin Office', grossSalary: 0, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e8', name: 'Nithin R', branch: 'VRSNB', department: 'Admin Office', grossSalary: 28000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e9', name: 'Gowrishankar', branch: 'VRSNB', department: 'Store', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e10', name: 'Meracline', branch: 'VRSNB', department: 'Store', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6459259743', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e11', name: 'Padma', branch: 'VRSNB', department: 'Store', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6310475833', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e12', name: 'Sathrohan', branch: 'VRSNB', department: 'Store', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e13', name: 'Suresh Kumar R', branch: 'VRSNB', department: 'Store', grossSalary: 30000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '7162192844', bankName: 'INDIAN BANK', ifscCode: 'IDIB000S058' },
-  { id: 'e14', name: 'Amit', branch: 'VRSNB', department: 'Packing', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e15', name: 'Hussain', branch: 'VRSNB', department: 'Packing', grossSalary: 23000, salaryAdvance: 5000, uniformDeduction: 450, otherDeduction: 0, accountNumber: '1405155000060588', bankName: 'KARUR VYSYA BANK', ifscCode: 'KVBL0001405' },
-  { id: 'e16', name: 'Kalavathi', branch: 'VRSNB', department: 'Packing', grossSalary: 10000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '10231296647', bankName: 'TAMILNADU GRAMA BANK', ifscCode: 'IDIB0PLB001' },
-  { id: 'e17', name: 'Kalavathi V', branch: 'VRSNB', department: 'Packing', grossSalary: 10000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '888952120', bankName: 'INDIAN BANK', ifscCode: 'IDIB000S023' },
-  { id: 'e18', name: 'Lal Babu', branch: 'VRSNB', department: 'Packing', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e19', name: 'Monish', branch: 'VRSNB', department: 'Packing', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e20', name: 'Roopakala', branch: 'VRSNB', department: 'Packing', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '850917530', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e21', name: 'Sudha', branch: 'VRSNB', department: 'Packing', grossSalary: 10000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e22', name: 'Anand Kumar', branch: 'VRSNB', department: 'Bakery', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e23', name: 'Annamalai', branch: 'VRSNB', department: 'Bakery', grossSalary: 27000, salaryAdvance: 5000, uniformDeduction: 845, otherDeduction: 0, accountNumber: '6127372019', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e24', name: 'Bharath', branch: 'VRSNB', department: 'Bakery', grossSalary: 17000, salaryAdvance: 2000, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e25', name: 'Birju Kumar', branch: 'VRSNB', department: 'Bakery', grossSalary: 16000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e26', name: 'Manjunath', branch: 'VRSNB', department: 'Bakery', grossSalary: 38000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '6505441406', bankName: 'INDIAN BANK', ifscCode: 'IDIB000S023' },
-  { id: 'e27', name: 'Rahul Roy', branch: 'VRSNB', department: 'Bakery', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e28', name: 'Santhosh', branch: 'VRSNB', department: 'Bakery', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e29', name: 'Saravanan', branch: 'VRSNB', department: 'Bakery', grossSalary: 24000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '6099410066', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e30', name: 'Uppendea Kumar', branch: 'VRSNB', department: 'Bakery', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e31', name: 'Vijay', branch: 'VRSNB', department: 'Bakery', grossSalary: 27000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '6332515283', bankName: 'INDIAN BANK', ifscCode: 'IDIB000K052' },
-  { id: 'e32', name: 'Seshadri', branch: 'VRSNB', department: 'Bakery', grossSalary: 0, salaryAdvance: 0, uniformDeduction: 450, otherDeduction: 0 },
-  { id: 'e33', name: 'Jothi R', branch: 'VRSNB', department: 'Cake', grossSalary: 42000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '110295875910', bankName: 'CANARA BANK', ifscCode: 'CNRB0004385' },
-  { id: 'e34', name: 'Ravindra', branch: 'VRSNB', department: 'Cake', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e35', name: 'Bharath Kumar', branch: 'VRSNB', department: 'Sweets', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e36', name: 'Kannan', branch: 'VRSNB', department: 'Sweets', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '7478743974', bankName: 'INDIAN BANK', ifscCode: 'IDIB000R020' },
-  { id: 'e37', name: 'Lokesh', branch: 'VRSNB', department: 'Sweets', grossSalary: 36000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '461701500376', bankName: 'ICICI BANK', ifscCode: 'ICIC0004617' },
-  { id: 'e38', name: 'Shiva Kumar V', branch: 'VRSNB', department: 'Sweets', grossSalary: 33000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0, accountNumber: '6929867250', bankName: 'INDIAN BANK', ifscCode: 'IDIB000N174' },
-  { id: 'e39', name: 'Alakesen', branch: 'VRSNB', department: 'Savouries', grossSalary: 33000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e40', name: 'Hemanth', branch: 'VRSNB', department: 'Savouries', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e41', name: 'Mantosh', branch: 'VRSNB', department: 'Savouries', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e42', name: 'Murali', branch: 'VRSNB', department: 'Savouries', grossSalary: 28000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '923010022700394', bankName: 'AXIS BANK', ifscCode: 'UTIB0000090' },
-  { id: 'e43', name: 'Shiva Kumar M', branch: 'VRSNB', department: 'Savouries', grossSalary: 24000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e44', name: 'Silambarasan', branch: 'VRSNB', department: 'Savouries', grossSalary: 28000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '50100501047237', bankName: 'HDFC BANK', ifscCode: 'HDFC0001588' },
-  { id: 'e45', name: 'Krishan', branch: 'VRSNB', department: 'Savouries', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 450, otherDeduction: 0 },
-  { id: 'e46', name: 'Kargamma', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '820303706', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e47', name: 'Lalitha', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e48', name: 'Padmanjali', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e49', name: 'Rajamma', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e50', name: 'Ramadevi', branch: 'VRSNB', department: 'House Keeping', grossSalary: 13000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '886283910', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e51', name: 'Sathyamma', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e52', name: 'Sindhu', branch: 'VRSNB', department: 'House Keeping', grossSalary: 15000, salaryAdvance: 3000, uniformDeduction: 0, otherDeduction: 0, accountNumber: '42827032486', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0040327' },
-  { id: 'e53', name: 'Varalakshmi', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '975185957', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e54', name: 'Muniratni', branch: 'VRSNB', department: 'House Keeping', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e55', name: 'Perarasu', branch: 'VRSNB', department: 'Driver & Maintenance', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6994799450', bankName: 'INDIAN BANK', ifscCode: 'IDIB000K076' },
-  { id: 'e56', name: 'Saravanan (Driver)', branch: 'VRSNB', department: 'Driver & Maintenance', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e57', name: 'Vijendra', branch: 'VRSNB', department: 'Driver & Maintenance', grossSalary: 19000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '7969159899', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e58', name: 'Moorthy', branch: 'VRSNB', department: 'Driver & Maintenance', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e59', name: 'Anirudh', branch: 'VRSNB', department: 'Cooking & Cutting', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e60', name: 'Bittu Kumar', branch: 'VRSNB', department: 'Cooking & Cutting', grossSalary: 23000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e61', name: 'Prince Kumar', branch: 'VRSNB', department: 'Cooking & Cutting', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e62', name: 'Rohith Kumar', branch: 'VRSNB', department: 'Cooking & Cutting', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e63', name: 'Munna Bhatt', branch: 'VRSNB', department: 'Security', grossSalary: 22000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e64', name: 'Manna Bhatt', branch: 'VRSNB', department: 'Security', grossSalary: 22000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e65', name: 'Dharumarasan', branch: 'VRSNB', department: 'South Indian Food Master', grossSalary: 27000, salaryAdvance: 0, uniformDeduction: 450, otherDeduction: 0, accountNumber: '20195007060', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0001020' },
-  { id: 'e66', name: 'Murugan S', branch: 'VRSNB', department: 'South Indian Food Master', grossSalary: 30000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e67', name: 'Kamlesh', branch: 'VRSNB', department: 'Chats Master', grossSalary: 30000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e68', name: 'Lalan Kumar', branch: 'VRSNB', department: 'Chats Master', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e69', name: 'Aman', branch: 'VRSNB', department: 'Chinese Food Master', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e70', name: 'Deepak', branch: 'VRSNB', department: 'Chinese Food Master', grossSalary: 32000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e71', name: 'Roshan', branch: 'VRSNB', department: 'Chinese Food Master', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  // Cafe Aadvikam
-  { id: 'e72', name: 'Anil Kumar A P', branch: 'Cafe Aadvikam', department: 'Kitchen', grossSalary: 28000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e73', name: 'Harsha Vardhan', branch: 'Cafe Aadvikam', department: 'Kitchen', grossSalary: 25000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e74', name: 'Ramesh', branch: 'Cafe Aadvikam', department: 'Kitchen', grossSalary: 40000, salaryAdvance: 0, uniformDeduction: 450, otherDeduction: 0, accountNumber: '20008965166', bankName: 'STATE BANK OF INDIA', ifscCode: 'SBIN0070209' },
-  { id: 'e75', name: 'Mahalakshmi', branch: 'Cafe Aadvikam', department: 'Sales', grossSalary: 16000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '7764097037', bankName: 'INDIAN BANK', ifscCode: 'IDIB000H011' },
-  { id: 'e76', name: 'Raju', branch: 'Cafe Aadvikam', department: 'Sales', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e77', name: 'Swetha', branch: 'Cafe Aadvikam', department: 'Sales', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e78', name: 'Vinodha', branch: 'Cafe Aadvikam', department: 'Sales', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6651746545', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e79', name: 'Anusha S', branch: 'Cafe Aadvikam', department: 'Sales', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e80', name: 'Ganesh', branch: 'Cafe Aadvikam', department: 'Chinese Food Master', grossSalary: 20000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e81', name: 'Sachin', branch: 'Cafe Aadvikam', department: 'Chinese Food Master', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 845, otherDeduction: 0 },
-  { id: 'e82', name: 'Sachin Kumar J', branch: 'Cafe Aadvikam', department: 'Chats Master', grossSalary: 15000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e83', name: 'Vikram S', branch: 'Cafe Aadvikam', department: 'South Indian Food Master', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e84', name: 'Dhanabaalan', branch: 'Cafe Aadvikam', department: 'South Indian Food Master', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e85', name: 'Rajveer Singh', branch: 'Cafe Aadvikam', department: 'South Indian Food Master', grossSalary: 18000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  // SNB
-  { id: 'e86', name: 'Anil (SNB)', branch: 'SNB', department: 'Sales', grossSalary: 19600, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6110072535', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e87', name: 'Devsaran Kumar', branch: 'SNB', department: 'Sales', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e88', name: 'Harish Kumar', branch: 'SNB', department: 'Sales', grossSalary: 17500, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6098755240', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e89', name: 'Munna Kumar (SNB)', branch: 'SNB', department: 'Sales', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e90', name: 'Pushpa', branch: 'SNB', department: 'Sales', grossSalary: 13000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '609705433', bankName: 'INDIAN BANK', ifscCode: 'IDIB000H011' },
-  { id: 'e91', name: 'Senthamilan', branch: 'SNB', department: 'Sales', grossSalary: 36300, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '6099394870', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e92', name: 'Sreenath', branch: 'SNB', department: 'Sales', grossSalary: 17000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-  { id: 'e93', name: 'Vignesh', branch: 'SNB', department: 'Sales', grossSalary: 21000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0, accountNumber: '7924980954', bankName: 'INDIAN BANK', ifscCode: 'IDIB000B017' },
-  { id: 'e94', name: 'Kishornath V', branch: 'SNB', department: 'Weekend Staff', grossSalary: 12000, salaryAdvance: 0, uniformDeduction: 0, otherDeduction: 0 },
-];
-
-// ─── Storage ──────────────────────────────────────────────────────────────────
-function loadEmployees(): Employee[] {
-  try { const r = localStorage.getItem(EMP_STORAGE_KEY); return r ? JSON.parse(r) : SEED; } catch { return SEED; }
-}
-function saveEmployees(e: Employee[]) { localStorage.setItem(EMP_STORAGE_KEY, JSON.stringify(e)); }
-function loadAtt(): MonthAttendance {
-  try { return JSON.parse(localStorage.getItem(ATT_STORAGE_KEY) || '{}'); } catch { return {}; }
-}
-function saveAtt(a: MonthAttendance) { localStorage.setItem(ATT_STORAGE_KEY, JSON.stringify(a)); }
 const ak = (eid: string, d: number) => `${eid}_${d}`;
 const defaultDay = (): DayAttendance => ({ present: false, woff: false, bf: false, lunch: false, dinner: false });
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
+function dbRowToEmployee(d: Record<string, unknown>): Employee {
+  return {
+    id: d.id as string,
+    name: d.name as string,
+    branch: d.branch as Branch,
+    department: (d.department as string) || '',
+    grossSalary: Number(d.gross_salary),
+    salaryAdvance: Number(d.salary_advance),
+    uniformDeduction: Number(d.uniform_deduction),
+    otherDeduction: Number(d.other_deduction),
+    accountNumber: (d.account_number as string) || undefined,
+    bankName: (d.bank_name as string) || undefined,
+    ifscCode: (d.ifsc_code as string) || undefined,
+  };
+}
+
+async function fetchEmployees(): Promise<Employee[]> {
+  const { data, error } = await supabase
+    .from('employees')
+    .select('*')
+    .eq('is_active', true)
+    .order('id', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(dbRowToEmployee);
+}
+
+async function fetchAttendance(year: number, month: number): Promise<MonthAttendance> {
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .eq('year', year)
+    .eq('month', month);
+  if (error) throw error;
+  const result: MonthAttendance = {};
+  for (const row of (data || [])) {
+    const k = ak(row.employee_id as string, row.day as number);
+    result[k] = {
+      present: row.present as boolean,
+      woff: row.woff as boolean,
+      bf: row.bf as boolean,
+      lunch: row.lunch as boolean,
+      dinner: row.dinner as boolean,
+    };
+  }
+  return result;
+}
+
+async function upsertAttendance(
+  employeeId: string, year: number, month: number, day: number, val: DayAttendance
+) {
+  const { error } = await supabase
+    .from('attendance')
+    .upsert({
+      employee_id: employeeId,
+      year,
+      month,
+      day,
+      present: val.present,
+      woff: val.woff,
+      bf: val.bf,
+      lunch: val.lunch,
+      dinner: val.dinner,
+    }, { onConflict: 'employee_id,year,month,day' });
+  if (error) console.error('Attendance upsert failed:', error.message);
+}
+
+async function insertEmployee(emp: Omit<Employee, 'id'> & { id?: string }): Promise<Employee | null> {
+  const id = emp.id || `emp_${Date.now()}`;
+  const { data, error } = await supabase
+    .from('employees')
+    .insert({
+      id,
+      name: emp.name,
+      branch: emp.branch,
+      department: emp.department,
+      gross_salary: emp.grossSalary,
+      salary_advance: emp.salaryAdvance,
+      uniform_deduction: emp.uniformDeduction,
+      other_deduction: emp.otherDeduction,
+      account_number: emp.accountNumber || null,
+      bank_name: emp.bankName || null,
+      ifsc_code: emp.ifscCode || null,
+    })
+    .select()
+    .single();
+  if (error || !data) { console.error('Insert employee failed:', error?.message); return null; }
+  return dbRowToEmployee(data as Record<string, unknown>);
+}
+
+async function updateEmployee(emp: Employee): Promise<boolean> {
+  const { error } = await supabase
+    .from('employees')
+    .update({
+      name: emp.name,
+      branch: emp.branch,
+      department: emp.department,
+      gross_salary: emp.grossSalary,
+      salary_advance: emp.salaryAdvance,
+      uniform_deduction: emp.uniformDeduction,
+      other_deduction: emp.otherDeduction,
+      account_number: emp.accountNumber || null,
+      bank_name: emp.bankName || null,
+      ifsc_code: emp.ifscCode || null,
+    })
+    .eq('id', emp.id);
+  if (error) { console.error('Update employee failed:', error.message); return false; }
+  return true;
+}
+
+async function deactivateEmployee(id: string): Promise<void> {
+  await supabase.from('employees').update({ is_active: false }).eq('id', id);
+}
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
 function calcSalary(emp: Employee, att: MonthAttendance) {
@@ -213,7 +218,23 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   const [bank, setBank] = useState('');
   const [acc, setAcc] = useState('');
   const [ifsc, setIfsc] = useState('');
+  const [saving, setSaving] = useState(false);
   const valid = name.trim() && dept.trim();
+
+  const handleAdd = async () => {
+    if (!valid) return;
+    setSaving(true);
+    const result = await insertEmployee({
+      name: name.trim(), branch, department: dept.trim(),
+      grossSalary: parseInt(salary) || 0,
+      salaryAdvance: parseInt(advance) || 0,
+      uniformDeduction: parseInt(uniform) || 0,
+      otherDeduction: parseInt(other) || 0,
+      bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined,
+    });
+    setSaving(false);
+    if (result) onAdd(result);
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
@@ -252,18 +273,17 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
         <div className="px-5 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
           <button
-            disabled={!valid}
-            onClick={() => onAdd({ id: `emp_${Date.now()}`, name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined })}
+            disabled={!valid || saving}
+            onClick={handleAdd}
             className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
           >
-            <Plus className="size-4" /> Add
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add
           </button>
         </div>
       </div>
     </div>
   );
 }
-
 
 function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Employee) => void; onClose: () => void }) {
   const [name, setName] = useState(emp.name);
@@ -276,7 +296,24 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
   const [bank, setBank] = useState(emp.bankName || '');
   const [acc, setAcc] = useState(emp.accountNumber || '');
   const [ifsc, setIfsc] = useState(emp.ifscCode || '');
+  const [saving, setSaving] = useState(false);
   const valid = name.trim() && dept.trim();
+
+  const handleSave = async () => {
+    if (!valid) return;
+    const updated: Employee = {
+      ...emp, name: name.trim(), branch, department: dept.trim(),
+      grossSalary: parseInt(salary) || 0,
+      salaryAdvance: parseInt(advance) || 0,
+      uniformDeduction: parseInt(uniform) || 0,
+      otherDeduction: parseInt(other) || 0,
+      bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined,
+    };
+    setSaving(true);
+    const ok = await updateEmployee(updated);
+    setSaving(false);
+    if (ok) onSave(updated);
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
@@ -296,12 +333,12 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
             <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Gross Salary (Rs)"><input type="number" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
-            <Field label="Salary Advance (Rs)"><input type="number" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
+            <Field label="Gross Salary (₹)"><input type="number" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
+            <Field label="Salary Advance (₹)"><input type="number" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Uniform Ded. (Rs)"><input type="number" className={InputCls()} value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
-            <Field label="Other Ded. (Rs)"><input type="number" className={InputCls()} value={other} onChange={e => setOther(e.target.value)} /></Field>
+            <Field label="Uniform Ded. (₹)"><input type="number" className={InputCls()} value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
+            <Field label="Other Ded. (₹)"><input type="number" className={InputCls()} value={other} onChange={e => setOther(e.target.value)} /></Field>
           </div>
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details</p>
@@ -315,11 +352,11 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
         <div className="px-5 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
           <button
-            disabled={!valid}
-            onClick={() => onSave({ ...emp, name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined })}
+            disabled={!valid || saving}
+            onClick={handleSave}
             className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
           >
-            <Pencil className="size-4" /> Save Changes
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Pencil className="size-4" />} Save Changes
           </button>
         </div>
       </div>
@@ -330,7 +367,7 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
 // ─── Attendance row (expandable) ──────────────────────────────────────────────
 function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
   emp: Employee; att: MonthAttendance;
-  onUpdate: (k: string, v: DayAttendance) => void;
+  onUpdate: (empId: string, day: number, v: DayAttendance) => void;
   expanded: boolean; onToggle: () => void;
 }) {
   const { presentDays, woffDays, canteenTotal, net } = calcSalary(emp, att);
@@ -344,24 +381,26 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
   const toggleDay = (day: number) => {
     const k = ak(emp.id, day);
     const cur = att[k] ?? defaultDay();
+    let next: DayAttendance;
     if (!cur.present && !cur.woff) {
-      onUpdate(k, { ...cur, present: true });
+      next = { ...cur, present: true };
     } else if (cur.present) {
       if (woffCount < 4) {
-        onUpdate(k, { ...cur, present: false, woff: true, bf: false, lunch: false, dinner: false });
+        next = { ...cur, present: false, woff: true, bf: false, lunch: false, dinner: false };
       } else {
-        onUpdate(k, { ...cur, present: false, woff: false, bf: false, lunch: false, dinner: false });
+        next = { ...cur, present: false, woff: false, bf: false, lunch: false, dinner: false };
       }
     } else {
-      onUpdate(k, { ...cur, present: false, woff: false });
+      next = { ...cur, present: false, woff: false };
     }
+    onUpdate(emp.id, day, next);
   };
 
   const toggleMeal = (day: number, meal: 'bf' | 'lunch' | 'dinner') => {
     const k = ak(emp.id, day);
     const cur = att[k];
     if (!cur?.present) return;
-    onUpdate(k, { ...cur, [meal]: !cur[meal] });
+    onUpdate(emp.id, day, { ...cur, [meal]: !cur[meal] });
   };
 
   return (
@@ -408,7 +447,6 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
                     >
                       {isSun ? 'S' : a.present ? '✓' : a.woff ? 'W' : ''}
                     </button>
-                    {/* Meal buttons */}
                     {a.present ? (
                       <div className="flex gap-[2px] mt-0.5">
                         {(['bf', 'lunch', 'dinner'] as const).map(m => (
@@ -433,7 +471,6 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
               })}
             </div>
           </div>
-          {/* Legend */}
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground">
               <span className="size-2.5 rounded-sm bg-emerald-500 inline-block" /> Present
@@ -515,8 +552,9 @@ function SalRow({ label, value, highlight, neg }: { label: string; value: string
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function AttendanceSalary() {
-  const [employees, setEmployees] = useState<Employee[]>(loadEmployees);
-  const [att, setAtt] = useState<MonthAttendance>(loadAtt);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [att, setAtt] = useState<MonthAttendance>({});
+  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees'>('attendance');
   const [branch, setBranch] = useState<'All' | Branch>('All');
   const [search, setSearch] = useState('');
@@ -526,6 +564,26 @@ export default function AttendanceSalary() {
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const ddRef = useRef<HTMLDivElement>(null);
 
+  // Load from Supabase on mount
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      try {
+        const [emps, attData] = await Promise.all([
+          fetchEmployees(),
+          fetchAttendance(YEAR, DB_MONTH),
+        ]);
+        setEmployees(emps);
+        setAtt(attData);
+      } catch (e) {
+        console.error('Load error:', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
   useEffect(() => {
     const fn = (e: MouseEvent) => {
       if (ddRef.current && !ddRef.current.contains(e.target as Node)) setShowBranchDD(false);
@@ -534,23 +592,26 @@ export default function AttendanceSalary() {
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
-  const updateAtt = (k: string, v: DayAttendance) => {
-    setAtt(prev => { const n = { ...prev, [k]: v }; saveAtt(n); return n; });
-  };
+  // Update attendance both in state and DB
+  const updateAtt = useCallback((empId: string, day: number, val: DayAttendance) => {
+    const k = ak(empId, day);
+    setAtt(prev => ({ ...prev, [k]: val }));
+    upsertAttendance(empId, YEAR, DB_MONTH, day, val);
+  }, []);
 
   const addEmp = (emp: Employee) => {
-    const updated = [...employees, emp];
-    setEmployees(updated); saveEmployees(updated); setShowAddModal(false);
+    setEmployees(prev => [...prev, emp]);
+    setShowAddModal(false);
   };
 
-  const removeEmp = (id: string) => {
-    const updated = employees.filter(e => e.id !== id);
-    setEmployees(updated); saveEmployees(updated);
+  const removeEmp = async (id: string) => {
+    await deactivateEmployee(id);
+    setEmployees(prev => prev.filter(e => e.id !== id));
   };
 
   const saveEmp = (emp: Employee) => {
-    const updated = employees.map(e => e.id === emp.id ? emp : e);
-    setEmployees(updated); saveEmployees(updated); setEditEmp(null);
+    setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e));
+    setEditEmp(null);
   };
 
   const filtered = useMemo(() => {
@@ -578,6 +639,17 @@ export default function AttendanceSalary() {
     a.download = `salary_april2026.csv`;
     a.click();
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-muted-foreground">
+          <Loader2 className="size-8 animate-spin text-primary" />
+          <p className="text-sm font-body">Loading employees & attendance…</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
