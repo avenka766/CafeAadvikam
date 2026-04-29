@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
-  Download, UserPlus, X,
+  Download, UserPlus, X, Pencil,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -264,6 +264,69 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   );
 }
 
+
+function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Employee) => void; onClose: () => void }) {
+  const [name, setName] = useState(emp.name);
+  const [branch, setBranch] = useState<Branch>(emp.branch);
+  const [dept, setDept] = useState(emp.department);
+  const [salary, setSalary] = useState(String(emp.grossSalary));
+  const [advance, setAdvance] = useState(String(emp.salaryAdvance));
+  const [uniform, setUniform] = useState(String(emp.uniformDeduction));
+  const [other, setOther] = useState(String(emp.otherDeduction));
+  const [bank, setBank] = useState(emp.bankName || '');
+  const [acc, setAcc] = useState(emp.accountNumber || '');
+  const [ifsc, setIfsc] = useState(emp.ifscCode || '');
+  const valid = name.trim() && dept.trim();
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
+        <div className="sticky top-0 bg-card flex items-center justify-between px-5 py-4 border-b border-border">
+          <h3 className="font-display font-bold text-lg">Edit Employee</h3>
+          <button onClick={onClose} className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <Field label="Full Name *"><input className={InputCls()} placeholder="Employee name" value={name} onChange={e => setName(e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Branch *">
+              <select className={InputCls()} value={branch} onChange={e => setBranch(e.target.value as Branch)}>
+                {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </Field>
+            <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Gross Salary (Rs)"><input type="number" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
+            <Field label="Salary Advance (Rs)"><input type="number" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Uniform Ded. (Rs)"><input type="number" className={InputCls()} value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
+            <Field label="Other Ded. (Rs)"><input type="number" className={InputCls()} value={other} onChange={e => setOther(e.target.value)} /></Field>
+          </div>
+          <div className="pt-2 border-t border-border space-y-2">
+            <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details</p>
+            <Field label="Bank Name"><input className={InputCls()} placeholder="e.g. INDIAN BANK" value={bank} onChange={e => setBank(e.target.value)} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Account No."><input className={InputCls()} placeholder="Account" value={acc} onChange={e => setAcc(e.target.value)} /></Field>
+              <Field label="IFSC Code"><input className={InputCls()} placeholder="IFSC" value={ifsc} onChange={e => setIfsc(e.target.value)} /></Field>
+            </div>
+          </div>
+        </div>
+        <div className="px-5 pb-5 flex gap-2">
+          <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
+          <button
+            disabled={!valid}
+            onClick={() => onSave({ ...emp, name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined })}
+            className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
+          >
+            <Pencil className="size-4" /> Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Attendance row (expandable) ──────────────────────────────────────────────
 function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
   emp: Employee; att: MonthAttendance;
@@ -345,19 +408,26 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
                     >
                       {isSun ? 'S' : a.present ? '✓' : a.woff ? 'W' : ''}
                     </button>
-                    {/* Meal dots */}
+                    {/* Meal buttons */}
                     {a.present ? (
-                      <div className="flex gap-px">
+                      <div className="flex gap-[2px] mt-0.5">
                         {(['bf', 'lunch', 'dinner'] as const).map(m => (
                           <button
                             key={m}
-                            onClick={() => toggleMeal(day, m)}
+                            onClick={e => { e.stopPropagation(); toggleMeal(day, m); }}
                             title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
-                            className={cn('w-[9px] h-[6px] rounded-sm transition-all', a[m] ? 'bg-orange-400' : 'bg-muted border border-border/40')}
-                          />
+                            className={cn(
+                              'w-[18px] h-[16px] rounded text-[7px] font-bold transition-all active:scale-90 border leading-none flex items-center justify-center',
+                              a[m]
+                                ? 'bg-orange-400 border-orange-500 text-white'
+                                : 'bg-muted border-border text-muted-foreground hover:border-orange-300'
+                            )}
+                          >
+                            {m === 'bf' ? 'B' : m === 'lunch' ? 'L' : 'D'}
+                          </button>
                         ))}
                       </div>
-                    ) : <div className="h-[6px]" />}
+                    ) : <div className="h-[16px] mt-0.5" />}
                   </div>
                 );
               })}
@@ -453,6 +523,7 @@ export default function AttendanceSalary() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const ddRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -475,6 +546,11 @@ export default function AttendanceSalary() {
   const removeEmp = (id: string) => {
     const updated = employees.filter(e => e.id !== id);
     setEmployees(updated); saveEmployees(updated);
+  };
+
+  const saveEmp = (emp: Employee) => {
+    const updated = employees.map(e => e.id === emp.id ? emp : e);
+    setEmployees(updated); saveEmployees(updated); setEditEmp(null);
   };
 
   const filtered = useMemo(() => {
@@ -635,6 +711,9 @@ export default function AttendanceSalary() {
                   <p className="font-display font-bold text-base tabular-nums">{e.grossSalary > 0 ? `₹${e.grossSalary.toLocaleString('en-IN')}` : '—'}</p>
                   <p className="text-[10px] font-body text-muted-foreground">Gross</p>
                 </div>
+                <button onClick={() => setEditEmp(e)} className="size-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors mt-0.5">
+                  <Pencil className="size-3.5" />
+                </button>
                 <button onClick={() => removeEmp(e.id)} className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors mt-0.5">
                   <Trash2 className="size-3.5" />
                 </button>
@@ -649,6 +728,7 @@ export default function AttendanceSalary() {
 
       <div className="h-6" />
       {showAddModal && <AddEmpModal onAdd={addEmp} onClose={() => setShowAddModal(false)} />}
+      {editEmp && <EditEmpModal emp={editEmp} onSave={saveEmp} onClose={() => setEditEmp(null)} />}
     </div>
   );
 }
