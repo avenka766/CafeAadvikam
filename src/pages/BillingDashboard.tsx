@@ -272,12 +272,8 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
-  const [orderType, setOrderType] = useState<OrderType>('dine_in');
-  const [tableNumber, setTableNumber] = useState<number | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes] = useState('');
-  const [showTableSelect, setShowTableSelect] = useState(false);
-  const [tableError, setTableError] = useState(false);
   const [advanceAmt, setAdvanceAmt] = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [advanceError, setAdvanceError] = useState('');
@@ -301,16 +297,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const handleSubmit = async () => {
     if (cart.length === 0) return;
     if (!currentUser) return;
-    if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
     if (amt >= total) { setAdvanceError('Advance must be less than total'); return; }
     if (!advanceMethod) { setAdvanceError('Select payment method'); return; }
-    setAdvanceError(''); setTableError(false);
+    setAdvanceError('');
     setSubmitting(true);
     await submitAdvanceOrder({
-      tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
-      orderType,
+      orderType: 'takeaway',
       notes: notes || undefined,
       customerName: customerName || undefined,
       createdBy: currentUser.username,
@@ -319,7 +313,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     });
     setSubmitting(false);
     setShowSuccess(true);
-    setNotes(''); setCustomerName(''); setTableNumber(null); setAdvanceAmt(''); setAdvanceMethod(null);
+    setNotes(''); setCustomerName(''); setAdvanceAmt(''); setAdvanceMethod(null);
     setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
   };
 
@@ -406,46 +400,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
           {cartCount > 0 && (
             <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/30">
-              {/* Order type */}
-              <div className="flex gap-2">
-                <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
-                  🍽️ Dine In
-                </button>
-                <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
-                  📦 Takeaway
-                </button>
+              {/* Customer name only — no order type for advance */}
+              <div className="relative">
+                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
+                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground" />
               </div>
-
-              {/* Table / Name */}
-              {orderType === 'dine_in' ? (
-                <div>
-                  <div className="relative">
-                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <button onClick={() => setShowTableSelect(!showTableSelect)}
-                      className={cn('w-full pl-8 pr-8 py-2 bg-card border rounded-lg text-left text-xs font-body', tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
-                      {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
-                    </button>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    {showTableSelect && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-36 overflow-y-auto">
-                        {TABLE_NUMBERS.map(num => (
-                          <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
-                            className={cn('py-1.5 rounded-md text-xs font-body font-medium', tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted')}>{num}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {tableError && <div className="flex items-center gap-1 mt-1 text-destructive"><AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required</span></div>}
-                </div>
-              ) : (
-                <div className="relative">
-                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                  <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground" />
-                </div>
-              )}
 
               {/* Notes */}
               <div className="relative">
