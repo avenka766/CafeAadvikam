@@ -14,8 +14,8 @@ export default function Header() {
   const isQROrder = location.pathname === '/order';
   const isTracking = location.pathname === '/order/track';
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/');
   };
 
