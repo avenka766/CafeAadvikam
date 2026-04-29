@@ -276,7 +276,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
 }
 
 // ── Advance New Order Panel (menu + cart that submits as advance) ─────────────
-function AdvanceOrderPanel({ onCreated }: { onCreated: () => void }) {
+function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore();
   const { currentUser } = useAuthStore();
@@ -503,6 +503,24 @@ function AdvanceOrderPanel({ onCreated }: { onCreated: () => void }) {
                   style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', color: 'white' }}>
                   <Wallet className="size-4" />{submitting ? 'Saving...' : '⏳ Record Advance Order'}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Pending Advance Orders ── */}
+          {advanceOrders.length > 0 && (
+            <div className="border-t-4 border-amber-200 mt-1">
+              <div className="px-4 py-2 bg-amber-50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="size-3.5 text-amber-600" />
+                  <span className="text-xs font-body font-bold text-amber-800">Pending Balance</span>
+                </div>
+                <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-800">
+                  {advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="divide-y divide-border/40 max-h-[400px] overflow-y-auto">
+                {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
               </div>
             </div>
           )}
@@ -736,7 +754,6 @@ function NewBillPanel() {
 export default function BillingDashboard() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
-  const [showAdvanceForm, setShowAdvanceForm] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
@@ -814,7 +831,7 @@ export default function BillingDashboard() {
 
           {/* Advance tab */}
           <button
-            onClick={() => { setActiveTab('advance'); setShowAdvanceForm(false); }}
+            onClick={() => setActiveTab('advance')}
             className={cn(
               'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
               activeTab === 'advance'
@@ -867,42 +884,7 @@ export default function BillingDashboard() {
       {activeTab === 'new_bill' ? (
         <NewBillPanel />
       ) : activeTab === 'advance' ? (
-        <div>
-          {showAdvanceForm ? (
-            <AdvanceOrderPanel onCreated={() => setShowAdvanceForm(false)} />
-          ) : (
-            <div className="px-4 py-4 space-y-3">
-              {/* Add new advance order button */}
-              <button
-                onClick={() => setShowAdvanceForm(true)}
-                className="w-full py-3.5 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all border-2 border-dashed border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100"
-              >
-                <Plus className="size-4" />Add Advance Order
-              </button>
-
-              {advanceOrders.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                  <Wallet className="size-14 mb-4 opacity-25" />
-                  <p className="font-body font-semibold text-lg">No pending advance orders</p>
-                  <p className="text-sm font-body mt-1">Tap above to record a new advance order</p>
-                </div>
-              ) : (
-                <>
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
-                    <Wallet className="size-5 text-amber-600 shrink-0" />
-                    <div>
-                      <p className="text-xs font-body font-bold text-amber-800">{advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''} awaiting balance</p>
-                      <p className="text-[10px] font-body text-amber-600">
-                        Total balance pending: {formatCurrency(advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0))}
-                      </p>
-                    </div>
-                  </div>
-                  {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        <AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} />
       ) : (
         <div className="px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
