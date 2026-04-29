@@ -81,23 +81,12 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         </button>
       </div>
 
-      {/* Meta row */}
-      <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
-        {order.orderType === 'dine_in' && order.tableNumber && (
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary rounded-full font-semibold">
-            <MapPin className="size-3" />Table {order.tableNumber}
-          </span>
-        )}
-        {order.orderType === 'takeaway' && (
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-accent/20 text-accent-foreground rounded-full font-semibold">📦 Takeaway</span>
-        )}
-        {order.customerName && (
+      {/* Meta row — advance tab: customer name only, no order type */}
+      {order.customerName && (
+        <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
           <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
-        )}
-        {order.orderSource === 'qr'
-          ? <span className="flex items-center gap-1 text-muted-foreground"><QrCode className="size-3" />QR Order</span>
-          : <span className="flex items-center gap-1 text-muted-foreground"><UserCheck className="size-3" />Staff</span>}
-      </div>
+        </div>
+      )}
 
       {/* Items (collapsible) */}
       {expanded && (
@@ -766,23 +755,29 @@ export default function BillingDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
-  // Advance orders: advance payment and balance still outstanding
+  // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)
   const advanceOrders = useMemo(() =>
     todayOrders.filter(o => o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0),
     [todayOrders]
   );
 
+  // Regular orders: everything EXCEPT pending-balance advance orders
+  const regularOrders = useMemo(() =>
+    todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)),
+    [todayOrders]
+  );
+
   const filtered = useMemo(() => {
     if (activeTab === 'new_bill' || activeTab === 'advance') return [];
-    // Exclude advance orders that still have balance pending from normal tabs
-    let result = todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0));
+    let result = regularOrders;
     if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
-  }, [todayOrders, activeTab, sourceFilter]);
+  }, [regularOrders, activeTab, sourceFilter]);
 
-  const qrCount = todayOrders.filter(o => o.orderSource === 'qr').length;
-  const staffCount = todayOrders.filter(o => o.orderSource === 'staff').length;
+  // Counts use regularOrders so advance (pending balance) never pollutes them
+  const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
+  const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
@@ -798,7 +793,7 @@ export default function BillingDashboard() {
           <button onClick={() => setSourceFilter('all')}
             className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all',
               sourceFilter === 'all' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground')}>
-            All ({todayOrders.length})
+            All ({regularOrders.length})
           </button>
           <button onClick={() => setSourceFilter('staff')}
             className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
@@ -852,10 +847,10 @@ export default function BillingDashboard() {
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = tab.key === 'all'
-              ? (sourceFilter === 'all' ? todayOrders.length : todayOrders.filter(o => o.orderSource === sourceFilter).length)
+              ? (sourceFilter === 'all' ? regularOrders.length : regularOrders.filter(o => o.orderSource === sourceFilter).length)
               : (sourceFilter === 'all'
-                  ? todayOrders.filter(o => o.status === tab.key).length
-                  : todayOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
+                  ? regularOrders.filter(o => o.status === tab.key).length
+                  : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
             return (
               <button
                 key={tab.key}
