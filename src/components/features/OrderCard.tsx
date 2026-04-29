@@ -6,6 +6,7 @@ import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
 import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell } from 'lucide-react';
 import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
+import { AdvancePaymentPanel } from '@/pages/BillingDashboard';
 
 interface OrderCardProps {
   order: Order;
@@ -18,6 +19,7 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
   card: '💳 Card',
   part_payment: '🔀 Split Payment',
   unpaid: 'Unpaid',
+  advance: '⏳ Advance',
 };
 
 type SplitMethod = 'cash' | 'upi' | 'card';
@@ -33,6 +35,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [showPayment, setShowPayment] = useState(false);
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [showAdvance, setShowAdvance] = useState(false);
 
   const [splitMode, setSplitMode] = useState(false);
   const [splitMethods, setSplitMethods] = useState<SplitMethod[]>([]);
@@ -229,17 +232,51 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         {/* Payment badge */}
         {order.paymentType && order.paymentType !== 'unpaid' && (
           <div className="px-3.5 py-2">
-            <span className="text-xs font-body font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-              {PAYMENT_LABELS[order.paymentType]}
-            </span>
-            {order.paymentType === 'part_payment' && order.paymentBreakdown && (
-              <div className="flex gap-2 mt-1.5 flex-wrap">
-                {order.paymentBreakdown.cash > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">💵 {formatCurrency(order.paymentBreakdown.cash)}</span>}
-                {order.paymentBreakdown.upi > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">📱 {formatCurrency(order.paymentBreakdown.upi)}</span>}
-                {order.paymentBreakdown.card > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">💳 {formatCurrency(order.paymentBreakdown.card)}</span>}
+            {order.paymentType === 'advance' && order.fullyPaidAt ? (
+              // Fully paid advance order — show full breakdown
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-body font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                    ✅ Fully Paid
+                  </span>
+                </div>
+                <div className="bg-muted/40 rounded-lg px-3 py-2 space-y-1 text-xs font-body">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Total Bill</span>
+                    <span className="font-bold tabular-nums">{formatCurrency(order.total)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-amber-700 flex items-center gap-1">
+                      Advance
+                      {order.advancePaidBy && <span className="px-1 py-0.5 rounded bg-amber-100 text-[9px] font-bold uppercase">{order.advancePaidBy}</span>}
+                    </span>
+                    <span className="font-bold text-amber-600 tabular-nums">−{formatCurrency(order.advanceAmount || 0)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-blue-700 flex items-center gap-1">
+                      Balance
+                      {order.balancePaymentType && <span className="px-1 py-0.5 rounded bg-blue-100 text-[9px] font-bold uppercase">{order.balancePaymentType}</span>}
+                    </span>
+                    <span className="font-bold text-blue-600 tabular-nums">−{formatCurrency((order.total) - (order.advanceAmount || 0))}</span>
+                  </div>
+                </div>
+                {order.billedBy && <p className="text-[10px] font-body text-muted-foreground">Closed by {order.billedBy}</p>}
               </div>
+            ) : (
+              <>
+                <span className="text-xs font-body font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  {PAYMENT_LABELS[order.paymentType]}
+                </span>
+                {order.paymentType === 'part_payment' && order.paymentBreakdown && (
+                  <div className="flex gap-2 mt-1.5 flex-wrap">
+                    {order.paymentBreakdown.cash > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">💵 {formatCurrency(order.paymentBreakdown.cash)}</span>}
+                    {order.paymentBreakdown.upi > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">📱 {formatCurrency(order.paymentBreakdown.upi)}</span>}
+                    {order.paymentBreakdown.card > 0 && <span className="text-[10px] font-body bg-muted px-1.5 py-0.5 rounded">💳 {formatCurrency(order.paymentBreakdown.card)}</span>}
+                  </div>
+                )}
+                {order.billedBy && <p className="text-[10px] font-body text-muted-foreground mt-1">Billed by {order.billedBy}</p>}
+              </>
             )}
-            {order.billedBy && <p className="text-[10px] font-body text-muted-foreground mt-1">Billed by {order.billedBy}</p>}
           </div>
         )}
 
