@@ -40,16 +40,30 @@ export const useAuthStore = create<AuthState>()((set) => ({
     const token = localStorage.getItem(SESSION_KEY);
     if (!token) { set({ sessionChecked: true }); return; }
 
-    const { data } = await supabase
+    // Step 1: look up the session
+    const { data: session } = await supabase
       .from('staff_sessions')
-      .select('staff_users(*)')
+      .select('staff_user_id')
       .eq('token', token)
       .eq('is_active', true)
       .single();
 
-    const userData = data?.staff_users as Record<string, unknown> | null;
+    if (!session?.staff_user_id) {
+      localStorage.removeItem(SESSION_KEY);
+      set({ sessionChecked: true });
+      return;
+    }
+
+    // Step 2: fetch the user
+    const { data: userData } = await supabase
+      .from('staff_users')
+      .select('*')
+      .eq('id', session.staff_user_id)
+      .eq('is_active', true)
+      .single();
+
     if (userData) {
-      set({ currentUser: rowToUser(userData), sessionChecked: true });
+      set({ currentUser: rowToUser(userData as Record<string, unknown>), sessionChecked: true });
     } else {
       localStorage.removeItem(SESSION_KEY);
       set({ sessionChecked: true });
