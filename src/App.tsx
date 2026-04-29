@@ -21,7 +21,12 @@ import OrderTrackingPage from '@/pages/OrderTrackingPage';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 
 function AppRoutes() {
-  const { currentUser } = useAuthStore();
+  const { currentUser, _hasHydrated } = useAuthStore();
+
+  // Wait for Zustand to rehydrate from localStorage before rendering routes.
+  // Without this, currentUser is briefly null even for logged-in users,
+  // causing a flash of the login page on browser reopen.
+  if (!_hasHydrated) return null;
 
   const getDefaultRoute = () => {
     if (!currentUser) return '/';
@@ -35,7 +40,7 @@ function AppRoutes() {
     <>
       <Header />
       <Routes>
-        <Route path="/" element={<Landing />} />
+        <Route path="/" element={currentUser ? <Navigate to={getDefaultRoute()} replace /> : <Landing />} />
         <Route path="/login" element={<Login />} />
         <Route path="/menu" element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
