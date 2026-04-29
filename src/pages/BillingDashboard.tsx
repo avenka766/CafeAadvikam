@@ -741,8 +741,16 @@ function NewBillPanel() {
 
 // ── Main BillingDashboard ─────────────────────────────────────────────────────
 export default function BillingDashboard() {
-  const { orders, startPolling, stopPolling, polling } = useOrderStore();
+  const { orders, startPolling, stopPolling, polling, clearCart } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
+
+  // Clear shared cart whenever switching between New Bill and Advance tabs
+  const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance') => {
+    if (tab !== activeTab && (tab === 'new_bill' || tab === 'advance' || activeTab === 'new_bill' || activeTab === 'advance')) {
+      clearCart();
+    }
+    setActiveTab(tab);
+  };
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
@@ -813,7 +821,7 @@ export default function BillingDashboard() {
         <div className="flex gap-1 overflow-x-auto scrollbar-hide px-4 py-2">
           {/* New Bill */}
           <button
-            onClick={() => setActiveTab('new_bill')}
+            onClick={() => switchTab('new_bill')}
             className={cn(
               'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
               activeTab === 'new_bill'
@@ -826,7 +834,7 @@ export default function BillingDashboard() {
 
           {/* Advance tab */}
           <button
-            onClick={() => setActiveTab('advance')}
+            onClick={() => switchTab('advance')}
             className={cn(
               'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
               activeTab === 'advance'
@@ -854,7 +862,7 @@ export default function BillingDashboard() {
             return (
               <button
                 key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
+                onClick={() => switchTab(tab.key)}
                 className={cn(
                   'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
                   isActive
