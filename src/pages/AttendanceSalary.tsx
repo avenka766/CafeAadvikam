@@ -2,7 +2,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
-  Download, UserPlus, X, Pencil, Loader2,
+  Download, UserPlus, X, Pencil, Loader2, ChevronLeft, ChevronRight,
+  AlertCircle, CheckCircle2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -16,7 +17,7 @@ interface Employee {
   branch: Branch;
   department: string;
   grossSalary: number;
-  salaryAdvance: number;
+  salaryAdvance: number;       // current outstanding advance
   uniformDeduction: number;
   otherDeduction: number;
   accountNumber?: string;
@@ -35,15 +36,15 @@ interface DayAttendance {
 // attendance keyed by "employeeId_day"
 type MonthAttendance = Record<string, DayAttendance>;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const DAYS_IN_MONTH = 30;
-const MONTH_LABEL = 'April 2026';
-const YEAR = 2026;
-const MONTH_IDX = 3; // April = index 3
-const DB_MONTH = 4;  // 1-based month for DB
-const SUNDAYS = Array.from({ length: DAYS_IN_MONTH }, (_, i) => i + 1)
-  .filter(d => new Date(YEAR, MONTH_IDX, d).getDay() === 0);
+// Per-employee per-month deduction decisions
+interface DeductionDecision {
+  deductAdvance: boolean;    // deduct advance this month (or carry forward)
+  deductOther: boolean;      // deduct otherDeduction this month
+  deductUniform: boolean;    // deduct uniform this month
+}
+type DeductionDecisions = Record<string, DeductionDecision>; // keyed by employeeId
 
+// ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB'];
 const BRANCH_COLORS: Record<Branch, string> = {
   VRSNB: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -58,6 +59,27 @@ const BRANCH_SHORT: Record<Branch, string> = {
 
 const ak = (eid: string, d: number) => `${eid}_${d}`;
 const defaultDay = (): DayAttendance => ({ present: false, woff: false, bf: false, lunch: false, dinner: false });
+const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true });
+
+// ─── Month helpers ────────────────────────────────────────────────────────────
+function getMonthMeta(year: number, month: number) {
+  // month is 1-based
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const label = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  return { daysInMonth, label };
+}
+
+function getTwoMonths(): Array<{ year: number; month: number; label: string; daysInMonth: number }> {
+  const now = new Date();
+  const current = { year: now.getFullYear(), month: now.getMonth() + 1 };
+  let prevMonth = current.month - 1;
+  let prevYear = current.year;
+  if (prevMonth === 0) { prevMonth = 12; prevYear--; }
+  return [
+    { ...current, ...getMonthMeta(current.year, current.month) },
+    { year: prevYear, month: prevMonth, ...getMonthMeta(prevYear, prevMonth) },
+  ];
+}
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 function dbRowToEmployee(d: Record<string, unknown>): Employee {
@@ -114,9 +136,7 @@ async function upsertAttendance(
     .from('attendance')
     .upsert({
       employee_id: employeeId,
-      year,
-      month,
-      day,
+      year, month, day,
       present: val.present,
       woff: val.woff,
       bf: val.bf,
@@ -126,15 +146,49 @@ async function upsertAttendance(
   if (error) console.error('Attendance upsert failed:', error.message);
 }
 
+async function fetchDeductionDecisions(year: number, month: number): Promise<DeductionDecisions> {
+  const { data, error } = await supabase
+    .from('deduction_decisions')
+    .select('*')
+    .eq('year', year)
+    .eq('month', month);
+  if (error) {
+    // Table may not exist yet — return empty
+    console.warn('deduction_decisions fetch:', error.message);
+    return {};
+  }
+  const result: DeductionDecisions = {};
+  for (const row of (data || [])) {
+    result[row.employee_id as string] = {
+      deductAdvance: row.deduct_advance as boolean,
+      deductOther: row.deduct_other as boolean,
+      deductUniform: row.deduct_uniform as boolean,
+    };
+  }
+  return result;
+}
+
+async function upsertDeductionDecision(
+  employeeId: string, year: number, month: number, decision: DeductionDecision
+) {
+  const { error } = await supabase
+    .from('deduction_decisions')
+    .upsert({
+      employee_id: employeeId,
+      year, month,
+      deduct_advance: decision.deductAdvance,
+      deduct_other: decision.deductOther,
+      deduct_uniform: decision.deductUniform,
+    }, { onConflict: 'employee_id,year,month' });
+  if (error) console.error('Deduction decision upsert failed:', error.message);
+}
+
 async function insertEmployee(emp: Omit<Employee, 'id'> & { id?: string }): Promise<Employee | null> {
   const id = emp.id || `emp_${Date.now()}`;
   const { data, error } = await supabase
     .from('employees')
     .insert({
-      id,
-      name: emp.name,
-      branch: emp.branch,
-      department: emp.department,
+      id, name: emp.name, branch: emp.branch, department: emp.department,
       gross_salary: emp.grossSalary,
       salary_advance: emp.salaryAdvance,
       uniform_deduction: emp.uniformDeduction,
@@ -153,9 +207,7 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
   const { error } = await supabase
     .from('employees')
     .update({
-      name: emp.name,
-      branch: emp.branch,
-      department: emp.department,
+      name: emp.name, branch: emp.branch, department: emp.department,
       gross_salary: emp.grossSalary,
       salary_advance: emp.salaryAdvance,
       uniform_deduction: emp.uniformDeduction,
@@ -169,14 +221,48 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
   return true;
 }
 
+// Clear advance from employee record once deducted
+async function clearAdvance(employeeId: string): Promise<void> {
+  await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
+}
+
 async function deactivateEmployee(id: string): Promise<void> {
   await supabase.from('employees').update({ is_active: false }).eq('id', id);
 }
 
+// Auto-delete attendance older than 2 months
+async function deleteOldAttendance(currentYear: number, currentMonth: number): Promise<void> {
+  try {
+    // Calculate cutoff: 2 months back
+    let cutoffMonth = currentMonth - 2;
+    let cutoffYear = currentYear;
+    if (cutoffMonth <= 0) { cutoffMonth += 12; cutoffYear--; }
+    // Delete anything older than cutoff (year < cutoffYear OR (year = cutoffYear AND month < cutoffMonth))
+    await supabase.from('attendance').delete()
+      .lt('year', cutoffYear);
+    await supabase.from('attendance').delete()
+      .eq('year', cutoffYear)
+      .lt('month', cutoffMonth);
+    // Same for deduction_decisions
+    await supabase.from('deduction_decisions').delete()
+      .lt('year', cutoffYear);
+    await supabase.from('deduction_decisions').delete()
+      .eq('year', cutoffYear)
+      .lt('month', cutoffMonth);
+  } catch (e) {
+    console.warn('Old data cleanup failed:', e);
+  }
+}
+
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
-function calcSalary(emp: Employee, att: MonthAttendance) {
+function calcSalary(
+  emp: Employee,
+  att: MonthAttendance,
+  daysInMonth: number,
+  decision: DeductionDecision
+) {
   let presentDays = 0, woffDays = 0, canteenTotal = 0;
-  for (let d = 1; d <= DAYS_IN_MONTH; d++) {
+  for (let d = 1; d <= daysInMonth; d++) {
     const a = att[ak(emp.id, d)];
     if (!a) continue;
     if (a.present) presentDays++;
@@ -187,10 +273,19 @@ function calcSalary(emp: Employee, att: MonthAttendance) {
     }
   }
   const worked = presentDays + woffDays;
-  const wagePd = emp.grossSalary > 0 ? emp.grossSalary / DAYS_IN_MONTH : 0;
+  const wagePd = emp.grossSalary > 0 ? emp.grossSalary / daysInMonth : 0;
   const earned = Math.round(wagePd * worked);
-  const totalDed = emp.salaryAdvance + canteenTotal + emp.uniformDeduction + emp.otherDeduction;
-  return { presentDays, woffDays, worked, canteenTotal, earned, totalDed, net: earned - totalDed };
+
+  const advanceDed = decision.deductAdvance ? emp.salaryAdvance : 0;
+  const uniformDed = decision.deductUniform ? emp.uniformDeduction : 0;
+  const otherDed = decision.deductOther ? emp.otherDeduction : 0;
+  const totalDed = advanceDed + canteenTotal + uniformDed + otherDed;
+
+  return {
+    presentDays, woffDays, worked, canteenTotal, earned, totalDed,
+    advanceDed, uniformDed, otherDed,
+    net: earned - totalDed,
+  };
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
@@ -205,6 +300,46 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function InputCls(extra = '') {
   return `w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 ${extra}`;
+}
+
+// ─── Deduction Toggle ─────────────────────────────────────────────────────────
+function DeductToggle({
+  label, amount, checked, onChange, color = 'orange',
+}: {
+  label: string; amount: number; checked: boolean; onChange: (v: boolean) => void; color?: string;
+}) {
+  if (amount <= 0) return null;
+  return (
+    <div className={cn(
+      'flex items-center justify-between px-3 py-2 rounded-xl border',
+      checked
+        ? 'bg-destructive/5 border-destructive/30'
+        : 'bg-muted/40 border-border/40'
+    )}>
+      <div className="flex items-center gap-2">
+        {checked
+          ? <CheckCircle2 className="size-3.5 text-destructive shrink-0" />
+          : <AlertCircle className="size-3.5 text-muted-foreground/50 shrink-0" />
+        }
+        <div>
+          <p className={cn('text-[11px] font-body font-semibold', checked ? 'text-destructive' : 'text-muted-foreground')}>{label}</p>
+          <p className="text-[10px] font-body text-muted-foreground">₹{amount.toLocaleString('en-IN')}</p>
+        </div>
+      </div>
+      <button
+        onClick={() => onChange(!checked)}
+        className={cn(
+          'relative h-5 w-9 rounded-full transition-colors shrink-0',
+          checked ? 'bg-destructive' : 'bg-muted border border-border'
+        )}
+      >
+        <span className={cn(
+          'absolute top-0.5 size-4 rounded-full bg-white shadow transition-all',
+          checked ? 'left-[18px]' : 'left-0.5'
+        )} />
+      </button>
+    </div>
+  );
 }
 
 function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose: () => void }) {
@@ -365,17 +500,21 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
 }
 
 // ─── Attendance row (expandable) ──────────────────────────────────────────────
-function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
-  emp: Employee; att: MonthAttendance;
+function AttRow({
+  emp, att, onUpdate, expanded, onToggle, decision, onDecisionChange, daysInMonth,
+}: {
+  emp: Employee; att: MonthAttendance; daysInMonth: number;
   onUpdate: (empId: string, day: number, v: DayAttendance) => void;
   expanded: boolean; onToggle: () => void;
+  decision: DeductionDecision;
+  onDecisionChange: (empId: string, d: DeductionDecision) => void;
 }) {
-  const { presentDays, woffDays, canteenTotal, net } = calcSalary(emp, att);
+  const { presentDays, woffDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
 
   const woffCount = useMemo(() =>
-    Array.from({ length: DAYS_IN_MONTH }, (_, i) => i + 1)
+    Array.from({ length: daysInMonth }, (_, i) => i + 1)
       .filter(d => att[ak(emp.id, d)]?.woff).length,
-    [emp.id, att]
+    [emp.id, att, daysInMonth]
   );
 
   const toggleDay = (day: number) => {
@@ -403,6 +542,10 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
     onUpdate(emp.id, day, { ...cur, [meal]: !cur[meal] });
   };
 
+  const hasAdvance = emp.salaryAdvance > 0;
+  const hasOther = emp.otherDeduction > 0;
+  const hasUniform = emp.uniformDeduction > 0;
+
   return (
     <div className={cn('border-b border-border/40', expanded && 'bg-primary/[0.03]')}>
       <button className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors active:bg-muted/40" onClick={onToggle}>
@@ -411,7 +554,10 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-body font-semibold text-foreground truncate">{emp.name}</p>
-          <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
+          <p className="text-[10px] font-body text-muted-foreground">
+            {emp.department}
+            {hasAdvance && <span className="ml-1 text-amber-600 font-semibold">· Adv ₹{emp.salaryAdvance.toLocaleString('en-IN')}</span>}
+          </p>
         </div>
         <div className="text-right shrink-0 mr-1">
           <p className="text-xs font-body font-bold tabular-nums">{presentDays + woffDays}d</p>
@@ -424,28 +570,60 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
 
       {expanded && (
         <div className="px-3 pb-3">
+          {/* Deduction Decisions in Attendance */}
+          {(hasAdvance || hasOther || hasUniform) && (
+            <div className="mb-3 space-y-1.5">
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1">Deductions this month</p>
+              {hasAdvance && (
+                <DeductToggle
+                  label="Salary Advance"
+                  amount={emp.salaryAdvance}
+                  checked={decision.deductAdvance}
+                  onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })}
+                />
+              )}
+              {hasUniform && (
+                <DeductToggle
+                  label="Uniform Deduction"
+                  amount={emp.uniformDeduction}
+                  checked={decision.deductUniform}
+                  onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })}
+                />
+              )}
+              {hasOther && (
+                <DeductToggle
+                  label="Other Deduction"
+                  amount={emp.otherDeduction}
+                  checked={decision.deductOther}
+                  onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })}
+                />
+              )}
+              {hasAdvance && !decision.deductAdvance && (
+                <p className="text-[10px] font-body text-amber-600 flex items-center gap-1">
+                  <AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} will carry forward
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Daily calendar */}
           <div className="overflow-x-auto pb-1">
             <div className="flex gap-1 min-w-max">
-              {Array.from({ length: DAYS_IN_MONTH }, (_, i) => i + 1).map(day => {
-                const isSun = SUNDAYS.includes(day);
+              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(day => {
                 const a = att[ak(emp.id, day)] ?? defaultDay();
                 return (
                   <div key={day} className="flex flex-col items-center gap-0.5" style={{ minWidth: 32 }}>
-                    <span className={cn('text-[9px] font-body font-semibold', isSun ? 'text-muted-foreground/40' : 'text-muted-foreground')}>
-                      {day}
-                    </span>
+                    <span className="text-[9px] font-body font-semibold text-muted-foreground">{day}</span>
                     <button
-                      disabled={isSun}
-                      onClick={() => !isSun && toggleDay(day)}
+                      onClick={() => toggleDay(day)}
                       className={cn(
                         'size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center',
-                        isSun && 'bg-muted/20 border-border/20 text-muted-foreground/30 cursor-default',
-                        !isSun && !a.present && !a.woff && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
+                        !a.present && !a.woff && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
                         a.present && 'bg-emerald-500 border-emerald-600 text-white',
                         a.woff && 'bg-sky-100 border-sky-300 text-sky-700',
                       )}
                     >
-                      {isSun ? 'S' : a.present ? '✓' : a.woff ? 'W' : ''}
+                      {a.present ? '✓' : a.woff ? 'W' : ''}
                     </button>
                     {a.present ? (
                       <div className="flex gap-[2px] mt-0.5">
@@ -490,8 +668,30 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle }: {
 }
 
 // ─── Salary card ──────────────────────────────────────────────────────────────
-function SalaryCard({ emp, att }: { emp: Employee; att: MonthAttendance }) {
-  const { presentDays, woffDays, worked, canteenTotal, earned, net } = calcSalary(emp, att);
+function SalaryCard({
+  emp, att, decision, onDecisionChange, daysInMonth, onAdvanceCleared,
+}: {
+  emp: Employee; att: MonthAttendance; daysInMonth: number;
+  decision: DeductionDecision;
+  onDecisionChange: (empId: string, d: DeductionDecision) => void;
+  onAdvanceCleared: (empId: string) => void;
+}) {
+  const [clearing, setClearing] = useState(false);
+  const { presentDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, net } =
+    calcSalary(emp, att, daysInMonth, decision);
+
+  const hasAdvance = emp.salaryAdvance > 0;
+  const hasOther = emp.otherDeduction > 0;
+  const hasUniform = emp.uniformDeduction > 0;
+
+  const handleMarkPaid = async () => {
+    if (!decision.deductAdvance || emp.salaryAdvance <= 0) return;
+    setClearing(true);
+    await clearAdvance(emp.id);
+    setClearing(false);
+    onAdvanceCleared(emp.id);
+  };
+
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden">
       <div className="px-4 py-3 border-b border-border flex items-start gap-3">
@@ -512,16 +712,58 @@ function SalaryCard({ emp, att }: { emp: Employee; att: MonthAttendance }) {
           <p className="text-[10px] font-body text-muted-foreground">Net Salary</p>
         </div>
       </div>
+
+      {/* Deduction Decisions in Salary */}
+      {(hasAdvance || hasOther || hasUniform) && (
+        <div className="px-4 pt-3 space-y-1.5">
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">Deductions — select what to apply</p>
+          {hasAdvance && (
+            <DeductToggle
+              label="Salary Advance"
+              amount={emp.salaryAdvance}
+              checked={decision.deductAdvance}
+              onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })}
+            />
+          )}
+          {hasUniform && (
+            <DeductToggle
+              label="Uniform Deduction"
+              amount={emp.uniformDeduction}
+              checked={decision.deductUniform}
+              onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })}
+            />
+          )}
+          {hasOther && (
+            <DeductToggle
+              label="Other Deduction"
+              amount={emp.otherDeduction}
+              checked={decision.deductOther}
+              onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })}
+            />
+          )}
+          {hasAdvance && !decision.deductAdvance && (
+            <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1">
+              <AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="px-4 py-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
         <SalRow label="Gross Salary" value={`₹${emp.grossSalary.toLocaleString('en-IN')}`} />
         <SalRow label="Days Present" value={String(presentDays)} />
         <SalRow label="Week Offs" value={String(woffDays)} />
-        <SalRow label="Total Worked" value={`${worked} / ${DAYS_IN_MONTH}`} highlight />
+        <SalRow label="Total Worked" value={`${worked} / ${daysInMonth}`} highlight />
         <SalRow label="Earned" value={`₹${earned.toLocaleString('en-IN')}`} highlight />
-        <SalRow label="Canteen Ded." value={canteenTotal > 0 ? `-₹${canteenTotal}` : '—'} neg={canteenTotal > 0} />
-        <SalRow label="Salary Advance" value={emp.salaryAdvance > 0 ? `-₹${emp.salaryAdvance.toLocaleString('en-IN')}` : '—'} neg={emp.salaryAdvance > 0} />
-        <SalRow label="Uniform Ded." value={emp.uniformDeduction > 0 ? `-₹${emp.uniformDeduction}` : '—'} neg={emp.uniformDeduction > 0} />
-        <SalRow label="Other Ded." value={emp.otherDeduction > 0 ? `-₹${emp.otherDeduction}` : '—'} neg={emp.otherDeduction > 0} />
+        <SalRow label="Food Deduction" value={canteenTotal > 0 ? `-₹${canteenTotal}` : '—'} neg={canteenTotal > 0} />
+        {decision.deductAdvance && advanceDed > 0 &&
+          <SalRow label="Salary Advance" value={`-₹${advanceDed.toLocaleString('en-IN')}`} neg />}
+        {!decision.deductAdvance && hasAdvance &&
+          <SalRow label="Advance (Carry Fwd)" value={`₹${emp.salaryAdvance.toLocaleString('en-IN')}`} />}
+        {decision.deductUniform && uniformDed > 0 &&
+          <SalRow label="Uniform Ded." value={`-₹${uniformDed}`} neg />}
+        {decision.deductOther && otherDed > 0 &&
+          <SalRow label="Other Ded." value={`-₹${otherDed}`} neg />}
         <div className="col-span-2 border-t border-border pt-2 mt-0.5 flex justify-between items-center">
           <span className="text-sm font-body font-bold text-foreground">Net Payable</span>
           <span className={cn('font-display font-bold text-lg tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>
@@ -529,6 +771,21 @@ function SalaryCard({ emp, att }: { emp: Employee; att: MonthAttendance }) {
           </span>
         </div>
       </div>
+
+      {/* Mark advance as cleared */}
+      {hasAdvance && decision.deductAdvance && (
+        <div className="px-4 pb-3">
+          <button
+            onClick={handleMarkPaid}
+            disabled={clearing}
+            className="w-full h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+          >
+            {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+            Mark Advance Cleared (removes from record)
+          </button>
+        </div>
+      )}
+
       {emp.ifscCode && (
         <div className="px-4 py-2 bg-muted/40 border-t border-border flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="text-[9px] font-body font-semibold text-muted-foreground uppercase">IFSC</span>
@@ -552,8 +809,13 @@ function SalRow({ label, value, highlight, neg }: { label: string; value: string
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function AttendanceSalary() {
+  const TWO_MONTHS = useMemo(() => getTwoMonths(), []);
+  const [monthIdx, setMonthIdx] = useState(0); // 0 = current, 1 = previous
+  const activeMonth = TWO_MONTHS[monthIdx];
+
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [att, setAtt] = useState<MonthAttendance>({});
+  const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees'>('attendance');
   const [branch, setBranch] = useState<'All' | Branch>('All');
@@ -564,17 +826,22 @@ export default function AttendanceSalary() {
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const ddRef = useRef<HTMLDivElement>(null);
 
-  // Load from Supabase on mount
+  // Load data whenever active month changes
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [emps, attData] = await Promise.all([
+        const [emps, attData, decData] = await Promise.all([
           fetchEmployees(),
-          fetchAttendance(YEAR, DB_MONTH),
+          fetchAttendance(activeMonth.year, activeMonth.month),
+          fetchDeductionDecisions(activeMonth.year, activeMonth.month),
         ]);
         setEmployees(emps);
         setAtt(attData);
+        setDecisions(decData);
+        // Auto-delete data older than 2 months (run silently)
+        const now = new Date();
+        deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
       } catch (e) {
         console.error('Load error:', e);
       } finally {
@@ -582,7 +849,7 @@ export default function AttendanceSalary() {
       }
     }
     load();
-  }, []);
+  }, [activeMonth.year, activeMonth.month]);
 
   useEffect(() => {
     const fn = (e: MouseEvent) => {
@@ -592,27 +859,30 @@ export default function AttendanceSalary() {
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
-  // Update attendance both in state and DB
   const updateAtt = useCallback((empId: string, day: number, val: DayAttendance) => {
     const k = ak(empId, day);
     setAtt(prev => ({ ...prev, [k]: val }));
-    upsertAttendance(empId, YEAR, DB_MONTH, day, val);
-  }, []);
+    upsertAttendance(empId, activeMonth.year, activeMonth.month, day, val);
+  }, [activeMonth.year, activeMonth.month]);
 
-  const addEmp = (emp: Employee) => {
-    setEmployees(prev => [...prev, emp]);
-    setShowAddModal(false);
+  const updateDecision = useCallback((empId: string, d: DeductionDecision) => {
+    setDecisions(prev => ({ ...prev, [empId]: d }));
+    upsertDeductionDecision(empId, activeMonth.year, activeMonth.month, d);
+  }, [activeMonth.year, activeMonth.month]);
+
+  const getDecision = (empId: string): DeductionDecision =>
+    decisions[empId] ?? defaultDecision();
+
+  const handleAdvanceCleared = (empId: string) => {
+    setEmployees(prev => prev.map(e => e.id === empId ? { ...e, salaryAdvance: 0 } : e));
+    // Also reset the advance toggle since advance is now 0
+    const cur = getDecision(empId);
+    updateDecision(empId, { ...cur, deductAdvance: false });
   };
 
-  const removeEmp = async (id: string) => {
-    await deactivateEmployee(id);
-    setEmployees(prev => prev.filter(e => e.id !== id));
-  };
-
-  const saveEmp = (emp: Employee) => {
-    setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e));
-    setEditEmp(null);
-  };
+  const addEmp = (emp: Employee) => { setEmployees(prev => [...prev, emp]); setShowAddModal(false); };
+  const removeEmp = async (id: string) => { await deactivateEmployee(id); setEmployees(prev => prev.filter(e => e.id !== id)); };
+  const saveEmp = (emp: Employee) => { setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e)); setEditEmp(null); };
 
   const filtered = useMemo(() => {
     let list = employees;
@@ -623,20 +893,31 @@ export default function AttendanceSalary() {
 
   const summary = useMemo(() => {
     const list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
-    let gross = 0, net = 0, canteen = 0;
-    list.forEach(e => { const c = calcSalary(e, att); gross += e.grossSalary; net += c.net; canteen += c.canteenTotal; });
-    return { count: list.length, gross, net, canteen };
-  }, [employees, branch, att]);
+    let gross = 0, net = 0, canteen = 0, advanceTotal = 0;
+    list.forEach(e => {
+      const d = getDecision(e.id);
+      const c = calcSalary(e, att, activeMonth.daysInMonth, d);
+      gross += e.grossSalary;
+      net += c.net;
+      canteen += c.canteenTotal;
+      advanceTotal += e.salaryAdvance;
+    });
+    return { count: list.length, gross, net, canteen, advanceTotal };
+  }, [employees, branch, att, decisions, activeMonth.daysInMonth]);
 
   const exportCSV = () => {
     const list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
     const rows = [
-      ['Name', 'Branch', 'Department', 'Gross', 'Present', 'Week Off', 'Worked', 'Earned', 'Canteen', 'Advance', 'Uniform', 'Other', 'Net', 'Bank', 'Account', 'IFSC'],
-      ...list.map(e => { const c = calcSalary(e, att); return [e.name, e.branch, e.department, e.grossSalary, c.presentDays, c.woffDays, c.worked, c.earned, c.canteenTotal, e.salaryAdvance, e.uniformDeduction, e.otherDeduction, c.net, e.bankName || '', e.accountNumber || '', e.ifscCode || '']; }),
+      ['Name', 'Branch', 'Department', 'Gross', 'Present', 'Week Off', 'Worked', 'Earned', 'Food Ded', 'Advance Ded', 'Uniform Ded', 'Other Ded', 'Net', 'Bank', 'Account', 'IFSC'],
+      ...list.map(e => {
+        const d = getDecision(e.id);
+        const c = calcSalary(e, att, activeMonth.daysInMonth, d);
+        return [e.name, e.branch, e.department, e.grossSalary, c.presentDays, c.woffDays, c.worked, c.earned, c.canteenTotal, c.advanceDed, c.uniformDed, c.otherDed, c.net, e.bankName || '', e.accountNumber || '', e.ifscCode || ''];
+      }),
     ];
     const a = document.createElement('a');
     a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(rows.map(r => r.join(',')).join('\n'));
-    a.download = `salary_april2026.csv`;
+    a.download = `salary_${activeMonth.label.replace(' ', '_').toLowerCase()}.csv`;
     a.click();
   };
 
@@ -645,7 +926,7 @@ export default function AttendanceSalary() {
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-muted-foreground">
           <Loader2 className="size-8 animate-spin text-primary" />
-          <p className="text-sm font-body">Loading employees & attendance…</p>
+          <p className="text-sm font-body">Loading {activeMonth.label}…</p>
         </div>
       </div>
     );
@@ -657,7 +938,7 @@ export default function AttendanceSalary() {
       <div className="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Attendance & Salary</h1>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">{MONTH_LABEL} · {employees.length} employees</p>
+          <p className="text-xs font-body text-muted-foreground mt-0.5">{employees.length} employees</p>
         </div>
         {/* Branch filter */}
         <div className="relative shrink-0" ref={ddRef}>
@@ -679,13 +960,40 @@ export default function AttendanceSalary() {
         </div>
       </div>
 
+      {/* Month switcher — 2 months only */}
+      <div className="px-4 mb-3">
+        <div className="flex items-center bg-card border border-border rounded-xl overflow-hidden">
+          {TWO_MONTHS.map((m, i) => (
+            <button
+              key={`${m.year}-${m.month}`}
+              onClick={() => setMonthIdx(i)}
+              className={cn(
+                'flex-1 py-2.5 text-sm font-body font-bold transition-all flex items-center justify-center gap-1.5',
+                i === monthIdx ? 'cafe-gradient text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              )}
+            >
+              <Calendar className="size-3.5" />
+              {i === 0 ? 'Current' : 'Previous'}
+              <span className={cn('text-[10px] font-normal', i === monthIdx ? 'text-primary-foreground/80' : 'text-muted-foreground/60')}>
+                ({m.label})
+              </span>
+            </button>
+          ))}
+        </div>
+        {monthIdx === 1 && (
+          <p className="text-[10px] font-body text-muted-foreground mt-1.5 flex items-center gap-1">
+            <AlertCircle className="size-3" /> Data older than 2 months is auto-deleted
+          </p>
+        )}
+      </div>
+
       {/* KPI Cards */}
       <div className="px-4 grid grid-cols-2 gap-2 mb-3">
         {[
           { icon: <Users className="size-3.5 text-primary" />, bg: 'bg-primary/10', val: String(summary.count), label: 'Employees' },
           { icon: <IndianRupee className="size-3.5 text-emerald-600" />, bg: 'bg-emerald-50', val: `₹${(summary.net / 100000).toFixed(1)}L`, label: 'Total Net' },
-          { icon: <TrendingDown className="size-3.5 text-orange-500" />, bg: 'bg-orange-50', val: `₹${summary.canteen.toLocaleString('en-IN')}`, label: 'Canteen Ded.' },
-          { icon: <Calendar className="size-3.5 text-blue-600" />, bg: 'bg-blue-50', val: `₹${(summary.gross / 100000).toFixed(1)}L`, label: 'Total Gross' },
+          { icon: <TrendingDown className="size-3.5 text-orange-500" />, bg: 'bg-orange-50', val: `₹${summary.canteen.toLocaleString('en-IN')}`, label: 'Food Ded.' },
+          { icon: <AlertCircle className="size-3.5 text-amber-500" />, bg: 'bg-amber-50', val: summary.advanceTotal > 0 ? `₹${summary.advanceTotal.toLocaleString('en-IN')}` : '—', label: 'Advances' },
         ].map(({ icon, bg, val, label }) => (
           <div key={label} className="bg-card border border-border rounded-xl p-3">
             <div className={cn('size-7 rounded-lg flex items-center justify-center mb-1.5', bg)}>{icon}</div>
@@ -728,17 +1036,22 @@ export default function AttendanceSalary() {
       {tab === 'attendance' && (
         <div className="mx-4 bg-card border border-border rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
-            <h2 className="font-display font-bold text-foreground">Daily Attendance</h2>
+            <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
             <p className="text-[10px] font-body text-muted-foreground mt-0.5">
-              Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Tap orange dots for meals (₹10 / ₹30 all 3). Max 4 week offs/month.
+              Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Meals ₹10 each. Max 4 week offs/month. Any day can be a week-off.
             </p>
           </div>
           {filtered.length === 0
             ? <p className="text-center py-10 font-body text-sm text-muted-foreground">No employees found</p>
             : filtered.map(e => (
-                <AttRow key={e.id} emp={e} att={att} onUpdate={updateAtt}
+                <AttRow
+                  key={e.id} emp={e} att={att} onUpdate={updateAtt}
                   expanded={expandedId === e.id}
-                  onToggle={() => setExpandedId(prev => prev === e.id ? null : e.id)} />
+                  onToggle={() => setExpandedId(prev => prev === e.id ? null : e.id)}
+                  decision={getDecision(e.id)}
+                  onDecisionChange={updateDecision}
+                  daysInMonth={activeMonth.daysInMonth}
+                />
               ))
           }
         </div>
@@ -750,15 +1063,26 @@ export default function AttendanceSalary() {
           <div className="bg-card border border-border rounded-2xl p-4">
             <h3 className="font-display font-bold text-foreground mb-3 flex items-center gap-2">
               <TrendingDown className="size-4 text-primary" />
-              {branch === 'All' ? 'All Branches' : branch} — Summary
+              {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
             </h3>
             <div className="space-y-1.5">
               <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Total Gross</span><span className="font-bold tabular-nums">₹{summary.gross.toLocaleString('en-IN')}</span></div>
               <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Food Deductions</span><span className="font-bold tabular-nums text-orange-600">-₹{summary.canteen.toLocaleString('en-IN')}</span></div>
+              {summary.advanceTotal > 0 && (
+                <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Outstanding Advances</span><span className="font-bold tabular-nums text-amber-600">₹{summary.advanceTotal.toLocaleString('en-IN')}</span></div>
+              )}
               <div className="flex justify-between text-sm font-body border-t border-border pt-1.5"><span className="font-bold text-foreground">Net Payable</span><span className="font-bold tabular-nums text-primary">₹{summary.net.toLocaleString('en-IN')}</span></div>
             </div>
           </div>
-          {filtered.map(e => <SalaryCard key={e.id} emp={e} att={att} />)}
+          {filtered.map(e => (
+            <SalaryCard
+              key={e.id} emp={e} att={att}
+              decision={getDecision(e.id)}
+              onDecisionChange={updateDecision}
+              daysInMonth={activeMonth.daysInMonth}
+              onAdvanceCleared={handleAdvanceCleared}
+            />
+          ))}
           {filtered.length === 0 && <p className="text-center py-10 font-body text-sm text-muted-foreground">No employees found</p>}
         </div>
       )}
@@ -776,6 +1100,11 @@ export default function AttendanceSalary() {
                   <span className="text-[10px] font-body text-muted-foreground truncate">{e.department}</span>
                 </div>
                 <p className="font-body font-bold text-sm text-foreground">{e.name}</p>
+                {e.salaryAdvance > 0 && (
+                  <p className="text-[10px] font-body text-amber-600 font-semibold mt-0.5">
+                    Advance pending: ₹{e.salaryAdvance.toLocaleString('en-IN')}
+                  </p>
+                )}
                 {e.accountNumber && <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">{e.bankName} · {e.accountNumber}</p>}
               </div>
               <div className="flex items-start gap-2 shrink-0">
