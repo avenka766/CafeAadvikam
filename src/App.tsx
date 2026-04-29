@@ -18,6 +18,7 @@ import QROrderPage from '@/pages/QROrderPage';
 import KitchenDashboard from '@/pages/KitchenDashboard';
 import DigitalMenu from '@/pages/DigitalMenu';
 import OrderTrackingPage from '@/pages/OrderTrackingPage';
+import AttendanceSalary from '@/pages/AttendanceSalary';
 
 function AppRoutes() {
   const { currentUser } = useAuthStore();
@@ -101,6 +102,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['admin']}>
               <QRMenuPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/attendance-salary"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <AttendanceSalary />
             </ProtectedRoute>
           }
         />
