@@ -2,17 +2,18 @@ import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
-import { cn, formatCurrency } from '@/lib/utils';
+import { cn, formatCurrency, formatTime } from '@/lib/utils';
 import {
   Inbox, Wifi, Plus, Minus, Search, X,
   ShoppingBag, MapPin, User as UserIcon, StickyNote,
   ChevronDown, AlertCircle, Trash2, Receipt,
-  QrCode, UserCheck,
+  QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
+  CreditCard, Banknote, Smartphone, Wallet,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
-import type { OrderStatus, OrderType } from '@/types';
+import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
 import { TABLE_NUMBERS } from '@/constants/config';
 
 const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
@@ -31,7 +32,250 @@ const QUICK_NOTES = [
 
 type SourceFilter = 'all' | 'staff' | 'qr';
 
-// ── Inline billing cart (no drawer, rendered in page) ─────────────────────────
+// ── Advance Order Card ────────────────────────────────────────────────────────
+function AdvanceOrderCard({ order }: { order: Order }) {
+  const { collectBalance, setAdvancePayment } = useOrderStore();
+  const { currentUser } = useAuthStore();
+  const [showCollect, setShowCollect] = useState(false);
+  const [collectMethod, setCollectMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [collecting, setCollecting] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const billedBy = currentUser?.displayName || currentUser?.username || '';
+  const advance = order.advanceAmount || 0;
+  const balance = order.balanceDue ?? (order.total - advance);
+
+  const handleCollect = async () => {
+    if (!collectMethod) return;
+    setCollecting(true);
+    await collectBalance(order.id, collectMethod, billedBy);
+    setCollecting(false);
+    setShowCollect(false);
+  };
+
+  const PAYMENT_ICONS: Record<string, React.ReactNode> = {
+    cash: <Banknote className="size-4" />,
+    upi: <Smartphone className="size-4" />,
+    card: <CreditCard className="size-4" />,
+  };
+
+  return (
+    <div className="bg-card rounded-2xl border-2 border-amber-400 overflow-hidden shadow-md shadow-amber-50">
+      {/* Header */}
+      <div className="bg-amber-50 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="font-display text-2xl font-bold text-foreground">
+            #{String(order.orderNumber).padStart(3, '0')}
+          </span>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300">
+              ⏳ Advance Paid
+            </span>
+            <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
+              <Clock className="size-3" />{formatTime(order.createdAt)}
+            </span>
+          </div>
+        </div>
+        <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
+          {expanded ? <ChevronDown className="size-4 rotate-180" /> : <ChevronDown className="size-4" />}
+        </button>
+      </div>
+
+      {/* Meta row */}
+      <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
+        {order.orderType === 'dine_in' && order.tableNumber && (
+          <span className="flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary rounded-full font-semibold">
+            <MapPin className="size-3" />Table {order.tableNumber}
+          </span>
+        )}
+        {order.orderType === 'takeaway' && (
+          <span className="flex items-center gap-1 px-2 py-0.5 bg-accent/20 text-accent-foreground rounded-full font-semibold">📦 Takeaway</span>
+        )}
+        {order.customerName && (
+          <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
+        )}
+        {order.orderSource === 'qr'
+          ? <span className="flex items-center gap-1 text-muted-foreground"><QrCode className="size-3" />QR Order</span>
+          : <span className="flex items-center gap-1 text-muted-foreground"><UserCheck className="size-3" />Staff</span>}
+      </div>
+
+      {/* Items (collapsible) */}
+      {expanded && (
+        <div className="px-4 py-3 space-y-1 border-b border-border/50">
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items</p>
+          {order.items.map(ci => (
+            <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
+              <span className="font-body text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
+              <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
+            </div>
+          ))}
+          {order.notes && (
+            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">⚠️ {order.notes}</p>
+          )}
+        </div>
+      )}
+
+      {/* Payment summary */}
+      <div className="px-4 py-3 space-y-2 border-b border-border/50 bg-muted/20">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground">Total Bill</span>
+          <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(order.total)}</span>
+        </div>
+        {order.discount > 0 && (
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-body text-muted-foreground">Discount</span>
+            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">−{formatCurrency(order.discount)}</span>
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-body text-muted-foreground flex items-center gap-1">
+            <Wallet className="size-3" />Advance Paid
+            {order.advancePaidBy && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold ml-1 uppercase">{order.advancePaidBy}</span>}
+          </span>
+          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">−{formatCurrency(advance)}</span>
+        </div>
+        <div className="flex items-center justify-between pt-1 border-t border-border">
+          <span className="text-sm font-body font-bold text-foreground">Balance Due</span>
+          <span className="text-lg font-display font-bold text-red-600 tabular-nums">{formatCurrency(balance)}</span>
+        </div>
+      </div>
+
+      {/* Collect balance action */}
+      {!showCollect ? (
+        <div className="px-4 py-3">
+          <button
+            onClick={() => setShowCollect(true)}
+            className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+            style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white', boxShadow: '0 4px 16px rgba(200,75,10,0.3)' }}
+          >
+            <IndianRupee className="size-4" />Collect Balance {formatCurrency(balance)}
+          </button>
+        </div>
+      ) : (
+        <div className="px-4 py-3 space-y-3">
+          <p className="text-xs font-body font-bold text-foreground">Select payment method for balance:</p>
+          <div className="grid grid-cols-3 gap-2">
+            {(['cash', 'upi', 'card'] as const).map(method => (
+              <button
+                key={method}
+                onClick={() => setCollectMethod(method)}
+                className={cn(
+                  'flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 text-xs font-body font-bold transition-all active:scale-95',
+                  collectMethod === method
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card text-muted-foreground'
+                )}
+              >
+                {PAYMENT_ICONS[method]}
+                {method.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowCollect(false); setCollectMethod(null); }}
+              className="flex-1 py-2.5 rounded-xl border border-border text-sm font-body font-semibold text-foreground active:scale-95"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCollect}
+              disabled={!collectMethod || collecting}
+              className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50"
+            >
+              <CheckCircle2 className="size-4" />
+              {collecting ? 'Saving...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Advance Payment Modal (used inside OrderCard area for ready orders) ────────
+export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
+  const { setAdvancePayment } = useOrderStore();
+  const { currentUser } = useAuthStore();
+  const [advanceAmt, setAdvanceAmt] = useState('');
+  const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const billedBy = currentUser?.displayName || currentUser?.username || '';
+
+  const handleSave = async () => {
+    const amt = parseFloat(advanceAmt);
+    if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
+    if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
+    if (!method) { setError('Select payment method'); return; }
+    setSaving(true);
+    await setAdvancePayment(order.id, amt, method, billedBy);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative w-full bg-background rounded-t-3xl shadow-2xl px-5 pt-5 pb-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-display text-xl font-bold">Collect Advance</h2>
+            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')} · Total {formatCurrency(order.total)}</p>
+          </div>
+          <button onClick={onClose} className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (₹)</label>
+            <div className="relative">
+              <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+              <input
+                type="number"
+                value={advanceAmt}
+                onChange={e => { setAdvanceAmt(e.target.value); setError(''); }}
+                placeholder="Enter advance amount"
+                className="w-full pl-9 pr-4 py-3 rounded-xl border border-border bg-card text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+            {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < order.total && (
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Balance due: <span className="font-bold text-red-600">{formatCurrency(order.total - parseFloat(advanceAmt))}</span>
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Payment Method</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['cash', 'upi', 'card'] as const).map(m => (
+                <button key={m} onClick={() => setMethod(m)}
+                  className={cn('flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 text-xs font-body font-bold transition-all active:scale-95',
+                    method === m ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground')}>
+                  {m === 'cash' ? <Banknote className="size-4" /> : m === 'upi' ? <Smartphone className="size-4" /> : <CreditCard className="size-4" />}
+                  {m.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
+
+          <button onClick={handleSave} disabled={saving}
+            className="w-full py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-60"
+            style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white' }}>
+            <Wallet className="size-4" />
+            {saving ? 'Saving...' : 'Record Advance Payment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Inline billing cart ────────────────────────────────────────────────────────
 function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore();
@@ -255,7 +499,7 @@ function NewBillPanel() {
 // ── Main BillingDashboard ─────────────────────────────────────────────────────
 export default function BillingDashboard() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill'>('pending');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'paid'>('pending');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
@@ -268,14 +512,23 @@ export default function BillingDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
+  // Advance orders: paymentType === 'advance' and not yet fully paid (not served)
+  const advanceOrders = useMemo(() =>
+    todayOrders.filter(o => o.paymentType === 'advance' && o.status !== 'served' && o.status !== 'cancelled'),
+    [todayOrders]
+  );
+
+  // Paid orders: advance orders that are now fully paid (served + fullyPaidAt set)
+  const paidAdvanceOrders = useMemo(() =>
+    todayOrders.filter(o => o.paymentType === 'advance' && o.status === 'served' && o.fullyPaidAt),
+    [todayOrders]
+  );
+
   const filtered = useMemo(() => {
-    let result = todayOrders;
-    if (activeTab !== 'all' && activeTab !== 'new_bill') {
-      result = result.filter(o => o.status === activeTab);
-    }
-    if (sourceFilter !== 'all') {
-      result = result.filter(o => o.orderSource === sourceFilter);
-    }
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'paid') return [];
+    let result = todayOrders.filter(o => !(o.paymentType === 'advance' && o.status !== 'served'));
+    if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
+    if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
   }, [todayOrders, activeTab, sourceFilter]);
 
@@ -292,27 +545,20 @@ export default function BillingDashboard() {
             {polling ? 'Live syncing every 3s' : 'Offline'}
           </span>
         </div>
-        {/* Source filter */}
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => setSourceFilter('all')}
+          <button onClick={() => setSourceFilter('all')}
             className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all',
-              sourceFilter === 'all' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground')}
-          >
+              sourceFilter === 'all' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground')}>
             All ({todayOrders.length})
           </button>
-          <button
-            onClick={() => setSourceFilter('staff')}
+          <button onClick={() => setSourceFilter('staff')}
             className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
-              sourceFilter === 'staff' ? 'bg-blue-600 text-white' : 'bg-muted text-muted-foreground')}
-          >
+              sourceFilter === 'staff' ? 'bg-blue-600 text-white' : 'bg-muted text-muted-foreground')}>
             <UserCheck className="size-2.5" />Staff ({staffCount})
           </button>
-          <button
-            onClick={() => setSourceFilter('qr')}
+          <button onClick={() => setSourceFilter('qr')}
             className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
-              sourceFilter === 'qr' ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground')}
-          >
+              sourceFilter === 'qr' ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground')}>
             <QrCode className="size-2.5" />QR ({qrCount})
           </button>
         </div>
@@ -321,6 +567,7 @@ export default function BillingDashboard() {
       {/* Tabs */}
       <div className="sticky top-14 z-30 bg-background border-b border-border">
         <div className="flex gap-1 overflow-x-auto scrollbar-hide px-4 py-2">
+          {/* New Bill */}
           <button
             onClick={() => setActiveTab('new_bill')}
             className={cn(
@@ -332,6 +579,46 @@ export default function BillingDashboard() {
           >
             <Plus className="size-3.5" />New Bill
           </button>
+
+          {/* Advance tab */}
+          <button
+            onClick={() => setActiveTab('advance')}
+            className={cn(
+              'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
+              activeTab === 'advance'
+                ? 'bg-amber-500 text-white shadow-md'
+                : 'bg-amber-50 border border-amber-200 text-amber-700 active:scale-95'
+            )}
+          >
+            <Wallet className="size-3.5" />Advance
+            {advanceOrders.length > 0 && (
+              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
+                activeTab === 'advance' ? 'bg-white/25 text-white' : 'bg-amber-200 text-amber-800')}>
+                {advanceOrders.length}
+              </span>
+            )}
+          </button>
+
+          {/* Paid tab */}
+          <button
+            onClick={() => setActiveTab('paid')}
+            className={cn(
+              'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
+              activeTab === 'paid'
+                ? 'bg-emerald-600 text-white shadow-md'
+                : 'bg-emerald-50 border border-emerald-200 text-emerald-700 active:scale-95'
+            )}
+          >
+            <CheckCircle2 className="size-3.5" />Paid
+            {paidAdvanceOrders.length > 0 && (
+              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
+                activeTab === 'paid' ? 'bg-white/25 text-white' : 'bg-emerald-200 text-emerald-800')}>
+                {paidAdvanceOrders.length}
+              </span>
+            )}
+          </button>
+
+          {/* Status tabs */}
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = tab.key === 'all'
@@ -366,6 +653,185 @@ export default function BillingDashboard() {
       {/* Content */}
       {activeTab === 'new_bill' ? (
         <NewBillPanel />
+      ) : activeTab === 'advance' ? (
+        <div className="px-4 py-4 space-y-3">
+          {advanceOrders.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+              <Wallet className="size-16 mb-4 opacity-30" />
+              <p className="font-body font-semibold text-lg">No advance orders</p>
+              <p className="text-sm font-body mt-1">Advance payments will appear here</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
+                <Wallet className="size-5 text-amber-600 shrink-0" />
+                <div>
+                  <p className="text-xs font-body font-bold text-amber-800">{advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''} with advance payment</p>
+                  <p className="text-[10px] font-body text-amber-600">
+                    Total balance pending: {formatCurrency(advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0))}
+                  </p>
+                </div>
+              </div>
+              {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
+            </>
+          )}
+        </div>
+      ) : activeTab === 'paid' ? (
+        <div className="px-4 py-4 space-y-3">
+          {paidAdvanceOrders.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+              <CheckCircle2 className="size-16 mb-4 opacity-30" />
+              <p className="font-body font-semibold text-lg">No fully paid advance orders</p>
+              <p className="text-sm font-body mt-1">Orders paid in full will appear here</p>
+            </div>
+          ) : (
+            <>
+              {/* Summary banner */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3">
+                <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
+                <div>
+                  <p className="text-xs font-body font-bold text-emerald-800">{paidAdvanceOrders.length} advance order{paidAdvanceOrders.length !== 1 ? 's' : ''} fully paid today</p>
+                  <p className="text-[10px] font-body text-emerald-600">
+                    Total collected: {formatCurrency(paidAdvanceOrders.reduce((s, o) => s + o.total, 0))}
+                  </p>
+                </div>
+              </div>
+
+              {/* Paid order cards */}
+              {paidAdvanceOrders.map(order => {
+                const advance = order.advanceAmount || 0;
+                const balance = order.total - advance;
+                const pmtLabel = (m?: string) => m === 'cash' ? '💵 Cash' : m === 'upi' ? '📱 UPI' : m === 'card' ? '💳 Card' : m || '—';
+                return (
+                  <div key={order.id} className="bg-card rounded-2xl border-2 border-emerald-400 overflow-hidden shadow-sm">
+                    {/* Header */}
+                    <div className="bg-emerald-50 px-4 py-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="font-display text-2xl font-bold text-foreground">
+                          #{String(order.orderNumber).padStart(3, '0')}
+                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-800 border-emerald-300 flex items-center gap-1">
+                            <CheckCircle2 className="size-3" />Fully Paid
+                          </span>
+                          <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
+                            <Clock className="size-3" />
+                            {order.fullyPaidAt ? formatTime(order.fullyPaidAt) : formatTime(order.updatedAt)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-display text-xl font-bold text-emerald-700 tabular-nums">{formatCurrency(order.total)}</p>
+                        <p className="text-[10px] font-body text-muted-foreground">Total Bill</p>
+                      </div>
+                    </div>
+
+                    {/* Meta */}
+                    <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
+                      {order.orderType === 'dine_in' && order.tableNumber && (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary rounded-full font-semibold">
+                          <MapPin className="size-3" />Table {order.tableNumber}
+                        </span>
+                      )}
+                      {order.orderType === 'takeaway' && (
+                        <span className="flex items-center gap-1 px-2 py-0.5 bg-accent/20 text-accent-foreground rounded-full font-semibold">📦 Takeaway</span>
+                      )}
+                      {order.customerName && (
+                        <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
+                      )}
+                      {order.orderSource === 'qr'
+                        ? <span className="flex items-center gap-1 text-muted-foreground"><QrCode className="size-3" />QR Order</span>
+                        : <span className="flex items-center gap-1 text-muted-foreground"><UserCheck className="size-3" />Staff</span>}
+                    </div>
+
+                    {/* Items */}
+                    <div className="px-4 py-3 space-y-1 border-b border-border/50">
+                      <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items Ordered</p>
+                      {order.items.map(ci => (
+                        <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
+                          <span className="font-body text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
+                          <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
+                        </div>
+                      ))}
+                      {order.notes && (
+                        <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">⚠️ {order.notes}</p>
+                      )}
+                    </div>
+
+                    {/* Full payment breakdown */}
+                    <div className="px-4 py-3 space-y-2 bg-muted/20">
+                      <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide">Payment Breakdown</p>
+
+                      {order.discount > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-body text-muted-foreground">Subtotal</span>
+                          <span className="text-sm font-body tabular-nums">{formatCurrency(order.subtotal)}</span>
+                        </div>
+                      )}
+                      {order.discount > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-body text-emerald-600">Discount ({order.discountType === 'percentage' ? `${order.discountValue}%` : 'flat'})</span>
+                          <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">−{formatCurrency(order.discount)}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-body font-bold text-foreground">Total Bill</span>
+                        <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(order.total)}</span>
+                      </div>
+
+                      <div className="border-t border-border/60 pt-2 space-y-1.5">
+                        {/* Advance row */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-body text-amber-700 font-semibold">Advance Paid</span>
+                            {order.advancePaidBy && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold uppercase">{order.advancePaidBy}</span>
+                            )}
+                          </div>
+                          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">−{formatCurrency(advance)}</span>
+                        </div>
+
+                        {/* Balance row */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-body text-blue-700 font-semibold">Balance Paid</span>
+                            {order.balancePaymentType && (
+                              <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[9px] font-bold uppercase">{order.balancePaymentType}</span>
+                            )}
+                          </div>
+                          <span className="text-sm font-body font-bold text-blue-600 tabular-nums">−{formatCurrency(balance)}</span>
+                        </div>
+
+                        {/* Net paid */}
+                        <div className="flex items-center justify-between pt-1.5 border-t border-border">
+                          <span className="text-sm font-body font-bold text-foreground">Total Collected</span>
+                          <span className="text-lg font-display font-bold text-emerald-700 tabular-nums">{formatCurrency(order.total)}</span>
+                        </div>
+                      </div>
+
+                      {/* Staff info */}
+                      <div className="flex gap-4 pt-1 text-[10px] font-body text-muted-foreground">
+                        {order.createdBy && <span>🧾 Created by {order.createdBy}</span>}
+                        {order.balancePaidBy && <span>✅ Closed by {order.balancePaidBy}</span>}
+                      </div>
+                    </div>
+
+                    {/* Advance method summary pill */}
+                    <div className="px-4 py-3 flex flex-wrap gap-2">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                        <Wallet className="size-3" />Advance: {pmtLabel(order.advancePaidBy)} · {formatCurrency(advance)}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                        <IndianRupee className="size-3" />Balance: {pmtLabel(order.balancePaymentType)} · {formatCurrency(balance)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
       ) : (
         <div className="px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
