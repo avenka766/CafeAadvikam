@@ -272,8 +272,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     return orderId;
   },
-
-  updateOrderStatus: async (orderId, status, cancelReason) => {
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = { status, updated_at: now };
     if (cancelReason) updates.cancel_reason = cancelReason;
