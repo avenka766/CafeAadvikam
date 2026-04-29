@@ -32,6 +32,8 @@ interface OrderState {
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
+  setAdvancePayment: (orderId: string, advanceAmount: number, advancePaidBy: string, billedBy: string) => Promise<void>;
+  collectBalance: (orderId: string, balancePaymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
 
   // Polling for real-time sync
   startPolling: () => void;
@@ -61,6 +63,12 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     billedBy: row.billed_by as string | undefined,
     cancelReason: row.cancel_reason as string | undefined,
     orderSource: (row.order_source as OrderSource) || 'staff',
+    advanceAmount: row.advance_amount ? Number(row.advance_amount) : undefined,
+    advancePaidBy: row.advance_paid_by as string | undefined,
+    balanceDue: row.balance_due ? Number(row.balance_due) : undefined,
+    fullyPaidAt: row.fully_paid_at as string | undefined,
+    balancePaymentType: row.balance_payment_type as string | undefined,
+    balancePaidBy: row.balance_paid_by as string | undefined,
   };
 }
 
@@ -238,6 +246,61 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     }));
 
     await supabase.from('orders').update(updates).eq('id', orderId);
+  },
+
+  setAdvancePayment: async (orderId, advanceAmount, advancePaidBy, billedBy) => {
+    const now = new Date().toISOString();
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) return;
+    const balanceDue = order.total - advanceAmount;
+
+    const updates: Record<string, unknown> = {
+      payment_type: 'advance',
+      advance_amount: advanceAmount,
+      advance_paid_by: advancePaidBy,
+      balance_due: balanceDue,
+      billed_by: billedBy,
+      updated_at: now,
+    };
+
+    set((state) => ({
+      orders: state.orders.map((o) =>
+        o.id === orderId
+          ? { ...o, paymentType: 'advance', advanceAmount, advancePaidBy, balanceDue, billedBy, updatedAt: now }
+          : o
+      ),
+    }));
+
+    await supabase.from('orders').update(updates).eq('id', orderId);
+  },
+
+  collectBalance: async (orderId, balancePaymentType, billedBy, breakdown) => {
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      payment_type: 'advance',        // keep 'advance' so we know it was an advance order
+      billed_by: billedBy,
+      balance_due: 0,
+      fully_paid_at: now,
+      balance_payment_type: balancePaymentType,
+      balance_paid_by: billedBy,
+      updated_at: now,
+    };
+    if (breakdown) updates.payment_breakdown = breakdown;
+
+    set((state) => ({
+      orders: state.orders.map((o) =>
+        o.id === orderId
+          ? { ...o, paymentType: 'advance', billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
+          : o
+      ),
+    }));
+
+    await supabase.from('orders').update(updates).eq('id', orderId);
+    // Also mark as served
+    await supabase.from('orders').update({ status: 'served', updated_at: now }).eq('id', orderId);
+    set((state) => ({
+      orders: state.orders.map((o) => o.id === orderId ? { ...o, status: 'served' } : o),
+    }));
   },
 
   // === Polling ===
