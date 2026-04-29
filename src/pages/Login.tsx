@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { CAFE_CONFIG } from '@/constants/config';
 import { Leaf, AlertCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
@@ -17,8 +17,7 @@ export default function Login() {
     const path = currentUser.role === 'order_taker' ? '/order-pad'
       : currentUser.role === 'admin' ? '/admin-dashboard'
       : currentUser.role === 'kitchen' ? '/kitchen' : '/billing';
-    navigate(path, { replace: true });
-    return null;
+    return <Navigate to={path} replace />;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
