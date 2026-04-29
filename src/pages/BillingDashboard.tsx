@@ -511,6 +511,8 @@ function AdvanceOrderPanel({ onCreated }: { onCreated: () => void }) {
     </div>
   );
 }
+
+function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore();
   const { currentUser } = useAuthStore();
