@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import Header from '@/components/layout/Header';
@@ -21,12 +22,22 @@ import OrderTrackingPage from '@/pages/OrderTrackingPage';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 
 function AppRoutes() {
-  const { currentUser, _hasHydrated } = useAuthStore();
+  const { currentUser } = useAuthStore();
+  const [hydrated, setHydrated] = useState(false);
 
-  // Wait for Zustand to rehydrate from localStorage before rendering routes.
-  // Without this, currentUser is briefly null even for logged-in users,
-  // causing a flash of the login page on browser reopen.
-  if (!_hasHydrated) return null;
+  useEffect(() => {
+    // Check synchronously first — rehydration may already be complete
+    if (useAuthStore.persist.hasHydrated()) {
+      setHydrated(true);
+    } else {
+      const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
+      return unsub;
+    }
+  }, []);
+
+  // Don't render any routes until localStorage has been read.
+  // Prevents blank/wrong-page flash on browser reopen.
+  if (!hydrated) return null;
 
   const getDefaultRoute = () => {
     if (!currentUser) return '/';
