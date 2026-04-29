@@ -29,6 +29,15 @@ interface OrderState {
     createdBy: string;
     orderSource?: OrderSource;
   }) => Promise<string>;
+  submitAdvanceOrder: (params: {
+    tableNumber?: number;
+    orderType: OrderType;
+    notes?: string;
+    customerName?: string;
+    createdBy: string;
+    advanceAmount: number;
+    advancePaidBy: string;
+  }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
@@ -198,7 +207,71 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     return orderId;
   },
 
-  updateOrderStatus: async (orderId, status, cancelReason) => {
+  submitAdvanceOrder: async (params) => {
+    const { cart } = get();
+    const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
+    const orderId = generateId();
+    const now = new Date().toISOString();
+    const balanceDue = subtotal - params.advanceAmount;
+
+    const { data: numData } = await supabase.rpc('get_next_order_number');
+    const orderNumber = numData || Date.now() % 10000;
+
+    const order: Order = {
+      id: orderId,
+      orderNumber,
+      tableNumber: params.tableNumber,
+      orderType: params.orderType,
+      items: [...cart],
+      subtotal,
+      discount: 0,
+      discountType: 'flat',
+      discountValue: 0,
+      total: subtotal,
+      status: 'served',          // never goes to kitchen
+      createdBy: params.createdBy,
+      createdAt: now,
+      updatedAt: now,
+      notes: params.notes,
+      customerName: params.customerName,
+      paymentType: 'advance',
+      orderSource: 'staff',
+      advanceAmount: params.advanceAmount,
+      advancePaidBy: params.advancePaidBy,
+      balanceDue,
+    };
+
+    set((state) => ({ orders: [order, ...state.orders], cart: [] }));
+
+    const payload = {
+      id: orderId,
+      order_number: orderNumber,
+      table_number: params.tableNumber || null,
+      order_type: params.orderType,
+      items: cart,
+      subtotal,
+      discount: 0,
+      discount_type: 'flat',
+      discount_value: 0,
+      total: subtotal,
+      status: 'served',
+      created_by: params.createdBy,
+      notes: params.notes || null,
+      customer_name: params.customerName || null,
+      payment_type: 'advance',
+      order_source: 'staff',
+      advance_amount: params.advanceAmount,
+      advance_paid_by: params.advancePaidBy,
+      balance_due: balanceDue,
+      created_at: now,
+      updated_at: now,
+    };
+
+    const { error } = await supabase.from('orders').insert(payload);
+    if (error) console.error('Advance order insert failed:', error.message);
+
+    return orderId;
+  },
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = { status, updated_at: now };
     if (cancelReason) updates.cancel_reason = cancelReason;
