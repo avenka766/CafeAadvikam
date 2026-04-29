@@ -7,6 +7,8 @@ interface AuthState {
   currentUser: User | null;
   staffList: User[];
   staffLoaded: boolean;
+  _hasHydrated: boolean;
+  setHasHydrated: (v: boolean) => void;
   login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
   loadStaff: () => Promise<void>;
@@ -21,6 +23,8 @@ export const useAuthStore = create<AuthState>()(
       currentUser: null,
       staffList: [],
       staffLoaded: false,
+      _hasHydrated: false,
+      setHasHydrated: (v) => set({ _hasHydrated: v }),
 
       login: async (username: string, password: string) => {
         const { data, error } = await supabase
@@ -121,6 +125,9 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'cafe-aadvikam-auth', // localStorage key
       partialize: (state) => ({ currentUser: state.currentUser }), // only persist the logged-in user, not staffList
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     }
   )
 );
