@@ -22,22 +22,14 @@ import OrderTrackingPage from '@/pages/OrderTrackingPage';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 
 function AppRoutes() {
-  const { currentUser } = useAuthStore();
-  const [hydrated, setHydrated] = useState(false);
+  const { currentUser, sessionChecked, restoreSession } = useAuthStore();
 
   useEffect(() => {
-    // Check synchronously first — rehydration may already be complete
-    if (useAuthStore.persist.hasHydrated()) {
-      setHydrated(true);
-    } else {
-      const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
-      return unsub;
-    }
+    restoreSession();
   }, []);
 
-  // Don't render any routes until localStorage has been read.
-  // Prevents blank/wrong-page flash on browser reopen.
-  if (!hydrated) return null;
+  // Wait for DB session check before rendering any routes
+  if (!sessionChecked) return null;
 
   const getDefaultRoute = () => {
     if (!currentUser) return '/';
@@ -57,86 +49,16 @@ function AppRoutes() {
         <Route path="/digital-menu" element={<DigitalMenu />} />
         <Route path="/order" element={<QROrderPage />} />
         <Route path="/order/track" element={<OrderTrackingPage />} />
-        <Route
-          path="/order-pad"
-          element={
-            <ProtectedRoute allowedRoles={['order_taker']}>
-              <OrderPad />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/billing"
-          element={
-            <ProtectedRoute allowedRoles={['billing']}>
-              <BillingDashboard />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/kitchen"
-          element={
-            <ProtectedRoute allowedRoles={['kitchen']}>
-              <KitchenDashboard />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/menu-management"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <MenuManagement />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/sales-report"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <SalesReport />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/admin-dashboard"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <AdminDashboard />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/staff-management"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <StaffManagement />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/qr-menu"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <QRMenuPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/attendance-salary"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <AttendanceSalary />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/order-history"
-          element={
-            <ProtectedRoute allowedRoles={['order_taker', 'billing', 'admin', 'kitchen']}>
-              <OrderHistory />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/order-pad" element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
+        <Route path="/billing" element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
+        <Route path="/kitchen" element={<ProtectedRoute allowedRoles={['kitchen']}><KitchenDashboard /></ProtectedRoute>} />
+        <Route path="/menu-management" element={<ProtectedRoute allowedRoles={['admin']}><MenuManagement /></ProtectedRoute>} />
+        <Route path="/sales-report" element={<ProtectedRoute allowedRoles={['admin']}><SalesReport /></ProtectedRoute>} />
+        <Route path="/admin-dashboard" element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
+        <Route path="/staff-management" element={<ProtectedRoute allowedRoles={['admin']}><StaffManagement /></ProtectedRoute>} />
+        <Route path="/qr-menu" element={<ProtectedRoute allowedRoles={['admin']}><QRMenuPage /></ProtectedRoute>} />
+        <Route path="/attendance-salary" element={<ProtectedRoute allowedRoles={['admin']}><AttendanceSalary /></ProtectedRoute>} />
+        <Route path="/order-history" element={<ProtectedRoute allowedRoles={['order_taker', 'billing', 'admin', 'kitchen']}><OrderHistory /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
       {currentUser && <BottomNav />}
