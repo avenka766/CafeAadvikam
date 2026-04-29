@@ -275,8 +275,242 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   );
 }
 
-// ── Inline billing cart ────────────────────────────────────────────────────────
-function NewBillPanel() {
+// ── Advance New Order Panel (menu + cart that submits as advance) ─────────────
+function AdvanceOrderPanel({ onCreated }: { onCreated: () => void }) {
+  const { items, loadMenu } = useMenuStore();
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore();
+  const { currentUser } = useAuthStore();
+
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [search, setSearch] = useState('');
+  const [orderType, setOrderType] = useState<OrderType>('dine_in');
+  const [tableNumber, setTableNumber] = useState<number | null>(null);
+  const [customerName, setCustomerName] = useState('');
+  const [notes, setNotes] = useState('');
+  const [showTableSelect, setShowTableSelect] = useState(false);
+  const [tableError, setTableError] = useState(false);
+  const [advanceAmt, setAdvanceAmt] = useState('');
+  const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [advanceError, setAdvanceError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
+  const filteredItems = useMemo(() => {
+    let f = enabledItems;
+    if (selectedCategory !== 'all') f = f.filter(i => i.category === selectedCategory);
+    if (search.trim()) f = f.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
+    return f;
+  }, [enabledItems, selectedCategory, search]);
+
+  const total = getCartTotal();
+  const cartCount = getCartCount();
+  const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity || 0;
+
+  const handleSubmit = async () => {
+    if (cart.length === 0) return;
+    if (!currentUser) return;
+    if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
+    const amt = parseFloat(advanceAmt);
+    if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
+    if (amt >= total) { setAdvanceError('Advance must be less than total'); return; }
+    if (!advanceMethod) { setAdvanceError('Select payment method'); return; }
+    setAdvanceError(''); setTableError(false);
+    setSubmitting(true);
+    await submitAdvanceOrder({
+      tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+      orderType,
+      notes: notes || undefined,
+      customerName: customerName || undefined,
+      createdBy: currentUser.username,
+      advanceAmount: amt,
+      advancePaidBy: advanceMethod,
+    });
+    setSubmitting(false);
+    setShowSuccess(true);
+    setNotes(''); setCustomerName(''); setTableNumber(null); setAdvanceAmt(''); setAdvanceMethod(null);
+    setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
+  };
+
+  if (showSuccess) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
+        <div className="size-16 rounded-full bg-amber-100 flex items-center justify-center mb-3">
+          <Wallet className="size-8 text-amber-600" />
+        </div>
+        <h2 className="font-display text-xl font-bold text-foreground">Advance Recorded!</h2>
+        <p className="text-muted-foreground font-body mt-1 text-sm">Order saved. Balance pending collection.</p>
+      </div>
+    );
+  }
+
+  const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
+
+  return (
+    <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
+      {/* LEFT: Menu */}
+      <div className="flex-1 min-w-0">
+        <div className="px-4 md:px-0 pt-3 pb-1">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <input type="text" placeholder="Search menu items..." value={search} onChange={e => setSearch(e.target.value)}
+              className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50" />
+            {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+          </div>
+        </div>
+        <div className="border-b border-border">
+          <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
+        </div>
+        <div className="px-4 md:px-0 py-3">
+          {filteredItems.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="font-body text-muted-foreground">No items found</p>
+              <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-2 text-sm font-body text-primary font-semibold">Clear filters</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {filteredItems.map(item => (
+                <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)} onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* RIGHT: Cart + Advance details */}
+      <div className="w-full md:w-80 lg:w-96 shrink-0">
+        <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-sm overflow-hidden">
+          {/* Cart header */}
+          <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border bg-amber-50/60">
+            <div className="flex items-center gap-2">
+              <Wallet className="size-4 text-amber-600" />
+              <h3 className="font-display font-bold text-base text-foreground">Advance Bill</h3>
+              {cartCount > 0 && <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{cartCount}</span>}
+            </div>
+            {cartCount > 0 && <button onClick={clearCart} className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95">Clear</button>}
+          </div>
+
+          {/* Cart items */}
+          <div className="max-h-44 overflow-y-auto px-4 py-2 space-y-2">
+            {cart.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
+                <ShoppingBag className="size-7 mb-2 opacity-30" />
+                <p className="text-sm font-body">Add items from the menu</p>
+              </div>
+            ) : cart.map(ci => (
+              <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-body font-semibold truncate">{ci.menuItem.name}</p>
+                  <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-md bg-muted flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
+                  <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
+                  <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-md cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90"><Plus className="size-3" /></button>
+                  <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-md bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {cartCount > 0 && (
+            <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/30">
+              {/* Order type */}
+              <div className="flex gap-2">
+                <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
+                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  🍽️ Dine In
+                </button>
+                <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
+                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  📦 Takeaway
+                </button>
+              </div>
+
+              {/* Table / Name */}
+              {orderType === 'dine_in' ? (
+                <div>
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <button onClick={() => setShowTableSelect(!showTableSelect)}
+                      className={cn('w-full pl-8 pr-8 py-2 bg-card border rounded-lg text-left text-xs font-body', tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
+                      {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
+                    </button>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    {showTableSelect && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-36 overflow-y-auto">
+                        {TABLE_NUMBERS.map(num => (
+                          <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
+                            className={cn('py-1.5 rounded-md text-xs font-body font-medium', tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted')}>{num}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {tableError && <div className="flex items-center gap-1 mt-1 text-destructive"><AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required</span></div>}
+                </div>
+              ) : (
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground" />
+                </div>
+              )}
+
+              {/* Notes */}
+              <div className="relative">
+                <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
+                <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground resize-none" />
+              </div>
+
+              {/* Advance amount */}
+              <div className="pt-1 border-t border-border space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-body text-xs text-muted-foreground">Total Bill</span>
+                  <span className="font-display text-xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+                </div>
+                <div>
+                  <label className="text-xs font-body font-bold text-amber-700 mb-1 block">Advance Amount (₹) *</label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
+                      placeholder="Enter advance"
+                      className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+                  </div>
+                  {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
+                    <p className="text-[11px] font-body text-muted-foreground mt-1">
+                      Balance due: <span className="font-bold text-red-600">{formatCurrency(total - parseFloat(advanceAmt))}</span>
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs font-body font-bold text-amber-700 mb-1 block">Advance Payment Method *</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['cash', 'upi', 'card'] as const).map(m => (
+                      <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
+                        className={cn('flex flex-col items-center gap-1 py-2.5 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
+                          advanceMethod === m ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border bg-card text-muted-foreground')}>
+                        {PAYMENT_ICONS[m]}{m.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {advanceError && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{advanceError}</p>}
+                <button onClick={handleSubmit} disabled={submitting}
+                  className="w-full py-3 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-transform shadow-md disabled:opacity-60 flex items-center justify-center gap-2"
+                  style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', color: 'white' }}>
+                  <Wallet className="size-4" />{submitting ? 'Saving...' : '⏳ Record Advance Order'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore();
   const { currentUser } = useAuthStore();
@@ -499,7 +733,8 @@ function NewBillPanel() {
 // ── Main BillingDashboard ─────────────────────────────────────────────────────
 export default function BillingDashboard() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'paid'>('pending');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
+  const [showAdvanceForm, setShowAdvanceForm] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
@@ -512,21 +747,16 @@ export default function BillingDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
-  // Advance orders: paymentType === 'advance' and not yet fully paid (not served)
+  // Advance orders: advance payment and balance still outstanding
   const advanceOrders = useMemo(() =>
-    todayOrders.filter(o => o.paymentType === 'advance' && o.status !== 'served' && o.status !== 'cancelled'),
-    [todayOrders]
-  );
-
-  // Paid orders: advance orders that are now fully paid (served + fullyPaidAt set)
-  const paidAdvanceOrders = useMemo(() =>
-    todayOrders.filter(o => o.paymentType === 'advance' && o.status === 'served' && o.fullyPaidAt),
+    todayOrders.filter(o => o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0),
     [todayOrders]
   );
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'paid') return [];
-    let result = todayOrders.filter(o => !(o.paymentType === 'advance' && o.status !== 'served'));
+    if (activeTab === 'new_bill' || activeTab === 'advance') return [];
+    // Exclude advance orders that still have balance pending from normal tabs
+    let result = todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0));
     if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
@@ -582,7 +812,7 @@ export default function BillingDashboard() {
 
           {/* Advance tab */}
           <button
-            onClick={() => setActiveTab('advance')}
+            onClick={() => { setActiveTab('advance'); setShowAdvanceForm(false); }}
             className={cn(
               'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
               activeTab === 'advance'
@@ -595,25 +825,6 @@ export default function BillingDashboard() {
               <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
                 activeTab === 'advance' ? 'bg-white/25 text-white' : 'bg-amber-200 text-amber-800')}>
                 {advanceOrders.length}
-              </span>
-            )}
-          </button>
-
-          {/* Paid tab */}
-          <button
-            onClick={() => setActiveTab('paid')}
-            className={cn(
-              'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
-              activeTab === 'paid'
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'bg-emerald-50 border border-emerald-200 text-emerald-700 active:scale-95'
-            )}
-          >
-            <CheckCircle2 className="size-3.5" />Paid
-            {paidAdvanceOrders.length > 0 && (
-              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                activeTab === 'paid' ? 'bg-white/25 text-white' : 'bg-emerald-200 text-emerald-800')}>
-                {paidAdvanceOrders.length}
               </span>
             )}
           </button>
@@ -654,182 +865,40 @@ export default function BillingDashboard() {
       {activeTab === 'new_bill' ? (
         <NewBillPanel />
       ) : activeTab === 'advance' ? (
-        <div className="px-4 py-4 space-y-3">
-          {advanceOrders.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-              <Wallet className="size-16 mb-4 opacity-30" />
-              <p className="font-body font-semibold text-lg">No advance orders</p>
-              <p className="text-sm font-body mt-1">Advance payments will appear here</p>
-            </div>
+        <div>
+          {showAdvanceForm ? (
+            <AdvanceOrderPanel onCreated={() => setShowAdvanceForm(false)} />
           ) : (
-            <>
-              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
-                <Wallet className="size-5 text-amber-600 shrink-0" />
-                <div>
-                  <p className="text-xs font-body font-bold text-amber-800">{advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''} with advance payment</p>
-                  <p className="text-[10px] font-body text-amber-600">
-                    Total balance pending: {formatCurrency(advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0))}
-                  </p>
+            <div className="px-4 py-4 space-y-3">
+              {/* Add new advance order button */}
+              <button
+                onClick={() => setShowAdvanceForm(true)}
+                className="w-full py-3.5 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all border-2 border-dashed border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100"
+              >
+                <Plus className="size-4" />Add Advance Order
+              </button>
+
+              {advanceOrders.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                  <Wallet className="size-14 mb-4 opacity-25" />
+                  <p className="font-body font-semibold text-lg">No pending advance orders</p>
+                  <p className="text-sm font-body mt-1">Tap above to record a new advance order</p>
                 </div>
-              </div>
-              {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
-            </>
-          )}
-        </div>
-      ) : activeTab === 'paid' ? (
-        <div className="px-4 py-4 space-y-3">
-          {paidAdvanceOrders.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-              <CheckCircle2 className="size-16 mb-4 opacity-30" />
-              <p className="font-body font-semibold text-lg">No fully paid advance orders</p>
-              <p className="text-sm font-body mt-1">Orders paid in full will appear here</p>
-            </div>
-          ) : (
-            <>
-              {/* Summary banner */}
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3">
-                <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
-                <div>
-                  <p className="text-xs font-body font-bold text-emerald-800">{paidAdvanceOrders.length} advance order{paidAdvanceOrders.length !== 1 ? 's' : ''} fully paid today</p>
-                  <p className="text-[10px] font-body text-emerald-600">
-                    Total collected: {formatCurrency(paidAdvanceOrders.reduce((s, o) => s + o.total, 0))}
-                  </p>
-                </div>
-              </div>
-
-              {/* Paid order cards */}
-              {paidAdvanceOrders.map(order => {
-                const advance = order.advanceAmount || 0;
-                const balance = order.total - advance;
-                const pmtLabel = (m?: string) => m === 'cash' ? '💵 Cash' : m === 'upi' ? '📱 UPI' : m === 'card' ? '💳 Card' : m || '—';
-                return (
-                  <div key={order.id} className="bg-card rounded-2xl border-2 border-emerald-400 overflow-hidden shadow-sm">
-                    {/* Header */}
-                    <div className="bg-emerald-50 px-4 py-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="font-display text-2xl font-bold text-foreground">
-                          #{String(order.orderNumber).padStart(3, '0')}
-                        </span>
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-emerald-100 text-emerald-800 border-emerald-300 flex items-center gap-1">
-                            <CheckCircle2 className="size-3" />Fully Paid
-                          </span>
-                          <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
-                            <Clock className="size-3" />
-                            {order.fullyPaidAt ? formatTime(order.fullyPaidAt) : formatTime(order.updatedAt)}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-display text-xl font-bold text-emerald-700 tabular-nums">{formatCurrency(order.total)}</p>
-                        <p className="text-[10px] font-body text-muted-foreground">Total Bill</p>
-                      </div>
-                    </div>
-
-                    {/* Meta */}
-                    <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
-                      {order.orderType === 'dine_in' && order.tableNumber && (
-                        <span className="flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary rounded-full font-semibold">
-                          <MapPin className="size-3" />Table {order.tableNumber}
-                        </span>
-                      )}
-                      {order.orderType === 'takeaway' && (
-                        <span className="flex items-center gap-1 px-2 py-0.5 bg-accent/20 text-accent-foreground rounded-full font-semibold">📦 Takeaway</span>
-                      )}
-                      {order.customerName && (
-                        <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
-                      )}
-                      {order.orderSource === 'qr'
-                        ? <span className="flex items-center gap-1 text-muted-foreground"><QrCode className="size-3" />QR Order</span>
-                        : <span className="flex items-center gap-1 text-muted-foreground"><UserCheck className="size-3" />Staff</span>}
-                    </div>
-
-                    {/* Items */}
-                    <div className="px-4 py-3 space-y-1 border-b border-border/50">
-                      <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items Ordered</p>
-                      {order.items.map(ci => (
-                        <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
-                          <span className="font-body text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
-                          <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
-                        </div>
-                      ))}
-                      {order.notes && (
-                        <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">⚠️ {order.notes}</p>
-                      )}
-                    </div>
-
-                    {/* Full payment breakdown */}
-                    <div className="px-4 py-3 space-y-2 bg-muted/20">
-                      <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide">Payment Breakdown</p>
-
-                      {order.discount > 0 && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-body text-muted-foreground">Subtotal</span>
-                          <span className="text-sm font-body tabular-nums">{formatCurrency(order.subtotal)}</span>
-                        </div>
-                      )}
-                      {order.discount > 0 && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-body text-emerald-600">Discount ({order.discountType === 'percentage' ? `${order.discountValue}%` : 'flat'})</span>
-                          <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">−{formatCurrency(order.discount)}</span>
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-body font-bold text-foreground">Total Bill</span>
-                        <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(order.total)}</span>
-                      </div>
-
-                      <div className="border-t border-border/60 pt-2 space-y-1.5">
-                        {/* Advance row */}
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-body text-amber-700 font-semibold">Advance Paid</span>
-                            {order.advancePaidBy && (
-                              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold uppercase">{order.advancePaidBy}</span>
-                            )}
-                          </div>
-                          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">−{formatCurrency(advance)}</span>
-                        </div>
-
-                        {/* Balance row */}
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-body text-blue-700 font-semibold">Balance Paid</span>
-                            {order.balancePaymentType && (
-                              <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[9px] font-bold uppercase">{order.balancePaymentType}</span>
-                            )}
-                          </div>
-                          <span className="text-sm font-body font-bold text-blue-600 tabular-nums">−{formatCurrency(balance)}</span>
-                        </div>
-
-                        {/* Net paid */}
-                        <div className="flex items-center justify-between pt-1.5 border-t border-border">
-                          <span className="text-sm font-body font-bold text-foreground">Total Collected</span>
-                          <span className="text-lg font-display font-bold text-emerald-700 tabular-nums">{formatCurrency(order.total)}</span>
-                        </div>
-                      </div>
-
-                      {/* Staff info */}
-                      <div className="flex gap-4 pt-1 text-[10px] font-body text-muted-foreground">
-                        {order.createdBy && <span>🧾 Created by {order.createdBy}</span>}
-                        {order.balancePaidBy && <span>✅ Closed by {order.balancePaidBy}</span>}
-                      </div>
-                    </div>
-
-                    {/* Advance method summary pill */}
-                    <div className="px-4 py-3 flex flex-wrap gap-2">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                        <Wallet className="size-3" />Advance: {pmtLabel(order.advancePaidBy)} · {formatCurrency(advance)}
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-body font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                        <IndianRupee className="size-3" />Balance: {pmtLabel(order.balancePaymentType)} · {formatCurrency(balance)}
-                      </span>
+              ) : (
+                <>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
+                    <Wallet className="size-5 text-amber-600 shrink-0" />
+                    <div>
+                      <p className="text-xs font-body font-bold text-amber-800">{advanceOrders.length} order{advanceOrders.length !== 1 ? 's' : ''} awaiting balance</p>
+                      <p className="text-[10px] font-body text-amber-600">
+                        Total balance pending: {formatCurrency(advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0))}
+                      </p>
                     </div>
                   </div>
-                );
-              })}
-            </>
+                  {advanceOrders.map(order => <AdvanceOrderCard key={order.id} order={order} />)}
+                </>
+              )}
+            </div>
           )}
         </div>
       ) : (
