@@ -20,6 +20,10 @@ import KitchenDashboard from '@/pages/KitchenDashboard';
 import DigitalMenu from '@/pages/DigitalMenu';
 import OrderTrackingPage from '@/pages/OrderTrackingPage';
 import AttendanceSalary from '@/pages/AttendanceSalary';
+import OrderReceiverDashboard from '@/bakery/OrderReceiverDashboard';
+import StoreDashboard from '@/bakery/StoreDashboard';
+import BakerDashboard from '@/bakery/BakerDashboard';
+import PackingDashboard from '@/bakery/PackingDashboard';
 
 function AppRoutes() {
   const { currentUser } = useAuthStore();
@@ -72,6 +76,10 @@ function AppRoutes() {
         <Route path="/qr-menu" element={<ProtectedRoute allowedRoles={['admin']}><QRMenuPage /></ProtectedRoute>} />
         <Route path="/attendance-salary" element={<ProtectedRoute allowedRoles={['admin']}><AttendanceSalary /></ProtectedRoute>} />
         <Route path="/order-history" element={<ProtectedRoute allowedRoles={['order_taker', 'billing', 'admin', 'kitchen']}><OrderHistory /></ProtectedRoute>} />
+        <Route path="/bakery/receive" element={<ProtectedRoute allowedRoles={['order_receiver']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/store" element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/baker" element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
       {currentUser && <BottomNav />}
