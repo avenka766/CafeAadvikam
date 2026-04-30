@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
 import type { User, UserRole } from '@/types';
 
@@ -82,6 +82,9 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'cafe-aadvikam-auth',
+      // ✅ sessionStorage clears when browser/tab is closed
+      // Previously used localStorage (default) which persisted forever
+      storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({ currentUser: state.currentUser }),
     }
   )
