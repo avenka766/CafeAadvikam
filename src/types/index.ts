@@ -1,4 +1,5 @@
-export type UserRole = 'order_taker' | 'billing' | 'admin' | 'kitchen';
+// Add bakery workflow roles to existing roles
+export type UserRole = 'order_taker' | 'billing' | 'admin' | 'kitchen' | 'store' | 'baker' | 'packing' | 'order_receiver';
 
 export interface User {
   id: string;
@@ -56,13 +57,13 @@ export interface Order {
   paymentBreakdown?: PaymentBreakdown;
   billedBy?: string;
   cancelReason?: string;
-  orderSource?: OrderSource;  // optional — column may not exist in older DB
-  advanceAmount?: number;     // advance paid by customer
-  advancePaidBy?: string;     // payment method for advance (cash/upi/card)
-  balanceDue?: number;        // total - advanceAmount
-  fullyPaidAt?: string;       // timestamp when full payment collected
-  balancePaymentType?: string; // payment method used for balance collection
-  balancePaidBy?: string;     // staff who collected balance
+  orderSource?: OrderSource;
+  advanceAmount?: number;
+  advancePaidBy?: string;
+  balanceDue?: number;
+  fullyPaidAt?: string;
+  balancePaymentType?: string;
+  balancePaidBy?: string;
 }
 
 export interface MenuCategory {
