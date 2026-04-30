@@ -1,6 +1,10 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ClipboardList, Receipt, UtensilsCrossed, History, BarChart3, LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck } from 'lucide-react';
+import {
+  ClipboardList, Receipt, UtensilsCrossed, History, BarChart3,
+  LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
+  Inbox, Store, Flame, Package,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
@@ -18,14 +22,15 @@ export default function BottomNav() {
 
   const navItems: NavItem[] = [];
 
+  // ── Cafe roles ──────────────────────────────────────────────
   if (currentUser.role === 'order_taker') {
     navItems.push(
       { label: 'Order Pad', icon: <ClipboardList className="size-5" />, path: '/order-pad' },
-      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+      { label: 'History',   icon: <History className="size-5" />,       path: '/order-history' }
     );
   } else if (currentUser.role === 'billing') {
     navItems.push(
-      { label: 'Orders', icon: <Receipt className="size-5" />, path: '/billing' },
+      { label: 'Orders',  icon: <Receipt className="size-5" />, path: '/billing' },
       { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
     );
   } else if (currentUser.role === 'kitchen') {
@@ -36,12 +41,30 @@ export default function BottomNav() {
   } else if (currentUser.role === 'admin') {
     navItems.push(
       { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
-      { label: 'Menu', icon: <UtensilsCrossed className="size-5" />, path: '/menu-management' },
-      { label: 'QR Code', icon: <QrCode className="size-5" />, path: '/qr-menu' },
-      { label: 'Reports', icon: <BarChart3 className="size-5" />, path: '/sales-report' },
-      { label: 'Attendance', icon: <CalendarCheck className="size-5" />, path: '/attendance-salary' },
-      { label: 'Staff', icon: <Users className="size-5" />, path: '/staff-management' },
-      { label: 'History', icon: <History className="size-5" />, path: '/order-history' }
+      { label: 'Menu',      icon: <UtensilsCrossed className="size-5" />, path: '/menu-management' },
+      { label: 'QR Code',   icon: <QrCode className="size-5" />,          path: '/qr-menu' },
+      { label: 'Reports',   icon: <BarChart3 className="size-5" />,       path: '/sales-report' },
+      { label: 'Attendance',icon: <CalendarCheck className="size-5" />,   path: '/attendance-salary' },
+      { label: 'Staff',     icon: <Users className="size-5" />,           path: '/staff-management' },
+      { label: 'History',   icon: <History className="size-5" />,         path: '/order-history' }
+    );
+
+  // ── Bakery workflow roles ────────────────────────────────────
+  } else if (currentUser.role === 'order_receiver') {
+    navItems.push(
+      { label: 'Receive Orders', icon: <Inbox className="size-5" />, path: '/bakery/receive' }
+    );
+  } else if (currentUser.role === 'store') {
+    navItems.push(
+      { label: 'Store', icon: <Store className="size-5" />, path: '/bakery/store' }
+    );
+  } else if (currentUser.role === 'baker') {
+    navItems.push(
+      { label: 'Baker', icon: <Flame className="size-5" />, path: '/bakery/baker' }
+    );
+  } else if (currentUser.role === 'packing') {
+    navItems.push(
+      { label: 'Packing', icon: <Package className="size-5" />, path: '/bakery/packing' }
     );
   }
 
@@ -56,9 +79,7 @@ export default function BottomNav() {
               onClick={() => navigate(item.path)}
               className={cn(
                 'flex-1 flex flex-col items-center gap-0.5 py-2 px-1 transition-colors min-h-[56px] justify-center relative',
-                isActive
-                  ? 'text-primary'
-                  : 'text-muted-foreground active:text-foreground'
+                isActive ? 'text-primary' : 'text-muted-foreground active:text-foreground'
               )}
             >
               {item.icon}
