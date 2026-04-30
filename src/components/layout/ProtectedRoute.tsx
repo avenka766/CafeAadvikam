@@ -16,9 +16,13 @@ export default function ProtectedRoute({ children, allowedRoles }: ProtectedRout
 
   if (!allowedRoles.includes(currentUser.role)) {
     const defaultPath =
-      currentUser.role === 'order_taker' ? '/order-pad'
-      : currentUser.role === 'admin' ? '/admin-dashboard'
-      : currentUser.role === 'kitchen' ? '/kitchen'
+      currentUser.role === 'order_taker'    ? '/order-pad'
+      : currentUser.role === 'admin'        ? '/admin-dashboard'
+      : currentUser.role === 'kitchen'      ? '/kitchen'
+      : currentUser.role === 'order_receiver' ? '/bakery/receive'
+      : currentUser.role === 'store'        ? '/bakery/store'
+      : currentUser.role === 'baker'        ? '/bakery/baker'
+      : currentUser.role === 'packing'      ? '/bakery/packing'
       : '/billing';
     return <Navigate to={defaultPath} replace />;
   }
