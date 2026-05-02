@@ -23,8 +23,9 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [customerPhone, setCustomerPhone] = useState('');
   const [orderRef, setOrderRef] = useState('');
   // qty stored as string so user can clear the field fully
+  const defaultItem = BAKERY_ITEMS[0];
   const [lines, setLines] = useState<{ itemId: string; itemName: string; qty: string }[]>([
-    { itemId: BAKERY_ITEMS[0].id, itemName: BAKERY_ITEMS[0].name, qty: '' },
+    { itemId: defaultItem.id, itemName: defaultItem.name, qty: '' },
   ]);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -42,7 +43,7 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
   };
 
   const addLine = () =>
-    setLines(prev => [...prev, { itemId: BAKERY_ITEMS[0].id, itemName: BAKERY_ITEMS[0].name, qty: '' }]);
+    setLines(prev => [...prev, { itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
 
   const removeLine = (idx: number) => {
     if (lines.length === 1) return;
@@ -69,7 +70,7 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
     setSubmitting(false);
     setSuccess(true);
     setCustomerName(''); setCustomerPhone(''); setOrderRef('');
-    setLines([{ itemId: BAKERY_ITEMS[0].id, itemName: BAKERY_ITEMS[0].name, qty: '' }]);
+    setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
     setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
   };
 
@@ -110,8 +111,17 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
               <div key={idx} className="flex gap-2 items-center">
                 <select value={line.itemId} onChange={e => updateItem(idx, e.target.value)}
                   className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  {BAKERY_ITEMS.map(item => (
-                    <option key={item.id} value={item.id}>{item.icon} {item.name}</option>
+                  {(['Sweets', 'Savouries', 'Bakery', 'Cookies'] as const).map(category => (
+                    <optgroup key={category} label={
+                      category === 'Sweets'    ? '🍬 Sweets' :
+                      category === 'Savouries' ? '🥜 Savouries' :
+                      category === 'Bakery'    ? '🍞 Bakery' :
+                      '🍪 Cookies'
+                    }>
+                      {BAKERY_ITEMS.filter(item => item.category === category).map(item => (
+                        <option key={item.id} value={item.id}>{item.name}</option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
                 <input
