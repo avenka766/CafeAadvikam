@@ -63,7 +63,7 @@ function Row({ label, value, bold, highlight }: { label: string; value: string; 
   );
 }
 
-// ─── CAFE VIEW ───────────────────────────────────────────────────────────────
+// ─── CAFE VIEW (Dashboard — today only) ──────────────────────────────────────
 function CafeView() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
 
@@ -216,7 +216,7 @@ function CafeView() {
   );
 }
 
-// ─── BAKERY DASHBOARD TAB ────────────────────────────────────────────────────
+// ─── BAKERY DASHBOARD TAB (today only) ───────────────────────────────────────
 function BakeryDashboardTab() {
   const { stock, sales, fetchBranchData } = useBranchStore();
 
@@ -306,7 +306,7 @@ function BakeryDashboardTab() {
   );
 }
 
-// ─── BAKERY SALES TAB (with filters) ────────────────────────────────────────
+// ─── BAKERY SALES TAB ────────────────────────────────────────────────────────
 function BakerySalesTab() {
   const { sales, fetchBranchData } = useBranchStore();
   const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
@@ -352,7 +352,6 @@ function BakerySalesTab() {
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Filter className="size-4 text-muted-foreground" />
@@ -393,7 +392,6 @@ function BakerySalesTab() {
         </div>
       </div>
 
-      {/* Sales table */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales match your filters.</p>
@@ -420,51 +418,280 @@ function BakerySalesTab() {
   );
 }
 
-// ─── BAKERY REPORTS TAB ──────────────────────────────────────────────────────
+// ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
+function CafeReportsTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  const todayISO = new Date().toISOString().split('T')[0];
+  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateTo, setDateTo] = useState(todayISO);
+
+  const rangeOrders = useMemo(() => {
+    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
+    return orders.filter(o => {
+      const t = new Date(o.createdAt).getTime();
+      return t >= from.getTime() && t <= to.getTime();
+    });
+  }, [orders, dateFrom, dateTo]);
+
+  const served = rangeOrders.filter(o => o.status === 'served');
+  const cancelled = rangeOrders.filter(o => o.status === 'cancelled');
+  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
+  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
+
+  const paymentTotals = useMemo(() => {
+    let cash = 0, upi = 0, card = 0;
+    served.forEach(o => {
+      if (o.paymentType === 'cash') cash += o.total;
+      else if (o.paymentType === 'upi') upi += o.total;
+      else if (o.paymentType === 'card') card += o.total;
+      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
+        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
+      }
+    });
+    return { cash, upi, card };
+  }, [served]);
+
+  const topItems = useMemo(() => {
+    const map = new Map<string, { name: string; qty: number; revenue: number }>();
+    served.forEach(o => o.items.forEach(ci => {
+      const ex = map.get(ci.menuItem.id);
+      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
+      else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
+    }));
+    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
+  }, [served]);
+
+  const rangeLabel = dateFrom === dateTo
+    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+  const handleDownload = () => {
+    const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
+    const gst = Math.round((totalRevenue - taxable) * 100) / 100;
+    downloadCSV([
+      ['CAFE SALES REPORT'],
+      ['Period', `${dateFrom} to ${dateTo}`],
+      [''],
+      ['SUMMARY'],
+      ['Total Orders', String(rangeOrders.length)],
+      ['Served', String(served.length)],
+      ['Cancelled', String(cancelled.length)],
+      ['Total Revenue', formatCurrency(totalRevenue)],
+      ['Avg Order Value', formatCurrency(avgOrderValue)],
+      [''],
+      ['PAYMENT BREAKDOWN'],
+      ['Cash', formatCurrency(paymentTotals.cash)],
+      ['UPI', formatCurrency(paymentTotals.upi)],
+      ['Card', formatCurrency(paymentTotals.card)],
+      [''],
+      ['GST'],
+      ['Revenue (incl. GST)', formatCurrency(totalRevenue)],
+      ['Taxable Amount', formatCurrency(taxable)],
+      ['GST @ 5%', formatCurrency(gst)],
+      ['CGST @ 2.5%', formatCurrency(Math.round((gst / 2) * 100) / 100)],
+      ['SGST @ 2.5%', formatCurrency(Math.round((gst / 2) * 100) / 100)],
+      [''],
+      ['TOP ITEMS'],
+      ['Item', 'Qty Sold', 'Revenue'],
+      ...topItems.map(i => [i.name, String(i.qty), formatCurrency(i.revenue)]),
+      [''],
+      ['ORDER TRANSACTIONS'],
+      ['Order #', 'Status', 'Total', 'Payment', 'Created At'],
+      ...rangeOrders.map(o => [
+        String(o.orderNumber), o.status, formatCurrency(o.total),
+        o.paymentType, new Date(o.createdAt).toLocaleString('en-IN'),
+      ]),
+    ], `CafeReport_${dateFrom}_to_${dateTo}.csv`);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Date range */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Filter className="size-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">Date Range</span>
+          </div>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
+            <Download className="size-3" />CSV
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
+          {' · '}{served.length} orders · {formatCurrency(totalRevenue)}
+        </p>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 gap-3">
+        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
+        <KPI icon={<ShoppingBag className="size-4" />} label="Orders Served" value={String(served.length)} color="bg-accent/20 text-accent-foreground" />
+        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
+        <KPI icon={<XCircle className="size-4" />} label="Cancelled" value={String(cancelled.length)} color="bg-red-50 text-red-700" />
+      </div>
+
+      {/* Payment breakdown */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <h3 className="font-display text-base font-bold text-foreground mb-3">Payment Breakdown</h3>
+        <div className="space-y-2">
+          <PaymentRow label="💵 Cash" amount={paymentTotals.cash} total={totalRevenue} />
+          <PaymentRow label="📱 UPI" amount={paymentTotals.upi} total={totalRevenue} />
+          <PaymentRow label="💳 Card" amount={paymentTotals.card} total={totalRevenue} />
+        </div>
+      </div>
+
+      {/* GST */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <h3 className="font-display text-base font-bold text-foreground mb-3">GST Summary</h3>
+        {totalRevenue === 0 ? (
+          <p className="text-sm font-body text-muted-foreground text-center py-4">No data for this range</p>
+        ) : (() => {
+          const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
+          const gst = Math.round((totalRevenue - taxable) * 100) / 100;
+          const cgst = Math.round((gst / 2) * 100) / 100;
+          const sgst = Math.round((gst / 2) * 100) / 100;
+          return (
+            <div className="space-y-1.5">
+              <Row label="Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
+              <Row label="Taxable Amount" value={formatCurrency(taxable)} />
+              <Row label="GST @ 5%" value={formatCurrency(gst)} />
+              <div className="border-t border-border pt-1.5 mt-1.5">
+                <Row label="CGST @ 2.5%" value={formatCurrency(cgst)} highlight />
+                <Row label="SGST @ 2.5%" value={formatCurrency(sgst)} highlight />
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Top items */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <h3 className="font-display text-base font-bold text-foreground mb-3">Top Selling Items</h3>
+        {topItems.length === 0 ? (
+          <p className="text-sm font-body text-muted-foreground text-center py-4">No sales in this range</p>
+        ) : (
+          <div className="space-y-2">
+            {topItems.map((item, i) => (
+              <div key={item.name} className="flex items-center gap-3">
+                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+                  i === 0 ? 'gold-gradient text-white' : i < 3 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                )}>{i + 1}</span>
+                <div className="flex-1 min-w-0"><p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p></div>
+                <div className="text-right shrink-0">
+                  <p className="text-sm font-body font-bold tabular-nums">{item.qty} sold</p>
+                  <p className="text-[10px] font-body text-muted-foreground tabular-nums">{formatCurrency(item.revenue)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Order transactions */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
+          <h3 className="font-display text-base font-bold text-foreground">Order Transactions</h3>
+          <span className="text-xs text-muted-foreground">{rangeOrders.length} total</span>
+        </div>
+        {rangeOrders.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground py-8">No orders in this range.</p>
+        ) : (
+          <div className="divide-y max-h-96 overflow-y-auto">
+            {rangeOrders.slice(0, 100).map(o => (
+              <div key={o.id} className="flex items-center justify-between px-4 py-2.5">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">#{o.orderNumber}</span>
+                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold',
+                      o.status === 'served' ? 'bg-emerald-100 text-emerald-700' :
+                      o.status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                      o.status === 'pending' ? 'bg-amber-100 text-amber-700' :
+                      'bg-blue-100 text-blue-700'
+                    )}>{o.status}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {new Date(o.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    {o.paymentType !== 'unpaid' && ` · ${o.paymentType}`}
+                  </p>
+                </div>
+                <span className="text-sm font-bold tabular-nums">{formatCurrency(o.total)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── BAKERY REPORTS TAB (custom range + summary + transactions) ───────────────
 function BakeryReportsTab() {
   const { sales, fetchBranchData } = useBranchStore();
   const [reportType, setReportType] = useState<'item' | 'branch'>('item');
+  const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
+
+  const todayISO = new Date().toISOString().split('T')[0];
+  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateTo, setDateTo] = useState(todayISO);
 
   useEffect(() => {
     BRANCHES.forEach(b => fetchBranchData(b));
   }, [fetchBranchData]);
 
-  const currentMonth = new Date().getMonth();
-  const currentYear = new Date().getFullYear();
-
-  const monthlySales = useMemo(() => {
-    const result: Array<{ branch: Branch; itemName: string; quantitySold: number; soldAt: string }> = [];
+  const allSales = useMemo(() => {
+    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string }> = [];
     BRANCHES.forEach(branch => {
-      (sales[branch] || [])
-        .filter(s => {
-          const d = new Date(s.soldAt);
-          return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-        })
-        .forEach(s => result.push({ ...s, branch }));
+      (sales[branch] || []).forEach(s => result.push({ ...s, branch }));
     });
-    return result;
-  }, [sales, currentMonth, currentYear]);
+    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
+  }, [sales]);
+
+  const rangeSales = useMemo(() => {
+    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
+    return allSales.filter(s => {
+      const t = new Date(s.soldAt).getTime();
+      if (t < from.getTime() || t > to.getTime()) return false;
+      if (filterBranch !== 'all' && s.branch !== filterBranch) return false;
+      return true;
+    });
+  }, [allSales, dateFrom, dateTo, filterBranch]);
 
   const itemReport = useMemo(() => {
     const map = new Map<string, number>();
-    monthlySales.forEach(s => { map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold); });
+    rangeSales.forEach(s => { map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold); });
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
-  }, [monthlySales]);
+  }, [rangeSales]);
 
   const branchReport = useMemo(() => {
     const map = new Map<Branch, number>();
-    monthlySales.forEach(s => { map.set(s.branch, (map.get(s.branch) || 0) + s.quantitySold); });
+    rangeSales.forEach(s => { map.set(s.branch, (map.get(s.branch) || 0) + s.quantitySold); });
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
-  }, [monthlySales]);
+  }, [rangeSales]);
 
-  const monthLabel = new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  const totalQty = itemReport.reduce((a, [, q]) => a + q, 0);
 
-  const handleDownload = () => {
-    const rows = reportType === 'item'
-      ? [['Item', 'Total Qty Sold'], ...itemReport.map(([item, qty]) => [item, String(qty)])]
-      : [['Branch', 'Total Qty Sold'], ...branchReport.map(([branch, qty]) => [branch, String(qty)])];
-    downloadCSV(rows, `BakeryMonthly_${reportType}_${monthLabel.replace(' ', '_')}.csv`);
-  };
+  const rangeLabel = dateFrom === dateTo
+    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
   const BRANCH_COLORS: Record<Branch, string> = {
     VRSNB: 'bg-blue-100 text-blue-700',
@@ -472,41 +699,84 @@ function BakeryReportsTab() {
     Hosur: 'bg-emerald-100 text-emerald-700',
   };
 
+  const handleDownload = () => {
+    downloadCSV([
+      [`BAKERY ${reportType.toUpperCase()}-WISE REPORT`],
+      ['Period', `${dateFrom} to ${dateTo}`],
+      ['Branch Filter', filterBranch],
+      [''],
+      reportType === 'item' ? ['Item', 'Total Qty Sold'] : ['Branch', 'Total Qty Sold'],
+      ...(reportType === 'item' ? itemReport : branchReport).map(([k, q]) => [k, String(q)]),
+      ['TOTAL', String(totalQty)],
+      [''],
+      ['TRANSACTION DETAILS'],
+      ['Branch', 'Item', 'Qty Sold', 'Sold At', 'Sold By'],
+      ...rangeSales.map(s => [s.branch, s.itemName, String(s.quantitySold), s.soldAt, s.soldBy]),
+    ], `BakeryReport_${reportType}_${dateFrom}_to_${dateTo}.csv`);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
-          <div className="flex gap-2">
-            {(['item', 'branch'] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => setReportType(r)}
-                className={cn(
-                  'text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
-                  reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-                )}
-              >
-                {r}-wise
-              </button>
-            ))}
+      {/* Filters */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Filter className="size-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">Filters</span>
           </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-2 py-1 border rounded-lg hover:bg-muted">
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
             <Download className="size-3" />CSV
           </button>
         </div>
+        <select
+          value={filterBranch}
+          onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
+          className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background"
+        >
+          <option value="all">All Branches</option>
+          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
+          {' · '}{rangeSales.length} transactions · {totalQty} units
+        </p>
+      </div>
 
-        <div className="px-4 py-2">
-          <p className="text-xs text-muted-foreground mb-3">Month: {monthLabel}</p>
-
+      {/* Item / Branch toggle + summary */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-muted/40 flex items-center gap-2">
+          {(['item', 'branch'] as const).map(r => (
+            <button
+              key={r} onClick={() => setReportType(r)}
+              className={cn(
+                'text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
+                reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+              )}
+            >
+              {r}-wise
+            </button>
+          ))}
+        </div>
+        <div className="px-4 py-3">
           {reportType === 'item' ? (
             itemReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales this month.</p>
+              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-muted-foreground">
-                    <th className="text-left py-1">Item</th>
-                    <th className="text-right py-1">Qty Sold</th>
+                    <th className="text-left py-1.5">Item</th>
+                    <th className="text-right py-1.5">Qty Sold</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -518,19 +788,18 @@ function BakeryReportsTab() {
                   ))}
                   <tr className="font-bold border-t-2">
                     <td className="py-2">Total</td>
-                    <td className="py-2 text-right">{itemReport.reduce((a, [, q]) => a + q, 0)}</td>
+                    <td className="py-2 text-right">{totalQty}</td>
                   </tr>
                 </tbody>
               </table>
             )
           ) : (
             branchReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales this month.</p>
+              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
             ) : (
               <div className="space-y-3 py-2">
                 {branchReport.map(([branch, qty]) => {
-                  const total = branchReport.reduce((a, [, q]) => a + q, 0);
-                  const pct = total > 0 ? Math.round((qty / total) * 100) : 0;
+                  const pct = totalQty > 0 ? Math.round((qty / totalQty) * 100) : 0;
                   return (
                     <div key={branch} className="space-y-1">
                       <div className="flex justify-between text-sm">
@@ -543,16 +812,80 @@ function BakeryReportsTab() {
                     </div>
                   );
                 })}
+                <div className="flex justify-between text-sm font-bold border-t pt-2 mt-1">
+                  <span>Total</span><span>{totalQty}</span>
+                </div>
               </div>
             )
           )}
         </div>
       </div>
+
+      {/* Transactions */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
+          <h3 className="font-display text-base font-bold text-foreground">Sale Transactions</h3>
+          <span className="text-xs text-muted-foreground">{rangeSales.length} records</span>
+        </div>
+        {rangeSales.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground py-8">No transactions in this range.</p>
+        ) : (
+          <div className="divide-y max-h-96 overflow-y-auto">
+            {rangeSales.slice(0, 100).map(s => (
+              <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                <div>
+                  <p className="text-sm font-medium">{s.itemName}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_COLORS[s.branch])}>{s.branch}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">· {s.soldBy}</span>
+                  </div>
+                </div>
+                <span className="text-sm font-bold tabular-nums text-blue-600">×{s.quantitySold}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── BAKERY VIEW ─────────────────────────────────────────────────────────────
+// ─── ADMIN REPORTS VIEW (Cafe/Bakery toggle) ─────────────────────────────────
+function AdminReportsView() {
+  const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
+
+  return (
+    <div className="space-y-4">
+      {/* Same Cafe / Bakery toggle as Dashboard */}
+      <div className="flex gap-1 bg-muted rounded-xl p-1">
+        <button
+          onClick={() => setMode('cafe')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+            mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          ☕ Cafe
+        </button>
+        <button
+          onClick={() => setMode('bakery')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+            mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          🥐 Bakery
+        </button>
+      </div>
+      {mode === 'cafe' ? <CafeReportsTab /> : <BakeryReportsTab />}
+    </div>
+  );
+}
+
+// ─── BAKERY VIEW (Dashboard / Sales / Reports sub-tabs) ──────────────────────
 function BakeryView() {
   const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
 
@@ -589,6 +922,12 @@ function BakeryView() {
 // ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
 export default function AdminDashboard() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
+  const [topTab, setTopTab] = useState<'dashboard' | 'reports'>('dashboard');
+
+  const topTabs = [
+    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'reports' as const, label: 'Reports', icon: FileText },
+  ];
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
@@ -599,31 +938,60 @@ export default function AdminDashboard() {
         </p>
       </div>
 
-      {/* Mode toggle */}
-      <div className="mx-4 mb-4 flex gap-1 bg-muted rounded-xl p-1">
-        <button
-          onClick={() => setMode('cafe')}
-          className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-          )}
-        >
-          ☕ Cafe
-        </button>
-        <button
-          onClick={() => setMode('bakery')}
-          className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-          )}
-        >
-          🥐 Bakery
-        </button>
+      {/* Top-level Dashboard / Reports tabs */}
+      <div className="mx-4 mb-3 flex gap-1 bg-muted rounded-xl p-1">
+        {topTabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTopTab(t.id)}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold transition',
+              topTab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+            )}
+          >
+            <t.icon className="size-4" />
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div className="px-4 space-y-4">
-        {mode === 'cafe' ? <CafeView /> : <BakeryView />}
+      {topTab === 'dashboard' && (
+        <>
+          {/* Cafe / Bakery toggle — Dashboard shows today's data only */}
+          <div className="mx-4 mb-4 flex gap-1 bg-muted rounded-xl p-1">
+            <button
+              onClick={() => setMode('cafe')}
+              className={cn(
+                'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+                mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              ☕ Cafe
+            </button>
+            <button
+              onClick={() => setMode('bakery')}
+              className={cn(
+                'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+                mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              🥐 Bakery
+            </button>
+          </div>
+          <div className="px-4 space-y-4">
+            {mode === 'cafe' ? <CafeView /> : <BakeryView />}
+          </div>
+        </>
+      )}
 
+      {topTab === 'reports' && (
+        <div className="px-4 space-y-4">
+          {/* AdminReportsView has its own Cafe/Bakery toggle + custom range */}
+          <AdminReportsView />
+        </div>
+      )}
+
+      <div className="px-4 mt-4">
         <div className="bg-muted/50 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2">
             <Package className="size-4 text-muted-foreground" />
