@@ -4,7 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   ClipboardList, Receipt, UtensilsCrossed, History, BarChart3,
   LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
-  Inbox, Store, Flame, Package, ShoppingCart,  // ShoppingCart = branch sales icon
+  Inbox, Store, Flame, Package, ShoppingCart, Settings2,  // ShoppingCart = branch sales icon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -47,6 +47,7 @@ export default function BottomNav() {
       { label: 'Reports',    icon: <BarChart3         className="size-5" />, path: '/sales-report' },
       { label: 'Attendance', icon: <CalendarCheck     className="size-5" />, path: '/attendance-salary' },
       { label: 'Staff',      icon: <Users             className="size-5" />, path: '/staff-management' },
+      { label: 'Bkry Items', icon: <Settings2         className="size-5" />, path: '/bakery/items'  },
       { label: 'History',    icon: <History           className="size-5" />, path: '/order-history' },
     );
 
