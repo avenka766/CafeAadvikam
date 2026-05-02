@@ -113,8 +113,13 @@ export const useAuthStore = create<AuthState>()(
       },
       // ─────────────────────────────────────────────────────────────────────────
 
+      // Soft-delete: set is_active = false so the login filter (is_active = true)
+      // naturally excludes the user without losing audit history.
       removeStaff: async (userId) => {
-        const { error } = await supabase.from('staff_users').delete().eq('id', userId);
+        const { error } = await supabase
+          .from('staff_users')
+          .update({ is_active: false })
+          .eq('id', userId);
         if (!error) {
           set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
         }
