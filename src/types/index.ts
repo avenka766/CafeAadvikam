@@ -1,5 +1,17 @@
-// Add bakery workflow roles to existing roles
-export type UserRole = 'order_taker' | 'billing' | 'admin' | 'kitchen' | 'store' | 'baker' | 'packing' | 'order_receiver';
+// src/types/index.ts
+// ── CHANGE: Added 'branch_vrsnb' | 'branch_snb' | 'branch_hosur' to UserRole ──
+export type UserRole =
+  | 'order_taker'
+  | 'billing'
+  | 'admin'
+  | 'kitchen'
+  | 'store'
+  | 'baker'
+  | 'packing'
+  | 'order_receiver'
+  | 'branch_vrsnb'   // NEW
+  | 'branch_snb'     // NEW
+  | 'branch_hosur';  // NEW
 
 export interface User {
   id: string;
