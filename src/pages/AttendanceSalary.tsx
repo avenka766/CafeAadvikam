@@ -14,7 +14,7 @@ import {
 import * as XLSX from 'xlsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Branch = 'VRSNB' | 'Cafe Aadvikam' | 'SNB';
+type Branch = 'VRSNB' | 'Cafe Aadvikam' | 'SNB' | 'Hosur';
 
 interface Employee {
   id: string;
@@ -48,16 +48,18 @@ interface DeductionDecision {
 type DeductionDecisions = Record<string, DeductionDecision>;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB'];
+const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
 const BRANCH_COLORS: Record<Branch, string> = {
   VRSNB: 'bg-blue-100 text-blue-800 border-blue-200',
   'Cafe Aadvikam': 'bg-orange-100 text-orange-800 border-orange-200',
   SNB: 'bg-amber-100 text-amber-700 border-amber-200',
+  Hosur: 'bg-emerald-100 text-emerald-800 border-emerald-200',
 };
 const BRANCH_SHORT: Record<Branch, string> = {
   VRSNB: 'VRSNB',
   'Cafe Aadvikam': 'Cafe',
   SNB: 'SNB',
+  Hosur: 'Hosur',
 };
 
 const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7C3AED'];
