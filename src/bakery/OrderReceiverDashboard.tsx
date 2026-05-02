@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Inbox, Plus, Trash2, Send, CheckCircle2, Loader2, Phone, User, Hash } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
+import { useBakeryItemsStore, BAKERY_CATEGORIES } from './bakeryItemsStore';
 import { useAuthStore } from '@/stores/authStore';
-import { BAKERY_ITEMS } from './types';
 import type { BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
 
@@ -15,64 +15,92 @@ const STATUS_STYLE: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   pending: 'At Store', baking: 'Baking', packed: 'Packed', dispatched: 'Dispatched',
 };
+const CATEGORY_LABEL: Record<string, string> = {
+  Sweets: '🍬 Sweets', Savouries: '🥜 Savouries', Bakery: '🍞 Bakery', Cookies: '🍪 Cookies',
+};
 
 function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
   const { submitOrder } = useBakeryStore();
   const { currentUser } = useAuthStore();
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
-  const [orderRef, setOrderRef] = useState('');
-  // qty stored as string so user can clear the field fully
-  const defaultItem = BAKERY_ITEMS[0];
-  const [lines, setLines] = useState<{ itemId: string; itemName: string; qty: string }[]>([
-    { itemId: defaultItem.id, itemName: defaultItem.name, qty: '' },
-  ]);
-  const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const { items: bakeryItems, loaded, loading: itemsLoading, loadItems } = useBakeryItemsStore();
 
-  const updateItem = (idx: number, itemId: string) => {
-    const item = BAKERY_ITEMS.find(b => b.id === itemId);
+  const [customerName, setCustomerName]   = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [orderRef, setOrderRef]           = useState('');
+  const [submitting, setSubmitting]       = useState(false);
+  const [success, setSuccess]             = useState(false);
+  const [lines, setLines] = useState<{ itemId: string; itemName: string; qty: string }[]>([
+    { itemId: '', itemName: '', qty: '' },
+  ]);
+
+  useEffect(() => { loadItems(); }, [loadItems]);
+
+  const defaultItem = bakeryItems[0];
+  useEffect(() => {
+    if (defaultItem && lines[0].itemId === '') {
+      setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+    }
+  }, [defaultItem]);
+
+  const updateItemSelection = (idx: number, itemId: string) => {
+    const item = bakeryItems.find(b => b.id === itemId);
     setLines(prev => prev.map((l, i) => i === idx ? { ...l, itemId, itemName: item?.name || '' } : l));
   };
 
   const updateQty = (idx: number, val: string) => {
-    // Allow empty string or positive numbers only
-    if (val === '' || (Number(val) >= 0)) {
+    if (val === '' || Number(val) >= 0)
       setLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
-    }
   };
 
-  const addLine = () =>
+  const addLine = () => {
+    if (!defaultItem) return;
     setLines(prev => [...prev, { itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+  };
 
   const removeLine = (idx: number) => {
     if (lines.length === 1) return;
     setLines(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const valid = lines.every(l => l.qty !== '' && Number(l.qty) > 0);
+  const valid = lines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0);
 
   const handleSubmit = async () => {
     if (!currentUser || !valid) return;
     setSubmitting(true);
     const items: BakeryOrderItem[] = lines.map(l => ({
-      itemId: l.itemId,
-      itemName: l.itemName,
-      quantity: Number(l.qty),
+      itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty),
     }));
     const label = [
       customerName.trim() || 'Walk-in',
       customerPhone.trim() ? `📞 ${customerPhone.trim()}` : '',
-      orderRef.trim() ? `Ref: ${orderRef.trim()}` : '',
+      orderRef.trim()      ? `Ref: ${orderRef.trim()}`    : '',
       `| ${currentUser.displayName}`,
     ].filter(Boolean).join(' ');
     await submitOrder(items, label);
     setSubmitting(false);
     setSuccess(true);
     setCustomerName(''); setCustomerPhone(''); setOrderRef('');
-    setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+    if (defaultItem) setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
     setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
   };
+
+  if (itemsLoading || !loaded) {
+    return (
+      <div className="bg-card border border-border rounded-2xl p-6 flex items-center justify-center gap-2">
+        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+        <span className="text-sm font-body text-muted-foreground">Loading menu…</span>
+      </div>
+    );
+  }
+
+  if (bakeryItems.length === 0) {
+    return (
+      <div className="bg-card border border-border rounded-2xl p-6 text-center">
+        <p className="text-sm font-body text-muted-foreground">No active items found.</p>
+        <p className="text-xs font-body text-muted-foreground mt-1">Ask admin to enable items in Bakery Item Management.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden">
@@ -105,36 +133,32 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
             className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
         </div>
         <div className="border-t border-border pt-2">
-          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-2">Order Items</p>
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-2">
+            Order Items
+            <span className="ml-1 normal-case text-primary font-normal">({bakeryItems.length} active)</span>
+          </p>
           <div className="space-y-2">
             {lines.map((line, idx) => (
               <div key={idx} className="flex gap-2 items-center">
-                <select value={line.itemId} onChange={e => updateItem(idx, e.target.value)}
+                <select value={line.itemId} onChange={e => updateItemSelection(idx, e.target.value)}
                   className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  {(['Sweets', 'Savouries', 'Bakery', 'Cookies'] as const).map(category => (
-                    <optgroup key={category} label={
-                      category === 'Sweets'    ? '🍬 Sweets' :
-                      category === 'Savouries' ? '🥜 Savouries' :
-                      category === 'Bakery'    ? '🍞 Bakery' :
-                      '🍪 Cookies'
-                    }>
-                      {BAKERY_ITEMS.filter(item => item.category === category).map(item => (
-                        <option key={item.id} value={item.id}>{item.name}</option>
-                      ))}
-                    </optgroup>
-                  ))}
+                  {BAKERY_CATEGORIES.map(category => {
+                    const catItems = bakeryItems.filter(i => i.category === category);
+                    if (catItems.length === 0) return null;
+                    return (
+                      <optgroup key={category} label={CATEGORY_LABEL[category] || category}>
+                        {catItems.map(item => (
+                          <option key={item.id} value={item.id}>{item.name}</option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
                 </select>
-                <input
-                  type="number"
-                  min={1}
-                  value={line.qty}
-                  onChange={e => updateQty(idx, e.target.value)}
-                  placeholder="Qty"
+                <input type="number" min={1} value={line.qty} onChange={e => updateQty(idx, e.target.value)} placeholder="Qty"
                   className={cn(
                     'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
                     line.qty === '' ? 'border-amber-400' : 'border-border'
-                  )}
-                />
+                  )} />
                 <button onClick={() => removeLine(idx)} disabled={lines.length === 1}
                   className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shrink-0">
                   <Trash2 className="size-4" />
@@ -155,7 +179,7 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
             success ? 'bg-emerald-500 text-white' : 'cafe-gradient text-primary-foreground'
           )}>
           {submitting ? <Loader2 className="size-4 animate-spin" />
-            : success ? <><CheckCircle2 className="size-4" /> Sent to Store!</>
+            : success  ? <><CheckCircle2 className="size-4" /> Sent to Store!</>
             : <><Send className="size-4" /> Forward to Store</>}
         </button>
       </div>
@@ -167,10 +191,9 @@ export default function OrderReceiverDashboard() {
   const { fetchOrders, orders, loading } = useBakeryStore();
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // ✅ Load data immediately on mount
   useEffect(() => { fetchOrders(); }, [refreshKey]);
 
-  const todayCount = orders.filter(o => new Date(o.createdAt).toDateString() === new Date().toDateString()).length;
+  const todayCount   = orders.filter(o => new Date(o.createdAt).toDateString() === new Date().toDateString()).length;
   const pendingCount = orders.filter(o => o.status === 'pending').length;
 
   return (
@@ -179,13 +202,11 @@ export default function OrderReceiverDashboard() {
         <h1 className="font-display text-2xl font-bold text-foreground">Order Receiver</h1>
         <p className="text-xs font-body text-muted-foreground mt-0.5">Receive customer orders and forward to Store</p>
       </div>
-
-      {/* KPI strip */}
       <div className="grid grid-cols-3 gap-2 mb-4">
         {[
-          { label: "Today's Orders", value: todayCount, color: 'text-primary' },
-          { label: 'Forwarded', value: orders.filter(o => o.status !== 'pending').length, color: 'text-emerald-600' },
-          { label: 'At Store', value: pendingCount, color: pendingCount > 0 ? 'text-amber-600' : 'text-muted-foreground' },
+          { label: "Today's Orders", value: todayCount,   color: 'text-primary' },
+          { label: 'Forwarded',      value: orders.filter(o => o.status !== 'pending').length, color: 'text-emerald-600' },
+          { label: 'At Store',       value: pendingCount, color: pendingCount > 0 ? 'text-amber-600' : 'text-muted-foreground' },
         ].map(({ label, value, color }) => (
           <div key={label} className="bg-card border border-border rounded-xl p-3 text-center">
             <p className={cn('font-display font-bold text-xl tabular-nums', color)}>{value}</p>
@@ -193,11 +214,8 @@ export default function OrderReceiverDashboard() {
           </div>
         ))}
       </div>
-
       <div className="space-y-4">
         <NewOrderForm onSubmitted={() => setRefreshKey(k => k + 1)} />
-
-        {/* Order history */}
         {loading ? (
           <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
         ) : orders.length > 0 && (
