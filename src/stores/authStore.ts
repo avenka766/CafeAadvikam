@@ -1,3 +1,4 @@
+// src/stores/authStore.ts  ← REPLACE EXISTING FILE
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
@@ -12,22 +13,23 @@ interface AuthState {
   loadStaff: () => Promise<void>;
   addStaff: (user: Omit<User, 'id'>) => Promise<boolean>;
   updateStaffPassword: (userId: string, newPassword: string) => Promise<void>;
+  updateStaffDetails: (userId: string, updates: { username?: string; displayName?: string }) => Promise<string | null>;
   removeStaff: (userId: string) => Promise<void>;
 }
 
 function rowToUser(d: Record<string, unknown>): User {
   return {
-    id: d.id as string,
-    username: d.username as string,
-    password: d.password as string,
+    id:          d.id as string,
+    username:    d.username as string,
+    password:    d.password as string,
     displayName: d.display_name as string,
-    role: d.role as UserRole,
+    role:        d.role as UserRole,
   };
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       currentUser: null,
       staffList: [],
       staffLoaded: false,
@@ -49,7 +51,8 @@ export const useAuthStore = create<AuthState>()(
 
       loadStaff: async () => {
         const { data, error } = await supabase
-          .from('staff_users').select('*').eq('is_active', true).order('created_at', { ascending: true });
+          .from('staff_users').select('*').eq('is_active', true)
+          .order('created_at', { ascending: true });
         if (!error && data) {
           set({ staffList: data.map((d) => rowToUser(d as Record<string, unknown>)), staffLoaded: true });
         }
@@ -69,9 +72,46 @@ export const useAuthStore = create<AuthState>()(
       updateStaffPassword: async (userId, newPassword) => {
         const { error } = await supabase.from('staff_users').update({ password: newPassword }).eq('id', userId);
         if (!error) {
-          set((s) => ({ staffList: s.staffList.map((u) => u.id === userId ? { ...u, password: newPassword } : u) }));
+          set((s) => ({
+            staffList: s.staffList.map((u) => u.id === userId ? { ...u, password: newPassword } : u),
+            currentUser: s.currentUser?.id === userId ? { ...s.currentUser, password: newPassword } : s.currentUser,
+          }));
         }
       },
+
+      // ── NEW ──────────────────────────────────────────────────────────────────
+      updateStaffDetails: async (userId, updates) => {
+        const payload: Record<string, string> = {};
+        if (updates.username)    payload.username     = updates.username.trim();
+        if (updates.displayName) payload.display_name = updates.displayName.trim();
+        if (Object.keys(payload).length === 0) return null;
+
+        // Check username uniqueness if changing username
+        if (payload.username) {
+          const existing = get().staffList.find(
+            (u) => u.username.toLowerCase() === payload.username.toLowerCase() && u.id !== userId
+          );
+          if (existing) return 'Username already taken';
+        }
+
+        const { error } = await supabase.from('staff_users').update(payload).eq('id', userId);
+        if (error) return 'Failed to update. Please try again.';
+
+        set((s) => {
+          const updated = s.staffList.map((u) =>
+            u.id === userId
+              ? { ...u, username: payload.username ?? u.username, displayName: payload.display_name ?? u.displayName }
+              : u
+          );
+          const updatedUser = updated.find((u) => u.id === userId)!;
+          return {
+            staffList: updated,
+            currentUser: s.currentUser?.id === userId ? updatedUser : s.currentUser,
+          };
+        });
+        return null;
+      },
+      // ─────────────────────────────────────────────────────────────────────────
 
       removeStaff: async (userId) => {
         const { error } = await supabase.from('staff_users').delete().eq('id', userId);
@@ -82,8 +122,6 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'cafe-aadvikam-auth',
-      // ✅ sessionStorage clears when browser/tab is closed
-      // Previously used localStorage (default) which persisted forever
       storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({ currentUser: state.currentUser }),
     }
