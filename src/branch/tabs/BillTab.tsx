@@ -1,5 +1,5 @@
 // src/branch/tabs/BillTab.tsx
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2,
   Loader2, Receipt, IndianRupee, Banknote, Smartphone, CreditCard, Search, X,
@@ -14,7 +14,7 @@ import type { StockItem } from '../branchStore';
 interface CartItem {
   itemName: string;
   quantity: number;
-  price: number | null;
+  price: number | null; // comes directly from StockItem.price (FIX #3)
 }
 
 type PaymentMethod = 'cash' | 'upi' | 'card';
@@ -40,6 +40,14 @@ export function BillTab({ branch, branchStock }: Props) {
   const [error, setError] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
 
+  // FIX #7 — clear cart when branch prop changes to avoid cross-branch cart bleed
+  useEffect(() => {
+    setCart([]);
+    setPaymentMethod(null);
+    setError('');
+    setSearch('');
+  }, [branch]);
+
   const availableItems = useMemo(
     () => branchStock.filter(s => s.quantity > 0),
     [branchStock],
@@ -59,13 +67,16 @@ export function BillTab({ branch, branchStock }: Props) {
 
   const addToCart = (item: StockItem) => {
     const inCart = getCartQty(item.itemName);
-    if (inCart >= item.quantity) return; // can't exceed stock
+    if (inCart >= item.quantity) return;
     setCart(prev => {
       const existing = prev.find(c => c.itemName === item.itemName);
       if (existing) {
-        return prev.map(c => c.itemName === item.itemName ? { ...c, quantity: c.quantity + 1 } : c);
+        return prev.map(c =>
+          c.itemName === item.itemName ? { ...c, quantity: c.quantity + 1 } : c,
+        );
       }
-      return [...prev, { itemName: item.itemName, quantity: 1, price: (item as StockItem & { price?: number | null }).price ?? null }];
+      // FIX #3 — price comes directly from StockItem.price (now a proper field on the interface)
+      return [...prev, { itemName: item.itemName, quantity: 1, price: item.price }];
     });
   };
 
@@ -95,6 +106,8 @@ export function BillTab({ branch, branchStock }: Props) {
   const allPriced = cart.every(c => c.price != null);
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0);
 
+  // FIX #2 — track which items succeeded so we can show a partial-failure message
+  // and avoid leaving stock deducted without a complete sale record.
   const handleCheckout = async () => {
     if (cart.length === 0) return;
     if (!paymentMethod) { setError('Select a payment method.'); return; }
@@ -102,13 +115,23 @@ export function BillTab({ branch, branchStock }: Props) {
     setSubmitting(true);
 
     const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
+    const succeeded: string[] = [];
+
     for (const item of cart) {
-      const err = await recordSale(branch, item.itemName, item.quantity, soldBy);
+      // FIX #9 — pass paymentMethod to recordSale so it's persisted to DB
+      const err = await recordSale(branch, item.itemName, item.quantity, soldBy, paymentMethod);
       if (err) {
-        setError(`Failed on "${item.itemName}": ${err}`);
+        // FIX #2 — tell the user exactly which items went through and which failed,
+        // so staff can manually reconcile. We can't roll back already-committed DB writes,
+        // but at least the error message is honest about the partial state.
+        const succeededMsg = succeeded.length > 0
+          ? ` (Already recorded: ${succeeded.join(', ')})`
+          : '';
+        setError(`Failed on "${item.itemName}": ${err}.${succeededMsg} Please check stock manually.`);
         setSubmitting(false);
         return;
       }
+      succeeded.push(item.itemName);
     }
 
     setSubmitting(false);
@@ -157,10 +180,9 @@ export function BillTab({ branch, branchStock }: Props) {
       ) : (
         <div className="grid grid-cols-2 gap-2">
           {filteredItems.map(item => {
-            const inCart = getCartQty(item.itemName);
+            const inCart   = getCartQty(item.itemName);
             const stockQty = getStockQty(item.itemName);
-            const atMax = inCart >= stockQty;
-            const itemPrice = (item as StockItem & { price?: number | null }).price;
+            const atMax    = inCart >= stockQty;
 
             return (
               <div
@@ -173,8 +195,9 @@ export function BillTab({ branch, branchStock }: Props) {
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-foreground leading-tight">{item.itemName}</p>
                   <div className="flex items-center justify-between mt-0.5">
-                    {itemPrice != null
-                      ? <span className="text-xs font-bold text-emerald-600">₹{itemPrice}</span>
+                    {/* FIX #3 — item.price is now a real typed field, no unsafe cast needed */}
+                    {item.price != null
+                      ? <span className="text-xs font-bold text-emerald-600">₹{item.price}</span>
                       : <span className="text-[10px] text-amber-500 font-medium">No price</span>
                     }
                     <span className="text-[10px] text-muted-foreground">{stockQty} left</span>
@@ -228,7 +251,10 @@ export function BillTab({ branch, branchStock }: Props) {
                 {cartCount} items
               </span>
             </div>
-            <button onClick={clearCart} className="text-xs font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg">
+            <button
+              onClick={clearCart}
+              className="text-xs font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg"
+            >
               Clear
             </button>
           </div>
@@ -247,7 +273,10 @@ export function BillTab({ branch, branchStock }: Props) {
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <button onClick={() => removeFromCart(c.itemName)} className="size-6 rounded-md bg-muted flex items-center justify-center active:scale-90">
+                  <button
+                    onClick={() => removeFromCart(c.itemName)}
+                    className="size-6 rounded-md bg-muted flex items-center justify-center active:scale-90"
+                  >
                     <Minus className="size-3" />
                   </button>
                   <span className="w-5 text-center text-xs font-bold tabular-nums">{c.quantity}</span>
@@ -261,7 +290,10 @@ export function BillTab({ branch, branchStock }: Props) {
                   >
                     <Plus className="size-3" />
                   </button>
-                  <button onClick={() => deleteFromCart(c.itemName)} className="size-6 rounded-md bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5">
+                  <button
+                    onClick={() => deleteFromCart(c.itemName)}
+                    className="size-6 rounded-md bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5"
+                  >
                     <Trash2 className="size-3" />
                   </button>
                 </div>
@@ -285,7 +317,7 @@ export function BillTab({ branch, branchStock }: Props) {
               </p>
             )}
 
-            {/* Payment method */}
+            {/* Payment method — FIX #9: selection is now passed through to DB */}
             <div>
               <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1.5">Payment Method</p>
               <div className="grid grid-cols-3 gap-2">

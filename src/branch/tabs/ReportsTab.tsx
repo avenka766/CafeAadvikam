@@ -12,21 +12,29 @@ interface Props {
   branchSales: SaleRecord[];
 }
 
+// FIX #8 — convert a UTC ISO timestamp to local-date YYYY-MM-DD string
+// so the date range filter compares in local time (IST), not UTC.
+function toLocalDateString(isoString: string): string {
+  const d = new Date(isoString);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function ReportsTab({ branch, branchSales }: Props) {
   const [reportType, setReportType] = useState<'item' | 'branch'>('item');
 
-  // Default: today
-  const todayISO = new Date().toISOString().split('T')[0];
+  const todayISO = toLocalDateString(new Date().toISOString());
   const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
+  const [dateTo,   setDateTo]   = useState(todayISO);
 
-  // ── Filter sales to the selected date range ──────────────────────────────
+  // FIX #8 — compare using local date strings instead of epoch milliseconds
+  // This avoids sales at 10:30 PM IST (5 PM UTC) being counted as the next UTC day.
   const rangeSales = useMemo(() => {
-    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
-    const to   = new Date(dateTo);   to.setHours(23, 59, 59, 999);
     return branchSales.filter(s => {
-      const t = new Date(s.soldAt).getTime();
-      return t >= from.getTime() && t <= to.getTime();
+      const localDate = toLocalDateString(s.soldAt);
+      return localDate >= dateFrom && localDate <= dateTo;
     });
   }, [branchSales, dateFrom, dateTo]);
 
@@ -37,8 +45,6 @@ export function ReportsTab({ branch, branchSales }: Props) {
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [rangeSales]);
 
-  // branch-wise: group by branch field (useful if branchSales ever contains
-  // cross-branch records; for a single-branch view this just shows the one branch)
   const branchReport = useMemo(() => {
     const map: Record<string, number> = {};
     rangeSales.forEach(s => {
@@ -51,12 +57,11 @@ export function ReportsTab({ branch, branchSales }: Props) {
   const totalQty = itemReport.reduce((a, [, q]) => a + q, 0);
 
   const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    ? new Date(dateFrom + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(dateFrom + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
   const colors = BRANCH_COLORS[branch];
 
-  // ── CSV download (summary + transactions) ────────────────────────────────
   const handleDownloadCSV = () => {
     const summaryRows = reportType === 'item'
       ? [['Item', 'Qty Sold'], ...itemReport.map(([i, q]) => [i, String(q)]), ['TOTAL', String(totalQty)]]
@@ -69,8 +74,8 @@ export function ReportsTab({ branch, branchSales }: Props) {
       ...summaryRows,
       [''],
       ['TRANSACTION DETAILS'],
-      ['Item', 'Qty Sold', 'Sold At', 'Sold By'],
-      ...rangeSales.map(s => [s.itemName, String(s.quantitySold), s.soldAt, s.soldBy]),
+      ['Item', 'Qty Sold', 'Sold At', 'Sold By', 'Payment'],
+      ...rangeSales.map(s => [s.itemName, String(s.quantitySold), s.soldAt, s.soldBy, s.paymentMethod ?? '']),
     ], `${branch}_Report_${dateFrom}_to_${dateTo}.csv`);
   };
 
@@ -205,6 +210,9 @@ export function ReportsTab({ branch, branchSales }: Props) {
                   <p className="text-sm font-medium">{s.itemName}</p>
                   <p className="text-xs text-muted-foreground">
                     {fmtDate(s.soldAt)} · {s.soldBy}
+                    {s.paymentMethod && (
+                      <span className="ml-1 capitalize text-muted-foreground/70">· {s.paymentMethod}</span>
+                    )}
                   </p>
                 </div>
                 <span className="text-sm font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
