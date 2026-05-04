@@ -9,6 +9,7 @@ export interface BakeryItem {
   category: string;
   enabled: boolean;
   sortOrder: number;
+  price: number | null;  // Admin-configurable selling price (null = not set yet)
 }
 
 const CATEGORIES = ['Sweets', 'Savouries', 'Bakery', 'Cookies'] as const;
@@ -30,6 +31,7 @@ interface BakeryItemsState {
   addItem:    (item: { name: string; category: string; icon: string }) => Promise<string | null>;
   toggleItem: (id: string) => Promise<void>;
   updateItem: (id: string, updates: { name?: string; icon?: string; category?: string }) => Promise<string | null>;
+  updatePrice: (id: string, price: number | null) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
 }
 
@@ -41,6 +43,7 @@ function rowToItem(d: Record<string, unknown>): BakeryItem {
     category:  d.category  as string,
     enabled:   d.enabled   as boolean,
     sortOrder: d.sort_order as number,
+    price:     d.price != null ? Number(d.price) : null,
   };
 }
 
@@ -140,6 +143,19 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
 
     set(s => ({
       items: s.items.map(i => i.id === id ? { ...i, ...updates } : i),
+    }));
+    return null;
+  },
+
+  // ── Update selling price ──────────────────────────────────────────────────
+  updatePrice: async (id, price) => {
+    const { error } = await supabase
+      .from('bakery_items')
+      .update({ price: price })
+      .eq('id', id);
+    if (error) return 'Failed to update price. Please try again.';
+    set(s => ({
+      items: s.items.map(i => i.id === id ? { ...i, price } : i),
     }));
     return null;
   },

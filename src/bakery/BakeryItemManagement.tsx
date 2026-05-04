@@ -63,7 +63,12 @@ function ItemRow({
         )}>
           {item.name}
         </p>
-        <p className="text-[10px] font-body text-muted-foreground">{item.id}</p>
+        <p className="text-[10px] font-body text-muted-foreground">
+          {item.price != null
+            ? <span className="text-emerald-600 font-semibold">₹{item.price}</span>
+            : <span className="text-amber-500 font-medium">⚠ Price not set</span>
+          }
+        </p>
       </div>
 
       {/* actions */}
@@ -110,30 +115,52 @@ function ItemRow({
 function EditSheet({
   item,
   onSave,
+  onSavePrice,
   onClose,
 }: {
   item: BakeryItem;
   onSave: (id: string, updates: { name?: string; icon?: string; category?: string }) => Promise<string | null>;
+  onSavePrice: (id: string, price: number | null) => Promise<string | null>;
   onClose: () => void;
 }) {
   const [name,     setName]     = useState(item.name);
   const [icon,     setIcon]     = useState(item.icon);
   const [category, setCategory] = useState(item.category);
+  const [priceStr, setPriceStr] = useState(item.price != null ? String(item.price) : '');
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState<string | null>(null);
 
-  const dirty = name !== item.name || icon !== item.icon || category !== item.category;
+  const dirty = name !== item.name || icon !== item.icon || category !== item.category
+    || priceStr !== (item.price != null ? String(item.price) : '');
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
+
+    // Validate price
+    const priceVal = priceStr.trim() === '' ? null : Number(priceStr);
+    if (priceStr.trim() !== '' && (isNaN(priceVal!) || priceVal! <= 0)) {
+      setError('Enter a valid price greater than 0, or leave blank.');
+      setSaving(false);
+      return;
+    }
+
+    // Save item details
     const err = await onSave(item.id, {
       name:     name     !== item.name     ? name     : undefined,
       icon:     icon     !== item.icon     ? icon     : undefined,
       category: category !== item.category ? category : undefined,
     });
+    if (err) { setError(err); setSaving(false); return; }
+
+    // Save price if changed
+    const currentPrice = item.price != null ? String(item.price) : '';
+    if (priceStr !== currentPrice) {
+      const priceErr = await onSavePrice(item.id, priceVal);
+      if (priceErr) { setError(priceErr); setSaving(false); return; }
+    }
+
     setSaving(false);
-    if (err) { setError(err); return; }
     onClose();
   };
 
@@ -184,6 +211,25 @@ function EditSheet({
                 <option key={c} value={c}>{CATEGORY_META[c]?.emoji} {c}</option>
               ))}
             </select>
+          </div>
+
+          {/* Price */}
+          <div>
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">
+              Selling Price (₹)
+            </label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-semibold">₹</span>
+              <input
+                type="number"
+                min={1}
+                value={priceStr}
+                onChange={e => setPriceStr(e.target.value)}
+                placeholder="e.g. 30"
+                className="w-full h-10 pl-7 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">Leave blank if price is not yet decided.</p>
           </div>
         </div>
 
@@ -409,7 +455,7 @@ function CategorySection({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function BakeryItemManagement() {
-  const { items, loading, loadAllItems, toggleItem, updateItem, deleteItem } = useBakeryItemsStore();
+  const { items, loading, loadAllItems, toggleItem, updateItem, updatePrice, deleteItem } = useBakeryItemsStore();
 
   const [search,      setSearch]      = useState('');
   const [showAdd,     setShowAdd]     = useState(false);
@@ -442,6 +488,7 @@ export default function BakeryItemManagement() {
 
   const totalEnabled  = items.filter(i => i.enabled).length;
   const totalDisabled = items.filter(i => !i.enabled).length;
+  const unpricedCount = items.filter(i => i.enabled && i.price == null).length;
 
   // ── handlers ───────────────────────────────────────────────────────────────
 
@@ -488,6 +535,16 @@ export default function BakeryItemManagement() {
           <p className="text-[9px] font-body font-semibold text-muted-foreground uppercase mt-0.5">Disabled</p>
         </div>
       </div>
+
+      {/* Price missing warning */}
+      {unpricedCount > 0 && (
+        <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+          <AlertTriangle className="size-4 text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-xs text-amber-700 font-medium">
+            <span className="font-bold">{unpricedCount} active item{unpricedCount > 1 ? 's' : ''}</span> {unpricedCount > 1 ? 'have' : 'has'} no price set. Tap the ✏️ edit button on each item to set a selling price.
+          </p>
+        </div>
+      )}
 
       {/* search + filter bar */}
       <div className="flex gap-2 mb-4">
@@ -552,6 +609,7 @@ export default function BakeryItemManagement() {
         <EditSheet
           item={editTarget}
           onSave={updateItem}
+          onSavePrice={updatePrice}
           onClose={() => setEditTarget(null)}
         />
       )}
