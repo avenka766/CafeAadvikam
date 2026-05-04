@@ -5,7 +5,7 @@ import { formatCurrency } from '@/lib/utils';
 import {
   TrendingUp, ShoppingBag, IndianRupee, Clock,
   Package, XCircle, RefreshCw, Wifi, Download,
-  LayoutDashboard, FileText, Filter, Store,
+  LayoutDashboard, Store, Filter,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -853,46 +853,13 @@ function BakeryReportsTab() {
   );
 }
 
-// ─── ADMIN REPORTS VIEW (Cafe/Bakery toggle) ─────────────────────────────────
-function AdminReportsView() {
-  const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
-
-  return (
-    <div className="space-y-4">
-      {/* Same Cafe / Bakery toggle as Dashboard */}
-      <div className="flex gap-1 bg-muted rounded-xl p-1">
-        <button
-          onClick={() => setMode('cafe')}
-          className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-          )}
-        >
-          ☕ Cafe
-        </button>
-        <button
-          onClick={() => setMode('bakery')}
-          className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-          )}
-        >
-          🥐 Bakery
-        </button>
-      </div>
-      {mode === 'cafe' ? <CafeReportsTab /> : <BakeryReportsTab />}
-    </div>
-  );
-}
-
-// ─── BAKERY VIEW (Dashboard / Sales / Reports sub-tabs) ──────────────────────
+// ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
 function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'sales'>('dashboard');
 
   const tabs = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'sales' as const, label: 'Sales', icon: Store },
-    { id: 'reports' as const, label: 'Reports', icon: FileText },
   ];
 
   return (
@@ -914,7 +881,6 @@ function BakeryView() {
       </div>
       {tab === 'dashboard' && <BakeryDashboardTab />}
       {tab === 'sales' && <BakerySalesTab />}
-      {tab === 'reports' && <BakeryReportsTab />}
     </div>
   );
 }
@@ -922,12 +888,6 @@ function BakeryView() {
 // ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
 export default function AdminDashboard() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
-  const [topTab, setTopTab] = useState<'dashboard' | 'reports'>('dashboard');
-
-  const topTabs = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'reports' as const, label: 'Reports', icon: FileText },
-  ];
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
@@ -938,58 +898,30 @@ export default function AdminDashboard() {
         </p>
       </div>
 
-      {/* Top-level Dashboard / Reports tabs */}
-      <div className="mx-4 mb-3 flex gap-1 bg-muted rounded-xl p-1">
-        {topTabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTopTab(t.id)}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold transition',
-              topTab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-            )}
-          >
-            <t.icon className="size-4" />
-            {t.label}
-          </button>
-        ))}
+      {/* Cafe / Bakery toggle */}
+      <div className="mx-4 mb-4 flex gap-1 bg-muted rounded-xl p-1">
+        <button
+          onClick={() => setMode('cafe')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+            mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          ☕ Cafe
+        </button>
+        <button
+          onClick={() => setMode('bakery')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
+            mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          🥐 Bakery
+        </button>
       </div>
-
-      {topTab === 'dashboard' && (
-        <>
-          {/* Cafe / Bakery toggle — Dashboard shows today's data only */}
-          <div className="mx-4 mb-4 flex gap-1 bg-muted rounded-xl p-1">
-            <button
-              onClick={() => setMode('cafe')}
-              className={cn(
-                'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-                mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-              )}
-            >
-              ☕ Cafe
-            </button>
-            <button
-              onClick={() => setMode('bakery')}
-              className={cn(
-                'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-                mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-              )}
-            >
-              🥐 Bakery
-            </button>
-          </div>
-          <div className="px-4 space-y-4">
-            {mode === 'cafe' ? <CafeView /> : <BakeryView />}
-          </div>
-        </>
-      )}
-
-      {topTab === 'reports' && (
-        <div className="px-4 space-y-4">
-          {/* AdminReportsView has its own Cafe/Bakery toggle + custom range */}
-          <AdminReportsView />
-        </div>
-      )}
+      <div className="px-4 space-y-4">
+        {mode === 'cafe' ? <CafeView /> : <BakeryView />}
+      </div>
 
       <div className="px-4 mt-4">
         <div className="bg-muted/50 rounded-xl px-4 py-3">
