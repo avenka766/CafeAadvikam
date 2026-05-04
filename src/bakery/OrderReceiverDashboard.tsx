@@ -3,6 +3,7 @@ import { Inbox, Plus, Trash2, Send, CheckCircle2, Loader2, Phone, User, Hash } f
 import { useBakeryStore } from './bakeryStore';
 import { useBakeryItemsStore, BAKERY_CATEGORIES } from './bakeryItemsStore';
 import { useAuthStore } from '@/stores/authStore';
+import { RECIPE_DEFINITIONS } from './recipeDefinitions';
 import type { BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
 
@@ -154,11 +155,18 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
                     );
                   })}
                 </select>
-                <input type="number" min={1} value={line.qty} onChange={e => updateQty(idx, e.target.value)} placeholder="Qty"
-                  className={cn(
-                    'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
-                    line.qty === '' ? 'border-amber-400' : 'border-border'
-                  )} />
+                <div className="flex flex-col items-center gap-0.5 shrink-0">
+                  <input type="number" min={1} value={line.qty} onChange={e => updateQty(idx, e.target.value)} placeholder="Qty"
+                    className={cn(
+                      'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
+                      line.qty === '' ? 'border-amber-400' : 'border-border'
+                    )} />
+                  {line.itemId && RECIPE_DEFINITIONS[line.itemId]?.outputUnit && (
+                    <span className="text-[9px] font-body font-bold text-primary leading-none">
+                      {RECIPE_DEFINITIONS[line.itemId].outputUnit}
+                    </span>
+                  )}
+                </div>
                 <button onClick={() => removeLine(idx)} disabled={lines.length === 1}
                   className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shrink-0">
                   <Trash2 className="size-4" />
