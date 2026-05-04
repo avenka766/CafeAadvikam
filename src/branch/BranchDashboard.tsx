@@ -38,11 +38,11 @@ export default function BranchDashboard({ branch }: Props) {
     seedBranchItems(branch);
     cleanOldData();
 
-    // Auto-refresh every 3 seconds
+    // Auto-refresh every 30 seconds
     const id = setInterval(() => {
       fetchBranchData(branch);
       syncIncomingFromDispatches(branch);
-    }, 3_000);
+    }, 30_000);
 
     return () => clearInterval(id);
   }, [branch]);
