@@ -115,37 +115,40 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .eq('id', orderId);
     if (error) return;
 
-    // 2. Write to branch_incoming immediately so branch dashboard shows it live
-    await supabase.from('branch_incoming').insert({
+    // 2. Write to branch_incoming (ignore duplicate if already exists)
+    await supabase.from('branch_incoming').upsert({
       id:            newEntry.id,
       branch:        newEntry.branch,
       item_name:     newEntry.itemName,
       quantity:      newEntry.quantity,
       received_at:   newEntry.dispatchedAt,
       dispatched_by: newEntry.dispatchedBy,
-    });
+    }, { onConflict: 'id' });
 
-    // 3. Upsert branch_stock — add to existing qty or create new row
+    // 3. Add dispatched qty to branch_stock using RPC to avoid race conditions.
+    //    maybeSingle() won't throw when no row found (unlike .single()).
     const { data: existingStock } = await supabase
       .from('branch_stock')
-      .select('quantity')
+      .select('quantity, min_threshold')
       .eq('branch', newEntry.branch)
       .eq('item_name', newEntry.itemName)
-      .single();
+      .maybeSingle();
 
     if (existingStock) {
-      await supabase.from('branch_stock')
+      // Row exists — increment quantity
+      await supabase
+        .from('branch_stock')
         .update({ quantity: existingStock.quantity + newEntry.quantity })
         .eq('branch', newEntry.branch)
         .eq('item_name', newEntry.itemName);
     } else {
-      await supabase.from('branch_stock')
-        .insert({
-          branch:        newEntry.branch,
-          item_name:     newEntry.itemName,
-          quantity:      newEntry.quantity,
-          min_threshold: 10,
-        });
+      // No row yet — insert fresh
+      await supabase.from('branch_stock').insert({
+        branch:        newEntry.branch,
+        item_name:     newEntry.itemName,
+        quantity:      newEntry.quantity,
+        min_threshold: 10,
+      });
     }
 
     // 4. Update local state
@@ -180,7 +183,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         .select('quantity')
         .eq('branch', removedEntry.branch)
         .eq('item_name', removedEntry.itemName)
-        .single();
+        .maybeSingle();
 
       if (existingStock) {
         await supabase.from('branch_stock')
