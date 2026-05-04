@@ -34,13 +34,11 @@ export default function BranchDashboard({ branch }: Props) {
   const colors         = BRANCH_COLORS[branch];
 
   useEffect(() => {
-    // Initial load
     fetchBranchData(branch);
     syncIncomingFromDispatches(branch);
     seedBranchItems(branch);
-    cleanOldData();
+    cleanOldData(); // FIX #6 — guarded inside store; safe to call, won't re-run within same session
 
-    // Auto-refresh every 30 seconds
     const id = setInterval(() => {
       fetchBranchData(branch);
       syncIncomingFromDispatches(branch);
@@ -50,11 +48,28 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch]);
 
   const lowStockItems = branchStock.filter((s) => s.quantity <= s.minThreshold);
-  const today         = new Date().toDateString();
+
+  // FIX #4 — memoize today's date string as a stable value so the sales filter
+  // memo only re-runs when branchSales actually changes, not on every render.
+  // Using a state-based date also lets it roll over correctly at midnight.
+  const [todayString, setTodayString] = useState(() => new Date().toDateString());
+
+  useEffect(() => {
+    // Refresh the date string just after midnight so the sales log rolls over correctly
+    const now = new Date();
+    const msUntilMidnight =
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
+
+    const timer = setTimeout(() => {
+      setTodayString(new Date().toDateString());
+    }, msUntilMidnight + 100); // +100ms buffer past midnight
+
+    return () => clearTimeout(timer);
+  }, [todayString]); // re-schedule each time the date rolls over
 
   const todaySalesLog = useMemo(
-    () => branchSales.filter((s) => new Date(s.soldAt).toDateString() === today),
-    [branchSales, today],
+    () => branchSales.filter((s) => new Date(s.soldAt).toDateString() === todayString),
+    [branchSales, todayString],
   );
 
   const totalTodayQty = useMemo(

@@ -1,5 +1,5 @@
-// src/branch/components.tsx  ← NEW FILE
-import { useState } from 'react';
+// src/branch/components.tsx
+import { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
@@ -24,9 +24,24 @@ export function ThresholdEditor({
   branch, itemName, current,
 }: { branch: Branch; itemName: string; current: number }) {
   const { updateThreshold } = useBranchStore();
-  const [val, setVal]     = useState(String(current));
+  const [val, setVal]       = useState(String(current));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved]   = useState(false);
+
+  // FIX #10 — sync input value when the parent stock data refreshes (e.g. from 30s auto-poll)
+  // Only update if the user isn't actively editing (i.e. their draft matches the old value)
+  useEffect(() => {
+    setVal((prev) => {
+      // If the user has typed something different from what we last saved,
+      // don't overwrite their in-progress edit.
+      const prevNum = Number(prev);
+      if (!isNaN(prevNum) && prevNum !== current) {
+        // They have a pending edit — leave it alone
+        return prev;
+      }
+      return String(current);
+    });
+  }, [current]);
 
   const save = async () => {
     setSaving(true);
