@@ -26,6 +26,7 @@ import StoreDashboard from '@/bakery/StoreDashboard';
 import BakerDashboard from '@/bakery/BakerDashboard';
 import PackingDashboard from '@/bakery/PackingDashboard';
 import BakeryItemManagement from '@/bakery/BakeryItemManagement';
+import RecipeManagement from '@/bakery/RecipeManagement';
 // ── NEW ──────────────────────────────────────────────────────────────────────
 import VRSNBDashboard from '@/pages/VRSNBDashboard';
 import SNBDashboard   from '@/pages/SNBDashboard';
@@ -92,6 +93,7 @@ function AppRoutes() {
         <Route path="/bakery/baker"    element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/packing"  element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
         <Route path="/bakery/items"    element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
+        <Route path="/bakery/recipes"  element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 
         {/* ── NEW BRANCH ROUTES ─────────────────────────────────────────── */}
         <Route path="/branch/vrsnb"    element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin']}><VRSNBDashboard /></ProtectedRoute>} />
