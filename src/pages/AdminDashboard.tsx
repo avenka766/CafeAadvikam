@@ -5,7 +5,7 @@ import { formatCurrency } from '@/lib/utils';
 import {
   TrendingUp, ShoppingBag, IndianRupee, Clock,
   Package, XCircle, RefreshCw, Wifi, Download,
-  LayoutDashboard, Store, Filter,
+  LayoutDashboard, Store, Filter, FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -63,8 +63,8 @@ function Row({ label, value, bold, highlight }: { label: string; value: string; 
   );
 }
 
-// ─── CAFE VIEW (Dashboard — today only) ──────────────────────────────────────
-function CafeView() {
+// ─── CAFE DASHBOARD TAB (today only) ─────────────────────────────────────────
+function CafeDashboardTab() {
   const { orders, startPolling, stopPolling, polling } = useOrderStore();
 
   useEffect(() => {
@@ -212,6 +212,38 @@ function CafeView() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── CAFE VIEW (Dashboard / Sales / Reports sub-tabs) ────────────────────────
+function CafeView() {
+  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
+
+  const tabs = [
+    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-muted rounded-xl p-1">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition',
+              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+            )}
+          >
+            <t.icon className="size-3" />
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'dashboard' && <CafeDashboardTab />}
+      {tab === 'reports'   && <CafeReportsTab />}
     </div>
   );
 }
@@ -855,11 +887,12 @@ function BakeryReportsTab() {
 
 // ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
 function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
 
   const tabs = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'sales' as const, label: 'Sales', icon: Store },
+    { id: 'sales'     as const, label: 'Sales',     icon: Store },
+    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
   ];
 
   return (
@@ -880,7 +913,8 @@ function BakeryView() {
         ))}
       </div>
       {tab === 'dashboard' && <BakeryDashboardTab />}
-      {tab === 'sales' && <BakerySalesTab />}
+      {tab === 'sales'     && <BakerySalesTab />}
+      {tab === 'reports'   && <BakeryReportsTab />}
     </div>
   );
 }
