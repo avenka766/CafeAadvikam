@@ -48,7 +48,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   };
 
   const handleDispatch = async () => {
-    if (!currentUser || !selectedPrepared || qtyNum < 1) return;
+    if (!currentUser || !selectedPrepared || qtyNum <= 0) return;
     setSubmitting(true);
     await submitDispatch(order.id, {
       itemName: selectedPrepared.itemName,
@@ -166,7 +166,8 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                 <div className="w-24">
                   <input
                     type="number"
-                    min={1}
+                    min={0.01}
+                    step={0.25}
                     value={qty}
                     onChange={e => setQty(e.target.value)}
                     placeholder="Qty"
@@ -194,7 +195,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
 
               <button
                 onClick={handleDispatch}
-                disabled={submitting || !qty || qtyNum < 1}
+                disabled={submitting || !qty || qtyNum <= 0}
                 className={cn(
                   'w-full h-11 rounded-xl text-white text-sm font-body font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50',
                   noStock ? 'bg-amber-500' : 'bg-emerald-600'
