@@ -107,17 +107,53 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (!order) return;
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
     const updatedLog = [...(order.dispatchLog || []), newEntry];
+
+    // 1. Update bakery_orders dispatch_log
     const { error } = await supabase
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: 'dispatched' })
       .eq('id', orderId);
-    if (!error) {
-      set(s => ({
-        orders: s.orders.map(o =>
-          o.id === orderId ? { ...o, dispatchLog: updatedLog, status: 'dispatched' } : o
-        ),
-      }));
+    if (error) return;
+
+    // 2. Write to branch_incoming immediately so branch dashboard shows it live
+    await supabase.from('branch_incoming').insert({
+      id:            newEntry.id,
+      branch:        newEntry.branch,
+      item_name:     newEntry.itemName,
+      quantity:      newEntry.quantity,
+      received_at:   newEntry.dispatchedAt,
+      dispatched_by: newEntry.dispatchedBy,
+    });
+
+    // 3. Upsert branch_stock — add to existing qty or create new row
+    const { data: existingStock } = await supabase
+      .from('branch_stock')
+      .select('quantity')
+      .eq('branch', newEntry.branch)
+      .eq('item_name', newEntry.itemName)
+      .single();
+
+    if (existingStock) {
+      await supabase.from('branch_stock')
+        .update({ quantity: existingStock.quantity + newEntry.quantity })
+        .eq('branch', newEntry.branch)
+        .eq('item_name', newEntry.itemName);
+    } else {
+      await supabase.from('branch_stock')
+        .insert({
+          branch:        newEntry.branch,
+          item_name:     newEntry.itemName,
+          quantity:      newEntry.quantity,
+          min_threshold: 10,
+        });
     }
+
+    // 4. Update local state
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === orderId ? { ...o, dispatchLog: updatedLog, status: 'dispatched' } : o
+      ),
+    }));
   },
 
   // ✅ Deletes a dispatch entry and restores stock automatically
@@ -126,18 +162,43 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   deleteDispatchEntry: async (orderId, entryId) => {
     const order = get().orders.find(o => o.id === orderId);
     if (!order) return;
+    const removedEntry = (order.dispatchLog || []).find(d => d.id === entryId);
     const updatedLog = (order.dispatchLog || []).filter(d => d.id !== entryId);
     const newStatus: WorkflowStatus = updatedLog.length === 0 ? 'packed' : 'dispatched';
+
+    // 1. Update bakery_orders
     const { error } = await supabase
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: newStatus })
       .eq('id', orderId);
-    if (!error) {
-      set(s => ({
-        orders: s.orders.map(o =>
-          o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o
-        ),
-      }));
+    if (error) return;
+
+    // 2. Reverse branch_stock and remove branch_incoming entry
+    if (removedEntry) {
+      const { data: existingStock } = await supabase
+        .from('branch_stock')
+        .select('quantity')
+        .eq('branch', removedEntry.branch)
+        .eq('item_name', removedEntry.itemName)
+        .single();
+
+      if (existingStock) {
+        await supabase.from('branch_stock')
+          .update({ quantity: Math.max(0, existingStock.quantity - removedEntry.quantity) })
+          .eq('branch', removedEntry.branch)
+          .eq('item_name', removedEntry.itemName);
+      }
+
+      await supabase.from('branch_incoming')
+        .delete()
+        .eq('id', entryId);
     }
+
+    // 3. Update local state
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o
+      ),
+    }));
   },
 }));
