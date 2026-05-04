@@ -48,6 +48,7 @@ export default function BottomNav() {
       { label: 'Attendance', icon: <CalendarCheck     className="size-5" />, path: '/attendance-salary' },
       { label: 'Staff',      icon: <Users             className="size-5" />, path: '/staff-management' },
       { label: 'Bkry Items', icon: <Settings2         className="size-5" />, path: '/bakery/items'  },
+      { label: 'Recipes',    icon: <ChefHat           className="size-5" />, path: '/bakery/recipes' },
       { label: 'History',    icon: <History           className="size-5" />, path: '/order-history' },
     );
 
