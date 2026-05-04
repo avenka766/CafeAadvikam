@@ -23,11 +23,12 @@ const TABS = [
 interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
-  const { stock, sales, incoming, loading, fetchBranchData, syncIncomingFromDispatches, cleanOldData } =
+  const { stock, sales, incoming, loading, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems } =
     useBranchStore();
 
   const [tab, setTab]       = useState<TabId>('stock');
-  const [syncing, setSyncing] = useState(false);
+  const [syncing,  setSyncing]  = useState(false);
+  const [seeding,  setSeeding]  = useState(false);
 
   const branchStock    = stock[branch]    || [];
   const branchSales    = sales[branch]    || [];
@@ -60,6 +61,12 @@ export default function BranchDashboard({ branch }: Props) {
     setSyncing(false);
   };
 
+  const handleSeed = async () => {
+    setSeeding(true);
+    await seedBranchItems(branch);
+    setSeeding(false);
+  };
+
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
       {/* Header */}
@@ -75,13 +82,22 @@ export default function BranchDashboard({ branch }: Props) {
               })}
             </p>
           </div>
-          <button
-            onClick={handleSync} disabled={syncing || loading}
-            className="flex items-center gap-1.5 text-xs px-3 py-2 border rounded-xl bg-background hover:bg-muted transition shadow-sm"
-          >
-            <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
-            Sync Stock
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleSeed} disabled={seeding || loading}
+              className="flex items-center gap-1.5 text-xs px-3 py-2 border rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition shadow-sm"
+            >
+              <RefreshCw className={cn('size-3', seeding && 'animate-spin')} />
+              Load All Items
+            </button>
+            <button
+              onClick={handleSync} disabled={syncing || loading}
+              className="flex items-center gap-1.5 text-xs px-3 py-2 border rounded-xl bg-background hover:bg-muted transition shadow-sm"
+            >
+              <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
+              Sync Stock
+            </button>
+          </div>
         </div>
 
         {lowStockItems.length > 0 && (

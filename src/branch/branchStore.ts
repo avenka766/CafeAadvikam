@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
+import { BAKERY_ITEMS } from '@/bakery/types';
 
 export interface StockItem {
   itemName: string;
@@ -38,6 +39,7 @@ interface BranchState {
   updateThreshold: (branch: Branch, itemName: string, threshold: number) => Promise<void>;
   syncIncomingFromDispatches: (branch: Branch) => Promise<void>;
   cleanOldData: () => Promise<void>;
+  seedBranchItems: (branch: Branch) => Promise<void>;
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -213,6 +215,27 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         await supabase.from('branch_stock')
           .insert({ branch, item_name: entry.item_name, quantity: entry.quantity, min_threshold: 10 });
       }
+    }
+    await get().fetchBranchData(branch);
+  },
+
+  seedBranchItems: async (branch) => {
+    // Ensure every bakery item exists in branch_stock with qty 0 if not already present.
+    // Uses upsert with ignoreDuplicates so existing rows (with real stock) are never overwritten.
+    const rows = BAKERY_ITEMS.map(item => ({
+      branch,
+      item_name:     item.name,
+      quantity:      0,
+      min_threshold: 10,
+    }));
+    // Insert in batches of 50 to stay within Supabase limits
+    for (let i = 0; i < rows.length; i += 50) {
+      await supabase
+        .from('branch_stock')
+        .upsert(rows.slice(i, i + 50), {
+          onConflict:      'branch,item_name',
+          ignoreDuplicates: true,          // never overwrite existing qty
+        });
     }
     await get().fetchBranchData(branch);
   },
