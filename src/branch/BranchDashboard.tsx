@@ -1,6 +1,6 @@
-// src/branch/BranchDashboard.tsx  ← NEW FILE
+// src/branch/BranchDashboard.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { Package, ShoppingCart, Settings, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Package, ShoppingCart, Settings, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import { StatCard, TabBar } from './components';
@@ -24,9 +24,7 @@ export default function BranchDashboard({ branch }: Props) {
   const { stock, sales, incoming, loading, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems } =
     useBranchStore();
 
-  const [tab, setTab]       = useState<TabId>('stock');
-  const [syncing,  setSyncing]  = useState(false);
-  const [seeding,  setSeeding]  = useState(false);
+  const [tab, setTab] = useState<TabId>('stock');
 
   const branchStock    = stock[branch]    || [];
   const branchSales    = sales[branch]    || [];
@@ -34,9 +32,18 @@ export default function BranchDashboard({ branch }: Props) {
   const colors         = BRANCH_COLORS[branch];
 
   useEffect(() => {
+    // Initial load
     fetchBranchData(branch);
+    syncIncomingFromDispatches(branch);
+    seedBranchItems(branch);
     cleanOldData();
-    const id = setInterval(() => fetchBranchData(branch), 30_000);
+
+    // Auto-refresh every 3 seconds
+    const id = setInterval(() => {
+      fetchBranchData(branch);
+      syncIncomingFromDispatches(branch);
+    }, 3_000);
+
     return () => clearInterval(id);
   }, [branch]);
 
@@ -53,18 +60,6 @@ export default function BranchDashboard({ branch }: Props) {
     [todaySalesLog],
   );
 
-  const handleSync = async () => {
-    setSyncing(true);
-    await syncIncomingFromDispatches(branch);
-    setSyncing(false);
-  };
-
-  const handleSeed = async () => {
-    setSeeding(true);
-    await seedBranchItems(branch);
-    setSeeding(false);
-  };
-
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
       {/* Header */}
@@ -79,22 +74,6 @@ export default function BranchDashboard({ branch }: Props) {
                 weekday: 'long', day: '2-digit', month: 'short',
               })}
             </p>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleSeed} disabled={seeding || loading}
-              className="flex items-center gap-1.5 text-xs px-3 py-2 border rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition shadow-sm"
-            >
-              <RefreshCw className={cn('size-3', seeding && 'animate-spin')} />
-              Load All Items
-            </button>
-            <button
-              onClick={handleSync} disabled={syncing || loading}
-              className="flex items-center gap-1.5 text-xs px-3 py-2 border rounded-xl bg-background hover:bg-muted transition shadow-sm"
-            >
-              <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
-              Sync Stock
-            </button>
           </div>
         </div>
 
