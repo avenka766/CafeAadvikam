@@ -2,9 +2,9 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  ClipboardList, Receipt, UtensilsCrossed, History, BarChart3,
+  ClipboardList, Receipt, UtensilsCrossed, History,
   LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
-  Inbox, Store, Flame, Package, ShoppingCart, Settings2,  // ShoppingCart = branch sales icon
+  Inbox, Store, Flame, Package, ShoppingCart, Settings2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -44,7 +44,6 @@ export default function BottomNav() {
       { label: 'Dashboard',  icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
       { label: 'Menu',       icon: <UtensilsCrossed  className="size-5" />, path: '/menu-management' },
       { label: 'QR Code',    icon: <QrCode           className="size-5" />, path: '/qr-menu' },
-      { label: 'Reports',    icon: <BarChart3         className="size-5" />, path: '/sales-report' },
       { label: 'Attendance', icon: <CalendarCheck     className="size-5" />, path: '/attendance-salary' },
       { label: 'Staff',      icon: <Users             className="size-5" />, path: '/staff-management' },
       { label: 'Bkry Items', icon: <Settings2         className="size-5" />, path: '/bakery/items'  },
