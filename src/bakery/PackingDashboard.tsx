@@ -1,26 +1,126 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Package, Loader2, ChevronDown, ChevronUp, Truck, Trash2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import {
+  Package, Loader2, ChevronDown, ChevronUp, Truck,
+  AlertTriangle, CheckCircle2, ClipboardCheck, Lock, Unlock,
+} from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { BRANCHES } from './types';
-import type { Branch } from './types';
+import type { Branch, PreparedItem } from './types';
 import { cn } from '@/lib/utils';
 
-function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
-  const { submitDispatch, deleteDispatchEntry } = useBakeryStore();
-  const { currentUser } = useAuthStore();
-  const [expanded, setExpanded] = useState(order.status === 'packed');
-  const [selectedItemIdx, setSelectedItemIdx] = useState(0);
-  const [qty, setQty] = useState('');
+// ─── Types ─────────────────────────────────────────────────────────────────────
+interface PackedEntry {
+  itemId:   string;
+  itemName: string;
+  qty:      number;
+  confirmed: boolean;
+}
+
+// ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
+function DispatchRow({
+  itemName, available, onDispatch, submitting,
+}: {
+  itemName:   string;
+  available:  number;
+  onDispatch: (qty: number, branch: Branch) => Promise<void>;
+  submitting: boolean;
+}) {
+  const [qty,    setQty]    = useState('');
   const [branch, setBranch] = useState<Branch>('VRSNB');
-  const [submitting, setSubmitting] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const qtyNum  = parseFloat(qty) || 0;
+  const overQty = qtyNum > available;
 
+  const handle = async () => {
+    if (qtyNum <= 0) return;
+    await onDispatch(qtyNum, branch);
+    setQty('');
+  };
+
+  return (
+    <div className="space-y-2 py-3 border-b border-border last:border-0">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-body font-semibold text-foreground">{itemName}</span>
+        <span className={cn(
+          'text-xs font-body font-bold',
+          available <= 0 ? 'text-destructive' : 'text-emerald-600',
+        )}>
+          {available} available
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="number" min={0.01} step={0.25} placeholder="Qty"
+          value={qty} onChange={e => setQty(e.target.value)}
+          className={cn(
+            'w-24 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',
+            overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',
+          )}
+        />
+        <select value={branch} onChange={e => setBranch(e.target.value as Branch)}
+          className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
+          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <button
+          onClick={handle}
+          disabled={submitting || qtyNum <= 0 || available <= 0}
+          className="h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1 disabled:opacity-40 active:scale-95 transition-all shrink-0"
+        >
+          {submitting ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />}
+          Send
+        </button>
+      </div>
+      {overQty && (
+        <p className="text-[10px] font-body text-amber-600 flex items-center gap-1">
+          <AlertTriangle className="size-3" /> Exceeds available stock
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Single order card ──────────────────────────────────────────────────────
+function PackingOrderCard({
+  order,
+}: {
+  order: ReturnType<typeof useBakeryStore.getState>['orders'][0];
+}) {
+  const { submitDispatch } = useBakeryStore();
+  const { currentUser } = useAuthStore();
+
+  const [expanded,  setExpanded]  = useState(order.status === 'packed');
+  const [dispatchingItem, setDispatchingItem] = useState<string | null>(null);
+
+  // ── Phase 1: Pack confirmation state ──────────────────────────────────────
+  // Pre-populate from preparedItems (set by baker)
+  const [packedEntries, setPackedEntries] = useState<PackedEntry[]>(() =>
+    (order.preparedItems || []).map(p => ({
+      itemId:    p.itemId,
+      itemName:  p.itemName,
+      qty:       p.quantityPrepared,
+      confirmed: false,
+    }))
+  );
+
+  const allConfirmed = packedEntries.length > 0 && packedEntries.every(e => e.confirmed);
+
+  const confirmEntry = (idx: number) => {
+    setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: true } : e));
+  };
+  const unconfirmEntry = (idx: number) => {
+    setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: false } : e));
+  };
+  const updateEntryQty = (idx: number, val: string) => {
+    const n = parseFloat(val);
+    if (!isNaN(n) && n >= 0) {
+      setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, qty: n, confirmed: false } : e));
+    }
+  };
+
+  // ── Phase 2: Dispatch ─────────────────────────────────────────────────────
   const preparedItems = order.preparedItems || [];
-  const dispatchLog = order.dispatchLog || [];
-  const selectedPrepared = preparedItems[selectedItemIdx];
+  const dispatchLog   = order.dispatchLog   || [];
 
-  // ── Stock calc: available = prepared - already dispatched for this item
   const stockByItem = useMemo(() => {
     const result: Record<string, { prepared: number; dispatched: number; available: number }> = {};
     preparedItems.forEach(p => {
@@ -28,18 +128,16 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
         .filter(d => d.itemName === p.itemName)
         .reduce((s, d) => s + d.quantity, 0);
       result[p.itemName] = {
-        prepared: p.quantityPrepared,
+        prepared:   p.quantityPrepared,
         dispatched,
-        available: p.quantityPrepared - dispatched,
+        available:  p.quantityPrepared - dispatched,
       };
     });
     return result;
   }, [preparedItems, dispatchLog]);
 
-  const selectedStock = selectedPrepared ? stockByItem[selectedPrepared.itemName] : null;
-  const qtyNum = Number(qty);
-  const overStock = selectedStock ? qtyNum > selectedStock.available : false;
-  const noStock = selectedStock ? selectedStock.available <= 0 : false;
+  const allDispatched = preparedItems.length > 0 &&
+    preparedItems.every(p => (stockByItem[p.itemName]?.available ?? 1) <= 0);
 
   const branchColor: Record<Branch, string> = {
     VRSNB: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -47,165 +145,179 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
     Hosur: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   };
 
-  const handleDispatch = async () => {
-    if (!currentUser || !selectedPrepared || qtyNum <= 0) return;
-    setSubmitting(true);
+  const handleDispatch = async (itemName: string, qty: number, branch: Branch) => {
+    if (!currentUser) return;
+    setDispatchingItem(itemName);
     await submitDispatch(order.id, {
-      itemName: selectedPrepared.itemName,
-      quantity: qtyNum,
+      itemName,
+      quantity: qty,
       branch,
       dispatchedAt: new Date().toISOString(),
       dispatchedBy: currentUser.displayName,
     });
-    setSubmitting(false);
-    setQty('');
+    setDispatchingItem(null);
   };
 
-  const handleDelete = async (entryId: string) => {
-    setDeleting(entryId);
-    await deleteDispatchEntry(order.id, entryId);
-    setDeleting(null);
-  };
+  // Status badge
+  const statusBadge = allDispatched
+    ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+    : allConfirmed
+    ? 'bg-blue-100 text-blue-700 border-blue-200'
+    : 'bg-purple-100 text-purple-700 border-purple-200';
+
+  const statusLabel = allDispatched
+    ? 'DISPATCHED'
+    : allConfirmed
+    ? 'READY TO DISPATCH'
+    : 'PACKING';
 
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden">
       {/* Header */}
-      <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setExpanded(v => !v)}>
+      <button
+        className="w-full px-4 py-3 flex items-center gap-3 text-left"
+        onClick={() => setExpanded(v => !v)}
+      >
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-0.5">
             <span className="font-display font-bold text-foreground">Order #{order.orderNumber}</span>
-            <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full border',
-              order.status === 'dispatched'
-                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                : 'bg-purple-100 text-purple-700 border-purple-200')}>
-              {order.status === 'dispatched' ? 'DISPATCHED' : 'READY TO PACK'}
+            <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full border', statusBadge)}>
+              {statusLabel}
             </span>
           </div>
           <p className="text-[11px] font-body text-muted-foreground">
             {preparedItems.map(p => `${p.itemName} ×${p.quantityPrepared}`).join(', ')}
           </p>
+          <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+            {packedEntries.filter(e => e.confirmed).length}/{packedEntries.length} items confirmed packed
+          </p>
         </div>
-        {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
+        {expanded
+          ? <ChevronUp   className="size-4 text-muted-foreground shrink-0" />
+          : <ChevronDown className="size-4 text-muted-foreground shrink-0" />
+        }
       </button>
 
       {expanded && (
-        <div className="border-t border-border px-4 pb-4 pt-3 space-y-4">
+        <div className="border-t border-border px-4 pb-4 pt-3 space-y-5">
 
-          {/* ── Stock Overview ─────────────────────────────── */}
+          {/* ── PHASE 1: Packing confirmation ────────────────── */}
           <div>
-            <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">Stock Available</p>
+            <div className="flex items-center gap-2 mb-2">
+              <ClipboardCheck className="size-4 text-primary" />
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">
+                Step 1 — Confirm Packed Quantities
+              </p>
+            </div>
+            <p className="text-[10px] font-body text-muted-foreground mb-3">
+              Verify each item's packed quantity. Confirm all before dispatching.
+            </p>
+
             <div className="space-y-2">
-              {preparedItems.map((p, idx) => {
+              {packedEntries.map((entry, idx) => (
+                <div
+                  key={entry.itemId}
+                  className={cn(
+                    'rounded-xl border p-3 transition-all',
+                    entry.confirmed
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-border bg-muted/20',
+                  )}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-body font-semibold text-foreground">
+                      {entry.itemName}
+                    </span>
+                    {entry.confirmed
+                      ? (
+                        <button
+                          onClick={() => unconfirmEntry(idx)}
+                          className="flex items-center gap-1 text-[10px] font-body font-bold text-emerald-700 bg-emerald-100 px-2 py-1 rounded-lg hover:bg-emerald-200 transition-colors"
+                        >
+                          <CheckCircle2 className="size-3" /> Confirmed — Undo
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => confirmEntry(idx)}
+                          disabled={entry.qty <= 0}
+                          className="flex items-center gap-1 text-[10px] font-body font-bold text-primary bg-primary/10 px-2 py-1 rounded-lg hover:bg-primary/20 transition-colors disabled:opacity-40"
+                        >
+                          <CheckCircle2 className="size-3" /> Confirm
+                        </button>
+                      )
+                    }
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-[10px] font-body text-muted-foreground shrink-0">
+                      Packed qty:
+                    </label>
+                    <input
+                      type="number" min={0.01} step={0.25}
+                      value={entry.qty}
+                      onChange={e => updateEntryQty(idx, e.target.value)}
+                      disabled={entry.confirmed}
+                      className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <span className="text-[10px] font-body text-muted-foreground">
+                      (Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'})
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* All confirmed banner */}
+            {allConfirmed && (
+              <div className="mt-3 flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                <Unlock className="size-4 text-emerald-600 shrink-0" />
+                <p className="text-xs font-body font-semibold text-emerald-700">
+                  All items confirmed! Dispatch panel is now unlocked below.
+                </p>
+              </div>
+            )}
+            {!allConfirmed && (
+              <div className="mt-3 flex items-center gap-2 bg-muted/40 border border-border rounded-xl px-3 py-2">
+                <Lock className="size-4 text-muted-foreground shrink-0" />
+                <p className="text-xs font-body text-muted-foreground">
+                  Confirm all {packedEntries.length} item{packedEntries.length !== 1 ? 's' : ''} above to unlock dispatch.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── PHASE 2: Dispatch (locked until all confirmed) ── */}
+          <div className={cn(
+            'rounded-2xl border transition-all',
+            allConfirmed ? 'border-emerald-200 bg-emerald-50/30' : 'border-border bg-muted/20 opacity-50 pointer-events-none select-none',
+          )}>
+            <div className="px-4 pt-3 pb-1">
+              <div className="flex items-center gap-2 mb-1">
+                <Truck className={cn('size-4', allConfirmed ? 'text-emerald-600' : 'text-muted-foreground')} />
+                <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">
+                  Step 2 — Dispatch to Branches
+                </p>
+                {!allConfirmed && <Lock className="size-3 text-muted-foreground ml-auto" />}
+              </div>
+              <p className="text-[10px] font-body text-muted-foreground mb-2">
+                Select quantity and branch for each item, then tap Send.
+              </p>
+            </div>
+
+            <div className="px-4 pb-3">
+              {preparedItems.map(p => {
                 const stock = stockByItem[p.itemName];
-                const pct = stock.prepared > 0 ? Math.round((stock.available / stock.prepared) * 100) : 0;
-                const isSelected = idx === selectedItemIdx;
                 return (
-                  <button
+                  <DispatchRow
                     key={p.itemId}
-                    onClick={() => { setSelectedItemIdx(idx); setQty(''); }}
-                    className={cn(
-                      'w-full rounded-xl border p-3 text-left transition-all',
-                      isSelected ? 'border-primary bg-primary/5' : 'border-border bg-muted/20 hover:border-primary/40'
-                    )}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className={cn('size-3.5 rounded-full border-2 flex items-center justify-center',
-                          isSelected ? 'border-primary' : 'border-muted-foreground/40')}>
-                          {isSelected && <span className="size-1.5 rounded-full bg-primary" />}
-                        </span>
-                        <span className="text-sm font-body font-semibold text-foreground">{p.itemName}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {stock.available <= 0
-                          ? <span className="text-[10px] font-body font-bold text-destructive flex items-center gap-1"><AlertTriangle className="size-3" /> Out of Stock</span>
-                          : stock.available < stock.prepared * 0.2
-                          ? <span className="text-[10px] font-body font-bold text-amber-600">Low Stock</span>
-                          : <span className="text-[10px] font-body font-bold text-emerald-600">In Stock</span>
-                        }
-                      </div>
-                    </div>
-                    {/* Progress bar */}
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden mb-1">
-                      <div
-                        className={cn('h-full rounded-full transition-all',
-                          stock.available <= 0 ? 'bg-destructive'
-                          : stock.available < stock.prepared * 0.2 ? 'bg-amber-400'
-                          : 'bg-emerald-500'
-                        )}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[10px] font-body text-muted-foreground">
-                      <span>Prepared: <strong className="text-foreground">{stock.prepared}</strong></span>
-                      <span>Dispatched: <strong className="text-destructive">{stock.dispatched}</strong></span>
-                      <span>Available: <strong className={stock.available <= 0 ? 'text-destructive' : 'text-emerald-600'}>{stock.available}</strong></span>
-                    </div>
-                  </button>
+                    itemName={p.itemName}
+                    available={stock?.available ?? 0}
+                    onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
+                    submitting={dispatchingItem === p.itemName}
+                  />
                 );
               })}
             </div>
           </div>
-
-          {/* ── Dispatch Form ──────────────────────────────── */}
-          {selectedPrepared && (
-            <div>
-              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">
-                Dispatch — {selectedPrepared.itemName}
-              </p>
-
-              {/* Warning if out of stock */}
-              {noStock && (
-                <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2 mb-2">
-                  <AlertTriangle className="size-4 text-destructive shrink-0" />
-                  <p className="text-[11px] font-body text-destructive font-semibold">No stock available for {selectedPrepared.itemName}</p>
-                </div>
-              )}
-
-              <div className="flex gap-2 mb-2">
-                <div className="w-24">
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.25}
-                    value={qty}
-                    onChange={e => setQty(e.target.value)}
-                    placeholder="Qty"
-                    className={cn(
-                      'w-full h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',
-                      overStock ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30'
-                    )}
-                  />
-                </div>
-                <select value={branch} onChange={e => setBranch(e.target.value as Branch)}
-                  className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-                </select>
-              </div>
-
-              {/* Over-stock warning */}
-              {overStock && (
-                <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-2">
-                  <AlertTriangle className="size-4 text-amber-500 shrink-0" />
-                  <p className="text-[11px] font-body text-amber-700 font-semibold">
-                    Qty ({qtyNum}) exceeds available stock ({selectedStock?.available}). You can still dispatch but stock will go negative.
-                  </p>
-                </div>
-              )}
-
-              <button
-                onClick={handleDispatch}
-                disabled={submitting || !qty || qtyNum <= 0}
-                className={cn(
-                  'w-full h-11 rounded-xl text-white text-sm font-body font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50',
-                  noStock ? 'bg-amber-500' : 'bg-emerald-600'
-                )}
-              >
-                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}
-                {noStock ? '⚠️ Force Dispatch to ' : 'Dispatch to '}{branch}
-              </button>
-            </div>
-          )}
 
           {/* ── Dispatch Log ───────────────────────────────── */}
           {dispatchLog.length > 0 && (
@@ -227,21 +339,20 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                     <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full border shrink-0', branchColor[d.branch])}>
                       {d.branch}
                     </span>
-                    {/* ✅ Delete button — restores stock on delete */}
-                    <button
-                      onClick={() => handleDelete(d.id)}
-                      disabled={deleting === d.id}
-                      title="Delete and restore stock"
-                      className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors disabled:opacity-40 shrink-0"
-                    >
-                      {deleting === d.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                    </button>
+                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
                   </div>
                 ))}
               </div>
-              <p className="text-[10px] font-body text-muted-foreground mt-1.5 flex items-center gap-1">
-                <CheckCircle2 className="size-3 text-emerald-500" />
-                Deleting a log entry restores the quantity back to available stock.
+
+            </div>
+          )}
+
+          {/* All dispatched */}
+          {allDispatched && (
+            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+              <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+              <p className="text-xs font-body font-semibold text-emerald-700">
+                All stock dispatched for this order.
               </p>
             </div>
           )}
@@ -251,49 +362,64 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   );
 }
 
+// ─── Main dashboard ─────────────────────────────────────────────────────────
 export default function PackingDashboard() {
   const { orders, fetchOrders, loading } = useBakeryStore();
-
-  // ✅ Load data immediately on mount
   useEffect(() => { fetchOrders(); }, []);
 
   const packingOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
 
-  // Branch totals across all orders
-  const branchTotals: Record<string, number> = {};
+  // Today's dispatch totals per branch
+  const branchTotals: Record<Branch, number> = { VRSNB: 0, SNB: 0, Hosur: 0 };
+  const today = new Date().toDateString();
   packingOrders.forEach(o =>
     (o.dispatchLog || []).forEach(d => {
-      branchTotals[d.branch] = (branchTotals[d.branch] || 0) + d.quantity;
+      if (new Date(d.dispatchedAt).toDateString() === today)
+        branchTotals[d.branch] = (branchTotals[d.branch] || 0) + d.quantity;
     })
   );
+
+  const toPackCount      = packingOrders.filter(o => o.status === 'packed').length;
+  const dispatchedCount  = packingOrders.filter(o => o.status === 'dispatched').length;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24 px-4">
       <div className="pt-4 pb-2 flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Packing</h1>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">Pack & dispatch to branches</p>
+          <p className="text-xs font-body text-muted-foreground mt-0.5">
+            Confirm packed quantities · then dispatch to branches
+          </p>
         </div>
-        <div className="bg-purple-100 border border-purple-200 text-purple-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">
-          {orders.filter(o => o.status === 'packed').length} To Pack
+        <div className="flex gap-2">
+          {toPackCount > 0 && (
+            <div className="bg-purple-100 border border-purple-200 text-purple-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">
+              {toPackCount} To Pack
+            </div>
+          )}
+          {dispatchedCount > 0 && (
+            <div className="bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">
+              {dispatchedCount} Done
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Branch dispatch summary */}
-      {Object.keys(branchTotals).length > 0 && (
-        <div className="grid grid-cols-3 gap-2 mb-4">
-          {BRANCHES.map(b => (
-            <div key={b} className="bg-card border border-border rounded-xl p-3 text-center">
-              <p className="font-display font-bold text-lg tabular-nums">{branchTotals[b] || 0}</p>
-              <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">{b}</p>
-              <p className="text-[9px] font-body text-muted-foreground">dispatched</p>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Today's branch dispatch summary */}
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        {BRANCHES.map(b => (
+          <div key={b} className="bg-card border border-border rounded-xl p-3 text-center">
+            <p className="font-display font-bold text-lg tabular-nums">{branchTotals[b] || 0}</p>
+            <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">{b}</p>
+            <p className="text-[9px] font-body text-muted-foreground">today</p>
+          </div>
+        ))}
+      </div>
 
       {loading ? (
-        <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
+        <div className="flex justify-center py-16">
+          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        </div>
       ) : packingOrders.length > 0 ? (
         <div className="space-y-3">
           {packingOrders.map(o => <PackingOrderCard key={o.id} order={o} />)}
