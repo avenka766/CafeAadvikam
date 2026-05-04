@@ -1,22 +1,20 @@
 // src/branch/BranchDashboard.tsx  ← NEW FILE
 import { useEffect, useMemo, useState } from 'react';
-import { Package, ShoppingCart, FileText, Settings, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Package, ShoppingCart, Settings, AlertTriangle, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import { StatCard, TabBar } from './components';
 import { StockTab }    from './tabs/StockTab';
 import { SalesTab }    from './tabs/SalesTab';
-import { ReportsTab }  from './tabs/ReportsTab';
 import { SettingsTab } from './tabs/SettingsTab';
 import type { Branch } from './types';
 import { BRANCH_COLORS } from './types';
 
-type TabId = 'stock' | 'sales' | 'reports' | 'settings';
+type TabId = 'stock' | 'sales' | 'settings';
 
 const TABS = [
   { id: 'stock'    as const, label: 'Stock',      icon: Package },
   { id: 'sales'    as const, label: 'Sales',      icon: ShoppingCart },
-  { id: 'reports'  as const, label: 'Reports',    icon: FileText },
   { id: 'settings' as const, label: 'Thresholds', icon: Settings },
 ];
 
@@ -129,7 +127,6 @@ export default function BranchDashboard({ branch }: Props) {
       <div className="px-4 space-y-3">
         {tab === 'stock'    && <StockTab    branch={branch} branchStock={branchStock} branchIncoming={branchIncoming} loading={loading} />}
         {tab === 'sales'    && <SalesTab    branch={branch} branchStock={branchStock} todaySalesLog={todaySalesLog}   totalTodayQty={totalTodayQty} />}
-        {tab === 'reports'  && <ReportsTab  branch={branch} branchSales={branchSales} />}
         {tab === 'settings' && <SettingsTab branch={branch} branchStock={branchStock} />}
       </div>
     </div>
