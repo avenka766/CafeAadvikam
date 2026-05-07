@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2,
   Loader2, Receipt, IndianRupee, Banknote, Smartphone,
-  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight,
+  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight, SplitSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -25,6 +25,11 @@ interface CartItem {
 }
 
 type PaymentMethod = 'cash' | 'upi' | 'card';
+
+interface PaymentSplit {
+  method: PaymentMethod;
+  amount: string; // string so input can be empty/partial while typing
+}
 
 interface Props {
   branch: Branch;
@@ -379,13 +384,13 @@ export function BillTab({ branch, branchStock }: Props) {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
+  const [splits, setSplits] = useState<PaymentSplit[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
 
   useEffect(() => {
-    setCart([]); setPaymentMethod(null); setError(''); setSearch('');
+    setCart([]); setSplits([]); setError(''); setSearch('');
   }, [branch]);
 
   const availableItems = useMemo(
@@ -472,7 +477,7 @@ export function BillTab({ branch, branchStock }: Props) {
   const deleteFromCart = (name: string) =>
     setCart((prev) => prev.filter((c) => c.itemName !== name));
 
-  const clearCart = () => { setCart([]); setPaymentMethod(null); setError(''); };
+  const clearCart = () => { setCart([]); setSplits([]); setError(''); };
 
   const cartTotal = useMemo(
     () => cart.reduce((sum, c) => sum + (c.lineTotal ?? 0), 0),
@@ -481,16 +486,69 @@ export function BillTab({ branch, branchStock }: Props) {
   const allPriced = cart.length > 0 && cart.every((c) => c.price != null);
   const cartCount = cart.length;
 
+  // Part-payment helpers
+  const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; icon: React.ReactNode }[] = [
+    { key: 'cash', label: 'Cash',  icon: <Banknote  className="size-4" /> },
+    { key: 'upi',  label: 'UPI',   icon: <Smartphone className="size-4" /> },
+    { key: 'card', label: 'Card',  icon: <CreditCard className="size-4" /> },
+  ];
+
+  const selectedMethods = splits.map((s) => s.method);
+  const splitsTotal = splits.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
+  const splitsMatch = allPriced
+    ? Math.abs(splitsTotal - cartTotal) < 0.01
+    : splits.length > 0;
+  const splitsPending = allPriced ? Math.round((cartTotal - splitsTotal) * 100) / 100 : 0;
+
+  const toggleMethod = (method: PaymentMethod) => {
+    setError('');
+    setSplits((prev) => {
+      const exists = prev.find((s) => s.method === method);
+      if (exists) {
+        // Remove this method
+        const next = prev.filter((s) => s.method !== method);
+        // Re-auto-fill last method with full remainder if only 1 left
+        if (next.length === 1 && allPriced) {
+          return [{ ...next[0], amount: String(cartTotal) }];
+        }
+        return next;
+      }
+      // Add new method
+      if (prev.length === 0) {
+        // First method — default to full total
+        return [{ method, amount: allPriced ? String(cartTotal) : '' }];
+      }
+      // Second/third method — move remainder into new slot, recalc first
+      const existingTotal = prev.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+      const remainder = allPriced ? Math.max(0, Math.round((cartTotal - existingTotal) * 100) / 100) : 0;
+      return [...prev, { method, amount: remainder > 0 ? String(remainder) : '' }];
+    });
+  };
+
+  const updateSplitAmount = (method: PaymentMethod, raw: string) => {
+    setError('');
+    setSplits((prev) => prev.map((s) => s.method === method ? { ...s, amount: raw } : s));
+  };
+
+  const paymentMethodLabel = splits.length === 0
+    ? null
+    : splits.map((s) => s.method).join('+');
+
   const handleCheckout = async () => {
     if (cart.length === 0) return;
-    if (!paymentMethod) { setError('Select a payment method.'); return; }
+    if (splits.length === 0) { setError('Select at least one payment method.'); return; }
+    if (allPriced && !splitsMatch) {
+      setError(`Payment total ₹${splitsTotal} doesn't match bill ₹${cartTotal}. Adjust amounts.`);
+      return;
+    }
     setError(''); setSubmitting(true);
 
     const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
     const succeeded: string[] = [];
+    const methodLabel = paymentMethodLabel ?? 'cash';
 
     for (const item of cart) {
-      const err = await recordSale(branch, item.itemName, item.quantity, soldBy, paymentMethod);
+      const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel);
       if (err) {
         const note = succeeded.length > 0 ? ` (Recorded: ${succeeded.join(', ')})` : '';
         setError(`Failed on "${item.itemName}": ${err}.${note}`);
@@ -598,7 +656,10 @@ export function BillTab({ branch, branchStock }: Props) {
           </div>
 
           {/* Cart items */}
-          <div className="divide-y max-h-64 overflow-y-auto overscroll-contain">
+          <div
+            className="divide-y max-h-64 overflow-y-scroll overscroll-contain"
+            onWheel={(e) => e.stopPropagation()}
+          >
             {cart.map((c) => (
               <CartLineItem
                 key={c.itemName}
@@ -638,31 +699,84 @@ export function BillTab({ branch, branchStock }: Props) {
               )}
             </div>
 
-            {/* Payment method */}
-            <div>
-              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                Payment Method
-              </p>
-              <div className="grid grid-cols-3 gap-2">
-                {([
-                  { key: 'cash' as const, label: 'Cash',  icon: <Banknote  className="size-4" /> },
-                  { key: 'upi'  as const, label: 'UPI',   icon: <Smartphone className="size-4" /> },
-                  { key: 'card' as const, label: 'Card',  icon: <CreditCard className="size-4" /> },
-                ]).map((m) => (
-                  <button
-                    key={m.key}
-                    onClick={() => { setPaymentMethod(m.key); setError(''); }}
-                    className={cn(
-                      'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                      paymentMethod === m.key
-                        ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
-                        : 'bg-card border-border text-foreground hover:bg-muted/50',
-                    )}
-                  >
-                    {m.icon}{m.label}
-                  </button>
-                ))}
+            {/* Payment — part payment */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                  Payment Method
+                </p>
+                {splits.length > 1 && (
+                  <span className="flex items-center gap-1 text-[10px] text-primary font-semibold">
+                    <SplitSquare className="size-3" /> Split payment
+                  </span>
+                )}
               </div>
+
+              {/* Method toggle buttons */}
+              <div className="grid grid-cols-3 gap-2">
+                {PAYMENT_OPTIONS.map((m) => {
+                  const active = selectedMethods.includes(m.key);
+                  return (
+                    <button
+                      key={m.key}
+                      onClick={() => toggleMethod(m.key)}
+                      className={cn(
+                        'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                        active
+                          ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
+                          : 'bg-card border-border text-foreground hover:bg-muted/50',
+                      )}
+                    >
+                      {m.icon}{m.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Amount inputs for each selected method */}
+              {splits.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {splits.map((s) => {
+                    const opt = PAYMENT_OPTIONS.find((o) => o.key === s.method)!;
+                    return (
+                      <div key={s.method} className="flex items-center gap-3 bg-muted/30 rounded-xl px-3 py-2">
+                        <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground w-14 shrink-0">
+                          {opt.icon}{opt.label}
+                        </span>
+                        <span className="text-xs text-muted-foreground">₹</span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          step="0.01"
+                          value={s.amount}
+                          onChange={(e) => updateSplitAmount(s.method, e.target.value)}
+                          placeholder="0"
+                          className="flex-1 h-8 px-2 rounded-lg border bg-background text-sm font-mono text-right focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {/* Balance row */}
+                  {allPriced && splits.length > 1 && (
+                    <div className={cn(
+                      'flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold',
+                      splitsMatch
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                        : 'bg-amber-50 text-amber-700 border border-amber-100',
+                    )}>
+                      <span>{splitsMatch ? '✓ Amounts match' : splitsPending > 0 ? 'Remaining' : 'Over by'}</span>
+                      {!splitsMatch && (
+                        <span className="font-bold tabular-nums">
+                          {formatCurrency(Math.abs(splitsPending))}
+                        </span>
+                      )}
+                      {splitsMatch && <span>✓</span>}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {error && (
@@ -673,7 +787,7 @@ export function BillTab({ branch, branchStock }: Props) {
 
             <button
               onClick={handleCheckout}
-              disabled={submitting || !paymentMethod}
+              disabled={submitting || splits.length === 0 || (allPriced && !splitsMatch)}
               className="w-full py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md"
             >
               {submitting
