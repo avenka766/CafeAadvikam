@@ -37,9 +37,9 @@ export default function BranchDashboard({ branch }: Props) {
     seedBranchItems(branch);
     cleanOldData();
 
+    // Only poll stock data every 30s — sync is mount-only to prevent stock inflation
     const id = setInterval(() => {
       fetchBranchData(branch);
-      syncIncomingFromDispatches(branch);
     }, 30_000);
 
     return () => clearInterval(id);
