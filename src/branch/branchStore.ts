@@ -134,15 +134,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // FIX #9 — accept and store paymentMethod
   recordSale: async (branch, itemName, qty, soldBy, paymentMethod) => {
     const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
-    if (!currentStock || currentStock.quantity < qty) return 'Insufficient stock';
+    if (!currentStock) return 'Item not found in stock';
+    if (currentStock.quantity < qty) return 'Insufficient stock';
 
-    const newQty = currentStock.quantity - qty;
+    // Round to 3 decimal places to avoid floating-point artifacts (e.g. 4.999999999)
+    const newQty = Math.round((currentStock.quantity - qty) * 1000) / 1000;
 
-    const { error: stockErr } = await supabase
+    const { error: stockErr, count } = await supabase
       .from('branch_stock')
       .update({ quantity: newQty })
-      .eq('branch', branch).eq('item_name', itemName);
-    if (stockErr) return 'Failed to update stock';
+      .eq('branch', branch)
+      .eq('item_name', itemName)
+      .select(); // .select() makes Supabase return affected rows so we can detect 0-row updates
+
+    if (stockErr) {
+      console.error('[recordSale] stock update error:', stockErr);
+      // Surface the real DB error so you can diagnose it
+      return `Failed to update stock: ${stockErr.message}`;
+    }
+    // Guard: if no row was matched (item_name mismatch / row missing), fail loudly
+    if (count === 0) {
+      console.error('[recordSale] stock row not found for', itemName, 'in', branch);
+      return 'Stock row not found — please refresh and try again';
+    }
 
     const { data: saleData, error: saleErr } = await supabase
       .from('branch_sales')
