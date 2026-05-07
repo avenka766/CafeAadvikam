@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2,
   Loader2, Receipt, IndianRupee, Banknote, Smartphone,
-  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight, SplitSquare,
+  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight, GitBranch,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -707,7 +707,7 @@ export function BillTab({ branch, branchStock }: Props) {
                 </p>
                 {splits.length > 1 && (
                   <span className="flex items-center gap-1 text-[10px] text-primary font-semibold">
-                    <SplitSquare className="size-3" /> Split payment
+                    <GitBranch className="size-3" /> Split payment
                   </span>
                 )}
               </div>
