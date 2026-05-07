@@ -1218,23 +1218,6 @@ export const RECIPE_DEFINITIONS: Record<string, RecipeDefinition> = {
     { material: 'Gram Flour (Boondhi)', qty: 1.5, unit: 'kg' },
     ],
   },
-  'ragi-mixture': {
-    outputQty: 8.0,
-    outputUnit: 'kg',
-    materials: [
-    { material: 'Ragi Flour', qty: 2.0, unit: 'kg' },
-    { material: 'Shankar Gram Flour', qty: 2.0, unit: 'kg' },
-    { material: 'Best Rice Flour', qty: 0.2, unit: 'kg' },
-    { material: 'Salt', qty: 0.17, unit: 'kg' },
-    { material: 'Pepper', qty: 0.04, unit: 'kg' },
-    { material: 'Chicken Masala', qty: 0.015, unit: 'kg' },
-    { material: 'Garam Masala', qty: 0.015, unit: 'kg' },
-    { material: 'Chilli Powder', qty: 0.02, unit: 'kg' },
-    { material: 'Avalakki', qty: 0.25, unit: 'kg' },
-    { material: 'Groundnut', qty: 0.25, unit: 'kg' },
-    { material: 'Cashew', qty: 0.25, unit: 'kg' },
-    ],
-  },
   'kara-boondhi': {
     outputQty: 7.0,
     outputUnit: 'kg',
