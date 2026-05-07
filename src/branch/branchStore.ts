@@ -166,10 +166,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         quantity_sold:  qty,
         sold_at:        new Date().toISOString(),
         sold_by:        soldBy,
-        payment_method: paymentMethod, // FIX #9
+        payment_method: paymentMethod,
       })
       .select().single();
-    if (saleErr) return 'Failed to record sale';
+    if (saleErr) {
+      console.error('[recordSale] sale insert error:', saleErr);
+      return `Failed to record sale: ${saleErr.message}`;
+    }
 
     const newSale: SaleRecord = {
       id:            saleData.id,
