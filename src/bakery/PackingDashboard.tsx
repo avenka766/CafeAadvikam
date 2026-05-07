@@ -89,7 +89,7 @@ function PackingOrderCard({
   const { currentUser } = useAuthStore();
 
   const [expanded,  setExpanded]  = useState(order.status === 'packed');
-  const [dispatchingItem, setDispatchingItem] = useState<string | null>(null);
+  const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
 
   // ── Phase 1: Pack confirmation state ──────────────────────────────────────
   // Pre-populate from preparedItems (set by baker)
@@ -147,7 +147,9 @@ function PackingOrderCard({
 
   const handleDispatch = async (itemName: string, qty: number, branch: Branch) => {
     if (!currentUser) return;
-    setDispatchingItem(itemName);
+    // Block if any dispatch for this order is already in-flight (prevents race conditions)
+    if (dispatchingItems.size > 0) return;
+    setDispatchingItems(prev => new Set(prev).add(itemName));
     await submitDispatch(order.id, {
       itemName,
       quantity: qty,
@@ -155,7 +157,7 @@ function PackingOrderCard({
       dispatchedAt: new Date().toISOString(),
       dispatchedBy: currentUser.displayName,
     });
-    setDispatchingItem(null);
+    setDispatchingItems(prev => { const s = new Set(prev); s.delete(itemName); return s; });
   };
 
   // Status badge
@@ -312,7 +314,7 @@ function PackingOrderCard({
                     itemName={p.itemName}
                     available={stock?.available ?? 0}
                     onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
-                    submitting={dispatchingItem === p.itemName}
+                    submitting={dispatchingItems.size > 0}
                   />
                 );
               })}

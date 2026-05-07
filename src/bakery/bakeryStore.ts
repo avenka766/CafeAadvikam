@@ -103,12 +103,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   submitDispatch: async (orderId, entry) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) return;
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
-    const updatedLog = [...(order.dispatchLog || []), newEntry];
 
-    // 1. Update bakery_orders dispatch_log
+    // 1. Fetch the LATEST dispatch_log directly from DB to avoid race conditions.
+    //    Using local state (get().orders) risks overwriting sibling dispatches that
+    //    were written between the last fetchOrders and now.
+    const { data: freshOrder, error: fetchErr } = await supabase
+      .from('bakery_orders')
+      .select('dispatch_log')
+      .eq('id', orderId)
+      .single();
+    if (fetchErr || !freshOrder) return;
+
+    const updatedLog: DispatchEntry[] = [
+      ...((freshOrder.dispatch_log as DispatchEntry[]) || []),
+      newEntry,
+    ];
+
+    // 2. Update bakery_orders dispatch_log
     const { error } = await supabase
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: 'dispatched' })
