@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { useVenueStore } from '@/stores/venueStore';
+import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star } from 'lucide-react';
@@ -23,27 +24,8 @@ const BAKERY = {
   about: 'Mr. Venugopal\'s father started Sri Nanjundeshwara Bakery (SNB) in 1988. Over 36 years of serving unforgettable melting sweets, cookies, cakes and the most exquisite savouries.',
   logo: 'https://www.snbbakery.in/img/SNB.png',
 };
-const SNB_PRODUCTS = [
-  { name: 'Dough Nut',         price: 15,   img: 'https://www.snbbakery.in/images/1664203693_donut.jpg',               cat: 'Bakery' },
-  { name: 'Banana Cake',       price: 440,  img: 'https://www.snbbakery.in/images/1664205307_bananacake.jpg',           cat: 'Cakes' },
-  { name: 'Black Forest',      price: 550,  img: 'https://www.snbbakery.in/images/1664204580_blackforest.jpg',          cat: 'Cakes' },
-  { name: 'Carrot Cake',       price: 440,  img: 'https://www.snbbakery.in/images/1664188140_carrotcake.jpg',           cat: 'Cakes' },
-  { name: 'Butter Scotch',     price: 800,  img: 'https://www.snbbakery.in/images/1664204542_butterscotch.jpg',         cat: 'Cakes' },
-  { name: 'SPL Bun',           price: 10,   img: 'https://www.snbbakery.in/images/1664187794_bun1.jpg',                 cat: 'Bakery' },
-  { name: 'Pakoda',            price: 320,  img: 'https://www.snbbakery.in/images/1664212527_pakkoda.jpeg',             cat: 'Snacks' },
-  { name: 'Kara Boondhi',      price: 300,  img: 'https://www.snbbakery.in/images/1664181239_karapoondhi.jpg',          cat: 'Snacks' },
-  { name: 'Masala Cashew',     price: 1200, img: 'https://www.snbbakery.in/images/1664178165_masala-cashew-nut.jpg',    cat: 'Snacks' },
-  { name: 'Benne Muruk',       price: 300,  img: 'https://www.snbbakery.in/images/1664211674_murukku.jpg.jpg',          cat: 'Snacks' },
-  { name: 'Rings',             price: 300,  img: 'https://www.snbbakery.in/images/1664211694_andhra-murukku.jpg',       cat: 'Snacks' },
-  { name: 'Wheat Biscuit',     price: 440,  img: 'https://www.snbbakery.in/images/1664253033_wheat-biscuit.jpg',        cat: 'Biscuits' },
-  { name: 'Coconut Biscuit',   price: 440,  img: 'https://www.snbbakery.in/images/1664204841_coconutbiscuit.jpg',       cat: 'Biscuits' },
-  { name: 'Honey Badam Cookies', price: 440, img: 'https://www.snbbakery.in/images/1664278859_Honey-Almond-Cookies.jpg', cat: 'Biscuits' },
-  { name: 'Peda',              price: 440,  img: 'https://www.snbbakery.in/images/1664209287_peda.jpg',                 cat: 'Sweets' },
-  { name: 'Jamoon',            price: 20,   img: 'https://www.snbbakery.in/images/1664280684_dryjamun.jpg',             cat: 'Sweets' },
-  { name: 'SNB Dairy Milk (Dry Fruits)', price: 90, img: 'https://www.snbbakery.in/images/1664252458_dairy-milk-fruit.jpeg', cat: 'Sweets' },
-  { name: 'SNB Dairy Milk',    price: 40,   img: 'https://www.snbbakery.in/images/1664252470_diarysmall.jpg',           cat: 'Sweets' },
-];
-const BAKERY_CATS = ['All', 'Cakes', 'Bakery', 'Biscuits', 'Snacks', 'Sweets'];
+
+
 const FOOD_IMAGES = {
   hero: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
   idly: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
@@ -360,28 +342,38 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
 
 // ─── Bakery Content ───────────────────────────────────────────────────────────
 function BakeryContent() {
+  const { items, loadAllItems } = useBakeryItemsStore();
   const [activeCat, setActiveCat] = useState('All');
-  const filtered = activeCat === 'All' ? SNB_PRODUCTS : SNB_PRODUCTS.filter(p => p.cat === activeCat);
+
+  useEffect(() => { loadAllItems(); }, [loadAllItems]);
+
+  // Only show enabled items
+  const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
+
+  // Derive categories dynamically from the store
+  const categories = useMemo(() => {
+    const cats = Array.from(new Set(enabledItems.map(i => i.category))).sort();
+    return ['All', ...cats];
+  }, [enabledItems]);
+
+  const filtered = useMemo(() =>
+    activeCat === 'All' ? enabledItems : enabledItems.filter(i => i.category === activeCat),
+    [enabledItems, activeCat],
+  );
 
   return (
     <div className="pb-10">
       {/* Bakery Hero */}
       <div className="relative overflow-hidden" style={{ minHeight: 320 }}>
-        {/* Warm bakery gradient background */}
         <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg,#1a0800 0%,#3d1500 40%,#5c2200 70%,#2d0f00 100%)' }} />
-        {/* Decorative pattern */}
         <div className="absolute inset-0 opacity-10" style={{
           backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none'%3E%3Ccircle cx='30' cy='30' r='25' stroke='%23FFD700' stroke-width='0.5'/%3E%3Ccircle cx='30' cy='30' r='15' stroke='%23FFD700' stroke-width='0.4'/%3E%3Ccircle cx='30' cy='30' r='5' fill='%23FFD700' opacity='0.3'/%3E%3C/g%3E%3C/svg%3E")`,
           backgroundSize: '60px 60px',
         }} />
-        {/* Floating warm orbs */}
         {[{ s:80,l:'10%',t:'20%',c:'#FF6B35',op:0.15 },{ s:120,l:'70%',t:'10%',c:'#FFD700',op:0.1 },{ s:60,l:'50%',t:'60%',c:'#E07A3A',op:0.12 }].map((o,i)=>(
           <div key={i} className="absolute rounded-full" style={{ width:o.s, height:o.s, left:o.l, top:o.t, background:`radial-gradient(circle,${o.c},transparent)`, opacity:o.op, filter:'blur(20px)' }} />
         ))}
-
-        {/* Content */}
         <div className="relative px-5 pt-10 pb-8 flex flex-col items-center text-center">
-          {/* 3D Logo badge */}
           <div className="mb-5 relative">
             <div className="size-24 rounded-3xl overflow-hidden border-2 shadow-2xl mx-auto" style={{ borderColor: 'rgba(255,215,0,0.5)', boxShadow: '0 8px 40px rgba(255,107,53,0.4), 0 0 0 1px rgba(255,215,0,0.1)' }}>
               <img src={BAKERY.logo} alt="SNB Bakery" className="w-full h-full object-contain bg-white p-2" onError={e => { (e.target as HTMLImageElement).style.display='none'; }} />
@@ -390,19 +382,14 @@ function BakeryContent() {
               EST. {BAKERY.since}
             </div>
           </div>
-
           <h1 className="font-display text-4xl font-bold mb-1" style={{ color: '#FFD700', textShadow: '0 0 30px rgba(255,215,0,0.3)' }}>SNB Bakery</h1>
           <p className="text-sm font-body mb-1" style={{ color: 'rgba(255,200,100,0.8)' }}>Sri Nanjundeshwara Bakery</p>
           <p className="text-white/50 font-body text-xs mb-5">{BAKERY.address}</p>
-
-          {/* Feature pills */}
           <div className="flex flex-wrap gap-2 justify-center mb-6">
             {[['🎂','Cakes'],['🍪','Biscuits'],['🍬','Sweets'],['🥐','Bakery'],['🧆','Snacks']].map(([icon,label])=>(
               <span key={label} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-body font-semibold" style={{ background: 'rgba(255,215,0,0.12)', border: '1px solid rgba(255,215,0,0.25)', color: '#FFD700' }}>{icon} {label}</span>
             ))}
           </div>
-
-          {/* CTA buttons */}
           <div className="flex gap-3 w-full max-w-sm">
             <a href={`tel:${BAKERY.phone}`} className="flex-1 py-3.5 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-all" style={{ background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', color: 'white', boxShadow: '0 4px 20px rgba(224,122,58,0.4)' }}>
               <Phone className="size-4" />Call Us
@@ -438,44 +425,62 @@ function BakeryContent() {
         </div>
       </div>
 
-      {/* Category filter */}
+      {/* Category filter + item count */}
       <div className="px-4 mb-4">
-        <h2 className="font-display text-xl font-bold text-foreground mb-3">Our Products</h2>
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
-          {BAKERY_CATS.map(cat => (
-            <button key={cat} onClick={() => setActiveCat(cat)}
-              className={cn('px-4 py-2 rounded-full text-xs font-body font-bold whitespace-nowrap shrink-0 transition-all active:scale-95',
-                activeCat === cat ? 'text-white shadow-lg' : 'bg-card border border-border text-foreground')}
-              style={activeCat === cat ? { background: 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: '0 4px 12px rgba(224,122,58,0.35)' } : {}}>
-              {cat}
-            </button>
-          ))}
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display text-xl font-bold text-foreground">Our Products</h2>
+          <span className="text-xs font-body text-muted-foreground">{filtered.length} items</span>
         </div>
+        {categories.length > 1 && (
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+            {categories.map(cat => (
+              <button key={cat} onClick={() => setActiveCat(cat)}
+                className={cn('px-4 py-2 rounded-full text-xs font-body font-bold whitespace-nowrap shrink-0 transition-all active:scale-95',
+                  activeCat === cat ? 'text-white shadow-lg' : 'bg-card border border-border text-foreground')}
+                style={activeCat === cat ? { background: 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: '0 4px 12px rgba(224,122,58,0.35)' } : {}}>
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Product grid — 3D tilt cards */}
-      <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {filtered.map(product => (
-          <TiltCard key={product.name}>
-            <div className="bg-card rounded-2xl overflow-hidden border border-border shadow-sm" style={{ transformStyle: 'preserve-3d' }}>
-              {/* Product image */}
-              <div className="relative overflow-hidden" style={{ height: 140 }}>
-                <img src={product.img} alt={product.name} className="w-full h-full object-cover transition-transform duration-300 hover:scale-110"
-                  onError={e => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1558303215-4f3c4a53e2c0?w=300&q=70'; }} />
-                {/* Category badge */}
-                <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[9px] font-body font-bold" style={{ background: 'rgba(0,0,0,0.55)', color: '#FFD700', backdropFilter: 'blur(4px)' }}>
-                  {product.cat}
-                </span>
+      {/* Product grid */}
+      {enabledItems.length === 0 ? (
+        <div className="mx-4 py-16 text-center bg-muted/30 rounded-2xl">
+          <p className="text-3xl mb-2">🥐</p>
+          <p className="text-sm font-body text-muted-foreground">Menu coming soon…</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="mx-4 py-12 text-center bg-muted/30 rounded-2xl">
+          <p className="text-sm font-body text-muted-foreground">No items in this category.</p>
+        </div>
+      ) : (
+        <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {filtered.map(item => (
+            <TiltCard key={item.id}>
+              <div className="bg-card rounded-2xl overflow-hidden border border-border shadow-sm h-full flex flex-col" style={{ transformStyle: 'preserve-3d' }}>
+                {/* Emoji icon display */}
+                <div className="flex items-center justify-center bg-amber-50 border-b border-border" style={{ height: 100 }}>
+                  <span className="text-5xl">{item.icon}</span>
+                </div>
+                {/* Info */}
+                <div className="p-3 flex flex-col gap-1 flex-1">
+                  <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-body font-bold self-start mb-0.5"
+                    style={{ background: 'rgba(184,134,11,0.12)', color: '#b8860b', border: '1px solid rgba(184,134,11,0.25)' }}>
+                    {item.category}
+                  </span>
+                  <p className="font-body font-bold text-foreground text-xs leading-tight line-clamp-2">{item.name}</p>
+                  {item.price != null
+                    ? <span className="font-display font-bold text-base tabular-nums mt-auto" style={{ color: '#C84B0A' }}>₹{item.price}</span>
+                    : <span className="text-[10px] text-muted-foreground mt-auto italic">Price on request</span>
+                  }
+                </div>
               </div>
-              {/* Info */}
-              <div className="p-3">
-                <p className="font-body font-bold text-foreground text-xs leading-tight mb-1.5 line-clamp-2">{product.name}</p>
-                <span className="font-display font-bold text-base tabular-nums" style={{ color: '#C84B0A' }}>₹{product.price}</span>
-              </div>
-            </div>
-          </TiltCard>
-        ))}
-      </div>
+            </TiltCard>
+          ))}
+        </div>
+      )}
 
       {/* Contact CTA */}
       <div className="mx-4 mt-6 flex gap-3">
@@ -492,6 +497,7 @@ function BakeryContent() {
     </div>
   );
 }
+
 
 // ─── Compact Floating Side Toggle ────────────────────────────────────────────
 function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
