@@ -59,10 +59,11 @@ const FOOD_IMAGES = {
 function getTimePeriod() {
   const now = new Date(); const h = now.getHours();
   const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-  if (h >= 6 && h < 11)  return { label: '🌅 Breakfast Menu Now Serving · ' + timeStr, id: 'south-indian-breakfast' };
+  if (h >= 6  && h < 11) return { label: '🌅 Breakfast Menu Now Serving · ' + timeStr, id: 'south-indian-breakfast' };
   if (h >= 11 && h < 15) return { label: '☀️ Lunch Menu Now Serving · ' + timeStr, id: 'lunch' };
   if (h >= 15 && h < 19) return { label: '🧆 Evening Snacks Now Serving · ' + timeStr, id: 'evening-snacks' };
-  return { label: '🌙 Dinner Menu Now Serving · ' + timeStr, id: 'biriyani' };
+  if (h >= 19 && h < 22) return { label: '🌙 Dinner Menu Now Serving · ' + timeStr, id: 'biriyani' };
+  return null; // Outside 6 AM – 10 PM, show nothing
 }
 
 // ─── 3D Tilt Card ─────────────────────────────────────────────────────────────
@@ -212,12 +213,14 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
         <HeroBg />
         <div className="absolute inset-0" style={{ background: 'linear-gradient(170deg,rgba(0,0,0,0.1) 0%,rgba(10,4,0,0.5) 40%,rgba(5,2,0,0.92) 100%)' }} />
         <div className="relative h-full flex flex-col justify-end px-5 pb-10">
+          {timePeriod && (
           <div className="mb-4" style={{ animation: 'fadeUp .7s both' }}>
             <span className="time-badge inline-flex items-center gap-2 px-4 py-2 rounded-full text-[11px] font-body font-bold"
               style={{ background: 'rgba(255,215,0,0.12)', border: '1px solid rgba(255,215,0,0.4)', color: '#FFD700' }}>
               {timePeriod.label}
             </span>
           </div>
+          )}
           <div className="flex items-center gap-3 mb-4" style={{ animation: 'fadeUp .7s .1s both' }}>
             <img src={cafeLogo} alt="logo" className="size-16 rounded-2xl border-2 object-cover shadow-2xl" style={{ borderColor: 'rgba(255,215,0,0.4)' }} />
             <div>
