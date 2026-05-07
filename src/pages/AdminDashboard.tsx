@@ -977,7 +977,11 @@ function BakeryReportsTab() {
           </div>
           <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
             <Download className="size-3" />Excel
-          </button>}
+          </button>
+        </div>
+        <select
+          value={filterBranch}
+          onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
           className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background"
         >
           <option value="all">All Branches</option>
