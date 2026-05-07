@@ -153,61 +153,117 @@ export default function SalesReport() {
       ? new Date().toLocaleDateString('en-IN').replace(/\//g, '-')
       : `${startDate}_to_${endDate}`;
 
+    const PAYMENT_LABELS_LOCAL: Record<string, string> = {
+      cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance',
+    };
+
+    // ── Sheet 1: Sales Report (all served orders) ─────────────────────────────
     const mainRows = dayOrders.map((o, i) => {
       const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5 = Math.round((o.total - gstBase) * 100) / 100;
-      const cashAmt = o.paymentType === 'cash' ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.cash || 0) : 0;
-      const upiAmt = o.paymentType === 'upi' ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.upi || 0) : 0;
-      const cardAmt = o.paymentType === 'card' ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.card || 0) : 0;
-      const totalPaid = cashAmt + upiAmt + cardAmt;
+      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
+      const cashAmt = o.paymentType === 'cash'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.cash || 0) : 0;
+      const upiAmt  = o.paymentType === 'upi'   ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.upi  || 0) : 0;
+      const cardAmt = o.paymentType === 'card'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.card || 0) : 0;
       return {
-        'S.No': i + 1,
-        'Order ID': `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Source': o.orderSource === 'qr' ? 'QR' : 'Staff',
-        'Date': new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Time': new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        'Order Type': o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No': o.tableNumber || '-',
-        'Customer': o.customerName || '-',
-        'Items Ordered': o.items.map((ci) => ci.menuItem.name).join(', '),
-        'Quantity': o.items.reduce((s, ci) => s + ci.quantity, 0),
-        'Item-wise Price': o.items.map((ci) => `${ci.menuItem.name}: ${ci.menuItem.price} x${ci.quantity} = ${ci.menuItem.price * ci.quantity}`).join(' | '),
-        'Subtotal': o.subtotal,
-        'Discount': o.discount,
-        'Total Amount': o.total,
-        'Taxable Amount': gstBase,
-        'GST 5%': gst5,
-        'CGST 2.5%': Math.round((gst5 / 2) * 100) / 100,
-        'SGST 2.5%': Math.round((gst5 / 2) * 100) / 100,
-        'Final Bill': o.total,
-        'Payment Type': PAYMENT_LABELS[o.paymentType || 'unpaid'],
-        'Cash Amount': cashAmt || '-',
-        'UPI Amount': upiAmt || '-',
-        'Card Amount': cardAmt || '-',
-        'Total Paid': totalPaid,
-        'Balance': Math.max(0, o.total - totalPaid),
-        'Biller Name': o.billedBy || '-',
+        'S.No':             i + 1,
+        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
+        'Source':           o.orderSource === 'qr' ? 'QR' : 'Staff',
+        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
+        'Time':             new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        'Order Type':       o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
+        'Table No':         o.tableNumber || '-',
+        'Customer':         o.customerName || '-',
+        'Items Ordered':    o.items.map(ci => ci.menuItem.name).join(', '),
+        'Total Qty':        o.items.reduce((s, ci) => s + ci.quantity, 0),
+        'Item-wise Breakup': o.items.map(ci => `${ci.menuItem.name} x${ci.quantity} = ₹${ci.menuItem.price * ci.quantity}`).join(' | '),
+        'Subtotal (₹)':     o.subtotal,
+        'Discount (₹)':     o.discount,
+        'Total Amount (₹)': o.total,
+        'Taxable Amt (₹)':  gstBase,
+        'GST 5% (₹)':      gst5,
+        'CGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
+        'SGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
+        'Payment Type':     PAYMENT_LABELS_LOCAL[o.paymentType || 'unpaid'],
+        'Cash (₹)':         cashAmt || '-',
+        'UPI (₹)':          upiAmt  || '-',
+        'Card (₹)':         cardAmt || '-',
+        'Biller':           o.billedBy || '-',
       };
     });
 
-    const cgstRows = dayOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return { 'S.No': i + 1, 'Order ID': `#${String(o.orderNumber).padStart(3, '0')}`, 'Date': new Date(o.createdAt).toLocaleDateString('en-IN'), 'Total Amount': o.total, 'Taxable Amount': gstBase, 'CGST 2.5%': Math.round(((o.total - gstBase) / 2) * 100) / 100, 'Biller Name': o.billedBy || '-' };
-    });
-
-    const sgstRows = dayOrders.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return { 'S.No': i + 1, 'Order ID': `#${String(o.orderNumber).padStart(3, '0')}`, 'Date': new Date(o.createdAt).toLocaleDateString('en-IN'), 'Total Amount': o.total, 'Taxable Amount': gstBase, 'SGST 2.5%': Math.round(((o.total - gstBase) / 2) * 100) / 100, 'Biller Name': o.billedBy || '-' };
-    });
-
+    // ── Sheet 2: Cancelled Orders ─────────────────────────────────────────────
     const cancelRows = cancelledOrders.map((o, i) => {
       const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5 = Math.round((o.total - gstBase) * 100) / 100;
-      return { 'S.No': i + 1, 'Order ID': `#${String(o.orderNumber).padStart(3, '0')}`, 'Date': new Date(o.createdAt).toLocaleDateString('en-IN'), 'Time': new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), 'Order Type': o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway', 'Table No': o.tableNumber || '-', 'Items': o.items.map((ci) => `${ci.menuItem.name} x${ci.quantity}`).join(', '), 'Total Amount': o.total, 'Taxable Amount': gstBase, 'GST 5%': gst5, 'Biller Name': o.billedBy || '-', 'Cancel Reason': o.cancelReason || '-' };
+      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
+      return {
+        'S.No':             i + 1,
+        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
+        'Source':           o.orderSource === 'qr' ? 'QR' : 'Staff',
+        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
+        'Time':             new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        'Order Type':       o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
+        'Table No':         o.tableNumber || '-',
+        'Customer':         o.customerName || '-',
+        'Items':            o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
+        'Total Amount (₹)': o.total,
+        'Taxable Amt (₹)':  gstBase,
+        'GST 5% (₹)':      gst5,
+        'CGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
+        'SGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
+        'Cancel Reason':    o.cancelReason || '-',
+        'Biller':           o.billedBy || '-',
+      };
     });
 
+    // ── Sheet 3: CGST ─────────────────────────────────────────────────────────
+    const cgstRows = dayOrders.map((o, i) => {
+      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
+      return {
+        'S.No':             i + 1,
+        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
+        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
+        'Total Amount (₹)': o.total,
+        'Taxable Amt (₹)':  gstBase,
+        'CGST 2.5% (₹)':   Math.round(((o.total - gstBase) / 2) * 100) / 100,
+        'Biller':           o.billedBy || '-',
+      };
+    });
+
+    // ── Sheet 4: SGST ─────────────────────────────────────────────────────────
+    const sgstRows = dayOrders.map((o, i) => {
+      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
+      return {
+        'S.No':             i + 1,
+        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
+        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
+        'Total Amount (₹)': o.total,
+        'Taxable Amt (₹)':  gstBase,
+        'SGST 2.5% (₹)':   Math.round(((o.total - gstBase) / 2) * 100) / 100,
+        'Biller':           o.billedBy || '-',
+      };
+    });
+
+    // ── Sheet 5: GST Summary ──────────────────────────────────────────────────
+    const taxableTotal  = Math.round((totalRevenue / 1.05) * 100) / 100;
+    const gstCollected  = Math.round((totalRevenue - taxableTotal) * 100) / 100;
+    const cgstTotal     = Math.round((gstCollected / 2) * 100) / 100;
+    const sgstTotal     = cgstTotal;
+
+    // GST by order rows
+    const gstSummaryRows = [
+      { 'Metric': 'Period', 'Value': filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} to ${endDate}` },
+      { 'Metric': 'Total Orders (Served)', 'Value': orderCount },
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'Total Revenue (incl. GST)', 'Value': totalRevenue },
+      { 'Metric': 'Taxable Amount', 'Value': taxableTotal },
+      { 'Metric': 'Total GST @ 5%', 'Value': gstCollected },
+      { 'Metric': 'CGST @ 2.5%', 'Value': cgstTotal },
+      { 'Metric': 'SGST @ 2.5%', 'Value': sgstTotal },
+    ];
+
+    // ── Sheet 6: Payment Breakdown ────────────────────────────────────────────
     let totalCash = 0, totalUpi = 0, totalCard = 0;
-    dayOrders.forEach((o) => {
+    dayOrders.forEach(o => {
       if (o.paymentType === 'cash') totalCash += o.total;
       else if (o.paymentType === 'upi') totalUpi += o.total;
       else if (o.paymentType === 'card') totalCard += o.total;
@@ -215,67 +271,80 @@ export default function SalesReport() {
         totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
       }
     });
+    const paymentRows = [
+      { 'Payment Method': 'Cash',  'Orders': dayOrders.filter(o => o.paymentType === 'cash' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
+      { 'Payment Method': 'UPI',   'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
+      { 'Payment Method': 'Card',  'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
+      { 'Payment Method': 'TOTAL', 'Orders': orderCount, 'Amount (₹)': totalRevenue },
+    ];
 
-    const taxableTotal = Math.round((totalRevenue / 1.05) * 100) / 100;
-    const gstCollected = Math.round((totalRevenue - taxableTotal) * 100) / 100;
+    // ── Sheet 7: Top Items ────────────────────────────────────────────────────
+    const topItemsRows = itemSales.map((item, i) => ({
+      'Rank':        i + 1,
+      'Item Name':   item.name,
+      'Qty Sold':    item.qty,
+      'Revenue (₹)': item.revenue,
+    }));
 
+    // ── Sheet 8: Daily Closing ────────────────────────────────────────────────
     const closingRows = [
-      { 'Metric': 'Date Range', 'Value': filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} to ${endDate}` },
+      { 'Metric': 'Period', 'Value': filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} to ${endDate}` },
       { 'Metric': 'Total Orders (Served)', 'Value': orderCount },
-      { 'Metric': 'Total Revenue', 'Value': totalRevenue },
-      { 'Metric': 'Taxable Amount', 'Value': taxableTotal },
-      { 'Metric': 'GST Collected (5%)', 'Value': gstCollected },
-      { 'Metric': 'CGST (2.5%)', 'Value': Math.round((gstCollected / 2) * 100) / 100 },
-      { 'Metric': 'SGST (2.5%)', 'Value': Math.round((gstCollected / 2) * 100) / 100 },
-      { 'Metric': 'Total Discounts', 'Value': totalDiscount },
+      { 'Metric': 'Cancelled Orders', 'Value': cancelledOrders.length },
+      { 'Metric': 'Total Revenue (₹)', 'Value': totalRevenue },
+      { 'Metric': 'Taxable Amount (₹)', 'Value': taxableTotal },
+      { 'Metric': 'GST Collected 5% (₹)', 'Value': gstCollected },
+      { 'Metric': 'CGST 2.5% (₹)', 'Value': cgstTotal },
+      { 'Metric': 'SGST 2.5% (₹)', 'Value': sgstTotal },
+      { 'Metric': 'Total Discounts (₹)', 'Value': totalDiscount },
+      { 'Metric': 'Avg Order Value (₹)', 'Value': avgOrderValue },
       { 'Metric': '', 'Value': '' },
       { 'Metric': 'SOURCE BREAKDOWN', 'Value': '' },
       { 'Metric': 'Staff Orders', 'Value': staffOrders.length },
-      { 'Metric': 'Staff Revenue', 'Value': staffRevenue },
+      { 'Metric': 'Staff Revenue (₹)', 'Value': staffRevenue },
       { 'Metric': 'QR Orders', 'Value': qrOrders.length },
-      { 'Metric': 'QR Revenue', 'Value': qrRevenue },
+      { 'Metric': 'QR Revenue (₹)', 'Value': qrRevenue },
       { 'Metric': '', 'Value': '' },
       { 'Metric': 'PAYMENT BREAKDOWN', 'Value': '' },
-      { 'Metric': 'Total Cash', 'Value': totalCash },
-      { 'Metric': 'Total UPI', 'Value': totalUpi },
-      { 'Metric': 'Total Card', 'Value': totalCard },
+      { 'Metric': 'Cash (₹)', 'Value': totalCash },
+      { 'Metric': 'UPI (₹)', 'Value': totalUpi },
+      { 'Metric': 'Card (₹)', 'Value': totalCard },
       { 'Metric': '', 'Value': '' },
-      { 'Metric': 'ORDER BREAKDOWN', 'Value': '' },
+      { 'Metric': 'ORDER TYPE', 'Value': '' },
       { 'Metric': 'Dine In', 'Value': dineInCount },
       { 'Metric': 'Takeaway', 'Value': takeawayCount },
       { 'Metric': '', 'Value': '' },
+      { 'Metric': 'CANCELLATIONS', 'Value': '' },
       { 'Metric': 'Cancelled Orders', 'Value': cancelledOrders.length },
-      { 'Metric': 'Cancelled Revenue', 'Value': cancelledOrders.reduce((s, o) => s + o.total, 0) },
+      { 'Metric': 'Lost Revenue (₹)', 'Value': cancelledOrders.reduce((s, o) => s + o.total, 0) },
     ];
 
+    // ── Build workbook ────────────────────────────────────────────────────────
     const wb = XLSX.utils.book_new();
-    const setColWidths = (ws: XLSX.WorkSheet, data: Record<string, unknown>[]) => {
-      if (data.length === 0) return;
+
+    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
+      if (!data.length) return;
       const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map((k) => ({ wch: Math.max(k.length, ...data.map((r) => String(r[k] ?? '').length)) + 2 }));
+      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
     };
 
-    const ws1 = XLSX.utils.json_to_sheet(mainRows.length > 0 ? mainRows : [{ 'S.No': 'No orders' }]);
-    if (mainRows.length > 0) setColWidths(ws1, mainRows);
-    XLSX.utils.book_append_sheet(wb, ws1, 'Sales Report');
+    const addSheet = (data: Record<string, unknown>[], name: string, fallback: string) => {
+      const rows = data.length > 0 ? data : [{ Note: fallback }];
+      const ws = XLSX.utils.json_to_sheet(rows);
+      if (data.length > 0) autoWidth(ws, data);
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    };
 
-    const ws2 = XLSX.utils.json_to_sheet(cgstRows.length > 0 ? cgstRows : [{ 'S.No': 'No data' }]);
-    if (cgstRows.length > 0) setColWidths(ws2, cgstRows);
-    XLSX.utils.book_append_sheet(wb, ws2, 'CGST 2.5%');
+    addSheet(mainRows,       'Sales Report',     'No served orders');
+    addSheet(cancelRows,     'Cancelled Orders', 'No cancellations');
+    addSheet(cgstRows,       'CGST 2.5%',        'No data');
+    addSheet(sgstRows,       'SGST 2.5%',        'No data');
+    addSheet(gstSummaryRows, 'GST Summary',      'No data');
+    addSheet(paymentRows,    'Payment Breakdown', 'No data');
+    addSheet(topItemsRows,   'Top Items',        'No items sold');
+    addSheet(closingRows,    'Daily Closing',    'No data');
 
-    const ws3 = XLSX.utils.json_to_sheet(sgstRows.length > 0 ? sgstRows : [{ 'S.No': 'No data' }]);
-    if (sgstRows.length > 0) setColWidths(ws3, sgstRows);
-    XLSX.utils.book_append_sheet(wb, ws3, 'SGST 2.5%');
-
-    const ws4 = XLSX.utils.json_to_sheet(cancelRows.length > 0 ? cancelRows : [{ 'S.No': 'No cancelled orders' }]);
-    if (cancelRows.length > 0) setColWidths(ws4, cancelRows);
-    XLSX.utils.book_append_sheet(wb, ws4, 'Cancelled Orders');
-
-    const ws5 = XLSX.utils.json_to_sheet(closingRows);
-    setColWidths(ws5, closingRows);
-    XLSX.utils.book_append_sheet(wb, ws5, 'Daily Closing');
-
-    XLSX.writeFile(wb, `CafeAadvikam_Sales_${dateLabel}.xlsx`);
+    XLSX.writeFile(wb, `CafeAadvikam_Report_${dateLabel}.xlsx`);
   };
 
   return (
