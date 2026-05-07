@@ -3,10 +3,20 @@ import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency, formatTime } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
-import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell } from 'lucide-react';
+import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell, AlertCircle } from 'lucide-react';
 import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 import { AdvancePaymentPanel } from '@/pages/BillingDashboard';
+
+const CANCEL_REASONS = [
+  'Customer changed mind',
+  'Item unavailable',
+  'Wrong order placed',
+  'Customer left',
+  'Duplicate order',
+  'Payment issue',
+  'Long wait time',
+];
 
 interface OrderCardProps {
   order: Order;
@@ -35,6 +45,9 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [showPayment, setShowPayment] = useState(false);
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [cancelCustomReason, setCancelCustomReason] = useState('');
+  const [cancelPassword, setCancelPassword] = useState('');
+  const [cancelPasswordError, setCancelPasswordError] = useState('');
   const [showAdvance, setShowAdvance] = useState(false);
 
   const [splitMode, setSplitMode] = useState(false);
@@ -346,28 +359,120 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           </div>
         )}
 
-        {/* Cancel Reason */}
-        {showCancelPrompt && (
-          <div className="px-3.5 py-3 border-t border-border bg-destructive/5 space-y-2">
-            <p className="text-xs font-body font-semibold text-destructive">Reason for cancellation</p>
-            <textarea
-              placeholder="e.g. Customer changed mind, item unavailable..."
-              value={cancelReason}
-              onChange={(e) => setCancelReason(e.target.value)}
-              rows={2}
-              className="w-full px-3 py-2 bg-card border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground resize-none"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={() => { updateOrderStatus(order.id, 'cancelled', cancelReason || 'No reason provided'); setShowCancelPrompt(false); setCancelReason(''); }}
-                className="flex-1 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-body font-bold active:scale-95"
-              >
-                Confirm Cancel
-              </button>
-              <button onClick={() => { setShowCancelPrompt(false); setCancelReason(''); }} className="px-4 py-2 rounded-lg bg-muted text-foreground text-sm font-body font-semibold active:scale-95">Back</button>
+        {/* Cancel Prompt — reason required + password required */}
+        {showCancelPrompt && (() => {
+          const finalReason = cancelReason === '__custom__' ? cancelCustomReason.trim() : cancelReason;
+          const canConfirm = finalReason.length > 0 && cancelPassword.length > 0;
+
+          const handleConfirmCancel = () => {
+            setCancelPasswordError('');
+            if (!finalReason) { setCancelPasswordError('Select or enter a reason.'); return; }
+            if (currentUser?.password && cancelPassword !== currentUser.password) {
+              setCancelPasswordError('Incorrect password. Try again.');
+              return;
+            }
+            updateOrderStatus(order.id, 'cancelled', finalReason);
+            setShowCancelPrompt(false);
+            setCancelReason('');
+            setCancelCustomReason('');
+            setCancelPassword('');
+            setCancelPasswordError('');
+          };
+
+          const handleBack = () => {
+            setShowCancelPrompt(false);
+            setCancelReason('');
+            setCancelCustomReason('');
+            setCancelPassword('');
+            setCancelPasswordError('');
+          };
+
+          return (
+            <div className="px-3.5 py-3 border-t border-destructive/30 bg-destructive/5 space-y-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="size-4 text-destructive shrink-0" />
+                <p className="text-xs font-body font-bold text-destructive">Cancel Order #{String(order.orderNumber).padStart(3, '0')}</p>
+              </div>
+
+              {/* Pre-populated reason chips */}
+              <div>
+                <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">Select a reason <span className="text-destructive">*</span></p>
+                <div className="flex flex-wrap gap-1.5">
+                  {CANCEL_REASONS.map(r => (
+                    <button
+                      key={r}
+                      onClick={() => { setCancelReason(r); setCancelCustomReason(''); }}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-body font-semibold transition-all active:scale-95 border ${
+                        cancelReason === r
+                          ? 'bg-destructive text-white border-destructive shadow-sm'
+                          : 'bg-card border-border text-foreground hover:border-destructive/40'
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setCancelReason('__custom__')}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-body font-semibold transition-all active:scale-95 border ${
+                      cancelReason === '__custom__'
+                        ? 'bg-destructive text-white border-destructive shadow-sm'
+                        : 'bg-card border-border text-foreground hover:border-destructive/40'
+                    }`}
+                  >
+                    + Other
+                  </button>
+                </div>
+              </div>
+
+              {/* Custom reason input */}
+              {cancelReason === '__custom__' && (
+                <textarea
+                  placeholder="Describe the reason…"
+                  value={cancelCustomReason}
+                  onChange={e => setCancelCustomReason(e.target.value)}
+                  rows={2}
+                  autoFocus
+                  className="w-full px-3 py-2 bg-card border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-destructive/30"
+                />
+              )}
+
+              {/* Password confirmation */}
+              <div>
+                <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">Your password <span className="text-destructive">*</span></p>
+                <input
+                  type="password"
+                  placeholder="Enter your login password"
+                  value={cancelPassword}
+                  onChange={e => { setCancelPassword(e.target.value); setCancelPasswordError(''); }}
+                  className={`w-full px-3 py-2 bg-card border rounded-lg text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-destructive/30 ${
+                    cancelPasswordError ? 'border-destructive' : 'border-border'
+                  }`}
+                />
+                {cancelPasswordError && (
+                  <p className="text-[11px] text-destructive mt-1 flex items-center gap-1">
+                    <AlertCircle className="size-3" />{cancelPasswordError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleConfirmCancel}
+                  disabled={!canConfirm}
+                  className="flex-1 py-2.5 rounded-lg bg-destructive text-destructive-foreground text-sm font-body font-bold active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  Confirm Cancel
+                </button>
+                <button
+                  onClick={handleBack}
+                  className="px-4 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body font-semibold active:scale-95"
+                >
+                  Back
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Payment Panel */}
         {showPayment && (
