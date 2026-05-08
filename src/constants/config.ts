@@ -1,5 +1,3 @@
-import type { User } from '@/types';
-
 export const CAFE_CONFIG = {
   name: 'Cafe Aadvikam',
   tagline: 'Restaurant & Party Hall',
@@ -15,51 +13,6 @@ export const CAFE_CONFIG = {
   hours: '6 AM - 10 PM Daily',
   googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=Cafe+Aadvikam+109+Bagalur+Main+Road+Berikai+635105',
 };
-
-export const USERS: User[] = [
-  {
-    id: 'u1',
-    username: 'Staff1',
-    password: 'SNBcafe1',
-    role: 'order_taker',
-    displayName: 'Order Staff',
-  },
-  {
-    id: 'u2',
-    username: 'Staff2',
-    password: 'SNBcafe2',
-    role: 'billing',
-    displayName: 'Billing Staff 2',
-  },
-  {
-    id: 'u3',
-    username: 'Staff3',
-    password: 'SNBcafe3',
-    role: 'billing',
-    displayName: 'Billing Staff 3',
-  },
-  {
-    id: 'u4',
-    username: 'Staff4',
-    password: 'SNBcafe4',
-    role: 'billing',
-    displayName: 'Billing Staff 4',
-  },
-  {
-    id: 'u5',
-    username: 'Admin',
-    password: 'SNBcafe',
-    role: 'admin',
-    displayName: 'Administrator',
-  },
-  {
-    id: 'u6',
-    username: 'Cheff',
-    password: 'SNBcafe1',
-    role: 'kitchen',
-    displayName: 'Kitchen Chef',
-  },
-];
 
 export const TABLE_NUMBERS = Array.from({ length: 30 }, (_, i) => i + 1);
 
