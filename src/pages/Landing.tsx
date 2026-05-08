@@ -14,7 +14,7 @@ const CAFE = {
   name: 'Cafe Aadvikam', address: '109 Bagalur Main Road, Berikai 635105',
   hours: '6 AM – 10 PM Daily', type: 'Pure Vegetarian',
   mapsUrl: 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9628595,17z',
-  waWhatsapp: '917667117803', waPretext: 'Hi, I need to enquire and book the Party Hall.',
+  waWhatsapp: '918883122246', waPretext: 'Hi, I need to enquire and book the Party Hall.',
 };
 const BAKERY = {
   name: 'SNB Bakery', tagline: 'Sri Nanjundeshwara Bakery',
