@@ -5,7 +5,7 @@ import {
   Loader2, Receipt, IndianRupee, Banknote, Smartphone,
   CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight,
   ArrowLeftRight, Percent, Printer, XCircle, Tag, FileText,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, Sparkles, Package,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -21,24 +21,19 @@ type SellUnit = 'pcs' | 'kg';
 
 interface CartItem {
   itemName: string;
-  quantity: number;     // kg for kg-items, count for pcs
+  quantity: number;
   sellUnit: SellUnit;
-  price: number | null; // per kg or per piece — can be overridden inline
+  price: number | null;
   lineTotal: number | null;
 }
 
 type PaymentMethod = 'cash' | 'upi' | 'card';
 
-interface PaymentSplit {
-  method: PaymentMethod;
-  amount: string;
-}
-
 type DiscountType = 'percent' | 'flat';
 
 interface DiscountState {
   type: DiscountType;
-  value: string; // raw input string
+  value: string;
 }
 
 interface Props {
@@ -99,13 +94,10 @@ function BillPrintModal({ bill, onClose }: { bill: BillData; onClose: () => void
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 print:hidden" onClick={onClose} />
-
-      {/* Modal card */}
       <div className="relative bg-white rounded-2xl w-[92vw] max-w-sm max-h-[92vh] overflow-y-auto shadow-2xl print:shadow-none print:rounded-none print:max-h-none print:w-full print:max-w-none">
 
-        {/* Action bar — hidden when printing */}
+        {/* Action bar */}
         <div className="flex justify-between items-center p-3 border-b bg-gray-50 print:hidden">
           <div className="flex items-center gap-2">
             <div className="size-8 rounded-full bg-emerald-100 flex items-center justify-center">
@@ -134,36 +126,26 @@ function BillPrintModal({ bill, onClose }: { bill: BillData; onClose: () => void
 
         {/* Receipt body */}
         <div className="px-5 py-4 font-mono text-gray-900 text-[13px] leading-relaxed" id="bill-receipt">
-
-          {/* Header */}
           <div className="text-center mb-3">
             <p className="font-bold text-[15px] tracking-wide">{CAFE_CONFIG.name}</p>
             <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-0.5">{CAFE_CONFIG.tagline}</p>
             <p className="text-[10px] text-gray-400">{CAFE_CONFIG.venture}</p>
             <p className="text-[11px] text-gray-500 mt-0.5">{CAFE_CONFIG.address}</p>
           </div>
-
           <div className="border-t border-dashed border-gray-300 my-2" />
-
-          {/* Bill meta */}
           <div className="flex justify-between text-[11px] text-gray-600 mb-0.5">
             <span>Branch: {bill.branch}</span>
             <span className="font-bold">Bill #{bill.billNo}</span>
           </div>
           <div className="text-[11px] text-gray-500 mb-0.5">{bill.timestamp}</div>
           <div className="text-[11px] text-gray-600 mb-1">Served by: <span className="font-semibold">{bill.billedBy}</span></div>
-
           <div className="border-t border-dashed border-gray-300 my-2" />
-
-          {/* Items header */}
           <div className="flex justify-between text-[10px] font-bold text-gray-500 uppercase mb-1.5">
             <span className="flex-1">Item</span>
             <span className="w-16 text-center">Qty</span>
             <span className="w-14 text-right">Rate</span>
             <span className="w-16 text-right">Amt</span>
           </div>
-
-          {/* Items */}
           <div className="space-y-1 mb-2">
             {bill.items.map((c) => (
               <div key={c.itemName} className="flex justify-between text-[12px]">
@@ -182,10 +164,7 @@ function BillPrintModal({ bill, onClose }: { bill: BillData; onClose: () => void
               </div>
             ))}
           </div>
-
           <div className="border-t border-dashed border-gray-300 my-2" />
-
-          {/* Totals */}
           <div className="space-y-0.5 text-[13px]">
             <div className="flex justify-between">
               <span className="text-gray-600">Subtotal</span>
@@ -193,48 +172,31 @@ function BillPrintModal({ bill, onClose }: { bill: BillData; onClose: () => void
             </div>
             {bill.discountAmount > 0 && (
               <div className="flex justify-between text-emerald-700">
-                <span>
-                  Discount
-                  {bill.discountType === 'percent'
-                    ? ` (${bill.discountValue}%)`
-                    : ` (flat)`}
-                </span>
+                <span>Discount{bill.discountType === 'percent' ? ` (${bill.discountValue}%)` : ` (flat)`}</span>
                 <span className="tabular-nums">- {formatCurrency(bill.discountAmount)}</span>
               </div>
             )}
           </div>
-
           <div className="border-t border-gray-400 my-1.5" />
-
           <div className="flex justify-between font-bold text-[15px]">
             <span>TOTAL</span>
             <span className="tabular-nums">{formatCurrency(bill.grandTotal)}</span>
           </div>
-
-          {/* GST note */}
           <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
             <span>Incl. GST 5% (CGST 2.5% + SGST 2.5%)</span>
             <span>{formatCurrency(gstAmt)}</span>
           </div>
-
           <div className="border-t border-dashed border-gray-300 my-2" />
-
-          {/* Payment */}
           <div className="text-[12px] text-gray-600">
             <p>Payment: <span className="font-semibold">{bill.paymentSummary}</span></p>
           </div>
-
           <div className="border-t border-dashed border-gray-300 my-2" />
-
-          {/* Footer */}
           <div className="text-center text-[11px] text-gray-500">
             <p className="font-bold">Thank you for visiting!</p>
             <p className="mt-0.5">~ {CAFE_CONFIG.type} ~</p>
           </div>
         </div>
       </div>
-
-      {/* Print-only styles */}
       <style>{`
         @media print {
           body > *:not(#__print_root) { display: none !important; }
@@ -259,22 +221,14 @@ function CancelConfirmDialog({ onConfirm, onCancel }: { onConfirm: () => void; o
           </div>
           <div>
             <p className="font-bold text-base">Cancel Order?</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              This will clear all items in the cart. This action cannot be undone.
-            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">All items in cart will be cleared. Cannot be undone.</p>
           </div>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl border border-border bg-muted text-sm font-semibold active:scale-95 transition"
-          >
+          <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-border bg-muted text-sm font-semibold active:scale-95 transition">
             Keep Order
           </button>
-          <button
-            onClick={onConfirm}
-            className="flex-1 py-2.5 rounded-xl bg-destructive text-destructive-foreground text-sm font-bold active:scale-95 transition"
-          >
+          <button onClick={onConfirm} className="flex-1 py-2.5 rounded-xl bg-destructive text-destructive-foreground text-sm font-bold active:scale-95 transition">
             Yes, Cancel
           </button>
         </div>
@@ -321,11 +275,7 @@ function KgInput({ value, onChange, max }: { value: number; onChange: (v: number
         <Scale className="size-3.5 text-muted-foreground shrink-0" />
         <input
           ref={inputRef}
-          type="number"
-          inputMode="decimal"
-          step="0.05"
-          min="0.05"
-          max={max}
+          type="number" inputMode="decimal" step="0.05" min="0.05" max={max}
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
           onBlur={(e) => commit(e.target.value)}
@@ -376,10 +326,7 @@ function InlinePriceInput({ unit, value, onChange }: {
       <span className="text-xs text-muted-foreground">₹</span>
       <input
         ref={inputRef}
-        type="number"
-        inputMode="decimal"
-        min="0.01"
-        step="0.5"
+        type="number" inputMode="decimal" min="0.01" step="0.5"
         value={raw}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={commit}
@@ -485,7 +432,6 @@ function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange
           <p className="text-[11px] text-amber-500">Enter price above to calculate</p>
         )}
       </div>
-
       <div className="flex items-center gap-1 shrink-0 pt-0.5">
         {item.sellUnit === 'pcs' && (
           <>
@@ -520,16 +466,11 @@ function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange
 
 // ─── DiscountPanel ────────────────────────────────────────────────────────────
 
-function DiscountPanel({
-  discount, onChange, subtotal, discountAmount,
-}: {
-  discount: DiscountState;
-  onChange: (d: DiscountState) => void;
-  subtotal: number;
-  discountAmount: number;
+function DiscountPanel({ discount, onChange, subtotal, discountAmount }: {
+  discount: DiscountState; onChange: (d: DiscountState) => void;
+  subtotal: number; discountAmount: number;
 }) {
   const pct = discount.type === 'percent';
-
   return (
     <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-2">
       <div className="flex items-center gap-1.5">
@@ -541,8 +482,6 @@ function DiscountPanel({
           </span>
         )}
       </div>
-
-      {/* Type toggle */}
       <div className="flex gap-1.5">
         <button
           onClick={() => onChange({ ...discount, type: 'percent' })}
@@ -563,8 +502,6 @@ function DiscountPanel({
           <IndianRupee className="size-3" /> Flat Amount
         </button>
       </div>
-
-      {/* Percent quick chips */}
       {pct && (
         <div className="flex gap-1.5 flex-wrap">
           {[5, 10, 15, 20].map((v) => (
@@ -583,28 +520,18 @@ function DiscountPanel({
           ))}
         </div>
       )}
-
-      {/* Input */}
       <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-2">
         {!pct && <span className="text-xs text-muted-foreground shrink-0">₹</span>}
         <input
-          type="number"
-          inputMode="decimal"
-          min="0"
-          max={pct ? 100 : subtotal}
-          step={pct ? 1 : 0.5}
+          type="number" inputMode="decimal" min="0" max={pct ? 100 : subtotal} step={pct ? 1 : 0.5}
           value={discount.value}
           onChange={(e) => onChange({ ...discount, value: e.target.value })}
           placeholder={pct ? 'e.g. 10' : 'e.g. 50'}
           className="flex-1 text-sm font-mono bg-transparent focus:outline-none"
         />
         {pct && <span className="text-xs text-muted-foreground shrink-0">%</span>}
-        {/* Clear */}
         {discount.value !== '' && (
-          <button
-            onClick={() => onChange({ ...discount, value: '' })}
-            className="text-muted-foreground hover:text-foreground transition"
-          >
+          <button onClick={() => onChange({ ...discount, value: '' })} className="text-muted-foreground hover:text-foreground transition">
             <X className="size-3.5" />
           </button>
         )}
@@ -613,53 +540,167 @@ function DiscountPanel({
   );
 }
 
-// ─── BillingSummaryPage ───────────────────────────────────────────────────────
-// A full billing summary panel shown on the right side / bottom of cart
+// ─── PaymentPanel ─────────────────────────────────────────────────────────────
+// Full part-payment panel matching the biller's split payment UI
 
-function BillingSummaryPanel({
-  cart,
-  subtotal,
-  discount,
-  discountAmount,
-  grandTotal,
-  allPriced,
-  payMode,
-  singleMethod,
-  splitMethods,
-  splitAmounts,
-  splitPending,
-  splitTotal0,
-  error,
-  submitting,
-  splitReady,
-  soldBy,
-  onDiscountChange,
-  onSetPayMode,
-  onSetSingle,
-  onSetSplitMethods,
-  onSetSplitAmounts,
-  onSplitAmountChange,
-  onSelectSplitMethod,
-  onPreviewBill,
-  onCheckout,
-  onCancelOrder,
+const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; icon: React.ReactNode }[] = [
+  { key: 'cash', label: 'Cash',  icon: <Banknote   className="size-4" /> },
+  { key: 'upi',  label: 'UPI',   icon: <Smartphone className="size-4" /> },
+  { key: 'card', label: 'Card',  icon: <CreditCard className="size-4" /> },
+];
+
+function PaymentPanel({
+  payMode, singleMethod, splitMethods, splitAmounts, splitPending, splitTotal0,
+  grandTotal, allPriced,
+  onSetPayMode, onSetSingle, onSetSplitMethods, onSetSplitAmounts,
+  onSplitAmountChange, onSelectSplitMethod,
 }: {
-  cart: CartItem[];
-  subtotal: number;
-  discount: DiscountState;
-  discountAmount: number;
-  grandTotal: number;
-  allPriced: boolean;
   payMode: 'single' | 'split';
   singleMethod: PaymentMethod | null;
   splitMethods: [PaymentMethod | null, PaymentMethod | null];
   splitAmounts: [string, string];
   splitPending: number;
   splitTotal0: number;
-  error: string;
-  submitting: boolean;
-  splitReady: boolean;
-  soldBy: string;
+  grandTotal: number;
+  allPriced: boolean;
+  onSetPayMode: (m: 'single' | 'split') => void;
+  onSetSingle: (m: PaymentMethod | null) => void;
+  onSetSplitMethods: (m: [PaymentMethod | null, PaymentMethod | null]) => void;
+  onSetSplitAmounts: (a: [string, string]) => void;
+  onSplitAmountChange: (idx: 0 | 1, v: string) => void;
+  onSelectSplitMethod: (idx: 0 | 1, m: PaymentMethod) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Payment Method</p>
+
+      {/* 4 mode buttons */}
+      <div className="grid grid-cols-4 gap-2">
+        {PAYMENT_OPTIONS.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => { onSetPayMode('single'); onSetSingle(m.key); }}
+            className={cn(
+              'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+              payMode === 'single' && singleMethod === m.key
+                ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
+                : 'bg-card border-border text-foreground hover:bg-muted/50',
+            )}
+          >
+            {m.icon}{m.label}
+          </button>
+        ))}
+        <button
+          onClick={() => {
+            onSetPayMode('split');
+            onSetSingle(null);
+            onSetSplitMethods([null, null]);
+            onSetSplitAmounts(['', '']);
+          }}
+          className={cn(
+            'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+            payMode === 'split'
+              ? 'bg-violet-600 text-white border-transparent shadow-md'
+              : 'bg-card border-border text-foreground hover:bg-muted/50',
+          )}
+        >
+          <ArrowLeftRight className="size-4" />
+          Part Pay
+        </button>
+      </div>
+
+      {/* Split payment panel */}
+      {payMode === 'split' && (
+        <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+          <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-1">
+            Split between 2 methods
+          </p>
+          {([0, 1] as const).map((idx) => {
+            const otherMethod = splitMethods[idx === 0 ? 1 : 0];
+            return (
+              <div key={idx} className="space-y-1.5">
+                {/* Method picker row */}
+                <div className="flex gap-1.5">
+                  {PAYMENT_OPTIONS.map((m) => {
+                    const isChosen  = splitMethods[idx] === m.key;
+                    const isBlocked = otherMethod === m.key;
+                    return (
+                      <button
+                        key={m.key}
+                        onClick={() => !isBlocked && onSelectSplitMethod(idx, m.key)}
+                        disabled={isBlocked}
+                        className={cn(
+                          'flex-1 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 border transition active:scale-95',
+                          isChosen
+                            ? 'bg-violet-600 text-white border-transparent'
+                            : isBlocked
+                            ? 'opacity-30 bg-muted border-border text-muted-foreground cursor-not-allowed'
+                            : 'bg-white border-border text-foreground hover:bg-violet-50',
+                        )}
+                      >
+                        {m.icon}{m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Amount input */}
+                <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-1.5">
+                  <span className="text-xs text-muted-foreground shrink-0">₹</span>
+                  <input
+                    type="number" inputMode="decimal" min="0" step="0.01"
+                    value={splitAmounts[idx]}
+                    onChange={(e) => onSplitAmountChange(idx, e.target.value)}
+                    placeholder={
+                      splitMethods[idx]
+                        ? allPriced ? `e.g. ${idx === 0 ? Math.round(grandTotal / 2) : ''}` : '0.00'
+                        : 'Pick method first'
+                    }
+                    disabled={!splitMethods[idx]}
+                    className="flex-1 text-sm font-mono text-right bg-transparent focus:outline-none disabled:opacity-40"
+                  />
+                </div>
+              </div>
+            );
+          })}
+          {/* Balance indicator */}
+          {allPriced && splitTotal0 > 0 && (
+            <div className={cn(
+              'flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold mt-1',
+              Math.abs(splitPending) < 0.01
+                ? 'bg-emerald-100 text-emerald-700'
+                : 'bg-amber-100 text-amber-700',
+            )}>
+              <span>
+                {Math.abs(splitPending) < 0.01
+                  ? '✓ Balanced'
+                  : splitPending > 0 ? 'Still to cover' : 'Over by'}
+              </span>
+              {Math.abs(splitPending) >= 0.01 && (
+                <span className="tabular-nums font-bold">{formatCurrency(Math.abs(splitPending))}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── BillingSummaryPanel ──────────────────────────────────────────────────────
+
+function BillingSummaryPanel({
+  cart, subtotal, discount, discountAmount, grandTotal, allPriced,
+  payMode, singleMethod, splitMethods, splitAmounts, splitPending, splitTotal0,
+  error, submitting, splitReady, soldBy,
+  onDiscountChange, onSetPayMode, onSetSingle, onSetSplitMethods, onSetSplitAmounts,
+  onSplitAmountChange, onSelectSplitMethod, onPreviewBill, onCheckout, onCancelOrder,
+}: {
+  cart: CartItem[]; subtotal: number; discount: DiscountState;
+  discountAmount: number; grandTotal: number; allPriced: boolean;
+  payMode: 'single' | 'split'; singleMethod: PaymentMethod | null;
+  splitMethods: [PaymentMethod | null, PaymentMethod | null];
+  splitAmounts: [string, string]; splitPending: number; splitTotal0: number;
+  error: string; submitting: boolean; splitReady: boolean; soldBy: string;
   onDiscountChange: (d: DiscountState) => void;
   onSetPayMode: (m: 'single' | 'split') => void;
   onSetSingle: (m: PaymentMethod | null) => void;
@@ -667,31 +708,27 @@ function BillingSummaryPanel({
   onSetSplitAmounts: (a: [string, string]) => void;
   onSplitAmountChange: (idx: 0 | 1, v: string) => void;
   onSelectSplitMethod: (idx: 0 | 1, m: PaymentMethod) => void;
-  onPreviewBill: () => void;
-  onCheckout: () => void;
-  onCancelOrder: () => void;
+  onPreviewBill: () => void; onCheckout: () => void; onCancelOrder: () => void;
 }) {
-  const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-    { key: 'cash', label: 'Cash',  icon: <Banknote   className="size-4" /> },
-    { key: 'upi',  label: 'UPI',   icon: <Smartphone className="size-4" /> },
-    { key: 'card', label: 'Card',  icon: <CreditCard className="size-4" /> },
-  ];
-
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-lg">
 
       {/* Panel header */}
       <div className="flex items-center justify-between px-4 py-3 border-b bg-gradient-to-r from-primary/5 to-transparent">
         <div className="flex items-center gap-2">
-          <FileText className="size-4 text-primary" />
+          <div className="size-7 rounded-lg bg-primary/10 flex items-center justify-center">
+            <FileText className="size-3.5 text-primary" />
+          </div>
           <div>
-            <span className="font-bold text-sm block">Billing Summary</span>
-            <span className="text-[10px] text-muted-foreground">Billed by: <span className="font-semibold text-foreground">{soldBy}</span></span>
+            <span className="font-bold text-sm block leading-tight">Billing Summary</span>
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              Billed by: <span className="font-semibold text-foreground">{soldBy}</span>
+            </span>
           </div>
         </div>
         <button
           onClick={onCancelOrder}
-          className="flex items-center gap-1.5 text-[11px] font-semibold text-destructive bg-destructive/10 hover:bg-destructive/15 px-2.5 py-1 rounded-lg transition active:scale-95"
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-destructive bg-destructive/10 hover:bg-destructive/15 px-2.5 py-1.5 rounded-lg transition active:scale-95"
         >
           <XCircle className="size-3.5" /> Cancel Order
         </button>
@@ -704,16 +741,14 @@ function BillingSummaryPanel({
           'rounded-xl px-4 py-3 space-y-1.5',
           allPriced ? 'bg-primary/5 border border-primary/10' : 'bg-amber-50 border border-amber-100',
         )}>
-          {/* Subtotal */}
+          {/* Subtotal row */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <IndianRupee className="size-3.5 text-muted-foreground" />
               <span className="text-sm text-muted-foreground font-medium">Subtotal</span>
             </div>
             {allPriced ? (
-              <span className="font-bold tabular-nums text-muted-foreground">
-                {formatCurrency(subtotal)}
-              </span>
+              <span className="font-bold tabular-nums text-muted-foreground">{formatCurrency(subtotal)}</span>
             ) : (
               <span className="text-xs text-amber-600 font-medium">⚠ Enter prices for total</span>
             )}
@@ -722,23 +757,16 @@ function BillingSummaryPanel({
           {/* Item count */}
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground">Items</span>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {cart.length} {cart.length === 1 ? 'item' : 'items'}
-            </span>
+            <span className="text-xs text-muted-foreground tabular-nums">{cart.length} {cart.length === 1 ? 'item' : 'items'}</span>
           </div>
 
           {/* Discount row */}
           {allPriced && discountAmount > 0 && (
             <div className="flex items-center justify-between pt-0.5 border-t border-emerald-100">
               <span className="text-sm text-emerald-700 font-medium">
-                Discount
-                {discount.type === 'percent'
-                  ? ` (${discount.value}%)`
-                  : ` (flat)`}
+                Discount{discount.type === 'percent' ? ` (${discount.value}%)` : ` (flat)`}
               </span>
-              <span className="font-bold tabular-nums text-emerald-700">
-                − {formatCurrency(discountAmount)}
-              </span>
+              <span className="font-bold tabular-nums text-emerald-700">− {formatCurrency(discountAmount)}</span>
             </div>
           )}
 
@@ -752,9 +780,7 @@ function BillingSummaryPanel({
                   {formatCurrency(grandTotal)}
                 </span>
               </div>
-              <p className="text-[10px] text-muted-foreground text-right">
-                Incl. GST 5%
-              </p>
+              <p className="text-[10px] text-muted-foreground text-right">Incl. GST 5%</p>
             </>
           )}
         </div>
@@ -762,127 +788,21 @@ function BillingSummaryPanel({
         {/* Discount panel */}
         {allPriced && (
           <DiscountPanel
-            discount={discount}
-            onChange={onDiscountChange}
-            subtotal={subtotal}
-            discountAmount={discountAmount}
+            discount={discount} onChange={onDiscountChange}
+            subtotal={subtotal} discountAmount={discountAmount}
           />
         )}
 
-        {/* Payment section */}
-        <div className="space-y-3">
-          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Payment Method</p>
-
-          <div className="grid grid-cols-4 gap-2">
-            {PAYMENT_OPTIONS.map((m) => (
-              <button
-                key={m.key}
-                onClick={() => { onSetPayMode('single'); onSetSingle(m.key); }}
-                className={cn(
-                  'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                  payMode === 'single' && singleMethod === m.key
-                    ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
-                    : 'bg-card border-border text-foreground hover:bg-muted/50',
-                )}
-              >
-                {m.icon}{m.label}
-              </button>
-            ))}
-            <button
-              onClick={() => {
-                onSetPayMode('split');
-                onSetSingle(null);
-                onSetSplitMethods([null, null]);
-                onSetSplitAmounts(['', '']);
-              }}
-              className={cn(
-                'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                payMode === 'split'
-                  ? 'bg-violet-600 text-white border-transparent shadow-md'
-                  : 'bg-card border-border text-foreground hover:bg-muted/50',
-              )}
-            >
-              <ArrowLeftRight className="size-4" />
-              Part Pay
-            </button>
-          </div>
-
-          {/* Split panel */}
-          {payMode === 'split' && (
-            <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
-              <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-1">
-                Split between 2 methods
-              </p>
-              {([0, 1] as const).map((idx) => {
-                const otherMethod = splitMethods[idx === 0 ? 1 : 0];
-                return (
-                  <div key={idx} className="space-y-1.5">
-                    <div className="flex gap-1.5">
-                      {PAYMENT_OPTIONS.map((m) => {
-                        const isChosen  = splitMethods[idx] === m.key;
-                        const isBlocked = otherMethod === m.key;
-                        return (
-                          <button
-                            key={m.key}
-                            onClick={() => !isBlocked && onSelectSplitMethod(idx, m.key)}
-                            disabled={isBlocked}
-                            className={cn(
-                              'flex-1 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 border transition active:scale-95',
-                              isChosen
-                                ? 'bg-violet-600 text-white border-transparent'
-                                : isBlocked
-                                ? 'opacity-30 bg-muted border-border text-muted-foreground cursor-not-allowed'
-                                : 'bg-white border-border text-foreground hover:bg-violet-50',
-                            )}
-                          >
-                            {m.icon}{m.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-1.5">
-                      <span className="text-xs text-muted-foreground shrink-0">₹</span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        step="0.01"
-                        value={splitAmounts[idx]}
-                        onChange={(e) => onSplitAmountChange(idx, e.target.value)}
-                        placeholder={
-                          splitMethods[idx]
-                            ? allPriced ? `e.g. ${idx === 0 ? Math.round(grandTotal / 2) : ''}` : '0.00'
-                            : 'Pick method first'
-                        }
-                        disabled={!splitMethods[idx]}
-                        className="flex-1 text-sm font-mono text-right bg-transparent focus:outline-none disabled:opacity-40"
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-              {allPriced && splitTotal0 > 0 && (
-                <div className={cn(
-                  'flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold mt-1',
-                  Math.abs(splitPending) < 0.01
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-amber-100 text-amber-700',
-                )}>
-                  <span>
-                    {Math.abs(splitPending) < 0.01
-                      ? '✓ Balanced'
-                      : splitPending > 0
-                      ? 'Still to cover'
-                      : 'Over by'}
-                  </span>
-                  {Math.abs(splitPending) >= 0.01 && (
-                    <span className="tabular-nums font-bold">{formatCurrency(Math.abs(splitPending))}</span>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        {/* Payment panel */}
+        <PaymentPanel
+          payMode={payMode} singleMethod={singleMethod}
+          splitMethods={splitMethods} splitAmounts={splitAmounts}
+          splitPending={splitPending} splitTotal0={splitTotal0}
+          grandTotal={grandTotal} allPriced={allPriced}
+          onSetPayMode={onSetPayMode} onSetSingle={onSetSingle}
+          onSetSplitMethods={onSetSplitMethods} onSetSplitAmounts={onSetSplitAmounts}
+          onSplitAmountChange={onSplitAmountChange} onSelectSplitMethod={onSelectSplitMethod}
+        />
 
         {/* Error */}
         {error && (
@@ -893,7 +813,6 @@ function BillingSummaryPanel({
 
         {/* Action buttons */}
         <div className="flex gap-2">
-          {/* Print Bill preview */}
           <button
             onClick={onPreviewBill}
             disabled={cart.length === 0 || !allPriced}
@@ -901,8 +820,6 @@ function BillingSummaryPanel({
           >
             <Printer className="size-4" /> Print Bill
           </button>
-
-          {/* Complete sale */}
           <button
             onClick={onCheckout}
             disabled={submitting || !splitReady}
@@ -927,6 +844,7 @@ export function BillTab({ branch, branchStock }: Props) {
   const { recordSale } = useBranchStore();
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
+  const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
 
   const [cart, setCart]             = useState<CartItem[]>([]);
   const [search, setSearch]         = useState('');
@@ -940,7 +858,7 @@ export function BillTab({ branch, branchStock }: Props) {
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [discount, setDiscount]     = useState<DiscountState>({ type: 'percent', value: '' });
   const [billToPrint, setBillToPrint] = useState<BillData | null>(null);
-  const [showCart, setShowCart]     = useState(true); // collapsible cart on mobile
+  const [showCart, setShowCart]     = useState(true);
 
   const resetPayment = () => {
     setPayMode('single'); setSingle(null);
@@ -955,15 +873,14 @@ export function BillTab({ branch, branchStock }: Props) {
   }, [branch]);
 
   const availableItems = useMemo(() => branchStock.filter((s) => s.quantity > 0), [branchStock]);
-
-  const filteredItems = useMemo(() => {
+  const filteredItems  = useMemo(() => {
     if (!search.trim()) return availableItems;
     const q = search.toLowerCase();
     return availableItems.filter((s) => s.itemName.toLowerCase().includes(q));
   }, [availableItems, search]);
 
-  const getCartItem = (name: string) => cart.find((c) => c.itemName === name);
-  const getStockQty = (name: string) => branchStock.find((s) => s.itemName === name)?.quantity ?? 0;
+  const getCartItem  = (name: string) => cart.find((c) => c.itemName === name);
+  const getStockQty  = (name: string) => branchStock.find((s) => s.itemName === name)?.quantity ?? 0;
 
   const computeLineTotal = (price: number | null, qty: number) =>
     price != null ? Math.round(price * qty * 100) / 100 : null;
@@ -1009,10 +926,9 @@ export function BillTab({ branch, branchStock }: Props) {
     setCart((prev) => prev.map((c) => c.itemName === name ? { ...c, price, lineTotal: computeLineTotal(price, c.quantity) } : c));
 
   const deleteFromCart = (name: string) => setCart((prev) => prev.filter((c) => c.itemName !== name));
-
   const clearCart = () => { setCart([]); resetPayment(); resetDiscount(); };
 
-  // ── Discount calculations ──────────────────────────────────────────────────
+  // ── Calculations ────────────────────────────────────────────────────────────
   const subtotal = useMemo(() => cart.reduce((sum, c) => sum + (c.lineTotal ?? 0), 0), [cart]);
 
   const discountAmount = useMemo(() => {
@@ -1026,11 +942,10 @@ export function BillTab({ branch, branchStock }: Props) {
   }, [discount, subtotal]);
 
   const grandTotal = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+  const allPriced  = cart.length > 0 && cart.every((c) => c.price != null);
+  const cartCount  = cart.length;
 
-  const allPriced = cart.length > 0 && cart.every((c) => c.price != null);
-  const cartCount = cart.length;
-
-  // ── Split payment helpers ──────────────────────────────────────────────────
+  // ── Split payment helpers ────────────────────────────────────────────────────
   const splitTotal0 = parseFloat(splitAmounts[0]) || 0;
   const splitTotal1 = parseFloat(splitAmounts[1]) || 0;
   const splitSum    = Math.round((splitTotal0 + splitTotal1) * 100) / 100;
@@ -1084,23 +999,16 @@ export function BillTab({ branch, branchStock }: Props) {
   // ── Preview bill (without completing sale) ────────────────────────────────
   const handlePreviewBill = () => {
     if (cart.length === 0) return;
-    const billedBy = currentUser?.displayName || currentUser?.username || 'Staff';
     setBillToPrint({
-      items: [...cart],
-      subtotal,
-      discountType: discount.type,
-      discountValue: parseFloat(discount.value) || 0,
-      discountAmount,
-      grandTotal,
-      paymentSummary: buildPaymentSummary(),
-      billedBy,
-      branch,
-      billNo: String(billCounter).padStart(4, '0'),
-      timestamp: nowString(),
+      items: [...cart], subtotal,
+      discountType: discount.type, discountValue: parseFloat(discount.value) || 0,
+      discountAmount, grandTotal,
+      paymentSummary: buildPaymentSummary(), billedBy: soldBy,
+      branch, billNo: String(billCounter).padStart(4, '0'), timestamp: nowString(),
     });
   };
 
-  // ── Checkout (complete sale) ──────────────────────────────────────────────
+  // ── Checkout ──────────────────────────────────────────────────────────────
   const handleCheckout = async () => {
     if (cart.length === 0) return;
     if (!splitReady) {
@@ -1116,8 +1024,7 @@ export function BillTab({ branch, branchStock }: Props) {
     }
     setError(''); setSubmitting(true);
 
-    const soldBy      = currentUser?.displayName || currentUser?.username || 'Staff';
-    const methodLabel = buildMethodLabel();
+    const methodLabel  = buildMethodLabel();
     const succeeded: string[] = [];
 
     for (const item of cart) {
@@ -1131,19 +1038,12 @@ export function BillTab({ branch, branchStock }: Props) {
       succeeded.push(item.itemName);
     }
 
-    // Show printable bill after successful checkout
     const billData: BillData = {
-      items: [...cart],
-      subtotal,
-      discountType: discount.type,
-      discountValue: parseFloat(discount.value) || 0,
-      discountAmount,
-      grandTotal,
-      paymentSummary: buildPaymentSummary(),
-      billedBy: soldBy,
-      branch,
-      billNo: String(billCounter++).padStart(4, '0'),
-      timestamp: nowString(),
+      items: [...cart], subtotal,
+      discountType: discount.type, discountValue: parseFloat(discount.value) || 0,
+      discountAmount, grandTotal,
+      paymentSummary: buildPaymentSummary(), billedBy: soldBy,
+      branch, billNo: String(billCounter++).padStart(4, '0'), timestamp: nowString(),
     };
 
     setSubmitting(false);
@@ -1153,7 +1053,7 @@ export function BillTab({ branch, branchStock }: Props) {
     setTimeout(() => setShowSuccess(false), 2500);
   };
 
-  // ── Cancel order handler ──────────────────────────────────────────────────
+  // ── Cancel handler ────────────────────────────────────────────────────────
   const handleCancelConfirmed = () => {
     clearCart();
     setShowCancelDialog(false);
@@ -1192,7 +1092,7 @@ export function BillTab({ branch, branchStock }: Props) {
         />
       )}
 
-      {/* Search */}
+      {/* ── Search ────────────────────────────────────────────────────────── */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
         <input
@@ -1217,10 +1117,17 @@ export function BillTab({ branch, branchStock }: Props) {
         </p>
       )}
 
-      {/* Item grid */}
+      {/* ── Item grid ─────────────────────────────────────────────────────── */}
       {filteredItems.length === 0 ? (
         <div className="text-center py-12 text-sm text-muted-foreground bg-muted/30 rounded-2xl border border-dashed">
-          {availableItems.length === 0 ? 'No items in stock.' : 'No items match your search.'}
+          {availableItems.length === 0
+            ? (
+              <div className="flex flex-col items-center gap-2">
+                <Package className="size-8 opacity-20" />
+                <p>No items in stock</p>
+              </div>
+            )
+            : 'No items match your search.'}
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-2">
@@ -1269,26 +1176,24 @@ export function BillTab({ branch, branchStock }: Props) {
             }
           </button>
 
-          {/* Cart items — collapsible */}
+          {/* Cart items */}
           {showCart && (
-            <>
-              <div
-                className="divide-y max-h-64 overflow-y-scroll overscroll-contain"
-                onWheel={(e) => e.stopPropagation()}
-              >
-                {cart.map((c) => (
-                  <CartLineItem
-                    key={c.itemName}
-                    item={c}
-                    stockQty={getStockQty(c.itemName)}
-                    onAdd={() => { const s = branchStock.find((si) => si.itemName === c.itemName); if (s) addToCart(s); }}
-                    onRemove={() => removeFromCart(c.itemName)}
-                    onDelete={() => deleteFromCart(c.itemName)}
-                    onPriceChange={(p) => updatePrice(c.itemName, p)}
-                  />
-                ))}
-              </div>
-            </>
+            <div
+              className="divide-y max-h-64 overflow-y-scroll overscroll-contain"
+              onWheel={(e) => e.stopPropagation()}
+            >
+              {cart.map((c) => (
+                <CartLineItem
+                  key={c.itemName}
+                  item={c}
+                  stockQty={getStockQty(c.itemName)}
+                  onAdd={() => { const s = branchStock.find((si) => si.itemName === c.itemName); if (s) addToCart(s); }}
+                  onRemove={() => removeFromCart(c.itemName)}
+                  onDelete={() => deleteFromCart(c.itemName)}
+                  onPriceChange={(p) => updatePrice(c.itemName, p)}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -1296,31 +1201,17 @@ export function BillTab({ branch, branchStock }: Props) {
       {/* ── Billing Summary Panel ─────────────────────────────────────────── */}
       {cart.length > 0 && (
         <BillingSummaryPanel
-          cart={cart}
-          subtotal={subtotal}
-          discount={discount}
-          discountAmount={discountAmount}
-          grandTotal={grandTotal}
-          allPriced={allPriced}
-          payMode={payMode}
-          singleMethod={singleMethod}
-          splitMethods={splitMethods}
-          splitAmounts={splitAmounts}
-          splitPending={splitPending}
-          splitTotal0={splitTotal0}
-          error={error}
-          submitting={submitting}
-          splitReady={splitReady}
-          soldBy={currentUser?.displayName || currentUser?.username || 'Staff'}
+          cart={cart} subtotal={subtotal} discount={discount}
+          discountAmount={discountAmount} grandTotal={grandTotal} allPriced={allPriced}
+          payMode={payMode} singleMethod={singleMethod}
+          splitMethods={splitMethods} splitAmounts={splitAmounts}
+          splitPending={splitPending} splitTotal0={splitTotal0}
+          error={error} submitting={submitting} splitReady={splitReady} soldBy={soldBy}
           onDiscountChange={setDiscount}
-          onSetPayMode={setPayMode}
-          onSetSingle={setSingle}
-          onSetSplitMethods={setSplitMethods}
-          onSetSplitAmounts={setSplitAmounts}
-          onSplitAmountChange={handleSplitAmount}
-          onSelectSplitMethod={selectSplitMethod}
-          onPreviewBill={handlePreviewBill}
-          onCheckout={handleCheckout}
+          onSetPayMode={setPayMode} onSetSingle={setSingle}
+          onSetSplitMethods={setSplitMethods} onSetSplitAmounts={setSplitAmounts}
+          onSplitAmountChange={handleSplitAmount} onSelectSplitMethod={selectSplitMethod}
+          onPreviewBill={handlePreviewBill} onCheckout={handleCheckout}
           onCancelOrder={() => setShowCancelDialog(true)}
         />
       )}
