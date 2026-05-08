@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2,
   Loader2, Receipt, IndianRupee, Banknote, Smartphone,
-  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight, GitBranch,
+  CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight, ArrowLeftRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -382,15 +382,25 @@ export function BillTab({ branch, branchStock }: Props) {
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
 
-  const [cart, setCart] = useState<CartItem[]>([]);
-  const [search, setSearch] = useState('');
-  const [splits, setSplits] = useState<PaymentSplit[]>([]);
+  const [cart, setCart]           = useState<CartItem[]>([]);
+  const [search, setSearch]       = useState('');
+  const [payMode, setPayMode]     = useState<'single' | 'split'>('single');
+  const [singleMethod, setSingle] = useState<PaymentMethod | null>(null);
+  // split state: which 2 methods + their amounts
+  const [splitMethods, setSplitMethods] = useState<[PaymentMethod | null, PaymentMethod | null]>([null, null]);
+  const [splitAmounts, setSplitAmounts] = useState<[string, string]>(['', '']);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError]         = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
 
+  const resetPayment = () => {
+    setPayMode('single'); setSingle(null);
+    setSplitMethods([null, null]); setSplitAmounts(['', '']);
+    setError('');
+  };
+
   useEffect(() => {
-    setCart([]); setSplits([]); setError(''); setSearch('');
+    setCart([]); resetPayment(); setSearch('');
   }, [branch]);
 
   const availableItems = useMemo(
@@ -477,7 +487,7 @@ export function BillTab({ branch, branchStock }: Props) {
   const deleteFromCart = (name: string) =>
     setCart((prev) => prev.filter((c) => c.itemName !== name));
 
-  const clearCart = () => { setCart([]); setSplits([]); setError(''); };
+  const clearCart = () => { setCart([]); resetPayment(); };
 
   const cartTotal = useMemo(
     () => cart.reduce((sum, c) => sum + (c.lineTotal ?? 0), 0),
@@ -486,66 +496,76 @@ export function BillTab({ branch, branchStock }: Props) {
   const allPriced = cart.length > 0 && cart.every((c) => c.price != null);
   const cartCount = cart.length;
 
-  // Part-payment helpers
   const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-    { key: 'cash', label: 'Cash',  icon: <Banknote  className="size-4" /> },
+    { key: 'cash', label: 'Cash',  icon: <Banknote   className="size-4" /> },
     { key: 'upi',  label: 'UPI',   icon: <Smartphone className="size-4" /> },
     { key: 'card', label: 'Card',  icon: <CreditCard className="size-4" /> },
   ];
 
-  const selectedMethods = splits.map((s) => s.method);
-  const splitsTotal = splits.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
-  const splitsMatch = allPriced
-    ? Math.abs(splitsTotal - cartTotal) < 0.01
-    : splits.length > 0;
-  const splitsPending = allPriced ? Math.round((cartTotal - splitsTotal) * 100) / 100 : 0;
+  // ── Split payment helpers ──────────────────────────────────────────────────
+  const splitTotal0 = parseFloat(splitAmounts[0]) || 0;
+  const splitTotal1 = parseFloat(splitAmounts[1]) || 0;
+  const splitSum    = Math.round((splitTotal0 + splitTotal1) * 100) / 100;
+  const splitReady  = payMode === 'split'
+    ? splitMethods[0] !== null && splitMethods[1] !== null &&
+      splitMethods[0] !== splitMethods[1] &&
+      (allPriced ? Math.abs(splitSum - cartTotal) < 0.01 : splitTotal0 > 0 && splitTotal1 > 0)
+    : singleMethod !== null;
 
-  const toggleMethod = (method: PaymentMethod) => {
+  // When user edits one split amount, auto-fill the other with remainder
+  const handleSplitAmount = (idx: 0 | 1, raw: string) => {
     setError('');
-    setSplits((prev) => {
-      const exists = prev.find((s) => s.method === method);
-      if (exists) {
-        // Remove this method
-        const next = prev.filter((s) => s.method !== method);
-        // Re-auto-fill last method with full remainder if only 1 left
-        if (next.length === 1 && allPriced) {
-          return [{ ...next[0], amount: String(cartTotal) }];
-        }
-        return next;
-      }
-      // Add new method
-      if (prev.length === 0) {
-        // First method — default to full total
-        return [{ method, amount: allPriced ? String(cartTotal) : '' }];
-      }
-      // Second/third method — move remainder into new slot, recalc first
-      const existingTotal = prev.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-      const remainder = allPriced ? Math.max(0, Math.round((cartTotal - existingTotal) * 100) / 100) : 0;
-      return [...prev, { method, amount: remainder > 0 ? String(remainder) : '' }];
+    const parsed = parseFloat(raw);
+    if (!isNaN(parsed) && allPriced) {
+      const other = Math.round((cartTotal - parsed) * 100) / 100;
+      setSplitAmounts(idx === 0 ? [raw, other >= 0 ? String(other) : ''] : [other >= 0 ? String(other) : '', raw]);
+    } else {
+      setSplitAmounts((prev) => idx === 0 ? [raw, prev[1]] : [prev[0], raw]);
+    }
+  };
+
+  const selectSplitMethod = (idx: 0 | 1, method: PaymentMethod) => {
+    setError('');
+    setSplitMethods((prev) => {
+      const next: [PaymentMethod | null, PaymentMethod | null] = [...prev] as any;
+      next[idx] = method;
+      return next;
     });
+    // When first method is picked and total is known, seed first amount with full total
+    if (idx === 0 && allPriced) {
+      setSplitAmounts(['', '']);
+    }
   };
 
-  const updateSplitAmount = (method: PaymentMethod, raw: string) => {
-    setError('');
-    setSplits((prev) => prev.map((s) => s.method === method ? { ...s, amount: raw } : s));
-  };
+  const splitPending = allPriced ? Math.round((cartTotal - splitSum) * 100) / 100 : 0;
 
-  const paymentMethodLabel = splits.length === 0
-    ? null
-    : splits.map((s) => s.method).join('+');
+  const buildMethodLabel = () => {
+    if (payMode === 'single') return singleMethod ?? 'cash';
+    const [m0, m1] = splitMethods;
+    const parts = [];
+    if (m0) parts.push(`${m0}:${splitAmounts[0] || 0}`);
+    if (m1) parts.push(`${m1}:${splitAmounts[1] || 0}`);
+    return parts.join('+');
+  };
 
   const handleCheckout = async () => {
     if (cart.length === 0) return;
-    if (splits.length === 0) { setError('Select at least one payment method.'); return; }
-    if (allPriced && !splitsMatch) {
-      setError(`Payment total ₹${splitsTotal} doesn't match bill ₹${cartTotal}. Adjust amounts.`);
-      return;
+    if (!splitReady) {
+      if (payMode === 'split') {
+        if (!splitMethods[0] || !splitMethods[1]) { setError('Select both payment methods for split.'); return; }
+        if (splitMethods[0] === splitMethods[1])  { setError('Choose two different methods.'); return; }
+        if (allPriced && Math.abs(splitSum - cartTotal) >= 0.01) {
+          setError(`Amounts total ₹${splitSum} but bill is ₹${cartTotal}.`); return;
+        }
+      } else {
+        setError('Select a payment method.'); return;
+      }
     }
     setError(''); setSubmitting(true);
 
-    const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
+    const soldBy     = currentUser?.displayName || currentUser?.username || 'Staff';
+    const methodLabel = buildMethodLabel();
     const succeeded: string[] = [];
-    const methodLabel = paymentMethodLabel ?? 'cash';
 
     for (const item of cart) {
       const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel);
@@ -699,80 +719,119 @@ export function BillTab({ branch, branchStock }: Props) {
               )}
             </div>
 
-            {/* Payment — part payment */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-                  Payment Method
-                </p>
-                {splits.length > 1 && (
-                  <span className="flex items-center gap-1 text-[10px] text-primary font-semibold">
-                    <GitBranch className="size-3" /> Split payment
-                  </span>
-                )}
+            {/* ── Payment section ── */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                Payment Method
+              </p>
+
+              {/* 4 mode buttons: Cash | UPI | Card | Part Pay */}
+              <div className="grid grid-cols-4 gap-2">
+                {PAYMENT_OPTIONS.map((m) => (
+                  <button
+                    key={m.key}
+                    onClick={() => { setPayMode('single'); setSingle(m.key); setError(''); }}
+                    className={cn(
+                      'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                      payMode === 'single' && singleMethod === m.key
+                        ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
+                        : 'bg-card border-border text-foreground hover:bg-muted/50',
+                    )}
+                  >
+                    {m.icon}{m.label}
+                  </button>
+                ))}
+                {/* Part Pay button */}
+                <button
+                  onClick={() => { setPayMode('split'); setSingle(null); setSplitMethods([null, null]); setSplitAmounts(['', '']); setError(''); }}
+                  className={cn(
+                    'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                    payMode === 'split'
+                      ? 'bg-violet-600 text-white border-transparent shadow-md'
+                      : 'bg-card border-border text-foreground hover:bg-muted/50',
+                  )}
+                >
+                  <ArrowLeftRight className="size-4" />
+                  Part Pay
+                </button>
               </div>
 
-              {/* Method toggle buttons */}
-              <div className="grid grid-cols-3 gap-2">
-                {PAYMENT_OPTIONS.map((m) => {
-                  const active = selectedMethods.includes(m.key);
-                  return (
-                    <button
-                      key={m.key}
-                      onClick={() => toggleMethod(m.key)}
-                      className={cn(
-                        'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                        active
-                          ? 'cafe-gradient text-primary-foreground border-transparent shadow-md'
-                          : 'bg-card border-border text-foreground hover:bg-muted/50',
-                      )}
-                    >
-                      {m.icon}{m.label}
-                    </button>
-                  );
-                })}
-              </div>
+              {/* ── Split payment panel ── */}
+              {payMode === 'split' && (
+                <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                  <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-1">
+                    Split between 2 methods
+                  </p>
 
-              {/* Amount inputs for each selected method */}
-              {splits.length > 0 && (
-                <div className="space-y-2 pt-1">
-                  {splits.map((s) => {
-                    const opt = PAYMENT_OPTIONS.find((o) => o.key === s.method)!;
+                  {/* Row for each split slot */}
+                  {([0, 1] as const).map((idx) => {
+                    const otherMethod = splitMethods[idx === 0 ? 1 : 0];
                     return (
-                      <div key={s.method} className="flex items-center gap-3 bg-muted/30 rounded-xl px-3 py-2">
-                        <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground w-14 shrink-0">
-                          {opt.icon}{opt.label}
-                        </span>
-                        <span className="text-xs text-muted-foreground">₹</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          value={s.amount}
-                          onChange={(e) => updateSplitAmount(s.method, e.target.value)}
-                          placeholder="0"
-                          className="flex-1 h-8 px-2 rounded-lg border bg-background text-sm font-mono text-right focus:outline-none focus:ring-2 focus:ring-primary/40"
-                        />
+                      <div key={idx} className="space-y-1.5">
+                        {/* Method picker for this slot */}
+                        <div className="flex gap-1.5">
+                          {PAYMENT_OPTIONS.map((m) => {
+                            const isChosen  = splitMethods[idx] === m.key;
+                            const isBlocked = otherMethod === m.key; // can't pick same as other slot
+                            return (
+                              <button
+                                key={m.key}
+                                onClick={() => !isBlocked && selectSplitMethod(idx, m.key)}
+                                disabled={isBlocked}
+                                className={cn(
+                                  'flex-1 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 border transition active:scale-95',
+                                  isChosen
+                                    ? 'bg-violet-600 text-white border-transparent'
+                                    : isBlocked
+                                    ? 'opacity-30 bg-muted border-border text-muted-foreground cursor-not-allowed'
+                                    : 'bg-white border-border text-foreground hover:bg-violet-50',
+                                )}
+                              >
+                                {m.icon}{m.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Amount input */}
+                        <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-1.5">
+                          <span className="text-xs text-muted-foreground shrink-0">₹</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            step="0.01"
+                            value={splitAmounts[idx]}
+                            onChange={(e) => handleSplitAmount(idx, e.target.value)}
+                            placeholder={
+                              splitMethods[idx]
+                                ? allPriced ? `e.g. ${idx === 0 ? Math.round(cartTotal / 2) : ''}` : '0.00'
+                                : 'Pick method first'
+                            }
+                            disabled={!splitMethods[idx]}
+                            className="flex-1 text-sm font-mono text-right bg-transparent focus:outline-none disabled:opacity-40"
+                          />
+                        </div>
                       </div>
                     );
                   })}
 
-                  {/* Balance row */}
-                  {allPriced && splits.length > 1 && (
+                  {/* Balance indicator */}
+                  {allPriced && splitTotal0 > 0 && (
                     <div className={cn(
-                      'flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold',
-                      splitsMatch
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                        : 'bg-amber-50 text-amber-700 border border-amber-100',
+                      'flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold mt-1',
+                      Math.abs(splitPending) < 0.01
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-amber-100 text-amber-700',
                     )}>
-                      <span>{splitsMatch ? '✓ Amounts match' : splitsPending > 0 ? 'Remaining' : 'Over by'}</span>
-                      {!splitsMatch && (
-                        <span className="font-bold tabular-nums">
-                          {formatCurrency(Math.abs(splitsPending))}
-                        </span>
+                      <span>
+                        {Math.abs(splitPending) < 0.01
+                          ? '✓ Balanced'
+                          : splitPending > 0 ? 'Still to cover' : 'Over by'}
+                      </span>
+                      {Math.abs(splitPending) >= 0.01 && (
+                        <span className="tabular-nums font-bold">{formatCurrency(Math.abs(splitPending))}</span>
                       )}
-                      {splitsMatch && <span>✓</span>}
                     </div>
                   )}
                 </div>
@@ -787,7 +846,7 @@ export function BillTab({ branch, branchStock }: Props) {
 
             <button
               onClick={handleCheckout}
-              disabled={submitting || splits.length === 0 || (allPriced && !splitsMatch)}
+              disabled={submitting || !splitReady}
               className="w-full py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md"
             >
               {submitting
