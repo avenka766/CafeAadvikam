@@ -36,7 +36,8 @@ const FOOD_IMAGES = {
   kids: 'https://images.unsplash.com/photo-1513442542250-854d436a73f2?w=600&q=80',
   soup: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80',
   south: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80',
-  partyHall: 'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w1200-h2136-k-no',
+  partyHall: '/party-hall.jpg',
+  partyHallExtra: 'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w1200-h2136-k-no',
 };
 function getTimePeriod() {
   const now = new Date(); const h = now.getHours();
@@ -149,12 +150,47 @@ function MenuPopup({ onClose }: { onClose: () => void }) {
   );
 }
 function PartyHallViewer({ onClose }: { onClose: () => void }) {
+  const [activeIdx, setActiveIdx] = useState(0);
+  const IMAGES = [
+    { src: FOOD_IMAGES.partyHall,      label: 'Cafe Aadvikam — Front View' },
+    { src: FOOD_IMAGES.partyHallExtra, label: 'Party Hall — Interior' },
+  ];
   useEffect(() => { document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = ''; }; }, []);
   return (
-    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center" onClick={onClose}>
-      <img src={FOOD_IMAGES.partyHall} alt="Party Hall" className="w-full h-full object-contain" onClick={e => e.stopPropagation()} />
-      <button onClick={onClose} className="absolute top-4 right-4 size-10 rounded-full flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)' }}><X className="size-5 text-white" /></button>
-      <p className="absolute bottom-6 text-white/50 text-xs font-body">Tap anywhere to close</p>
+    <div className="fixed inset-0 z-50 bg-black flex flex-col" onClick={onClose}>
+      {/* Main image */}
+      <div className="flex-1 flex items-center justify-center" onClick={onClose}>
+        <img
+          src={IMAGES[activeIdx].src}
+          alt={IMAGES[activeIdx].label}
+          className="max-w-full max-h-full object-contain"
+          onClick={e => e.stopPropagation()}
+        />
+      </div>
+
+      {/* Caption */}
+      <p className="text-center text-white/60 text-xs font-body pb-1 pt-1">{IMAGES[activeIdx].label}</p>
+
+      {/* Thumbnail strip */}
+      <div className="flex justify-center gap-3 pb-8 pt-2" onClick={e => e.stopPropagation()}>
+        {IMAGES.map((img, i) => (
+          <button
+            key={i}
+            onClick={() => setActiveIdx(i)}
+            className="relative rounded-xl overflow-hidden border-2 transition-all"
+            style={{ width: 72, height: 52, borderColor: activeIdx === i ? '#FFD700' : 'rgba(255,255,255,0.2)' }}
+          >
+            <img src={img.src} alt={img.label} className="w-full h-full object-cover" />
+            {activeIdx !== i && <div className="absolute inset-0 bg-black/40" />}
+          </button>
+        ))}
+      </div>
+
+      {/* Close button */}
+      <button onClick={onClose} className="absolute top-4 right-4 size-10 rounded-full flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)' }}>
+        <X className="size-5 text-white" />
+      </button>
+      <p className="absolute top-5 left-4 text-white/40 text-[11px] font-body">Tap outside to close</p>
     </div>
   );
 }
