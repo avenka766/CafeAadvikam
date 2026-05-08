@@ -14,13 +14,16 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
 
   if (currentUser) {
-    const path = currentUser.role === 'order_taker' ? '/order-pad'
-      : currentUser.role === 'admin' ? '/admin-dashboard'
-      : currentUser.role === 'kitchen' ? '/kitchen'
-      : currentUser.role === 'order_receiver' ? '/bakery/receive'
-      : currentUser.role === 'store' ? '/bakery/store'
-      : currentUser.role === 'baker' ? '/bakery/baker'
-      : currentUser.role === 'packing' ? '/bakery/packing'
+    const path = currentUser.role === 'order_taker'    ? '/order-pad'
+      : currentUser.role === 'admin'                   ? '/admin-dashboard'
+      : currentUser.role === 'kitchen'                 ? '/kitchen'
+      : currentUser.role === 'order_receiver'          ? '/bakery/receive'
+      : currentUser.role === 'store'                   ? '/bakery/store'
+      : currentUser.role === 'baker'                   ? '/bakery/baker'
+      : currentUser.role === 'packing'                 ? '/bakery/packing'
+      : currentUser.role === 'branch_vrsnb'            ? '/branch/vrsnb'
+      : currentUser.role === 'branch_snb'              ? '/branch/snb'
+      : currentUser.role === 'branch_hosur'            ? '/branch/hosur'
       : '/billing';
     return <Navigate to={path} replace />;
   }
@@ -33,9 +36,16 @@ export default function Login() {
     const ok = await login(username.trim(), password);
     if (ok) {
       const user = useAuthStore.getState().currentUser;
-      const path = user?.role === 'admin' ? '/admin-dashboard'
-        : user?.role === 'order_taker' ? '/order-pad'
-        : user?.role === 'kitchen' ? '/kitchen'
+      const path = user?.role === 'admin'            ? '/admin-dashboard'
+        : user?.role === 'order_taker'               ? '/order-pad'
+        : user?.role === 'kitchen'                   ? '/kitchen'
+        : user?.role === 'order_receiver'            ? '/bakery/receive'
+        : user?.role === 'store'                     ? '/bakery/store'
+        : user?.role === 'baker'                     ? '/bakery/baker'
+        : user?.role === 'packing'                   ? '/bakery/packing'
+        : user?.role === 'branch_vrsnb'              ? '/branch/vrsnb'
+        : user?.role === 'branch_snb'                ? '/branch/snb'
+        : user?.role === 'branch_hosur'              ? '/branch/hosur'
         : '/billing';
       navigate(path, { replace: true });
     } else {

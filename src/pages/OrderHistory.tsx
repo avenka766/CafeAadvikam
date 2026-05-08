@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
-import { cn, formatDate } from '@/lib/utils';
+import { cn, formatDate, formatCurrency } from '@/lib/utils';
 import { History, CalendarDays } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 
@@ -55,7 +55,7 @@ export default function OrderHistory() {
           <div className="flex items-center gap-1.5 mb-1">
             <span className="text-[10px] font-body font-semibold text-primary uppercase">Revenue</span>
           </div>
-          <p className="font-display text-xl font-bold text-primary tabular-nums">₹{todayTotal}</p>
+          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(todayTotal)}</p>
           <p className="text-[10px] font-body text-muted-foreground">served today</p>
         </div>
       </div>

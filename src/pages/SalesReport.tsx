@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 import type { PaymentType } from '@/types';
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
-  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
+  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance',
 };
 const PIE_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#999'];
 const SOURCE_COLORS = ['#3B82F6', '#8B5CF6'];
@@ -153,10 +153,6 @@ export default function SalesReport() {
       ? new Date().toLocaleDateString('en-IN').replace(/\//g, '-')
       : `${startDate}_to_${endDate}`;
 
-    const PAYMENT_LABELS_LOCAL: Record<string, string> = {
-      cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance',
-    };
-
     // ── Sheet 1: Sales Report (all served orders) ─────────────────────────────
     const mainRows = dayOrders.map((o, i) => {
       const gstBase = Math.round((o.total / 1.05) * 100) / 100;
@@ -183,7 +179,7 @@ export default function SalesReport() {
         'GST 5% (₹)':      gst5,
         'CGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
         'SGST 2.5% (₹)':   Math.round((gst5 / 2) * 100) / 100,
-        'Payment Type':     PAYMENT_LABELS_LOCAL[o.paymentType || 'unpaid'],
+        'Payment Type':     PAYMENT_LABELS[o.paymentType || 'unpaid'],
         'Cash (₹)':         cashAmt || '-',
         'UPI (₹)':          upiAmt  || '-',
         'Card (₹)':         cardAmt || '-',

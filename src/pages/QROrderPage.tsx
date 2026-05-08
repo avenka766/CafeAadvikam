@@ -62,7 +62,7 @@ export default function QROrderPage() {
 
     const tn = orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined;
 
-    await submitOrder({
+    const returnedId = await submitOrder({
       tableNumber: tn,
       orderType,
       notes: notes || undefined,
@@ -72,9 +72,10 @@ export default function QROrderPage() {
     });
 
     const storeOrders = useOrderStore.getState().orders;
-    if (storeOrders.length > 0) {
-      setOrderNumber(storeOrders[0].orderNumber);
-      setTrackingId(storeOrders[0].id);
+    const placed = storeOrders.find((o) => o.id === returnedId);
+    if (placed) {
+      setOrderNumber(placed.orderNumber);
+      setTrackingId(placed.id);
     }
 
     setSubmitting(false);
