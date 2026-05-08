@@ -268,7 +268,7 @@ function ExploreMenuSection() {
             <div
               key={label}
               className="group shrink-0 relative rounded-2xl overflow-hidden shadow-lg cursor-pointer"
-              style={{ width: 150, height: 210 }}
+              style={{ width: 170, height: 250 }}
             >
               {/* Image with hover zoom */}
               <img
@@ -315,10 +315,12 @@ function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
     const onScroll = () => {
       const rect = container.getBoundingClientRect();
       const vh   = window.innerHeight;
-      // progress: 0 when bottom of element enters viewport, 1 when top leaves
-      const progress = Math.min(1, Math.max(0, (vh - rect.top) / (vh * 0.8)));
+      const progress = Math.min(1, Math.max(0, (vh - rect.top) / (vh * 0.75)));
       const pct = Math.round(progress * 100);
       img.style.clipPath = `polygon(0 0, ${pct}% 0, ${pct}% 100%, 0 100%)`;
+      // Move the divider line to match clip edge
+      const divider = container.querySelector('#wipe-divider') as HTMLElement | null;
+      if (divider) divider.style.left = `${pct}%`;
     };
 
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -355,7 +357,7 @@ function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
             <div
               key={name}
               className="group shrink-0 relative rounded-2xl overflow-hidden shadow-md cursor-pointer"
-              style={{ width: 150, height: 185 }}
+              style={{ width: 170, height: 215 }}
             >
               <img
                 src={img}
@@ -374,39 +376,57 @@ function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
         <div className="absolute right-0 top-0 bottom-3 w-12 pointer-events-none" style={{ background: 'linear-gradient(to left, var(--background, white), transparent)' }} />
       </div>
 
-      {/* Scroll-driven wipe: cafe image reveals as you scroll */}
+      {/* Scroll-driven wipe: South Indian Meal → Party Hall */}
       <div
         ref={wipeRef}
-        className="relative mx-4 mt-6 rounded-3xl overflow-hidden shadow-xl border border-border"
-        style={{ height: 220 }}
+        className="relative mx-4 mt-8 rounded-3xl overflow-hidden shadow-2xl border border-border"
+        style={{ height: 320 }}
       >
-        {/* Base image */}
+        {/* Base — South Indian Meal (revealed first, full width) */}
         <img
-          src="https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=1200&q=80"
-          alt="Cafe Aadvikam"
+          src="https://images.unsplash.com/photo-1596797038530-2c107229654b?w=1200&q=80"
+          alt="South Indian Meal"
           className="absolute inset-0 w-full h-full object-cover"
           loading="lazy"
         />
-        {/* Wipe-in overlay — clip-path driven by scroll */}
+        {/* Label for base image — bottom-left */}
+        <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
+          <span className="text-[10px] font-body font-bold uppercase tracking-widest px-2.5 py-1 rounded-full"
+            style={{ background: 'rgba(255,215,0,0.18)', border: '1px solid rgba(255,215,0,0.4)', color: '#FFD700' }}>
+            South Indian Meal
+          </span>
+        </div>
+
+        {/* Wipe-in overlay — Party Hall, left-to-right clip */}
         <div
           ref={wipeImgRef}
           className="absolute inset-0"
-          style={{ clipPath: 'polygon(0 0, 0 0, 0 100%, 0 100%)', transition: 'clip-path 0.05s linear' }}
+          style={{ clipPath: 'polygon(0 0, 0 0, 0 100%, 0 100%)' }}
         >
           <img
             src="/party-hall.jpg"
-            alt="Cafe Aadvikam exterior"
+            alt="Party Hall"
             className="w-full h-full object-cover"
             loading="lazy"
           />
-        </div>
-        {/* Label on top */}
-        <div className="absolute inset-0 flex items-end p-4" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.55) 0%,transparent 60%)' }}>
-          <div>
-            <p className="text-white font-display font-bold text-base leading-tight drop-shadow">Cafe Aadvikam</p>
-            <p className="text-white/70 font-body text-xs">109 Bagalur Main Road, Berikai</p>
+          {/* Label for wipe image — bottom-right */}
+          <div className="absolute bottom-4 right-4">
+            <span className="text-[10px] font-body font-bold uppercase tracking-widest px-2.5 py-1 rounded-full"
+              style={{ background: 'rgba(255,215,0,0.18)', border: '1px solid rgba(255,215,0,0.4)', color: '#FFD700' }}>
+              Party Hall
+            </span>
           </div>
         </div>
+
+        {/* Vertical wipe divider — follows the clip edge */}
+        <div
+          className="absolute inset-y-0 w-[3px] shadow-[0_0_12px_rgba(255,255,255,0.6)] pointer-events-none z-20"
+          style={{ left: 'var(--wipe-x, 0%)', background: 'white', transition: 'left 0.05s linear' }}
+          id="wipe-divider"
+        />
+
+        {/* Gradient overlays top corners */}
+        <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(to bottom,rgba(0,0,0,0.25) 0%,transparent 35%, transparent 65%, rgba(0,0,0,0.35) 100%)' }} />
       </div>
     </section>
   );
