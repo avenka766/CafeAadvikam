@@ -61,7 +61,7 @@ export const USERS: User[] = [
   },
 ];
 
-export const TABLE_NUMBERS = Array.from({ length: 20 }, (_, i) => i + 1);
+export const TABLE_NUMBERS = Array.from({ length: 30 }, (_, i) => i + 1);
 
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   pending: 'New Order',
