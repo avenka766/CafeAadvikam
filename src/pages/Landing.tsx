@@ -9,6 +9,22 @@ import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
+
+// ─── Scroll Reveal Hook ───────────────────────────────────────────────────────
+function useScrollReveal<T extends HTMLElement>(options: { threshold?: number } = {}) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { el.dataset.visible = 'true'; obs.disconnect(); } },
+      { threshold: options.threshold ?? 0.12 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  return ref;
+}
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 const CAFE = {
   name: 'Cafe Aadvikam', address: '109 Bagalur Main Road, Berikai 635105',
@@ -216,6 +232,186 @@ function HeroBg() {
   );
 }
 
+// ─── Explore Our Menu Section ────────────────────────────────────────────────
+const EXPLORE_CATS = [
+  { img: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80', label: 'South Indian' },
+  { img: 'https://images.unsplash.com/photo-1642821373181-696a54913e93?w=600&q=80', label: 'Biriyani' },
+  { img: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80', label: 'Tandoori' },
+  { img: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80', label: 'North Indian' },
+  { img: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80', label: 'Soups' },
+];
+
+function ExploreMenuSection() {
+  const rowRef = useScrollReveal<HTMLDivElement>({ threshold: 0.1 });
+  const titleRef = useScrollReveal<HTMLDivElement>({ threshold: 0.2 });
+  return (
+    <section className="py-6">
+      {/* Heading */}
+      <div
+        ref={titleRef}
+        data-reveal="up"
+        className="px-4 mb-5"
+      >
+        <p className="text-[10px] font-body font-bold uppercase tracking-widest text-primary mb-1">Explore Our Menu</p>
+        <h2 className="font-display text-2xl font-bold text-foreground leading-tight">What are you craving?</h2>
+      </div>
+
+      {/* Horizontal scroll row with stagger */}
+      <div className="relative">
+        <div
+          ref={rowRef}
+          data-stagger
+          className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-3"
+          style={{ scrollbarWidth: 'none' }}
+        >
+          {EXPLORE_CATS.map(({ img, label }, i) => (
+            <div
+              key={label}
+              className="group shrink-0 relative rounded-2xl overflow-hidden shadow-lg cursor-pointer"
+              style={{ width: 150, height: 210 }}
+            >
+              {/* Image with hover zoom */}
+              <img
+                src={img}
+                alt={label}
+                className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                loading={i < 2 ? 'eager' : 'lazy'}
+              />
+              {/* Gradient overlay */}
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.78) 0%,rgba(0,0,0,0.15) 50%,transparent 100%)' }} />
+              {/* Label */}
+              <p className="absolute bottom-3 left-0 right-0 text-center text-white font-body font-bold text-xs drop-shadow-md">{label}</p>
+            </div>
+          ))}
+        </div>
+        {/* Fade edge right */}
+        <div className="absolute right-0 top-0 bottom-3 w-12 pointer-events-none" style={{ background: 'linear-gradient(to left, var(--background, white), transparent)' }} />
+      </div>
+    </section>
+  );
+}
+
+// ─── From Our Kitchen Section ─────────────────────────────────────────────────
+const KITCHEN_ITEMS = [
+  { img: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80', name: 'Masala Dosa', price: '₹69' },
+  { img: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80', name: 'Paneer Masala', price: '₹170' },
+  { img: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80', name: 'Tomato Soup', price: '₹59' },
+  { img: 'https://images.unsplash.com/photo-1642821373181-696a54913e93?w=600&q=80', name: 'Handi Biriyani', price: '₹169' },
+  { img: 'https://images.unsplash.com/photo-1596797038530-2c107229654b?w=600&q=80', name: 'South Indian Thali', price: '' },
+];
+
+function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
+  const rowRef    = useScrollReveal<HTMLDivElement>({ threshold: 0.1 });
+  const titleRef  = useScrollReveal<HTMLDivElement>({ threshold: 0.2 });
+  // Scroll-driven wipe: cafe image slides in as user scrolls
+  const wipeRef    = useRef<HTMLDivElement>(null);
+  const wipeImgRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = wipeRef.current;
+    const img       = wipeImgRef.current;
+    if (!container || !img) return;
+
+    const onScroll = () => {
+      const rect = container.getBoundingClientRect();
+      const vh   = window.innerHeight;
+      // progress: 0 when bottom of element enters viewport, 1 when top leaves
+      const progress = Math.min(1, Math.max(0, (vh - rect.top) / (vh * 0.8)));
+      const pct = Math.round(progress * 100);
+      img.style.clipPath = `polygon(0 0, ${pct}% 0, ${pct}% 100%, 0 100%)`;
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll(); // initialise
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  return (
+    <section className="pb-8">
+      {/* Header */}
+      <div
+        ref={titleRef}
+        data-reveal="up"
+        className="px-4 mb-4 flex items-center justify-between"
+      >
+        <h2 className="font-display text-xl font-bold text-foreground">From Our Kitchen</h2>
+        <button
+          onClick={onViewAll}
+          className="text-xs font-body font-semibold text-primary flex items-center gap-1 active:opacity-70"
+        >
+          View All <ChevronRight className="size-3" />
+        </button>
+      </div>
+
+      {/* Horizontal scroll row */}
+      <div className="relative">
+        <div
+          ref={rowRef}
+          data-stagger
+          className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-3"
+          style={{ scrollbarWidth: 'none' }}
+        >
+          {KITCHEN_ITEMS.map(({ img, name, price }, i) => (
+            <div
+              key={name}
+              className="group shrink-0 relative rounded-2xl overflow-hidden shadow-md cursor-pointer"
+              style={{ width: 150, height: 185 }}
+            >
+              <img
+                src={img}
+                alt={name}
+                className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                loading="lazy"
+              />
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.78) 0%,transparent 55%)' }} />
+              <div className="absolute bottom-3 left-2.5 right-2.5">
+                <p className="text-white font-body font-semibold text-[11px] leading-tight">{name}</p>
+                {price && <p className="font-body font-bold text-xs mt-0.5" style={{ color: '#F4A23A' }}>{price}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="absolute right-0 top-0 bottom-3 w-12 pointer-events-none" style={{ background: 'linear-gradient(to left, var(--background, white), transparent)' }} />
+      </div>
+
+      {/* Scroll-driven wipe: cafe image reveals as you scroll */}
+      <div
+        ref={wipeRef}
+        className="relative mx-4 mt-6 rounded-3xl overflow-hidden shadow-xl border border-border"
+        style={{ height: 220 }}
+      >
+        {/* Base image */}
+        <img
+          src="https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=1200&q=80"
+          alt="Cafe Aadvikam"
+          className="absolute inset-0 w-full h-full object-cover"
+          loading="lazy"
+        />
+        {/* Wipe-in overlay — clip-path driven by scroll */}
+        <div
+          ref={wipeImgRef}
+          className="absolute inset-0"
+          style={{ clipPath: 'polygon(0 0, 0 0, 0 100%, 0 100%)', transition: 'clip-path 0.05s linear' }}
+        >
+          <img
+            src="/party-hall.jpg"
+            alt="Cafe Aadvikam exterior"
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        </div>
+        {/* Label on top */}
+        <div className="absolute inset-0 flex items-end p-4" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.55) 0%,transparent 60%)' }}>
+          <div>
+            <p className="text-white font-display font-bold text-base leading-tight drop-shadow">Cafe Aadvikam</p>
+            <p className="text-white/70 font-body text-xs">109 Bagalur Main Road, Berikai</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Cafe Content ─────────────────────────────────────────────────────────────
 function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setShowMenu: (v: boolean) => void; setDrawerCat: (v: string | null) => void; setPartyFullscreen: (v: boolean) => void }) {
   const [timePeriod] = useState(getTimePeriod);
@@ -281,18 +477,8 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
         </div>
       </section>
 
-      {/* Food strip */}
-      <section className="py-6">
-        <div className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-2">
-          {[{ img: FOOD_IMAGES.idly, label: 'South Indian' }, { img: FOOD_IMAGES.biryani, label: 'Biriyani' }, { img: FOOD_IMAGES.tandoor, label: 'Tandoori' }, { img: FOOD_IMAGES.paneer, label: 'North Indian' }, { img: FOOD_IMAGES.soup, label: 'Soups' }].map(({ img, label }) => (
-            <div key={label} className="shrink-0 relative rounded-2xl overflow-hidden shadow-md" style={{ width: 130, height: 160 }}>
-              <img src={img} alt={label} className="w-full h-full object-cover" />
-              <div className="absolute inset-0" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.7) 0%,transparent 55%)' }} />
-              <p className="absolute bottom-2 left-0 right-0 text-center text-white font-body font-bold text-[11px]">{label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Explore Our Menu */}
+      <ExploreMenuSection />
 
       {/* Specialty cards */}
       <section className="px-4 py-6">
@@ -338,8 +524,8 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
       <section className="px-4 py-8">
         <div className="flex items-center gap-2 mb-2"><PartyPopper className="size-5 text-primary" /><h2 className="font-display text-2xl font-bold text-foreground">Party Hall</h2></div>
         <p className="text-sm font-body text-muted-foreground mb-4">Perfect for birthdays, family gatherings &amp; corporate events.</p>
-        <div className="relative rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-all shadow-xl border border-border" style={{ height: 220 }} onClick={() => setPartyFullscreen(true)}>
-          <img src={FOOD_IMAGES.partyHall} alt="Party Hall" className="w-full h-full object-cover" />
+        <div className="group relative rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-all shadow-xl border border-border" style={{ height: 220 }} onClick={() => setPartyFullscreen(true)}>
+          <img src={FOOD_IMAGES.partyHall} alt="Party Hall" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
           <div className="absolute inset-0" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.75) 0%,rgba(0,0,0,0.1) 60%)' }} />
           <div className="absolute top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full font-body text-xs font-bold whitespace-nowrap" style={{ background: 'rgba(255,215,0,0.9)', color: '#1a0a00' }}>🎉 PARTY HALL AVAILABLE</div>
           <div className="absolute bottom-4 left-4"><p className="text-white font-display text-lg font-bold">Celebrate with Us</p><p className="text-white/70 font-body text-xs">Spacious · Ample parking · 6 AM – 10 PM</p></div>
@@ -351,27 +537,7 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
       </section>
 
       {/* From Our Kitchen */}
-      <section className="pb-8">
-        <div className="px-4 mb-3 flex items-center justify-between">
-          <h2 className="font-display text-xl font-bold text-foreground">From Our Kitchen</h2>
-          <button onClick={() => setShowMenu(true)} className="text-xs font-body font-semibold text-primary flex items-center gap-1">View All <ChevronRight className="size-3" /></button>
-        </div>
-        <div className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-2">
-          {[
-            { img: FOOD_IMAGES.dosa,    label: 'Masala Dosa ₹69' },
-            { img: FOOD_IMAGES.paneer,  label: 'Paneer Masala ₹170' },
-            { img: FOOD_IMAGES.soup,    label: 'Tomato Soup ₹59' },
-            { img: FOOD_IMAGES.biryani, label: 'Handi Biriyani ₹169' },
-            { img: FOOD_IMAGES.south,   label: 'South Indian Thali' },
-          ].map(({ img, label }) => (
-            <div key={label} className="shrink-0 relative rounded-2xl overflow-hidden shadow-md" style={{ width: 150, height: 180 }}>
-              <img src={img} alt={label} className="w-full h-full object-cover" />
-              <div className="absolute inset-0" style={{ background: 'linear-gradient(to top,rgba(0,0,0,0.75) 0%,transparent 50%)' }} />
-              <p className="absolute bottom-2.5 left-2 right-2 text-white font-body font-semibold text-[10px] leading-tight">{label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      <FromOurKitchenSection onViewAll={() => setShowMenu(true)} />
     </>
   );
 }
@@ -635,6 +801,19 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-background pt-14 overflow-x-hidden">
       <style>{`
+/* Scroll reveal */
+[data-reveal] { opacity: 0; transform: translateX(var(--rv-x,0)) translateY(var(--rv-y,0)) scale(var(--rv-s,1)); transition: opacity .55s cubic-bezier(.22,1,.36,1), transform .55s cubic-bezier(.22,1,.36,1); }
+[data-reveal][data-visible=true] { opacity: 1; transform: none; }
+[data-reveal~=right] { --rv-x: 60px; }
+[data-reveal~=up] { --rv-y: 30px; }
+[data-reveal~=scale] { --rv-s: 0.94; }
+[data-stagger] > * { opacity: 0; transform: translateX(60px); transition: opacity .5s cubic-bezier(.22,1,.36,1), transform .5s cubic-bezier(.22,1,.36,1); }
+[data-stagger][data-visible=true] > *:nth-child(1) { opacity:1; transform:none; transition-delay:.05s }
+[data-stagger][data-visible=true] > *:nth-child(2) { opacity:1; transform:none; transition-delay:.15s }
+[data-stagger][data-visible=true] > *:nth-child(3) { opacity:1; transform:none; transition-delay:.25s }
+[data-stagger][data-visible=true] > *:nth-child(4) { opacity:1; transform:none; transition-delay:.35s }
+[data-stagger][data-visible=true] > *:nth-child(5) { opacity:1; transform:none; transition-delay:.45s }
+
         @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
         @keyframes shimmer { 0% { background-position:-200% center; } 100% { background-position:200% center; } }
         @keyframes pulseGlow { 0%,100% { box-shadow:0 0 14px rgba(255,215,0,0.2); } 50% { box-shadow:0 0 28px rgba(255,215,0,0.5); } }
