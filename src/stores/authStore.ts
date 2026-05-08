@@ -128,7 +128,11 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'cafe-aadvikam-auth',
       storage: createJSONStorage(() => sessionStorage),
-      partialize: (state) => ({ currentUser: state.currentUser }),
+      partialize: (state) => ({
+        currentUser: state.currentUser
+          ? { ...state.currentUser, password: '' }
+          : null,
+      }),
     }
   )
 );

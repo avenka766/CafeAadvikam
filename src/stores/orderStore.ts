@@ -9,6 +9,7 @@ interface OrderState {
   loading: boolean;
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
+  _pollRefCount: number;
 
   // Cart actions (local only)
   addToCart: (item: MenuItem) => void;
@@ -87,6 +88,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   loading: false,
   polling: false,
   pollTimer: null,
+  _pollRefCount: 0,
 
   // === Cart (local) ===
   addToCart: (item: MenuItem) =>
@@ -163,7 +165,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       orderSource,
     };
 
-    // Always clear cart immediately — don't wait for DB
+    // Always clear cart immediately — optimistic update
     set((state) => ({
       orders: [order, ...state.orders],
       cart: [],
@@ -201,6 +203,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const { error: error2 } = await supabase.from('orders').insert(basePayload);
       if (error2) {
         console.error('Order insert failed:', error2.message);
+        // Revert optimistic update — restore cart and remove the ghost order
+        set((state) => ({
+          orders: state.orders.filter((o) => o.id !== orderId),
+          cart,
+        }));
       }
     }
 
@@ -212,7 +219,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
-    const balanceDue = subtotal - params.advanceAmount;
+    const balanceDue = Math.max(0, subtotal - params.advanceAmount);
 
     const { data: numData } = await supabase.rpc('get_next_order_number');
     const orderNumber = numData || Date.now() % 10000;
@@ -327,7 +334,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const now = new Date().toISOString();
     const order = get().orders.find(o => o.id === orderId);
     if (!order) return;
-    const balanceDue = order.total - advanceAmount;
+    const balanceDue = Math.max(0, order.total - advanceAmount);
 
     const updates: Record<string, unknown> = {
       payment_type: 'advance',
@@ -351,6 +358,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
   collectBalance: async (orderId, balancePaymentType, billedBy, breakdown) => {
     const now = new Date().toISOString();
+    // Single atomic update — avoids race condition from two sequential calls
     const updates: Record<string, unknown> = {
       payment_type: 'advance',        // keep 'advance' so we know it was an advance order
       billed_by: billedBy,
@@ -358,6 +366,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       fully_paid_at: now,
       balance_payment_type: balancePaymentType,
       balance_paid_by: billedBy,
+      status: 'served',
       updated_at: now,
     };
     if (breakdown) updates.payment_breakdown = breakdown;
@@ -365,37 +374,34 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     set((state) => ({
       orders: state.orders.map((o) =>
         o.id === orderId
-          ? { ...o, paymentType: 'advance', billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
+          ? { ...o, paymentType: 'advance', billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, status: 'served', updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
           : o
       ),
     }));
 
     await supabase.from('orders').update(updates).eq('id', orderId);
-    // Also mark as served
-    await supabase.from('orders').update({ status: 'served', updated_at: now }).eq('id', orderId);
-    set((state) => ({
-      orders: state.orders.map((o) => o.id === orderId ? { ...o, status: 'served' } : o),
-    }));
   },
 
-  // === Polling ===
+  // === Polling (reference-counted so multiple components can safely start/stop) ===
   startPolling: () => {
-    const { pollTimer } = get();
-    if (pollTimer) return;
+    const state = get();
+    const newCount = (state._pollRefCount || 0) + 1;
+    set({ _pollRefCount: newCount });
+
+    if (state.pollTimer) return; // timer already running
 
     get().loadOrders();
-
-    const timer = setInterval(() => {
-      get().loadOrders();
-    }, 3000);
-
+    const timer = setInterval(() => { get().loadOrders(); }, 3000);
     set({ polling: true, pollTimer: timer });
   },
 
   stopPolling: () => {
-    const { pollTimer } = get();
-    if (pollTimer) {
-      clearInterval(pollTimer);
+    const state = get();
+    const newCount = Math.max(0, (state._pollRefCount || 0) - 1);
+    set({ _pollRefCount: newCount });
+
+    if (newCount === 0 && state.pollTimer) {
+      clearInterval(state.pollTimer);
       set({ polling: false, pollTimer: null });
     }
   },

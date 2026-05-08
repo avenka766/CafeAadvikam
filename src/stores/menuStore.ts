@@ -2,11 +2,14 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { MenuItem } from '@/types';
 
+const MENU_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 interface MenuState {
   items: MenuItem[];
   loading: boolean;
   loaded: boolean;
-  loadMenu: () => Promise<void>;
+  loadedAt: number | null;
+  loadMenu: (force?: boolean) => Promise<void>;
   toggleItem: (id: string) => Promise<void>;
   updateItem: (id: string, updates: Partial<MenuItem>) => Promise<void>;
   setItemImage: (id: string, imageUrl: string) => Promise<void>;
@@ -16,9 +19,13 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
   items: [],
   loading: false,
   loaded: false,
+  loadedAt: null,
 
-  loadMenu: async () => {
-    if (get().loaded) return;
+  loadMenu: async (force = false) => {
+    const { loaded, loadedAt } = get();
+    const expired = !loadedAt || Date.now() - loadedAt > MENU_TTL_MS;
+    if (loaded && !expired && !force) return;
+
     set({ loading: true });
     const { data, error } = await supabase
       .from('menu_items')
@@ -35,7 +42,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
         enabled: d.enabled,
         imageUrl: d.image_url || undefined,
       }));
-      set({ items, loaded: true, loading: false });
+      set({ items, loaded: true, loadedAt: Date.now(), loading: false });
     } else {
       set({ loading: false });
     }
