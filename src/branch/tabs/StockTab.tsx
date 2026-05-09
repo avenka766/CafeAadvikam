@@ -1,8 +1,12 @@
 // src/branch/tabs/StockTab.tsx
 import { useState } from 'react';
-import { ArrowDownToLine, Package, AlertTriangle, Loader2, ChevronDown, ChevronUp, Scale, Hash } from 'lucide-react';
+import {
+  ArrowDownToLine, Package, AlertTriangle, Loader2,
+  ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
+import { useBranchStore } from '../branchStore';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock } from '../branchStore';
 
@@ -15,7 +19,6 @@ interface Props {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Detect if an item is sold by weight (kg) vs pieces */
 function detectSellUnit(itemName: string): 'kg' | 'pcs' {
   const lower = itemName.toLowerCase();
   const weightKeywords = [
@@ -27,48 +30,90 @@ function detectSellUnit(itemName: string): 'kg' | 'pcs' {
   return weightKeywords.some((kw) => lower.includes(kw)) ? 'kg' : 'pcs';
 }
 
-/** Format a quantity with proper unit label — handles decimals for kg items */
 function formatQtyLabel(qty: number, itemName: string): string {
   const unit = detectSellUnit(itemName);
+  const clean = (n: number) => parseFloat(n.toFixed(3)).toString();
   if (unit === 'kg') {
-    if (qty >= 1) return `${qty % 1 === 0 ? qty : qty.toFixed(2)} kg`;
+    if (qty >= 1) return `${clean(qty)} kg`;
     const grams = Math.round(qty * 1000);
     return `${grams}g`;
   }
-  return `${qty % 1 === 0 ? qty : qty.toFixed(2)} pcs`;
+  return `${clean(qty)} pcs`;
 }
-
-/** Format incoming delta with a + prefix */
-function formatIncomingQty(qty: number, itemName: string): string {
-  return `+${formatQtyLabel(qty, itemName)}`;
-}
-
-// ─── StockBadge (replaces shared one for this tab to support kg/pcs) ──────────
 
 function SmartStockBadge({ qty, threshold, itemName }: { qty: number; threshold: number; itemName: string }) {
   const unit = detectSellUnit(itemName);
   const low  = qty <= threshold;
-  const label = formatQtyLabel(qty, itemName);
-
   return (
     <span className={cn(
       'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold',
       low ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700',
     )}>
       {low && <AlertTriangle className="size-3 shrink-0" />}
-      {unit === 'kg' ? <Scale className="size-3 shrink-0 opacity-60" /> : <Hash className="size-3 shrink-0 opacity-60" />}
-      {label}
+      {unit === 'kg'
+        ? <Scale className="size-3 shrink-0 opacity-60" />
+        : <Hash  className="size-3 shrink-0 opacity-60" />
+      }
+      {formatQtyLabel(qty, itemName)}
     </span>
+  );
+}
+
+// ─── Per-item confirm button ───────────────────────────────────────────────────
+
+function ConfirmButton({ onConfirm }: { onConfirm: () => Promise<void> }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
+
+  const handleClick = async () => {
+    setState('loading');
+    await onConfirm();
+    setState('done');
+  };
+
+  if (state === 'done') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+        <CheckCircle2 className="size-3.5" /> Added
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={state === 'loading'}
+      className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-primary px-3 py-1 rounded-full disabled:opacity-50 transition active:scale-95"
+    >
+      {state === 'loading'
+        ? <Loader2 className="size-3.5 animate-spin" />
+        : <CheckCircle2 className="size-3.5" />
+      }
+      Confirm
+    </button>
   );
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export function StockTab({ branch, branchStock, branchIncoming, loading }: Props) {
+  const { confirmIncoming, confirmAllIncoming } = useBranchStore();
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
+  const [confirmingAll, setConfirmingAll] = useState(false);
 
   const availableItems  = branchStock.filter((s) => s.quantity > 0);
   const outOfStockItems = branchStock.filter((s) => s.quantity <= 0);
+
+  // Only today's unconfirmed items — no item limit
+  const today = new Date().toDateString();
+  const todayIncoming = branchIncoming.filter(
+    (inc) => !inc.confirmed && new Date(inc.receivedAt).toDateString() === today
+  );
+
+  const handleConfirmAll = async () => {
+    setConfirmingAll(true);
+    await confirmAllIncoming(branch);
+    setConfirmingAll(false);
+  };
 
   return (
     <div className="space-y-3">
@@ -78,16 +123,38 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
         <SectionHeader
           icon={<ArrowDownToLine className="size-4 text-emerald-600" />}
           title="Incoming Stock"
-          right={<span className="text-xs text-muted-foreground">Last 10</span>}
+          right={
+            todayIncoming.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {todayIncoming.length} pending
+                </span>
+                <button
+                  onClick={handleConfirmAll}
+                  disabled={confirmingAll}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95"
+                >
+                  {confirmingAll
+                    ? <Loader2 className="size-3 animate-spin" />
+                    : <CheckCheck className="size-3" />
+                  }
+                  {confirmingAll ? 'Adding…' : 'Confirm All'}
+                </button>
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">Today</span>
+            )
+          }
         />
-        {branchIncoming.length === 0 ? (
-          <EmptyState message="No incoming stock. Sync from Packing." />
+
+        {todayIncoming.length === 0 ? (
+          <EmptyState message="No incoming stock today. Items dispatched from Packing will appear here." />
         ) : (
           <div className="divide-y">
-            {branchIncoming.slice(0, 10).map((inc) => {
+            {todayIncoming.map((inc) => {
               const unit = detectSellUnit(inc.itemName);
               return (
-                <div key={inc.id} className="flex items-center justify-between px-4 py-3">
+                <div key={inc.id} className="flex items-center justify-between px-4 py-3 gap-3">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     {unit === 'kg'
                       ? <Scale className="size-3.5 text-muted-foreground shrink-0" />
@@ -100,9 +167,15 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
                       </p>
                     </div>
                   </div>
-                  <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full ml-3 shrink-0 tabular-nums">
-                    {formatIncomingQty(inc.quantity, inc.itemName)}
-                  </span>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
+                      +{formatQtyLabel(inc.quantity, inc.itemName)}
+                    </span>
+                    <ConfirmButton
+                      onConfirm={() => confirmIncoming(branch, inc.id).then(() => {})}
+                    />
+                  </div>
                 </div>
               );
             })}
