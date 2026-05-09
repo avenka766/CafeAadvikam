@@ -27,6 +27,7 @@ export interface IncomingStock {
   quantity: number;
   receivedAt: string;
   dispatchedBy: string;
+  confirmed: boolean;
 }
 
 interface BranchState {
@@ -41,6 +42,8 @@ interface BranchState {
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string) => Promise<string | null>;
   updateThreshold: (branch: Branch, itemName: string, threshold: number) => Promise<void>;
   syncIncomingFromDispatches: (branch: Branch) => Promise<void>;
+  confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
+  confirmAllIncoming: (branch: Branch) => Promise<string | null>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
 }
@@ -108,9 +111,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         incoming[branch] = (incomingData || []).map((d) => ({
           id:            d.id,
           itemName:      d.item_name,
-          quantity:      d.quantity,
+          quantity:      Number(d.quantity),
           receivedAt:    d.received_at,
           dispatchedBy:  d.dispatched_by,
+          confirmed:     d.confirmed ?? false,
         }));
 
         const tMap: Record<string, number> = {};
@@ -262,31 +266,82 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     if (newEntries.length === 0) return;
 
-    // Upsert with conflict on dispatch_id — if two calls race, only one wins.
-    // ignoreDuplicates means only truly new rows are returned in data.
-    const { data: insertedEntries } = await supabase
+    // Insert incoming records as unconfirmed — branch must confirm before stock is updated
+    await supabase
       .from('branch_incoming')
-      .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true })
-      .select();
+      .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
 
-    // Only update stock for rows actually inserted this call — never for duplicates.
-    const trulyNew = insertedEntries || [];
-    if (trulyNew.length === 0) return;
-
-    for (const entry of trulyNew) {
-      const { data: existing } = await supabase
-        .from('branch_stock').select('quantity')
-        .eq('branch', branch).eq('item_name', entry.item_name).single();
-      if (existing) {
-        await supabase.from('branch_stock')
-          .update({ quantity: existing.quantity + entry.quantity })
-          .eq('branch', branch).eq('item_name', entry.item_name);
-      } else {
-        await supabase.from('branch_stock')
-          .insert({ branch, item_name: entry.item_name, quantity: entry.quantity, min_threshold: 10 });
-      }
-    }
     await get().fetchBranchData(branch);
+  },
+
+  // Confirm a single incoming item — adds to stock and marks confirmed
+  confirmIncoming: async (branch, incomingId) => {
+    const inc = get().incoming[branch].find((i) => i.id === incomingId);
+    if (!inc) return 'Item not found';
+    if (inc.confirmed) return null;
+
+    // Mark confirmed in DB
+    const { error: confErr } = await supabase
+      .from('branch_incoming')
+      .update({ confirmed: true })
+      .eq('id', incomingId);
+    if (confErr) return `Failed to confirm: ${confErr.message}`;
+
+    // Add quantity to branch_stock
+    const { data: existing } = await supabase
+      .from('branch_stock')
+      .select('quantity')
+      .eq('branch', branch)
+      .eq('item_name', inc.itemName)
+      .single();
+
+    if (existing) {
+      const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
+      await supabase.from('branch_stock')
+        .update({ quantity: newQty })
+        .eq('branch', branch).eq('item_name', inc.itemName);
+    } else {
+      await supabase.from('branch_stock')
+        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, min_threshold: 10 });
+    }
+
+    // Update local state
+    set((s) => {
+      const incoming = { ...s.incoming };
+      incoming[branch] = incoming[branch].map((i) =>
+        i.id === incomingId ? { ...i, confirmed: true } : i
+      );
+      const stock = { ...s.stock };
+      const si = stock[branch].find((x) => x.itemName === inc.itemName);
+      if (si) {
+        stock[branch] = stock[branch].map((x) =>
+          x.itemName === inc.itemName
+            ? { ...x, quantity: Math.round((x.quantity + inc.quantity) * 1000) / 1000 }
+            : x
+        );
+      } else {
+        stock[branch] = [...stock[branch], {
+          itemName: inc.itemName, quantity: inc.quantity, minThreshold: 10, price: null,
+        }];
+      }
+      return { incoming, stock };
+    });
+    return null;
+  },
+
+  // Confirm all today's unconfirmed incoming items at once
+  confirmAllIncoming: async (branch) => {
+    const today = new Date().toDateString();
+    const toConfirm = get().incoming[branch].filter(
+      (i) => !i.confirmed && new Date(i.receivedAt).toDateString() === today
+    );
+    if (toConfirm.length === 0) return null;
+
+    for (const inc of toConfirm) {
+      const err = await get().confirmIncoming(branch, inc.id);
+      if (err) return err;
+    }
+    return null;
   },
 
   seedBranchItems: async (branch) => {
