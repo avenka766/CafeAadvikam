@@ -9,6 +9,7 @@ import {
   ChevronDown, AlertCircle, Trash2, Receipt,
   QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
   CreditCard, Banknote, Smartphone, Wallet,
+  Edit3, UtensilsCrossed, Printer,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
@@ -265,20 +266,34 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
 }
 
 // ── Advance New Order Panel (menu + cart that submits as advance) ─────────────
+// ── Custom item type (for non-menu items) ─────────────────────────────────────
+interface CustomLineItem { id: string; name: string; price: number; qty: number; }
+
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore();
   const { currentUser } = useAuthStore();
 
+  // Menu picker state
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
+
+  // Custom items state
+  const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
+  const [customName, setCustomName]   = useState('');
+  const [customPrice, setCustomPrice] = useState('');
+  const [customQty, setCustomQty]     = useState('1');
+  const [customError, setCustomError] = useState('');
+
+  // Order meta
   const [customerName, setCustomerName] = useState('');
-  const [notes, setNotes] = useState('');
-  const [advanceAmt, setAdvanceAmt] = useState('');
+  const [notes, setNotes]               = useState('');
+  const [advanceAmt, setAdvanceAmt]     = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [advanceError, setAdvanceError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [submitting, setSubmitting]     = useState(false);
+  const [showSuccess, setShowSuccess]   = useState(false);
+  const [itemMode, setItemMode]         = useState<'menu' | 'custom'>('menu');
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
@@ -290,12 +305,39 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     return f;
   }, [enabledItems, selectedCategory, search]);
 
-  const total = getCartTotal();
-  const cartCount = getCartCount();
+  // Total = menu cart + custom items
+  const menuTotal   = getCartTotal();
+  const customTotal = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const total       = menuTotal + customTotal;
+  const cartCount   = getCartCount();
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity || 0;
 
+  // ── Add custom item ──────────────────────────────────────────────────────────
+  const handleAddCustomItem = () => {
+    const n = customName.trim();
+    const p = parseFloat(customPrice);
+    const q = parseInt(customQty) || 1;
+    if (!n) { setCustomError('Enter item name'); return; }
+    if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    setCustomError('');
+    setCustomItems(prev => {
+      const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
+      if (existing) return prev.map(c => c.name.toLowerCase() === n.toLowerCase() ? { ...c, qty: c.qty + q } : c);
+      return [...prev, { id: `custom-${Date.now()}-${Math.random()}`, name: n, price: p, qty: q }];
+    });
+    setCustomName(''); setCustomPrice(''); setCustomQty('1');
+  };
+
+  const updateCustomQty = (id: string, qty: number) => {
+    if (qty <= 0) setCustomItems(prev => prev.filter(c => c.id !== id));
+    else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
+  };
+
+  const allEmpty = cartCount === 0 && customItems.length === 0;
+
+  // ── Submit ───────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
-    if (cart.length === 0) return;
+    if (allEmpty) return;
     if (!currentUser) return;
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
@@ -303,6 +345,23 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     if (!advanceMethod) { setAdvanceError('Select payment method'); return; }
     setAdvanceError('');
     setSubmitting(true);
+
+    // Inject custom items into the cart as synthetic menu items
+    for (const ci of customItems) {
+      const syntheticItem = {
+        id: ci.id,
+        name: ci.name,
+        price: ci.price,
+        category: 'custom',
+        timing: 'all',
+        enabled: true,
+      };
+      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+    }
+
+    // Small delay to let Zustand batch the addToCart calls
+    await new Promise(r => setTimeout(r, 50));
+
     await submitAdvanceOrder({
       orderType: 'takeaway',
       notes: notes || undefined,
@@ -311,20 +370,25 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       advanceAmount: amt,
       advancePaidBy: advanceMethod,
     });
+
     setSubmitting(false);
     setShowSuccess(true);
     setNotes(''); setCustomerName(''); setAdvanceAmt(''); setAdvanceMethod(null);
+    setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
     setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
   };
 
   if (showSuccess) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-        <div className="size-16 rounded-full bg-amber-100 flex items-center justify-center mb-3">
-          <Wallet className="size-8 text-amber-600" />
+      <div className="flex flex-col items-center justify-center py-24 px-6 text-center gap-4">
+        <div className="size-20 rounded-3xl flex items-center justify-center animate-scale-in"
+          style={{ background: 'linear-gradient(135deg,rgba(217,119,6,0.15),rgba(217,119,6,0.08))', border: '2px solid rgba(217,119,6,0.25)' }}>
+          <Wallet className="size-10 text-amber-600" />
         </div>
-        <h2 className="font-display text-xl font-bold text-foreground">Advance Recorded!</h2>
-        <p className="text-muted-foreground font-body mt-1 text-sm">Order saved. Balance pending collection.</p>
+        <div>
+          <h2 className="font-display text-2xl font-bold text-foreground">Advance Recorded!</h2>
+          <p className="text-muted-foreground font-body mt-1 text-sm">Order saved. Balance pending collection.</p>
+        </div>
       </div>
     );
   }
@@ -333,124 +397,364 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
   return (
     <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
-      {/* LEFT: Menu */}
+
+      {/* ═══ LEFT: Item picker ═══════════════════════════════════════════════════ */}
       <div className="flex-1 min-w-0">
-        <div className="px-4 md:px-0 pt-3 pb-1">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input type="text" placeholder="Search menu items..." value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50" />
-            {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+
+        {/* Mode toggle — Menu vs Custom */}
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex gap-1.5 p-1 rounded-xl bg-muted">
+            <button
+              onClick={() => setItemMode('menu')}
+              className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
+                itemMode === 'menu' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground active:scale-95')}
+            >
+              <UtensilsCrossed className="size-3.5" />Menu Items
+            </button>
+            <button
+              onClick={() => setItemMode('custom')}
+              className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
+                itemMode === 'custom' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground active:scale-95')}
+            >
+              <Edit3 className="size-3.5" />Custom Items
+            </button>
           </div>
         </div>
-        <div className="border-b border-border">
-          <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
-        </div>
-        <div className="px-4 md:px-0 py-3">
-          {filteredItems.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="font-body text-muted-foreground">No items found</p>
-              <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-2 text-sm font-body text-primary font-semibold">Clear filters</button>
+
+        {itemMode === 'menu' ? (
+          <>
+            {/* Search */}
+            <div className="px-4 pb-2">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input type="text" placeholder="Search menu items…" value={search} onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
+                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+              </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {filteredItems.map(item => (
-                <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)} onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
-              ))}
+            <div className="border-b border-border">
+              <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
             </div>
-          )}
-        </div>
+            <div className="px-4 py-3">
+              {filteredItems.length === 0 ? (
+                <div className="text-center py-12 space-y-2">
+                  <p className="font-body text-muted-foreground text-sm">No items found</p>
+                  <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="text-sm font-body font-semibold text-primary active:opacity-70">Clear filters</button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {filteredItems.map(item => (
+                    <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          /* ── Custom items panel ── */
+          <div className="px-4 py-3 space-y-4">
+            {/* Add custom item form */}
+            <div className="bg-card border border-amber-200/60 rounded-2xl p-4 space-y-3 shadow-soft"
+              style={{ background: 'linear-gradient(135deg,rgba(251,191,36,0.04),rgba(251,191,36,0.02))' }}>
+              <div className="flex items-center gap-2 mb-1">
+                <div className="size-7 rounded-lg flex items-center justify-center"
+                  style={{ background: 'rgba(217,119,6,0.15)' }}>
+                  <Edit3 className="size-3.5 text-amber-600" />
+                </div>
+                <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
+              </div>
+
+              {/* Item name */}
+              <div>
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                  Item Name <span className="text-destructive">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Special Cake, Custom Parcel…"
+                  value={customName}
+                  onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
+                  className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
+                  onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()}
+                />
+              </div>
+
+              {/* Price + Qty row */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                    Price (₹) <span className="text-destructive">*</span>
+                  </label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      placeholder="0.00"
+                      value={customPrice}
+                      onChange={e => { setCustomPrice(e.target.value); setCustomError(''); }}
+                      className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
+                      onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                    Qty
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Minus className="size-3.5" />
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      value={customQty}
+                      onChange={e => setCustomQty(e.target.value)}
+                      className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
+                    />
+                    <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Plus className="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {customError && (
+                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="size-3 shrink-0" />{customError}
+                </p>
+              )}
+
+              <button
+                onClick={handleAddCustomItem}
+                className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white"
+                style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)', boxShadow: '0 4px 16px rgba(217,119,6,0.3)' }}
+              >
+                <Plus className="size-4" />Add to Bill
+              </button>
+            </div>
+
+            {/* Custom items list */}
+            {customItems.length > 0 && (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
+                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between"
+                  style={{ background: 'rgba(217,119,6,0.06)' }}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-body font-bold text-amber-700">Custom Items Added</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{customItems.length}</span>
+                  </div>
+                  <button onClick={() => setCustomItems([])}
+                    className="text-xs font-body font-semibold text-destructive active:opacity-70">
+                    Clear all
+                  </button>
+                </div>
+                <div className="divide-y divide-border/50">
+                  {customItems.map(ci => (
+                    <div key={ci.id} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
+                        <p className="text-xs font-body text-muted-foreground tabular-nums">
+                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)}
+                          className="size-7 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border">
+                          <Minus className="size-3" />
+                        </button>
+                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)}
+                          className="size-7 rounded-lg flex items-center justify-center active:scale-90 text-white"
+                          style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}>
+                          <Plus className="size-3" />
+                        </button>
+                        <button onClick={() => updateCustomQty(ci.id, 0)}
+                          className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 border border-destructive/20 ml-0.5">
+                          <Trash2 className="size-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-4 py-2.5 border-t border-border flex items-center justify-between"
+                  style={{ background: 'rgba(217,119,6,0.04)' }}>
+                  <span className="text-xs font-body text-muted-foreground">Custom items subtotal</span>
+                  <span className="text-sm font-body font-bold text-amber-600 tabular-nums">{formatCurrency(customTotal)}</span>
+                </div>
+              </div>
+            )}
+
+            {customItems.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+                <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+                  <Edit3 className="size-6 text-muted-foreground/40" />
+                </div>
+                <p className="text-sm font-body text-muted-foreground">No custom items added yet.</p>
+                <p className="text-xs font-body text-muted-foreground/70">Use the form above to add items<br/>not listed in the menu.</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* RIGHT: Cart + Advance details */}
+      {/* ═══ RIGHT: Cart + Advance details ═══════════════════════════════════════ */}
       <div className="w-full md:w-80 lg:w-96 shrink-0">
-        <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-sm overflow-hidden">
+        <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-soft overflow-hidden">
+
           {/* Cart header */}
-          <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border bg-amber-50/60">
+          <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border"
+            style={{ background: 'rgba(217,119,6,0.06)' }}>
             <div className="flex items-center gap-2">
               <Wallet className="size-4 text-amber-600" />
               <h3 className="font-display font-bold text-base text-foreground">Advance Bill</h3>
-              {cartCount > 0 && <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{cartCount}</span>}
+              {!allEmpty && (
+                <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">
+                  {cartCount + customItems.length}
+                </span>
+              )}
             </div>
-            {cartCount > 0 && <button onClick={clearCart} className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95">Clear</button>}
+            {!allEmpty && (
+              <button onClick={() => { clearCart(); setCustomItems([]); }}
+                className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
+                Clear all
+              </button>
+            )}
           </div>
 
           {/* Cart items */}
-          <div className="max-h-44 overflow-y-auto px-4 py-2 space-y-2">
-            {cart.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
-                <ShoppingBag className="size-7 mb-2 opacity-30" />
-                <p className="text-sm font-body">Add items from the menu</p>
+          <div className="max-h-52 overflow-y-auto scrollbar-thin px-4 py-2 space-y-2">
+            {allEmpty ? (
+              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
+                <ShoppingBag className="size-7 opacity-25" />
+                <p className="text-sm font-body">Add menu or custom items</p>
               </div>
-            ) : cart.map(ci => (
-              <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-body font-semibold truncate">{ci.menuItem.name}</p>
-                  <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-md bg-muted flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                  <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
-                  <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-md cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90"><Plus className="size-3" /></button>
-                  <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-md bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
-                </div>
-              </div>
-            ))}
+            ) : (
+              <>
+                {cart.map(ci => (
+                  <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-body font-semibold truncate">{ci.menuItem.name}</p>
+                      <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
+                      <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
+                      <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                        style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
+                      <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5 border border-destructive/15"><Trash2 className="size-3" /></button>
+                    </div>
+                  </div>
+                ))}
+                {customItems.map(ci => (
+                  <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-amber-400 pl-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1">
+                        <p className="text-sm font-body font-semibold truncate">{ci.name}</p>
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
+                      </div>
+                      <p className="text-xs text-amber-600 font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
+                      <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.qty}</span>
+                      <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-6 rounded-lg text-white flex items-center justify-center active:scale-90"
+                        style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}><Plus className="size-3" /></button>
+                      <button onClick={() => updateCustomQty(ci.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5 border border-destructive/15"><Trash2 className="size-3" /></button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
 
-          {cartCount > 0 && (
-            <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/30">
-              {/* Customer name only — no order type for advance */}
+          {!allEmpty && (
+            <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/20">
+              {/* Customer */}
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground" />
+                  className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
 
               {/* Notes */}
               <div className="relative">
                 <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
                 <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground resize-none" />
+                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
 
-              {/* Advance amount */}
-              <div className="pt-1 border-t border-border space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-body text-xs text-muted-foreground">Total Bill</span>
-                  <span className="font-display text-xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+              {/* Total + Advance */}
+              <div className="pt-2 border-t border-border space-y-3">
+                {/* Bill breakdown */}
+                <div className="space-y-1">
+                  {menuTotal > 0 && (
+                    <div className="flex justify-between text-xs font-body text-muted-foreground">
+                      <span>Menu items</span>
+                      <span className="tabular-nums">{formatCurrency(menuTotal)}</span>
+                    </div>
+                  )}
+                  {customTotal > 0 && (
+                    <div className="flex justify-between text-xs font-body text-amber-600">
+                      <span>Custom items</span>
+                      <span className="tabular-nums">{formatCurrency(customTotal)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between pt-1 border-t border-border/50">
+                    <span className="font-body text-sm font-bold text-foreground">Total Bill</span>
+                    <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+                  </div>
                 </div>
+
+                {/* Advance amount */}
                 <div>
-                  <label className="text-xs font-body font-bold text-amber-700 mb-1 block">Advance Amount (₹) *</label>
+                  <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">
+                    Advance Amount (₹) *
+                  </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                     <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
-                      placeholder="Enter advance"
-                      className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
+                      placeholder="Enter advance amount"
+                      className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/50 transition-all" />
                   </div>
                   {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
-                    <p className="text-[11px] font-body text-muted-foreground mt-1">
-                      Balance due: <span className="font-bold text-red-600">{formatCurrency(total - parseFloat(advanceAmt))}</span>
-                    </p>
+                    <div className="flex justify-between mt-1.5 px-1">
+                      <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
+                      <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{formatCurrency(total - parseFloat(advanceAmt))}</span>
+                    </div>
                   )}
                 </div>
+
+                {/* Payment method */}
                 <div>
-                  <label className="text-xs font-body font-bold text-amber-700 mb-1 block">Advance Payment Method *</label>
+                  <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">
+                    Payment Method *
+                  </label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
-                        className={cn('flex flex-col items-center gap-1 py-2.5 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
+                        className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
                           advanceMethod === m ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border bg-card text-muted-foreground')}>
                         {PAYMENT_ICONS[m]}{m.toUpperCase()}
                       </button>
                     ))}
                   </div>
                 </div>
-                {advanceError && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{advanceError}</p>}
+
+                {advanceError && (
+                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                    <AlertCircle className="size-3 shrink-0" />{advanceError}
+                  </p>
+                )}
+
                 <button onClick={handleSubmit} disabled={submitting}
-                  className="w-full py-3 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-transform shadow-md disabled:opacity-60 flex items-center justify-center gap-2"
-                  style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', color: 'white' }}>
-                  <Wallet className="size-4" />{submitting ? 'Saving...' : '⏳ Record Advance Order'}
+                  className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white"
+                  style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: '0 4px 16px rgba(184,134,11,0.35)' }}>
+                  <Wallet className="size-4" />{submitting ? 'Saving…' : '⏳ Record Advance Order'}
                 </button>
               </div>
             </div>
@@ -459,7 +763,8 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
           {/* ── Pending Advance Orders ── */}
           {advanceOrders.length > 0 && (
             <div className="border-t-4 border-amber-200 mt-1">
-              <div className="px-4 py-2 bg-amber-50 flex items-center justify-between">
+              <div className="px-4 py-2.5 flex items-center justify-between"
+                style={{ background: 'rgba(251,191,36,0.08)' }}>
                 <div className="flex items-center gap-2">
                   <Clock className="size-3.5 text-amber-600" />
                   <span className="text-xs font-body font-bold text-amber-800">Pending Balance</span>
@@ -486,6 +791,7 @@ function NewBillPanel() {
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
+  const [itemMode, setItemMode] = useState<'menu' | 'custom'>('menu');
   const [orderType, setOrderType] = useState<OrderType>('dine_in');
   const [tableNumber, setTableNumber] = useState<number | null>(null);
   const [customerName, setCustomerName] = useState('');
@@ -495,34 +801,64 @@ function NewBillPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
+  // Custom items
+  const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
+  const [customName, setCustomName]   = useState('');
+  const [customPrice, setCustomPrice] = useState('');
+  const [customQty, setCustomQty]     = useState('1');
+  const [customError, setCustomError] = useState('');
+
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
-
   const filteredItems = useMemo(() => {
     let filtered = enabledItems;
     if (selectedCategory !== 'all') filtered = filtered.filter(i => i.category === selectedCategory);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      filtered = filtered.filter(i => i.name.toLowerCase().includes(q));
-    }
+    if (search.trim()) filtered = filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
     return filtered;
   }, [enabledItems, selectedCategory, search]);
 
-  const total = getCartTotal();
-  const cartCount = getCartCount();
+  const menuTotal   = getCartTotal();
+  const customTotal = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const total       = menuTotal + customTotal;
+  const cartCount   = getCartCount();
+  const allEmpty    = cartCount === 0 && customItems.length === 0;
+  const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
 
-  const getQty = (id: string) => {
-    const ci = cart.find(c => c.menuItem.id === id);
-    return ci ? ci.quantity : 0;
+  const handleAddCustomItem = () => {
+    const n = customName.trim();
+    const p = parseFloat(customPrice);
+    const q = parseInt(customQty) || 1;
+    if (!n) { setCustomError('Enter item name'); return; }
+    if (isNaN(p) || p <= 0) { setCustomError('Enter a valid price'); return; }
+    setCustomError('');
+    setCustomItems(prev => {
+      const existing = prev.find(c => c.name.toLowerCase() === n.toLowerCase());
+      if (existing) return prev.map(c => c.name.toLowerCase() === n.toLowerCase() ? { ...c, qty: c.qty + q } : c);
+      return [...prev, { id: `custom-${Date.now()}-${Math.random()}`, name: n, price: p, qty: q }];
+    });
+    setCustomName(''); setCustomPrice(''); setCustomQty('1');
+  };
+
+  const updateCustomQty = (id: string, qty: number) => {
+    if (qty <= 0) setCustomItems(prev => prev.filter(c => c.id !== id));
+    else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
   };
 
   const handleSubmit = async () => {
-    if (cart.length === 0) return;
+    if (allEmpty) return;
     if (!currentUser) return;
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
     setSubmitting(true);
+
+    // Inject custom items as synthetic menu items
+    for (const ci of customItems) {
+      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+    }
+    await new Promise(r => setTimeout(r, 50));
+
     await submitOrder({
       tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
       orderType,
@@ -534,125 +870,307 @@ function NewBillPanel() {
     setSubmitting(false);
     setShowSuccess(true);
     setNotes(''); setCustomerName(''); setTableNumber(null);
+    setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
     setTimeout(() => setShowSuccess(false), 2200);
   };
 
   if (showSuccess) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 px-6 text-center">
-        <div className="size-20 rounded-full bg-emerald-100 flex items-center justify-center mb-4">
+      <div className="flex flex-col items-center justify-center py-24 px-6 text-center gap-4">
+        <div className="size-20 rounded-3xl flex items-center justify-center animate-scale-in"
+          style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))', border: '2px solid rgba(16,185,129,0.25)' }}>
           <Receipt className="size-10 text-emerald-600" />
         </div>
-        <h2 className="font-display text-2xl font-bold text-foreground">Bill Created!</h2>
-        <p className="text-muted-foreground font-body mt-1 text-sm">Order has been added to the queue.</p>
+        <div>
+          <h2 className="font-display text-2xl font-bold text-foreground">Bill Created!</h2>
+          <p className="text-muted-foreground font-body mt-1 text-sm">Order has been added to the queue.</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
-      {/* LEFT: Menu browser */}
+
+      {/* ═══ LEFT: Item picker ═══════════════════════════════════════════════════ */}
       <div className="flex-1 min-w-0">
-        <div className="px-4 md:px-0 pt-3 pb-1">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input type="text" placeholder="Search menu items..." value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50" />
-            {search && (
-              <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>
-            )}
+
+        {/* Mode toggle */}
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex gap-1.5 p-1 rounded-xl bg-muted">
+            <button onClick={() => setItemMode('menu')}
+              className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
+                itemMode === 'menu' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground active:scale-95')}>
+              <UtensilsCrossed className="size-3.5" />Menu Items
+            </button>
+            <button onClick={() => setItemMode('custom')}
+              className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
+                itemMode === 'custom' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground active:scale-95')}>
+              <Edit3 className="size-3.5" />Custom Items
+            </button>
           </div>
         </div>
-        <div className="border-b border-border">
-          <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
-        </div>
-        <div className="px-4 md:px-0 py-3">
-          {filteredItems.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="font-body text-muted-foreground">No items found</p>
-              <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-2 text-sm font-body text-primary font-semibold">Clear filters</button>
+
+        {itemMode === 'menu' ? (
+          <>
+            <div className="px-4 pb-2">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input type="text" placeholder="Search menu items…" value={search} onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
+                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+              </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3">
-              {filteredItems.map(item => (
-                <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)} onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
-              ))}
+            <div className="border-b border-border">
+              <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
             </div>
-          )}
-        </div>
+            <div className="px-4 py-3">
+              {filteredItems.length === 0 ? (
+                <div className="text-center py-12 space-y-2">
+                  <p className="font-body text-muted-foreground text-sm">No items found</p>
+                  <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="text-sm font-body font-semibold text-primary active:opacity-70">Clear filters</button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {filteredItems.map(item => (
+                    <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          /* ── Custom items panel ── */
+          <div className="px-4 py-3 space-y-4">
+            <div className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-soft">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="size-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Edit3 className="size-3.5 text-primary" />
+                </div>
+                <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                  Item Name <span className="text-destructive">*</span>
+                </label>
+                <input type="text" placeholder="e.g. Special Thali, Custom Parcel…"
+                  value={customName} onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
+                  className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
+                  onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
+                    Price (₹) <span className="text-destructive">*</span>
+                  </label>
+                  <div className="relative">
+                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                    <input type="number" min="0" step="0.5" placeholder="0.00"
+                      value={customPrice} onChange={e => { setCustomPrice(e.target.value); setCustomError(''); }}
+                      className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
+                      onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Minus className="size-3.5" />
+                    </button>
+                    <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
+                      className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
+                    <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
+                      <Plus className="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {customError && (
+                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="size-3 shrink-0" />{customError}
+                </p>
+              )}
+
+              <button onClick={handleAddCustomItem}
+                className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-primary-foreground shadow-teal"
+                style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>
+                <Plus className="size-4" />Add to Bill
+              </button>
+            </div>
+
+            {customItems.length > 0 ? (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
+                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between bg-muted/30">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-body font-bold text-foreground">Custom Items</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full cafe-gradient text-primary-foreground">{customItems.length}</span>
+                  </div>
+                  <button onClick={() => setCustomItems([])} className="text-xs font-body font-semibold text-destructive active:opacity-70">Clear all</button>
+                </div>
+                <div className="divide-y divide-border/50">
+                  {customItems.map(ci => (
+                    <div key={ci.id} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
+                        <p className="text-xs font-body text-muted-foreground tabular-nums">
+                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)}
+                          className="size-7 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90">
+                          <Minus className="size-3" />
+                        </button>
+                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)}
+                          className="size-7 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                          style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
+                          <Plus className="size-3" />
+                        </button>
+                        <button onClick={() => updateCustomQty(ci.id, 0)}
+                          className="size-7 rounded-lg bg-destructive/10 text-destructive border border-destructive/20 flex items-center justify-center active:scale-90 ml-0.5">
+                          <Trash2 className="size-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-4 py-2.5 border-t border-border flex items-center justify-between bg-muted/20">
+                  <span className="text-xs font-body text-muted-foreground">Custom items subtotal</span>
+                  <span className="text-sm font-body font-bold text-primary tabular-nums">{formatCurrency(customTotal)}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+                <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+                  <Edit3 className="size-6 text-muted-foreground/40" />
+                </div>
+                <p className="text-sm font-body text-muted-foreground">No custom items yet.</p>
+                <p className="text-xs font-body text-muted-foreground/70">Add items not listed in the menu.</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* RIGHT: Bill summary */}
+      {/* ═══ RIGHT: Bill summary ═════════════════════════════════════════════════ */}
       <div className="w-full md:w-80 lg:w-96 shrink-0">
-        <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border bg-muted/40">
+        <div className="md:sticky md:top-[112px] bg-background md:bg-card md:border md:border-border md:rounded-2xl md:shadow-soft overflow-hidden">
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-t md:border-t-0 border-b border-border bg-muted/30">
             <div className="flex items-center gap-2">
               <ShoppingBag className="size-4 text-primary" />
               <h3 className="font-display font-bold text-base text-foreground">New Bill</h3>
-              {cartCount > 0 && (
-                <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full cafe-gradient text-primary-foreground">{cartCount}</span>
+              {!allEmpty && (
+                <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full text-primary-foreground"
+                  style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
+                  {cartCount + customItems.length}
+                </span>
               )}
             </div>
-            {cartCount > 0 && (
-              <button onClick={clearCart} className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95">Clear</button>
+            {!allEmpty && (
+              <button onClick={() => { clearCart(); setCustomItems([]); }}
+                className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
+                Clear all
+              </button>
             )}
           </div>
 
-          <div className="max-h-52 overflow-y-auto px-4 py-2 space-y-2">
-            {cart.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-                <ShoppingBag className="size-8 mb-2 opacity-30" />
-                <p className="text-sm font-body">Add items from the menu</p>
+          {/* Cart items */}
+          <div className="max-h-52 overflow-y-auto scrollbar-thin px-4 py-2 space-y-2">
+            {allEmpty ? (
+              <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
+                <ShoppingBag className="size-7 opacity-25" />
+                <p className="text-sm font-body">Add menu or custom items</p>
               </div>
-            ) : cart.map(ci => (
-              <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-body font-semibold truncate">{ci.menuItem.name}</p>
-                  <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-md bg-muted flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                  <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
-                  <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-md cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90"><Plus className="size-3" /></button>
-                  <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-md bg-destructive/10 text-destructive flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
-                </div>
-              </div>
-            ))}
+            ) : (
+              <>
+                {cart.map(ci => (
+                  <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-body font-semibold truncate">{ci.menuItem.name}</p>
+                      <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
+                      <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
+                      <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                        style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
+                      <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                    </div>
+                  </div>
+                ))}
+                {customItems.map(ci => (
+                  <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-primary/40 pl-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1">
+                        <p className="text-sm font-body font-semibold truncate">{ci.name}</p>
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-primary/10 text-primary shrink-0">CUSTOM</span>
+                      </div>
+                      <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
+                      <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.qty}</span>
+                      <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
+                        style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
+                      <button onClick={() => updateCustomQty(ci.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
 
-          {cartCount > 0 && (
-            <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/30">
+          {!allEmpty && (
+            <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/20">
+              {/* Order type */}
               <div className="flex gap-2">
                 <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  className={cn('flex-1 py-2.5 rounded-xl text-xs font-body font-semibold transition-all active:scale-95',
+                    orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                  style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
                   🍽️ Dine In
                 </button>
                 <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                  className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all', orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
+                  className={cn('flex-1 py-2.5 rounded-xl text-xs font-body font-semibold transition-all active:scale-95',
+                    orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                  style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
                   📦 Takeaway
                 </button>
               </div>
 
+              {/* Table / customer name */}
               {orderType === 'dine_in' ? (
-                <div>
-                  <div className="relative">
-                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <button onClick={() => setShowTableSelect(!showTableSelect)}
-                      className={cn('w-full pl-8 pr-8 py-2 bg-card border rounded-lg text-left text-xs font-body', tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
-                      {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
-                    </button>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    {showTableSelect && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-36 overflow-y-auto">
-                        {TABLE_NUMBERS.map(num => (
-                          <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
-                            className={cn('py-1.5 rounded-md text-xs font-body font-medium', tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted')}>{num}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <button onClick={() => setShowTableSelect(!showTableSelect)}
+                    className={cn('w-full pl-8 pr-8 py-2.5 bg-card border rounded-xl text-left text-xs font-body transition-all',
+                      tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
+                    {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
+                  </button>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  {showTableSelect && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-2xl shadow-lifted z-10 p-2.5 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto scrollbar-thin">
+                      {TABLE_NUMBERS.map(num => (
+                        <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
+                          className={cn('py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-90',
+                            tableNumber === num ? 'text-primary-foreground shadow-teal' : 'hover:bg-muted text-foreground')}
+                          style={tableNumber === num ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                          {num}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {tableError && (
-                    <div className="flex items-center gap-1 mt-1 text-destructive">
+                    <div className="flex items-center gap-1 mt-1.5 text-destructive">
                       <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table number required for Dine In</span>
                     </div>
                   )}
@@ -661,34 +1179,47 @@ function NewBillPanel() {
                 <div className="relative">
                   <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                   <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground" />
+                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
                 </div>
               )}
 
+              {/* Notes */}
               <div>
                 <div className="relative">
                   <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
                   <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                    className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-lg text-xs font-body placeholder:text-muted-foreground resize-none" />
+                    className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
                 </div>
-                <div className="flex flex-wrap gap-1 mt-1">
+                <div className="flex flex-wrap gap-1 mt-1.5">
                   {QUICK_NOTES.map(n => (
-                    <button key={n} type="button" onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
-                      className="px-2 py-0.5 rounded text-[10px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
+                    <button key={n} onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
+                      className="px-2 py-1 rounded-lg text-[10px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
                       + {n}
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div className="pt-1 border-t border-border">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-body text-xs text-muted-foreground">Total</span>
-                  <span className="font-display text-xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+              {/* Total + submit */}
+              <div className="pt-2 border-t border-border space-y-2">
+                {menuTotal > 0 && customTotal > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs font-body text-muted-foreground">
+                      <span>Menu items</span><span className="tabular-nums">{formatCurrency(menuTotal)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs font-body text-primary">
+                      <span>Custom items</span><span className="tabular-nums">{formatCurrency(customTotal)}</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="font-body text-sm font-bold text-foreground">Total</span>
+                  <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                 </div>
                 <button onClick={handleSubmit} disabled={submitting}
-                  className="w-full py-3 rounded-xl cafe-gradient text-primary-foreground font-body font-bold text-sm active:scale-[0.98] transition-transform shadow-md disabled:opacity-60">
-                  {submitting ? 'Creating...' : '🧾 Create Bill'}
+                  className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all shadow-teal disabled:opacity-60 flex items-center justify-center gap-2 text-primary-foreground"
+                  style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>
+                  <Receipt className="size-4" />{submitting ? 'Creating…' : '🧾 Create Bill'}
                 </button>
               </div>
             </div>
