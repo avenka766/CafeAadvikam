@@ -35,12 +35,10 @@ export default function BottomNav() {
   } else if (currentUser.role === 'admin') {
     navItems.push(
       { label: 'Dashboard',  icon: <LayoutDashboard className="size-5" />, path: '/admin-dashboard' },
-      { label: 'Menu',       icon: <UtensilsCrossed  className="size-5" />, path: '/menu-management' },
       { label: 'QR',         icon: <QrCode           className="size-5" />, path: '/qr-menu' },
       { label: 'Attendance', icon: <CalendarCheck     className="size-5" />, path: '/attendance-salary' },
       { label: 'Staff',      icon: <Users             className="size-5" />, path: '/staff-management' },
       { label: 'Items',      icon: <Settings2         className="size-5" />, path: '/bakery/items'  },
-      { label: 'Recipes',    icon: <ChefHat           className="size-5" />, path: '/bakery/recipes' },
       { label: 'History',    icon: <History           className="size-5" />, path: '/order-history' },
     );
   } else if (currentUser.role === 'order_receiver') {
