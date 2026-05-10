@@ -157,7 +157,7 @@ function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void })
 }
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
-export default function MenuManagement() {
+export default function MenuManagement({ embedded = false }: { embedded?: boolean }) {
   const { items, toggleItem, updateItem, setItemImage, loadMenu } = useMenuStore();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search,           setSearch]           = useState('');
@@ -206,7 +206,7 @@ export default function MenuManagement() {
   const disabledCount = items.filter(i => !i.enabled).length;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
+    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-20')}>
 
       {/* Stats row */}
       <div className="px-4 pt-4 pb-2 flex gap-3">
@@ -225,7 +225,7 @@ export default function MenuManagement() {
       </div>
 
       {/* Sticky search + filters */}
-      <div className="sticky top-14 z-30 bg-background border-b border-border">
+      <div className={cn(embedded ? 'mb-2' : 'sticky top-14 z-30 bg-background border-b border-border')}>
         <div className="px-4 pt-3 pb-1 flex items-center gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
