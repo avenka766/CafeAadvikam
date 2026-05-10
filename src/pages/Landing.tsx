@@ -8,6 +8,7 @@ import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star, Send, SmilePlus } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
+import ChatBot from '@/components/features/ChatBot';
 
 
 // ─── Scroll Reveal Hook ───────────────────────────────────────────────────────
@@ -1015,6 +1016,7 @@ export default function Landing() {
       {showMenu && <MenuPopup onClose={() => setShowMenu(false)} />}
       {drawerCat && <CategoryDrawer catId={drawerCat} onClose={() => setDrawerCat(null)} />}
       {partyFullscreen && <PartyHallViewer onClose={() => setPartyFullscreen(false)} />}
+      <ChatBot />
     </div>
   );
 }
