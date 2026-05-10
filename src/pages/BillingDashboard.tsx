@@ -748,70 +748,58 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
-      {/* Sync indicator */}
-      <div className="px-4 pt-2 pb-1 flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
-          <span className="text-[10px] font-body text-muted-foreground">
-            {polling ? 'Live syncing every 3s' : 'Offline'}
+    <div className="min-h-screen bg-background pt-14 pb-24">
+
+      {/* ── Status bar ── */}
+      <div className="px-4 pt-3 pb-2 flex items-center justify-between border-b border-border">
+        <div className="flex items-center gap-2">
+          <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
+          <span className="text-xs font-body font-medium text-muted-foreground">
+            {polling ? 'Live' : 'Offline'}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setSourceFilter('all')}
-            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all',
-              sourceFilter === 'all' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground')}>
-            All ({regularOrders.length})
-          </button>
-          <button onClick={() => setSourceFilter('staff')}
-            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
-              sourceFilter === 'staff' ? 'bg-blue-600 text-white' : 'bg-muted text-muted-foreground')}>
-            <UserCheck className="size-2.5" />Staff ({staffCount})
-          </button>
-          <button onClick={() => setSourceFilter('qr')}
-            className={cn('px-2 py-1 rounded-md text-[10px] font-body font-bold transition-all flex items-center gap-0.5',
-              sourceFilter === 'qr' ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground')}>
-            <QrCode className="size-2.5" />QR ({qrCount})
-          </button>
+        <div className="flex items-center gap-1.5">
+          {([
+            { key: 'all' as SourceFilter, label: `All · ${regularOrders.length}`, icon: null },
+            { key: 'staff' as SourceFilter, label: `Staff · ${staffCount}`, icon: <UserCheck className="size-3" /> },
+            { key: 'qr' as SourceFilter, label: `QR · ${qrCount}`, icon: <QrCode className="size-3" /> },
+          ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
+            <button key={s.key} onClick={() => setSourceFilter(s.key)}
+              className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
+                sourceFilter === s.key ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground active:scale-95')}>
+              {s.icon}{s.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="sticky top-14 z-30 bg-background border-b border-border">
-        <div className="flex gap-1 overflow-x-auto scrollbar-hide px-4 py-2">
-          {/* New Bill */}
-          <button
-            onClick={() => switchTab('new_bill')}
-            className={cn(
-              'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
+      {/* ── Sticky tab rail ── */}
+      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border">
+        <div className="flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
+
+          <button onClick={() => switchTab('new_bill')}
+            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
               activeTab === 'new_bill'
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'bg-emerald-50 border border-emerald-200 text-emerald-700 active:scale-95'
-            )}
-          >
+                ? 'text-white shadow-lifted'
+                : 'bg-emerald-50 border border-emerald-200 text-emerald-700')}
+            style={activeTab === 'new_bill' ? { background: 'linear-gradient(135deg,#1a7a50,#0f5436)', boxShadow: '0 4px 16px rgba(26,122,80,0.35)' } : {}}>
             <Plus className="size-3.5" />New Bill
           </button>
 
-          {/* Advance tab */}
-          <button
-            onClick={() => switchTab('advance')}
-            className={cn(
-              'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
+          <button onClick={() => switchTab('advance')}
+            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
               activeTab === 'advance'
                 ? 'bg-amber-500 text-white shadow-md'
-                : 'bg-amber-50 border border-amber-200 text-amber-700 active:scale-95'
-            )}
-          >
+                : 'bg-amber-50 border border-amber-200 text-amber-700')}>
             <Wallet className="size-3.5" />Advance
             {advanceOrders.length > 0 && (
               <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                activeTab === 'advance' ? 'bg-white/25 text-white' : 'bg-amber-200 text-amber-800')}>
+                activeTab === 'advance' ? 'bg-white/30 text-white' : 'bg-amber-200 text-amber-800')}>
                 {advanceOrders.length}
               </span>
             )}
           </button>
 
-          {/* Status tabs */}
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = tab.key === 'all'
@@ -820,20 +808,15 @@ export default function BillingDashboard() {
                   ? regularOrders.filter(o => o.status === tab.key).length
                   : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
             return (
-              <button
-                key={tab.key}
-                onClick={() => switchTab(tab.key)}
-                className={cn(
-                  'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-body font-semibold whitespace-nowrap transition-all shrink-0',
-                  isActive
-                    ? 'cafe-gradient text-primary-foreground shadow-md'
-                    : 'bg-card border border-border text-foreground active:scale-95'
-                )}
-              >
-                <span className={cn('size-2 rounded-full', isActive ? 'bg-primary-foreground' : tab.dotColor)} />
+              <button key={tab.key} onClick={() => switchTab(tab.key)}
+                className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
+                  isActive ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                style={isActive ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                <span className={cn('size-2 rounded-full shrink-0', isActive ? 'bg-white/80' : tab.dotColor)} />
                 {tab.label}
                 {count > 0 && (
-                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', isActive ? 'bg-white/20' : 'bg-muted')}>
+                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0',
+                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
                     {count}
                   </span>
                 )}
@@ -843,7 +826,7 @@ export default function BillingDashboard() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* ── Content ── */}
       {activeTab === 'new_bill' ? (
         <NewBillPanel />
       ) : activeTab === 'advance' ? (
@@ -851,12 +834,16 @@ export default function BillingDashboard() {
       ) : (
         <div className="px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-              <Inbox className="size-16 mb-4 opacity-30" />
-              <p className="font-body font-semibold text-lg">No orders here</p>
-              <p className="text-sm font-body mt-1">
-                {activeTab === 'pending' ? 'Waiting for new orders from staff or QR...' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
-              </p>
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
+                <Inbox className="size-10 text-muted-foreground/40" />
+              </div>
+              <div className="text-center">
+                <p className="font-body font-semibold text-foreground">No orders here</p>
+                <p className="text-sm font-body text-muted-foreground mt-1">
+                  {activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
+                </p>
+              </div>
             </div>
           ) : (
             filtered.map(order => <OrderCard key={order.id} order={order} showActions />)

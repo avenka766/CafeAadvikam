@@ -166,46 +166,47 @@ export default function StaffManagement() {
 
   // ─────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
-      {/* Page header */}
-      <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+    <div className="min-h-screen bg-background pt-14 pb-24">
+      {/* ── Header ── */}
+      <div className="px-4 pt-4 pb-4 border-b border-border flex items-center justify-between">
         <div>
-          <h1 className="font-display text-2xl font-bold text-foreground">Staff Management</h1>
-          <p className="text-sm font-body text-muted-foreground">{staffList.length} staff members</p>
+          <h1 className="font-display text-2xl font-bold text-foreground">Staff</h1>
+          <p className="text-xs font-body text-muted-foreground mt-0.5">{staffList.length} members</p>
         </div>
         <button
           onClick={() => { setShowAdd(!showAdd); setAddError(''); }}
-          className="px-3 py-2 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center gap-1.5 active:scale-95"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold active:scale-95 transition-all text-white shadow-teal"
+          style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
         >
-          <UserPlus className="size-4" />Add
+          <UserPlus className="size-4" />{showAdd ? 'Cancel' : 'Add Staff'}
         </button>
       </div>
 
-      <div className="px-4 py-3 space-y-3">
+      <div className="px-4 py-4 space-y-3">
 
-        {/* ── Add form ─────────────────────────────────────────────────────── */}
+        {/* ── Add form ── */}
         {showAdd && (
-          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-            <h3 className="font-body text-sm font-bold text-foreground">Add New Staff</h3>
+          <div className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-soft animate-fade-up">
+            <h3 className="font-display text-lg font-bold text-foreground">Add New Staff Member</h3>
             {addError && (
-              <div className="flex items-center gap-2 text-xs text-destructive">
-                <AlertCircle className="size-3" />{addError}
+              <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-xs text-destructive">
+                <AlertCircle className="size-3.5 shrink-0" />{addError}
               </div>
             )}
             <input
               placeholder="Display Name" value={newDisplayName}
               onChange={(e) => setNewDisplayName(e.target.value)}
-              className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground"
+              className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
             <input
               placeholder="Username" value={newUsername}
               onChange={(e) => setNewUsername(e.target.value)}
-              className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground"
+              className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
             <input
               placeholder="Password" type="text" value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm font-body placeholder:text-muted-foreground"
+              className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
 
             {/* Role picker — all roles grouped */}
@@ -245,12 +246,13 @@ export default function StaffManagement() {
           const isChangingPw = changingPwId === user.id;
 
           return (
-            <div key={user.id} className="bg-card border border-border rounded-xl overflow-hidden">
+            <div key={user.id} className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
               {/* ── Card header ── */}
               <div className="p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="size-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+                    <div className="size-11 rounded-2xl flex items-center justify-center shrink-0"
+                      style={{ background: user.role === 'admin' ? 'rgba(245,158,11,0.12)' : 'hsl(var(--muted))', border: user.role === 'admin' ? '1px solid rgba(245,158,11,0.25)' : '1px solid hsl(var(--border))' }}>
                       {user.role === 'admin'
                         ? <ShieldCheck className="size-5 text-amber-600" />
                         : <User className="size-5 text-muted-foreground" />}
@@ -261,12 +263,12 @@ export default function StaffManagement() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full', ROLE_COLORS[user.role])}>
+                    <span className={cn('text-[10px] font-body font-bold px-2.5 py-1 rounded-full border', ROLE_COLORS[user.role])}>
                       {ROLE_LABELS[user.role]}
                     </span>
                     <button
                       onClick={() => setExpandedId(isExpanded ? null : user.id)}
-                      className="p-1 rounded-lg hover:bg-muted text-muted-foreground"
+                      className="size-8 rounded-xl bg-muted flex items-center justify-center text-muted-foreground active:scale-90 transition-all"
                     >
                       {isExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
                     </button>
@@ -288,29 +290,29 @@ export default function StaffManagement() {
 
               {/* ── Expanded actions ── */}
               {isExpanded && (
-                <div className="border-t border-border px-4 pb-4 pt-3 space-y-3 bg-muted/20">
+                <div className="border-t border-border px-4 pb-4 pt-3 space-y-3" style={{ background: 'hsl(var(--muted)/0.3)' }}>
 
                   {/* Action buttons row */}
                   {!isEditing && !isChangingPw && (
                     <div className="flex gap-2">
                       <button
                         onClick={() => startEdit(user)}
-                        className="flex-1 py-2 rounded-lg bg-muted text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1 active:scale-95"
+                        className="flex-1 py-2.5 rounded-xl bg-card border border-border text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
                       >
-                        <Pencil className="size-3" />Edit Details
+                        <Pencil className="size-3" />Edit
                       </button>
                       <button
                         onClick={() => { setChangingPwId(user.id); setEditingId(null); setNewPw(''); }}
-                        className="flex-1 py-2 rounded-lg bg-muted text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1 active:scale-95"
+                        className="flex-1 py-2.5 rounded-xl bg-card border border-border text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
                       >
-                        <Key className="size-3" />Change Password
+                        <Key className="size-3" />Password
                       </button>
                       {user.id !== currentUser?.id && (
                         <button
                           onClick={() => {
                             if (window.confirm(`Remove ${user.displayName}?`)) removeStaff(user.id);
                           }}
-                          className="px-3 py-2 rounded-lg bg-destructive/10 text-destructive text-xs font-body font-semibold flex items-center gap-1 active:scale-95"
+                          className="px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-body font-semibold flex items-center gap-1 active:scale-95 transition-all"
                         >
                           <Trash2 className="size-3" />
                         </button>

@@ -128,69 +128,69 @@ export default function OrderTrackingPage() {
   const isServed = order.status === 'served';
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="cafe-gradient text-primary-foreground px-5 py-5 pb-8">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="size-10 rounded-full bg-white/15 flex items-center justify-center">
-            <Leaf className="size-5" />
+    <div className="min-h-screen" style={{ background: 'linear-gradient(180deg,hsl(164 52% 18%) 0%,hsl(164 52% 12%) 40%,hsl(var(--background)) 100%)' }}>
+      {/* ── Hero header ── */}
+      <div className="px-5 pt-12 pb-12 relative overflow-hidden">
+        <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(circle at 70% 50%, hsl(34 80% 52%), transparent)' }} />
+        <div className="relative z-10">
+          <div className="flex items-center gap-2 mb-6">
+            <Leaf className="size-5 text-white/70" />
+            <span className="text-sm font-body font-medium text-white/70">{CAFE_CONFIG.name}</span>
           </div>
-          <div>
-            <h1 className="font-display text-xl font-bold">{CAFE_CONFIG.name}</h1>
-            <p className="text-xs font-body opacity-80">Order Tracking</p>
-          </div>
-        </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-body opacity-70">Order Number</p>
-            <p className="font-display text-4xl font-bold">#{String(order.orderNumber).padStart(3, '0')}</p>
-          </div>
-          <div className="text-right">
+          <p className="text-xs font-body font-semibold text-white/50 uppercase tracking-widest mb-1">Order Number</p>
+          <p className="font-display text-6xl font-bold text-white leading-none">
+            #{String(order.orderNumber).padStart(3, '0')}
+          </p>
+          <div className="flex items-center gap-4 mt-4">
             {order.tableNumber && (
-              <div className="flex items-center gap-1 mb-1">
-                <MapPin className="size-3.5" />
-                <span className="text-sm font-body font-bold">Table {order.tableNumber}</span>
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full"
+                style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.15)' }}>
+                <MapPin className="size-3.5 text-white/80" />
+                <span className="text-sm font-body font-semibold text-white">Table {order.tableNumber}</span>
               </div>
             )}
-            <div className="flex items-center gap-1">
-              <Clock className="size-3.5 opacity-70" />
-              <span className="text-sm font-body opacity-80">{formatTime(order.createdAt)}</span>
+            <div className="flex items-center gap-1.5">
+              <Clock className="size-3.5 text-white/50" />
+              <span className="text-sm font-body text-white/60">{formatTime(order.createdAt)}</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="px-5 -mt-4">
-        {/* Status tracker */}
+      <div className="px-5 -mt-6 pb-8 space-y-4">
+        {/* ── Status tracker ── */}
         {isCancelled ? (
-          <div className="bg-card border-2 border-red-300 rounded-2xl p-6 text-center shadow-sm">
-            <div className="size-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
-              <AlertCircle className="size-7 text-red-600" />
+          <div className="bg-card border-2 border-red-300 rounded-3xl p-7 text-center shadow-lifted animate-fade-up">
+            <div className="size-16 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="size-8 text-red-600" />
             </div>
-            <h2 className="font-display text-xl font-bold text-red-700 mb-1">Order Cancelled</h2>
+            <h2 className="font-display text-2xl font-bold text-red-700 mb-1">Order Cancelled</h2>
             {order.cancelReason && (
-              <p className="text-sm font-body text-muted-foreground">Reason: {order.cancelReason}</p>
+              <p className="text-sm font-body text-muted-foreground mt-1">Reason: {order.cancelReason}</p>
             )}
           </div>
         ) : isServed ? (
-          <div className="bg-card border-2 border-emerald-300 rounded-2xl p-6 text-center shadow-sm">
-            <div className="size-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-3">
-              <CheckCircle2 className="size-7 text-emerald-600" />
+          <div className="bg-card border-2 border-emerald-300 rounded-3xl p-7 text-center shadow-lifted animate-fade-up"
+            style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.06),rgba(16,185,129,0.02))' }}>
+            <div className="size-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
+              <CheckCircle2 className="size-8 text-emerald-600" />
             </div>
-            <h2 className="font-display text-xl font-bold text-emerald-700 mb-1">Order Served</h2>
+            <h2 className="font-display text-2xl font-bold text-emerald-700 mb-1">Enjoy Your Meal! 🍽️</h2>
             <p className="text-sm font-body text-muted-foreground">Thank you for dining with us!</p>
           </div>
         ) : (
-          <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-            <h2 className="font-display text-lg font-bold text-foreground mb-5">Order Status</h2>
+          <div className="bg-card border border-border rounded-3xl p-6 shadow-lifted animate-fade-up">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="font-display text-xl font-bold text-foreground">Live Status</h2>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200">
+                <div className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[10px] font-body font-semibold text-emerald-700">Live</span>
+              </div>
+            </div>
             <div className="relative">
-              {/* Progress line */}
               <div className="absolute left-[22px] top-0 bottom-0 w-0.5 bg-border" />
-              <div
-                className="absolute left-[22px] top-0 w-0.5 bg-primary transition-all duration-700"
-                style={{ height: `${Math.max(0, currentStepIdx) * 50}%` }}
-              />
-
+              <div className="absolute left-[22px] top-0 w-0.5 bg-primary transition-all duration-1000 ease-out"
+                style={{ height: `${Math.max(0, currentStepIdx) * 50}%` }} />
               <div className="space-y-8">
                 {STATUS_STEPS.map((step, idx) => {
                   const isActive = idx === currentStepIdx;
@@ -198,23 +198,21 @@ export default function OrderTrackingPage() {
                   return (
                     <div key={step.key} className="flex items-center gap-4 relative">
                       <div className={cn(
-                        'size-11 rounded-full border-2 flex items-center justify-center shrink-0 transition-all z-10',
-                        isActive ? step.color + ' shadow-md scale-110' : isPast ? 'bg-primary/10 text-primary border-primary' : 'bg-muted text-muted-foreground border-border'
+                        'size-11 rounded-2xl border-2 flex items-center justify-center shrink-0 transition-all duration-300 z-10',
+                        isActive ? step.color + ' shadow-lifted scale-110' : isPast ? 'bg-primary/10 text-primary border-primary' : 'bg-muted text-muted-foreground border-border'
                       )}>
                         {isPast ? <CheckCircle2 className="size-5" /> : step.icon}
                       </div>
                       <div className="flex-1">
-                        <p className={cn(
-                          'text-base font-body font-bold',
-                          isActive ? 'text-foreground' : isPast ? 'text-primary' : 'text-muted-foreground'
-                        )}>
+                        <p className={cn('text-base font-body font-bold',
+                          isActive ? 'text-foreground' : isPast ? 'text-primary' : 'text-muted-foreground')}>
                           {step.label}
                         </p>
                         {isActive && (
-                          <p className="text-xs font-body text-muted-foreground mt-0.5 animate-pulse">
-                            {step.key === 'pending' && 'Your order has been received by the kitchen'}
-                            {step.key === 'preparing' && 'Our chefs are preparing your food'}
-                            {step.key === 'ready' && 'Your order is ready! Please collect it.'}
+                          <p className="text-xs font-body text-muted-foreground mt-0.5">
+                            {step.key === 'pending' && '✅ Order received by kitchen'}
+                            {step.key === 'preparing' && '👨‍🍳 Our chefs are preparing your food'}
+                            {step.key === 'ready' && '🔔 Your order is ready — please collect!'}
                           </p>
                         )}
                       </div>
@@ -223,30 +221,24 @@ export default function OrderTrackingPage() {
                 })}
               </div>
             </div>
-
-            {/* Auto-refresh notice */}
-            <div className="mt-6 pt-4 border-t border-border flex items-center justify-center gap-2">
-              <div className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-              <p className="text-[11px] font-body text-muted-foreground">Live tracking · Updates every 5 seconds</p>
-            </div>
           </div>
         )}
 
-        {/* Order items */}
-        <div className="bg-card border border-border rounded-2xl p-5 mt-4 shadow-sm">
-          <h3 className="font-display text-base font-bold text-foreground mb-3">Your Items</h3>
+        {/* ── Items ── */}
+        <div className="bg-card border border-border rounded-3xl p-5 shadow-soft animate-fade-up delay-100">
+          <h3 className="font-display text-lg font-bold text-foreground mb-3">Your Items</h3>
           <div className="space-y-2">
             {order.items.map(ci => (
-              <div key={ci.menuItem.id} className="flex justify-between text-sm font-body">
+              <div key={ci.menuItem.id} className="flex justify-between text-sm font-body py-1.5 border-b border-border/50 last:border-0">
                 <span className="text-foreground">
-                  <span className="font-bold text-primary tabular-nums">{ci.quantity}×</span> {ci.menuItem.name}
+                  <span className="font-bold text-primary tabular-nums mr-1">{ci.quantity}×</span>{ci.menuItem.name}
                 </span>
               </div>
             ))}
           </div>
           {order.notes && (
             <div className="mt-3 pt-3 border-t border-border">
-              <p className="text-xs font-body text-muted-foreground">📝 {order.notes}</p>
+              <p className="text-xs font-body text-muted-foreground bg-muted px-3 py-2 rounded-xl">📝 {order.notes}</p>
             </div>
           )}
         </div>

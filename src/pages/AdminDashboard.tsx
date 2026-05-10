@@ -24,19 +24,21 @@ function downloadCSV(rows: string[][], filename: string) {
 // ─── Sub-components ─────────────────────────────────────────────────────────
 function KPI({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
   return (
-    <div className="bg-card border border-border rounded-xl p-3.5">
-      <div className={cn('size-8 rounded-lg flex items-center justify-center mb-2', color)}>{icon}</div>
-      <p className="font-display text-xl font-bold text-foreground tabular-nums">{value}</p>
-      <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase mt-0.5">{label}</p>
+    <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6"
+        style={{ background: 'hsl(var(--primary))' }} />
+      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
+      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
+      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
     </div>
   );
 }
 
 function StatusBadge({ label, count, color }: { label: string; count: number; color: string }) {
   return (
-    <div className={cn('rounded-lg p-2 text-center', color)}>
-      <p className="font-display text-lg font-bold tabular-nums">{count}</p>
-      <p className="text-[10px] font-bold uppercase">{label}</p>
+    <div className={cn('rounded-xl p-3 text-center', color)}>
+      <p className="font-display text-2xl font-bold tabular-nums">{count}</p>
+      <p className="text-[10px] font-body font-bold uppercase tracking-wide mt-0.5">{label}</p>
     </div>
   );
 }
@@ -1143,21 +1145,27 @@ export default function AdminDashboard() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
-      <div className="px-4 pt-4 pb-2">
-        <h1 className="font-display text-2xl font-bold text-foreground">Dashboard</h1>
-        <p className="text-sm font-body text-muted-foreground mt-0.5">
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' })}
-        </p>
+    <div className="min-h-screen bg-background pt-14 pb-24">
+      {/* ── Page header ── */}
+      <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
+        <div className="flex items-end justify-between">
+          <div>
+            <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Admin Portal</p>
+            <h1 className="font-display text-3xl font-bold text-foreground leading-none">Dashboard</h1>
+          </div>
+          <p className="text-xs font-body text-muted-foreground pb-0.5">
+            {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
+          </p>
+        </div>
       </div>
 
       {/* Cafe / Bakery toggle */}
-      <div className="mx-4 mb-4 flex gap-1 bg-muted rounded-xl p-1">
+      <div className="mx-4 my-4 flex gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
         <button
           onClick={() => setMode('cafe')}
           className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'cafe' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
           )}
         >
           ☕ Cafe
@@ -1165,23 +1173,22 @@ export default function AdminDashboard() {
         <button
           onClick={() => setMode('bakery')}
           className={cn(
-            'flex-1 py-2 rounded-lg text-sm font-semibold transition',
-            mode === 'bakery' ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
           )}
         >
           🥐 Bakery
         </button>
       </div>
+
       <div className="px-4 space-y-4">
         {mode === 'cafe' ? <CafeView /> : <BakeryView />}
       </div>
 
-      <div className="px-4 mt-4">
-        <div className="bg-muted/50 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Package className="size-4 text-muted-foreground" />
-            <p className="text-xs font-body text-muted-foreground">Data retained for last 60 days. Older records are automatically purged.</p>
-          </div>
+      <div className="px-4 mt-6">
+        <div className="flex items-center gap-2 px-4 py-3 rounded-xl" style={{ background: 'hsl(var(--muted)/0.5)' }}>
+          <Package className="size-4 text-muted-foreground shrink-0" />
+          <p className="text-xs font-body text-muted-foreground">Data retained for last 60 days. Older records are automatically purged.</p>
         </div>
       </div>
     </div>

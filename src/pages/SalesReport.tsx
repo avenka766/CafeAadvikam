@@ -344,39 +344,48 @@ export default function SalesReport() {
   };
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
-      {/* Date Filter */}
-      <div className="sticky top-14 z-30 bg-background border-b border-border px-4 py-3 space-y-3">
+    <div className="min-h-screen bg-background pt-14 pb-24">
+
+      {/* ── Page title ── */}
+      <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
+        <Download className="size-5 text-primary" />
+        <h1 className="font-display text-2xl font-bold text-foreground">Sales Report</h1>
+      </div>
+
+      {/* ── Filter toolbar ── */}
+      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border px-4 py-3 space-y-3">
         <div className="flex gap-2">
           <button
             onClick={() => { setFilterMode('today'); setStartDate(toInputDate(new Date())); setEndDate(toInputDate(new Date())); }}
-            className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all', filterMode === 'today' ? 'cafe-gradient text-primary-foreground' : 'bg-card border border-border text-foreground')}
+            className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95', filterMode === 'today' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+            style={filterMode === 'today' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}
           >
             Today
           </button>
           <button
             onClick={() => setFilterMode('custom')}
-            className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all', filterMode === 'custom' ? 'cafe-gradient text-primary-foreground' : 'bg-card border border-border text-foreground')}
+            className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95', filterMode === 'custom' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+            style={filterMode === 'custom' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}
           >
             Custom Range
           </button>
         </div>
         {filterMode === 'custom' && (
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-end">
             <div className="flex-1">
-              <label className="text-[10px] font-body font-semibold text-muted-foreground uppercase">From</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2 bg-card border border-border rounded-lg text-sm font-body" />
+              <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">From</label>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
             <div className="flex-1">
-              <label className="text-[10px] font-body font-semibold text-muted-foreground uppercase">To</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2 bg-card border border-border rounded-lg text-sm font-body" />
+              <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">To</label>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
           </div>
         )}
         <div className="flex items-center gap-1.5">
           <CalendarDays className="size-3.5 text-primary" />
-          <span className="text-xs font-body text-muted-foreground">
-            {filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} to ${endDate}`}
+          <span className="text-xs font-body font-medium text-muted-foreground">
+            {filterMode === 'today' ? formatDisplayDate(new Date()) : `${startDate} → ${endDate}`}
           </span>
         </div>
       </div>
@@ -603,10 +612,10 @@ export default function SalesReport() {
 
 function KPICard({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
   return (
-    <div className="bg-card border border-border rounded-xl p-3.5">
-      <div className={cn('size-8 rounded-lg flex items-center justify-center mb-2', color)}>{icon}</div>
-      <p className="font-display text-xl font-bold text-foreground tabular-nums">{value}</p>
-      <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase mt-0.5">{label}</p>
+    <div className="kpi-card">
+      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
+      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
+      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
     </div>
   );
 }
