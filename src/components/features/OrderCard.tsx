@@ -162,25 +162,30 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
   return (
     <>
-      <div className={`bg-card rounded-xl border overflow-hidden ${showReadyBadge ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-lg' : 'border-border'}`}>
+      <div className={`bg-card rounded-2xl overflow-hidden shadow-soft transition-all ${
+        showReadyBadge
+          ? 'ring-2 ring-emerald-400 shadow-lifted'
+          : 'border border-border'
+      }`}>
         {/* Ready notification for biller */}
         {showReadyBadge && (
-          <div className="px-3.5 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center gap-2">
+          <div className="px-4 py-2.5 flex items-center gap-2"
+            style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))', borderBottom: '1px solid rgba(16,185,129,0.25)' }}>
             <Bell className="size-4 text-emerald-600 animate-bounce" />
             <span className="text-xs font-body font-bold text-emerald-700">Order Ready — Collect Payment</span>
           </div>
         )}
 
         {/* Header */}
-        <div className="px-3.5 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-display text-lg font-bold text-foreground">
+        <div className="px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display text-xl font-bold text-foreground">
               #{String(order.orderNumber).padStart(3, '0')}
             </span>
-            <span className={`text-[10px] font-body font-bold px-2 py-0.5 rounded-full border ${ORDER_STATUS_COLORS[order.status]}`}>
+            <span className={`text-[10px] font-body font-bold px-2.5 py-0.5 rounded-full border ${ORDER_STATUS_COLORS[order.status]}`}>
               {ORDER_STATUS_LABELS[order.status]}
             </span>
-            <span className={`text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${
+            <span className={`text-[9px] font-body font-bold px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
               order.orderSource === 'qr'
                 ? 'bg-violet-100 text-violet-700 border border-violet-200'
                 : 'bg-blue-50 text-blue-600 border border-blue-200'
@@ -188,7 +193,8 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
               {order.orderSource === 'qr' ? <><QrCode className="size-2.5" />QR</> : <><UserCheck className="size-2.5" />Staff</>}
             </span>
           </div>
-          <button onClick={() => setExpanded(!expanded)} className="size-8 flex items-center justify-center rounded-md active:bg-muted">
+          <button onClick={() => setExpanded(!expanded)}
+            className="size-8 flex items-center justify-center rounded-xl bg-muted active:scale-90 transition-all">
             {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
           </button>
         </div>
@@ -295,18 +301,19 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
         {/* Biller Actions — Only collect payment on ready orders */}
         {canCollectPayment && (
-          <div className="px-3.5 py-2.5 border-t border-border flex gap-2">
+          <div className="px-4 py-3 border-t border-border flex gap-2">
             <button
               onClick={() => setShowPayment(true)}
-              className="flex-1 py-2.5 rounded-lg cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-[0.97] transition-transform"
+              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2"
+              style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
             >
               💰 Collect Payment
             </button>
-            <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-2.5 rounded-lg bg-accent/20 text-accent-foreground text-sm font-body font-semibold active:scale-95">💰</button>
-            <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
+            <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-3 rounded-xl bg-accent/15 text-accent-foreground text-sm font-body font-semibold active:scale-90 border border-accent/20">%</button>
+            <button onClick={() => setShowReceipt(true)} className="px-3 py-3 rounded-xl bg-muted text-foreground text-sm font-body active:scale-90 border border-border" aria-label="Print receipt">
               <Printer className="size-4" />
             </button>
-            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-3 rounded-xl bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-90 border border-destructive/20">✕</button>
           </div>
         )}
 
