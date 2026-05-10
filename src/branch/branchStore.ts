@@ -256,11 +256,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           newEntries.push({
             dispatch_id:   e.id,
             item_name:     e.itemName,
-            quantity:      e.quantity,
+            quantity:      parseFloat(String(e.quantity)), // explicit float — avoids integer column rejection
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
             branch,
-            confirmed:     false,   // explicit — never rely on DB column default
+            confirmed:     false,
           }),
         );
     }
