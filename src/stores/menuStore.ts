@@ -10,6 +10,7 @@ interface MenuState {
   loaded: boolean;
   loadedAt: number | null;
   loadMenu: (force?: boolean) => Promise<void>;
+  addItem: (item: Omit<MenuItem, 'id' | 'imageUrl' | 'enabled'>) => Promise<string | null>;
   toggleItem: (id: string) => Promise<void>;
   updateItem: (id: string, updates: Partial<MenuItem>) => Promise<void>;
   setItemImage: (id: string, imageUrl: string) => Promise<void>;
@@ -67,6 +68,32 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.enabled !== undefined) dbUpdates.enabled = updates.enabled;
     await supabase.from('menu_items').update(dbUpdates).eq('id', id);
+  },
+
+  addItem: async (item) => {
+    const { data, error } = await supabase
+      .from('menu_items')
+      .insert({
+        name:       item.name.trim(),
+        price:      item.price,
+        category:   item.category,
+        timing:     item.timing,
+        enabled:    true,
+      })
+      .select()
+      .single();
+    if (error || !data) return error?.message ?? 'Failed to add item';
+    const newItem: MenuItem = {
+      id:       data.id,
+      name:     data.name,
+      price:    data.price,
+      category: data.category,
+      timing:   data.timing,
+      enabled:  data.enabled,
+      imageUrl: data.image_url || undefined,
+    };
+    set((s) => ({ items: [...s.items, newItem] }));
+    return null;
   },
 
   setItemImage: async (id: string, imageUrl: string) => {
