@@ -1,4 +1,4 @@
-// src/stores/authStore.ts  ← REPLACE EXISTING FILE
+// src/stores/authStore.ts
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
@@ -34,16 +34,13 @@ export const useAuthStore = create<AuthState>()(
       staffList: [],
       staffLoaded: false,
 
+      // FIX: Password sent in POST body via .rpc(), never in a GET URL.
+      // The old .eq('password', password) exposed passwords in server logs + browser history.
       login: async (username, password) => {
         const { data, error } = await supabase
-          .from('staff_users')
-          .select('*')
-          .ilike('username', username)
-          .eq('password', password)
-          .eq('is_active', true)
-          .single();
-        if (error || !data) return false;
-        set({ currentUser: rowToUser(data as Record<string, unknown>) });
+          .rpc('login_staff', { p_username: username, p_password: password });
+        if (error || !data || data.length === 0) return false;
+        set({ currentUser: rowToUser(data[0] as Record<string, unknown>) });
         return true;
       },
 
@@ -79,14 +76,12 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      // ── NEW ──────────────────────────────────────────────────────────────────
       updateStaffDetails: async (userId, updates) => {
         const payload: Record<string, string> = {};
         if (updates.username)    payload.username     = updates.username.trim();
         if (updates.displayName) payload.display_name = updates.displayName.trim();
         if (Object.keys(payload).length === 0) return null;
 
-        // Check username uniqueness if changing username
         if (payload.username) {
           const existing = get().staffList.find(
             (u) => u.username.toLowerCase() === payload.username.toLowerCase() && u.id !== userId
@@ -111,10 +106,7 @@ export const useAuthStore = create<AuthState>()(
         });
         return null;
       },
-      // ─────────────────────────────────────────────────────────────────────────
 
-      // Soft-delete: set is_active = false so the login filter (is_active = true)
-      // naturally excludes the user without losing audit history.
       removeStaff: async (userId) => {
         const { error } = await supabase
           .from('staff_users')
