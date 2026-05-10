@@ -8,7 +8,7 @@ export interface StockItem {
   itemName: string;
   quantity: number;
   minThreshold: number;
-  price: number | null; // FIX #3 — added price field so BillTab can display/use it
+  price: number | null;
 }
 
 export interface SaleRecord {
@@ -18,7 +18,7 @@ export interface SaleRecord {
   soldAt: string;
   soldBy: string;
   branch: Branch;
-  paymentMethod: string | null; // FIX #9 — store payment method
+  paymentMethod: string | null;
 }
 
 export interface IncomingStock {
@@ -35,8 +35,13 @@ interface BranchState {
   sales: Record<Branch, SaleRecord[]>;
   incoming: Record<Branch, IncomingStock[]>;
   thresholds: Record<Branch, Record<string, number>>;
+  // Cached bakery_items price map — fetched once, reused on every poll
+  priceMap: Record<string, number | null>;
+  priceMapLoaded: boolean;
   loading: boolean;
-  lastCleanedAt: number | null; // FIX #6 — track last clean so it only runs once per session
+  lastCleanedAt: number | null;
+  // Track which branches have been seeded so seedBranchItems only runs once per session
+  seededBranches: Set<Branch>;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string) => Promise<string | null>;
@@ -53,8 +58,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   sales:          { VRSNB: [], SNB: [], Hosur: [] },
   incoming:       { VRSNB: [], SNB: [], Hosur: [] },
   thresholds:     { VRSNB: {}, SNB: {}, Hosur: {} },
+  priceMap:       {},
+  priceMapLoaded: false,
   loading:        false,
   lastCleanedAt:  null,
+  seededBranches: new Set(),
 
   fetchBranchData: async (branch) => {
     set({ loading: true });
@@ -62,12 +70,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const twoMonthsAgo = new Date();
       twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
 
+      // FIX: Only fetch bakery_items (prices) once — cache in priceMap.
+      // Previously fetched on every poll (every 30s) — now skipped after first load.
+      let priceMap = get().priceMap;
+      if (!get().priceMapLoaded) {
+        const { data: priceData } = await supabase.from('bakery_items').select('name, price');
+        priceMap = {};
+        (priceData || []).forEach((d) => {
+          priceMap[d.name] = d.price != null ? Number(d.price) : null;
+        });
+        set({ priceMap, priceMapLoaded: true });
+      }
+
       const [
         { data: stockData },
         { data: salesData },
         { data: incomingData },
         { data: thresholdData },
-        { data: priceData },   // FIX #3 — fetch prices from bakery_items
       ] = await Promise.all([
         supabase.from('branch_stock').select('*').eq('branch', branch),
         supabase.from('branch_sales').select('*').eq('branch', branch)
@@ -76,26 +95,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('branch_incoming').select('*').eq('branch', branch)
           .order('received_at', { ascending: false }),
         supabase.from('branch_thresholds').select('*').eq('branch', branch),
-        supabase.from('bakery_items').select('name, price'),
       ]);
-
-      // Build a name → price lookup from bakery_items
-      const priceMap: Record<string, number | null> = {};
-      (priceData || []).forEach((d) => {
-        priceMap[d.name] = d.price != null ? Number(d.price) : null;
-      });
 
       set((s) => {
         const stock      = { ...s.stock };
         const sales      = { ...s.sales };
         const incoming   = { ...s.incoming };
         const thresholds = { ...s.thresholds };
+        const pm         = s.priceMap;
 
         stock[branch] = (stockData || []).map((d) => ({
           itemName:     d.item_name,
           quantity:     d.quantity,
           minThreshold: d.min_threshold ?? 10,
-          price:        priceMap[d.item_name] ?? null, // FIX #3
+          price:        pm[d.item_name] ?? null,
         }));
 
         sales[branch] = (salesData || []).map((d) => ({
@@ -105,7 +118,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           soldAt:        d.sold_at,
           soldBy:        d.sold_by,
           branch:        d.branch as Branch,
-          paymentMethod: d.payment_method ?? null, // FIX #9
+          paymentMethod: d.payment_method ?? null,
         }));
 
         incoming[branch] = (incomingData || []).map((d) => ({
@@ -134,14 +147,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await Promise.all((['VRSNB', 'SNB', 'Hosur'] as Branch[]).map((b) => get().fetchBranchData(b)));
   },
 
-  // FIX #1 — removed double stock deduction from local state update
-  // FIX #9 — accept and store paymentMethod
   recordSale: async (branch, itemName, qty, soldBy, paymentMethod) => {
     const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
     if (!currentStock) return 'Item not found in stock';
     if (currentStock.quantity < qty) return 'Insufficient stock';
 
-    // Round to 3 decimal places to avoid floating-point artifacts (e.g. 4.999999999)
     const newQty = Math.round((currentStock.quantity - qty) * 1000) / 1000;
 
     const { error: stockErr, count } = await supabase
@@ -149,18 +159,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .update({ quantity: newQty })
       .eq('branch', branch)
       .eq('item_name', itemName)
-      .select(); // .select() makes Supabase return affected rows so we can detect 0-row updates
+      .select();
 
-    if (stockErr) {
-      console.error('[recordSale] stock update error:', stockErr);
-      // Surface the real DB error so you can diagnose it
-      return `Failed to update stock: ${stockErr.message}`;
-    }
-    // Guard: if no row was matched (item_name mismatch / row missing), fail loudly
-    if (count === 0) {
-      console.error('[recordSale] stock row not found for', itemName, 'in', branch);
-      return 'Stock row not found — please refresh and try again';
-    }
+    if (stockErr) return `Failed to update stock: ${stockErr.message}`;
+    if (count === 0) return 'Stock row not found — please refresh and try again';
 
     const { data: saleData, error: saleErr } = await supabase
       .from('branch_sales')
@@ -173,10 +175,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         payment_method: paymentMethod,
       })
       .select().single();
-    if (saleErr) {
-      console.error('[recordSale] sale insert error:', saleErr);
-      return `Failed to record sale: ${saleErr.message}`;
-    }
+    if (saleErr) return `Failed to record sale: ${saleErr.message}`;
 
     const newSale: SaleRecord = {
       id:            saleData.id,
@@ -185,13 +184,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       soldAt:        saleData.sold_at,
       soldBy:        saleData.sold_by,
       branch,
-      paymentMethod: saleData.payment_method ?? null, // FIX #9
+      paymentMethod: saleData.payment_method ?? null,
     };
 
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      // FIX #1 — use pre-computed newQty instead of subtracting again
       stock[branch] = stock[branch].map((si) =>
         si.itemName === itemName ? { ...si, quantity: newQty } : si,
       );
@@ -229,9 +227,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     if (!orders) return;
 
-    // FIXED: use dispatch_id column (the dispatch_log entry id) as the dedup key.
-    // The old code used branch_incoming.id which is auto-generated by Supabase,
-    // so it never matched e.id from the dispatch_log — every 30s poll re-added stock.
     const { data: existingIncoming } = await supabase
       .from('branch_incoming')
       .select('dispatch_id')
@@ -256,7 +251,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           newEntries.push({
             dispatch_id:   e.id,
             item_name:     e.itemName,
-            quantity:      parseFloat(String(e.quantity)), // explicit float — avoids integer column rejection
+            quantity:      parseFloat(String(e.quantity)),
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
             branch,
@@ -267,7 +262,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     if (newEntries.length === 0) return;
 
-    // Insert incoming records as unconfirmed — branch must confirm before stock is updated
     await supabase
       .from('branch_incoming')
       .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
@@ -275,38 +269,30 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await get().fetchBranchData(branch);
   },
 
-  // Confirm a single incoming item — adds to stock and marks confirmed
+  // FIX: confirmIncoming now uses 2 DB calls instead of 3 (removed the read-then-write
+  // pattern for branch_stock — we use Postgres arithmetic to avoid a race condition).
   confirmIncoming: async (branch, incomingId) => {
     const inc = get().incoming[branch].find((i) => i.id === incomingId);
     if (!inc) return 'Item not found';
     if (inc.confirmed) return null;
 
-    // Mark confirmed in DB
-    const { error: confErr } = await supabase
-      .from('branch_incoming')
-      .update({ confirmed: true })
-      .eq('id', incomingId);
+    const qty = parseFloat(String(inc.quantity));
+
+    // 1. Mark confirmed + update stock in parallel — avoids sequential round trips.
+    //    branch_stock uses Postgres expression update (quantity + qty) to be race-safe.
+    const [{ error: confErr }, { error: stockErr }] = await Promise.all([
+      supabase.from('branch_incoming').update({ confirmed: true }).eq('id', incomingId),
+      supabase.rpc('increment_branch_stock', {
+        p_branch:    branch,
+        p_item_name: inc.itemName,
+        p_qty:       qty,
+      }),
+    ]);
+
     if (confErr) return `Failed to confirm: ${confErr.message}`;
+    if (stockErr) return `Failed to update stock: ${stockErr.message}`;
 
-    // Add quantity to branch_stock
-    const { data: existing } = await supabase
-      .from('branch_stock')
-      .select('quantity')
-      .eq('branch', branch)
-      .eq('item_name', inc.itemName)
-      .single();
-
-    if (existing) {
-      const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-      await supabase.from('branch_stock')
-        .update({ quantity: newQty })
-        .eq('branch', branch).eq('item_name', inc.itemName);
-    } else {
-      await supabase.from('branch_stock')
-        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, min_threshold: 10 });
-    }
-
-    // Update local state
+    // 2. Update local state immediately (no extra fetch needed)
     set((s) => {
       const incoming = { ...s.incoming };
       incoming[branch] = incoming[branch].map((i) =>
@@ -317,12 +303,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (si) {
         stock[branch] = stock[branch].map((x) =>
           x.itemName === inc.itemName
-            ? { ...x, quantity: Math.round((x.quantity + inc.quantity) * 1000) / 1000 }
+            ? { ...x, quantity: Math.round((x.quantity + qty) * 1000) / 1000 }
             : x
         );
       } else {
         stock[branch] = [...stock[branch], {
-          itemName: inc.itemName, quantity: inc.quantity, minThreshold: 10, price: null,
+          itemName: inc.itemName, quantity: qty, minThreshold: 10, price: null,
         }];
       }
       return { incoming, stock };
@@ -330,7 +316,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     return null;
   },
 
-  // Confirm all today's unconfirmed incoming items at once
+  // FIX: confirmAllIncoming now runs all confirms in parallel instead of a sequential loop.
   confirmAllIncoming: async (branch) => {
     const today = new Date().toDateString();
     const toConfirm = get().incoming[branch].filter(
@@ -338,14 +324,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     );
     if (toConfirm.length === 0) return null;
 
-    for (const inc of toConfirm) {
-      const err = await get().confirmIncoming(branch, inc.id);
-      if (err) return err;
-    }
-    return null;
+    const results = await Promise.all(
+      toConfirm.map((inc) => get().confirmIncoming(branch, inc.id))
+    );
+    const firstErr = results.find((r) => r !== null);
+    return firstErr ?? null;
   },
 
+  // FIX: seedBranchItems only runs once per session per branch.
+  // Previously ran on every page mount, firing 21 upsert batches in 3 minutes.
   seedBranchItems: async (branch) => {
+    if (get().seededBranches.has(branch)) return;
+
     const rows = BAKERY_ITEMS.map(item => ({
       branch,
       item_name:     item.name,
@@ -360,14 +350,15 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           ignoreDuplicates: true,
         });
     }
+    set((s) => ({
+      seededBranches: new Set([...s.seededBranches, branch]),
+    }));
     await get().fetchBranchData(branch);
   },
 
-  // FIX #6 — only run cleanOldData once per session using lastCleanedAt guard
   cleanOldData: async () => {
     const { lastCleanedAt } = get();
     const now = Date.now();
-    // Skip if already cleaned within the last hour
     if (lastCleanedAt && now - lastCleanedAt < 60 * 60 * 1000) return;
 
     const twoMonthsAgo = new Date();

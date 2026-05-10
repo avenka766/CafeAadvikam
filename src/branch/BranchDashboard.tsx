@@ -1,5 +1,5 @@
 // src/branch/BranchDashboard.tsx
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Package, Settings, Receipt } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
@@ -18,6 +18,8 @@ const TABS = [
   { id: 'settings' as const, label: 'Thresholds', icon: Settings },
 ];
 
+const POLL_INTERVAL = 30_000;
+
 interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
@@ -25,25 +27,65 @@ export default function BranchDashboard({ branch }: Props) {
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
+  // Ref to the interval so we can clear it without capturing stale state
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startPolling = () => {
+    if (pollRef.current) return; // already running
+    pollRef.current = setInterval(() => {
+      // FIX: Skip poll if tab is hidden or browser is offline — prevents
+      // piling up timed-out requests (seen as 43s/60s timeouts in the HAR).
+      if (document.visibilityState === 'hidden' || !navigator.onLine) return;
+      fetchBranchData(branch);
+    }, POLL_INTERVAL);
+  };
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    // Initial load
+    fetchBranchData(branch);
+    syncIncomingFromDispatches(branch);
+    seedBranchItems(branch);  // no-op after first run per branch per session
+    cleanOldData();            // no-op after first run per hour
+
+    startPolling();
+
+    // Pause polling when the tab goes to background, resume when visible again
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchBranchData(branch); // immediate refresh on tab focus
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    // Pause when offline, resume + refresh when back online
+    const handleOnline  = () => { fetchBranchData(branch); startPolling(); };
+    const handleOffline = () => stopPolling();
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [branch]);
 
   const branchStock    = stock[branch]    || [];
   const branchSales    = sales[branch]    || [];
   const branchIncoming = incoming[branch] || [];
   const colors         = BRANCH_COLORS[branch];
-
-  useEffect(() => {
-    fetchBranchData(branch);
-    syncIncomingFromDispatches(branch);
-    seedBranchItems(branch);
-    cleanOldData();
-
-    // Only poll stock data every 30s — sync is mount-only to prevent stock inflation
-    const id = setInterval(() => {
-      fetchBranchData(branch);
-    }, 30_000);
-
-    return () => clearInterval(id);
-  }, [branch]);
 
   const availableStock = branchStock.filter((s) => s.quantity > 0);
 
@@ -69,7 +111,6 @@ export default function BranchDashboard({ branch }: Props) {
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
-      {/* Header — warning banner removed */}
       <div className={cn('px-4 pt-4 pb-3 border-b', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
@@ -81,13 +122,11 @@ export default function BranchDashboard({ branch }: Props) {
         </p>
       </div>
 
-      {/* Quick stats — In Stock (available only) + Sold Today */}
       <div className="px-4 py-3 grid grid-cols-2 gap-2">
         <StatCard label="In Stock"   value={availableStock.length} color={colors.text} />
         <StatCard label="Sold Today" value={totalTodayQty}         color="text-blue-700" />
       </div>
 
-      {/* Tab bar — Sales Log removed */}
       <div className="mx-4 mb-3">
         <TabBar tabs={TABS} active={tab} onChange={setTab} />
       </div>
