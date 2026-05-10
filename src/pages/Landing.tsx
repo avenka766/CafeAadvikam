@@ -6,7 +6,7 @@ import { useVenueStore } from '@/stores/venueStore';
 import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
-import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star } from 'lucide-react';
+import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star, Send, SmilePlus } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
 
@@ -432,6 +432,143 @@ function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
   );
 }
 
+// ─── Feedback Section ─────────────────────────────────────────────────────────
+function FeedbackSection() {
+  const [name, setName]       = useState('');
+  const [rating, setRating]   = useState(0);
+  const [hovered, setHovered] = useState(0);
+  const [message, setMessage] = useState('');
+  const [sent, setSent]       = useState(false);
+  const ref = useScrollReveal<HTMLElement>({ threshold: 0.1 });
+
+  const STAR_LABELS = ['', 'Poor', 'Fair', 'Good', 'Great', 'Excellent!'];
+
+  const handleSend = () => {
+    if (!rating || !message.trim()) return;
+    const stars   = '⭐'.repeat(rating);
+    const label   = STAR_LABELS[rating];
+    const nameStr = name.trim() ? `👤 *${name.trim()}*\n` : '';
+    const text = `🍽️ *Feedback — Cafe Aadvikam*\n\n${nameStr}${stars} ${label}\n\n💬 ${message.trim()}\n\n_Sent from CafeAadvikam.in_`;
+    window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(text)}`, '_blank');
+    setSent(true);
+  };
+
+  const handleReset = () => { setName(''); setRating(0); setMessage(''); setSent(false); };
+
+  return (
+    <section ref={ref} data-reveal="up" className="px-4 py-8">
+      {/* Heading */}
+      <div className="flex items-center gap-2 mb-1">
+        <SmilePlus className="size-5 text-primary" />
+        <h2 className="font-display text-2xl font-bold text-foreground">Share Your Experience</h2>
+      </div>
+      <p className="text-xs font-body text-muted-foreground mb-5">
+        Your feedback goes directly to us on WhatsApp 💚
+      </p>
+
+      {sent ? (
+        /* ── Thank-you state ── */
+        <div className="flex flex-col items-center justify-center py-10 gap-4 text-center bg-emerald-50 rounded-2xl border border-emerald-200">
+          <span className="text-5xl">🙏</span>
+          <div>
+            <p className="font-display font-bold text-lg text-emerald-700">Thank you!</p>
+            <p className="text-xs font-body text-emerald-600 mt-1">Your feedback has been sent to us on WhatsApp.</p>
+          </div>
+          <button
+            onClick={handleReset}
+            className="text-xs font-body font-semibold text-emerald-600 underline underline-offset-4 active:opacity-70"
+          >
+            Submit another feedback
+          </button>
+        </div>
+      ) : (
+        /* ── Form ── */
+        <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+          {/* Name (optional) */}
+          <div className="px-4 pt-4 pb-3 border-b border-border/60">
+            <label className="block text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground mb-2">
+              Your Name <span className="font-normal normal-case">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Ravi Kumar"
+              className="w-full bg-muted/40 rounded-xl px-3.5 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/60 outline-none focus:ring-2 focus:ring-primary/30 transition"
+              maxLength={40}
+            />
+          </div>
+
+          {/* Star rating */}
+          <div className="px-4 py-4 border-b border-border/60">
+            <label className="block text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground mb-3">
+              Rating <span className="text-destructive">*</span>
+            </label>
+            <div className="flex items-center gap-2">
+              {[1, 2, 3, 4, 5].map((s) => (
+                <button
+                  key={s}
+                  onMouseEnter={() => setHovered(s)}
+                  onMouseLeave={() => setHovered(0)}
+                  onClick={() => setRating(s)}
+                  className="active:scale-75 transition-transform"
+                  aria-label={`${s} star`}
+                >
+                  <Star
+                    className="size-8 transition-all duration-150"
+                    fill={(hovered || rating) >= s ? '#F4A23A' : 'none'}
+                    stroke={(hovered || rating) >= s ? '#F4A23A' : 'currentColor'}
+                    style={{ color: (hovered || rating) >= s ? '#F4A23A' : 'var(--muted-foreground)' }}
+                  />
+                </button>
+              ))}
+              {(hovered || rating) > 0 && (
+                <span className="text-xs font-body font-semibold text-primary ml-1">
+                  {STAR_LABELS[hovered || rating]}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Message */}
+          <div className="px-4 py-4">
+            <label className="block text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground mb-2">
+              Your Feedback <span className="text-destructive">*</span>
+            </label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Tell us about your experience — food, service, ambiance…"
+              rows={4}
+              className="w-full bg-muted/40 rounded-xl px-3.5 py-2.5 text-sm font-body text-foreground placeholder:text-muted-foreground/60 outline-none focus:ring-2 focus:ring-primary/30 transition resize-none"
+              maxLength={500}
+            />
+            <p className="text-right text-[10px] text-muted-foreground mt-0.5">{message.length}/500</p>
+          </div>
+
+          {/* Send button */}
+          <div className="px-4 pb-4">
+            <button
+              onClick={handleSend}
+              disabled={!rating || !message.trim()}
+              className="w-full py-4 rounded-2xl font-body font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: 'linear-gradient(135deg,#0F6E56,#1D9E75)', color: 'white', boxShadow: '0 4px 20px rgba(29,158,117,0.35)' }}
+            >
+              <Send className="size-4" />
+              Send Feedback via WhatsApp
+            </button>
+            {(!rating || !message.trim()) && (
+              <p className="text-center text-[10px] text-muted-foreground mt-2">
+                {!rating ? 'Please select a star rating' : 'Please write your feedback'}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ─── Cafe Content ─────────────────────────────────────────────────────────────
 function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setShowMenu: (v: boolean) => void; setDrawerCat: (v: string | null) => void; setPartyFullscreen: (v: boolean) => void }) {
   const [timePeriod] = useState(getTimePeriod);
@@ -558,6 +695,9 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
 
       {/* From Our Kitchen */}
       <FromOurKitchenSection onViewAll={() => setShowMenu(true)} />
+
+      {/* Feedback */}
+      <FeedbackSection />
     </>
   );
 }
