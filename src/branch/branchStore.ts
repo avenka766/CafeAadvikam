@@ -242,7 +242,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const newEntries: {
       dispatch_id: string; item_name: string; quantity: number;
-      received_at: string; dispatched_by: string; branch: Branch;
+      received_at: string; dispatched_by: string; branch: Branch; confirmed: boolean;
     }[] = [];
 
     for (const order of orders) {
@@ -260,6 +260,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
             branch,
+            confirmed:     false,   // explicit — never rely on DB column default
           }),
         );
     }
