@@ -139,31 +139,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       dispatched_by: newEntry.dispatchedBy,
     }, { onConflict: 'dispatch_id' });
 
-    // 3. Add dispatched qty to branch_stock using RPC to avoid race conditions.
-    //    maybeSingle() won't throw when no row found (unlike .single()).
-    const { data: existingStock } = await supabase
-      .from('branch_stock')
-      .select('quantity, min_threshold')
-      .eq('branch', newEntry.branch)
-      .eq('item_name', newEntry.itemName)
-      .maybeSingle();
 
-    if (existingStock) {
-      // Row exists — increment quantity
-      await supabase
-        .from('branch_stock')
-        .update({ quantity: existingStock.quantity + newEntry.quantity })
-        .eq('branch', newEntry.branch)
-        .eq('item_name', newEntry.itemName);
-    } else {
-      // No row yet — insert fresh
-      await supabase.from('branch_stock').insert({
-        branch:        newEntry.branch,
-        item_name:     newEntry.itemName,
-        quantity:      newEntry.quantity,
-        min_threshold: 10,
-      });
-    }
+    // NOTE: branch_stock is NOT updated here intentionally.
+    // Stock is only added when the branch confirms the incoming item (confirmIncoming).
+    // This ensures dispatched items appear in Incoming Stock first, waiting for branch confirmation.
 
     // 4. Update local state
     set(s => ({
