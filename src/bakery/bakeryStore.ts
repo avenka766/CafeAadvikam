@@ -128,14 +128,16 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (error) return;
 
     // 2. Write to branch_incoming (ignore duplicate if already exists)
+    //    Use dispatch_id (not id) as the conflict key — this matches the schema
+    //    used by syncIncomingFromDispatches so decimal quantities are stored correctly.
     await supabase.from('branch_incoming').upsert({
-      id:            newEntry.id,
+      dispatch_id:   newEntry.id,
       branch:        newEntry.branch,
       item_name:     newEntry.itemName,
       quantity:      newEntry.quantity,
       received_at:   newEntry.dispatchedAt,
       dispatched_by: newEntry.dispatchedBy,
-    }, { onConflict: 'id' });
+    }, { onConflict: 'dispatch_id' });
 
     // 3. Add dispatched qty to branch_stock using RPC to avoid race conditions.
     //    maybeSingle() won't throw when no row found (unlike .single()).
