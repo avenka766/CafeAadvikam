@@ -1,42 +1,51 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, User, Leaf } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
 import { useVenueStore } from '@/stores/venueStore';
+import cafeLogo from '@/assets/cafe-logo.png';
+import { cn } from '@/lib/utils';
+
+const ROLE_LABELS: Record<string, string> = {
+  admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
+  kitchen: 'Kitchen', order_receiver: 'Receiver', store: 'Store',
+  baker: 'Baker', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
+  branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
+};
+const ROLE_COLORS: Record<string, string> = {
+  admin: 'bg-amber-500/20 text-amber-700 border-amber-400/30',
+  order_taker: 'bg-blue-500/20 text-blue-700 border-blue-400/30',
+  billing: 'bg-emerald-500/20 text-emerald-700 border-emerald-400/30',
+  kitchen: 'bg-orange-500/20 text-orange-700 border-orange-400/30',
+};
 
 export default function Header() {
   const { currentUser, logout } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
   const { activeVenue } = useVenueStore();
-  const headerName = activeVenue === 'bakery' ? 'SNB Bakery' : CAFE_CONFIG.name;
+
   const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
   const isQROrder = location.pathname === '/order';
   const isTracking = location.pathname === '/order/track';
-
-  const handleLogout = () => {
-    logout();
-    navigate('/');
-  };
-
-  // Hide header on QR order page and tracking page — they have their own headers
   if (isQROrder || isTracking) return null;
 
+  const headerName = activeVenue === 'bakery' ? 'SNB Bakery' : CAFE_CONFIG.name;
+
+  /* ── Public header ── */
   if (isPublic) {
     return (
-      <header className="fixed top-0 left-0 right-0 z-40 bg-background/80 backdrop-blur-md border-b border-border/50">
+      <header className="fixed top-0 left-0 right-0 z-40 glass border-b border-white/30">
         <div className="flex items-center justify-between px-4 h-14">
-          <button onClick={() => navigate('/')} className="flex items-center gap-2">
-            <div className="size-8 rounded-full cafe-gradient flex items-center justify-center">
-              <Leaf className="size-4 text-primary-foreground" />
+          <button onClick={() => navigate('/')} className="flex items-center gap-2.5 active:opacity-80 transition-opacity">
+            <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/40 shadow-sm" />
+            <div className="leading-tight">
+              <p className="font-display text-base font-bold text-foreground">{headerName}</p>
             </div>
-            <span className="font-display text-lg font-semibold text-foreground transition-all duration-300">
-              {headerName}
-            </span>
           </button>
           <button
             onClick={() => navigate('/login')}
-            className="px-4 py-2 text-sm font-semibold font-body cafe-gradient text-primary-foreground rounded-lg active:scale-95 transition-transform"
+            className="px-4 py-2 text-xs font-body font-semibold cafe-gradient text-primary-foreground rounded-xl shadow-teal active:scale-95 transition-all"
           >
             Staff Login
           </button>
@@ -45,30 +54,44 @@ export default function Header() {
     );
   }
 
+  /* ── Staff header ── */
+  const roleColor = ROLE_COLORS[currentUser?.role || ''] || 'bg-primary/15 text-primary border-primary/20';
+
   return (
-    <header className="fixed top-0 left-0 right-0 z-40 cafe-gradient text-primary-foreground">
+    <header className="fixed top-0 left-0 right-0 z-40 espresso-gradient text-white border-b border-white/8"
+      style={{ boxShadow: '0 2px 20px rgba(0,0,0,0.25)' }}>
       <div className="flex items-center justify-between px-4 h-14">
-        <div className="flex items-center gap-2">
-          <div className="size-8 rounded-full bg-white/15 flex items-center justify-center">
-            <Leaf className="size-4" />
-          </div>
-          <div className="leading-tight">
-            <p className="font-display text-base font-semibold">{CAFE_CONFIG.name}</p>
+        {/* Left — logo + name */}
+        <div className="flex items-center gap-2.5">
+          <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/20" />
+          <div className="leading-none">
+            <p className="font-display text-base font-semibold text-white/95">{CAFE_CONFIG.name}</p>
+            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">Staff Portal</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-white/15 rounded-lg px-2.5 py-1.5">
-            <User className="size-3.5" />
-            <span className="text-xs font-body font-medium">
-              {currentUser?.displayName}
-            </span>
-          </div>
+
+        {/* Right — user + logout */}
+        <div className="flex items-center gap-2">
+          {currentUser && (
+            <div className="flex flex-col items-end">
+              <span className="text-xs font-body font-semibold text-white/90 leading-none">
+                {currentUser.displayName || currentUser.username}
+              </span>
+              <span className={cn(
+                'text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full border mt-0.5 uppercase tracking-wide',
+                roleColor
+              )}>
+                {ROLE_LABELS[currentUser.role] || currentUser.role}
+              </span>
+            </div>
+          )}
           <button
-            onClick={handleLogout}
-            className="size-9 rounded-lg bg-white/15 flex items-center justify-center active:scale-95 transition-transform"
+            onClick={() => { logout(); navigate('/'); }}
+            className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
+            style={{ background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.12)' }}
             aria-label="Logout"
           >
-            <LogOut className="size-4" />
+            <LogOut className="size-4 text-white/80" />
           </button>
         </div>
       </div>
