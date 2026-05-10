@@ -127,18 +127,21 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .eq('id', orderId);
     if (error) return;
 
-    // 2. Write to branch_incoming (ignore duplicate if already exists)
-    //    Use dispatch_id (not id) as the conflict key — this matches the schema
-    //    used by syncIncomingFromDispatches so decimal quantities are stored correctly.
-    await supabase.from('branch_incoming').upsert({
+    // 2. Write to branch_incoming
+    //    quantity is explicitly cast to float to avoid silent failure if DB column is integer type.
+    //    confirmed:false ensures it shows in Incoming Stock awaiting branch confirmation.
+    const { error: incomingErr } = await supabase.from('branch_incoming').upsert({
       dispatch_id:   newEntry.id,
       branch:        newEntry.branch,
       item_name:     newEntry.itemName,
-      quantity:      newEntry.quantity,
+      quantity:      parseFloat(String(newEntry.quantity)),
       received_at:   newEntry.dispatchedAt,
       dispatched_by: newEntry.dispatchedBy,
-      confirmed:     false,   // MUST be explicit — if DB default is true, row is hidden from Incoming Stock
+      confirmed:     false,
     }, { onConflict: 'dispatch_id' });
+    if (incomingErr) {
+      console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
+    }
 
 
     // NOTE: branch_stock is NOT updated here intentionally.
