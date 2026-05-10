@@ -137,6 +137,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       quantity:      newEntry.quantity,
       received_at:   newEntry.dispatchedAt,
       dispatched_by: newEntry.dispatchedBy,
+      confirmed:     false,   // MUST be explicit — if DB default is true, row is hidden from Incoming Stock
     }, { onConflict: 'dispatch_id' });
 
 
