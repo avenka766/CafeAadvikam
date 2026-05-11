@@ -102,6 +102,10 @@ function PackingOrderCard({
     }))
   );
 
+  // Look up isCustom from original order items
+  const isCustomItem = (itemId: string) =>
+    order.items.find(i => i.itemId === itemId)?.isCustom ?? false;
+
   const allConfirmed = packedEntries.length > 0 && packedEntries.every(e => e.confirmed);
 
   const confirmEntry = (idx: number) => {
@@ -227,9 +231,14 @@ function PackingOrderCard({
                   )}
                 >
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-body font-semibold text-foreground">
-                      {entry.itemName}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-body font-semibold text-foreground">
+                        {entry.itemName}
+                      </span>
+                      {isCustomItem(entry.itemId) && (
+                        <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
+                      )}
+                    </div>
                     {entry.confirmed
                       ? (
                         <button
@@ -308,14 +317,21 @@ function PackingOrderCard({
             <div className="px-4 pb-3">
               {preparedItems.map(p => {
                 const stock = stockByItem[p.itemName];
+                const isCustom = isCustomItem(p.itemId);
                 return (
-                  <DispatchRow
-                    key={p.itemId}
-                    itemName={p.itemName}
-                    available={stock?.available ?? 0}
-                    onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
-                    submitting={dispatchingItems.size > 0}
-                  />
+                  <div key={p.itemId}>
+                    {isCustom && (
+                      <div className="pt-2 pb-0.5">
+                        <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
+                      </div>
+                    )}
+                    <DispatchRow
+                      itemName={p.itemName}
+                      available={stock?.available ?? 0}
+                      onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
+                      submitting={dispatchingItems.size > 0}
+                    />
+                  </div>
                 );
               })}
             </div>

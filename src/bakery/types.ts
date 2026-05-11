@@ -8,6 +8,7 @@ export interface BakeryOrderItem {
   itemId: string;
   itemName: string;
   quantity: number;
+  isCustom?: boolean;
 }
 
 export interface BakeryOrder {

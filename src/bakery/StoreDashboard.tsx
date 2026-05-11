@@ -108,6 +108,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 const outQty  = getOutputQty(item.itemId);
                 const isSelected = idx === selectedItemIdx;
                 const hasRec = !!RECIPE_DEFINITIONS[item.itemId];
+                const isCustom = !!item.isCustom;
                 return (
                   <button key={item.itemId} onClick={() => { setSelectedItemIdx(idx); setCalculatedMats([]); setCalcForItem(''); }}
                     className={cn('w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all text-left',
@@ -117,9 +118,15 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                         {isSelected && <span className="size-2 rounded-full bg-primary" />}
                       </span>
                       <div>
-                        <span className="text-sm font-body font-semibold text-foreground">{meta?.icon} {item.itemName}</span>
-                        {outUnit && outQty && <p className="text-[10px] font-body text-muted-foreground">1 batch = {outQty} {outUnit}</p>}
-                        {!hasRec && <p className="text-[10px] font-body text-amber-600">⚠ No recipe — add via Admin</p>}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-body font-semibold text-foreground">{meta?.icon} {item.itemName}</span>
+                          {isCustom && (
+                            <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
+                          )}
+                        </div>
+                        {!isCustom && outUnit && outQty && <p className="text-[10px] font-body text-muted-foreground">1 batch = {outQty} {outUnit}</p>}
+                        {!isCustom && !hasRec && <p className="text-[10px] font-body text-amber-600">⚠ No recipe — add via Admin</p>}
+                        {isCustom && <p className="text-[10px] font-body text-amber-600">Special order — no recipe needed</p>}
                       </div>
                     </div>
                     <span className="text-xs font-body font-bold text-primary">×{item.quantity} ordered</span>
@@ -135,27 +142,36 @@ function OrderCard({ order }: { order: BakeryOrder }) {
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">
                 Step 2 — Qty to Produce{selectedOutputUnit && <span className="ml-1 normal-case text-primary">({selectedOutputUnit})</span>}
               </p>
-              {selectedOutputUnit && (
-                <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-primary/5 rounded-lg border border-primary/20">
-                  {UNIT_ICONS[selectedOutputUnit]}
-                  <span className="text-xs font-body text-primary font-semibold">Measured in {UNIT_LABELS[selectedOutputUnit]}</span>
-                  {selectedOutputQty && <span className="ml-auto text-[10px] font-body text-muted-foreground">1 batch = {selectedOutputQty} {selectedOutputUnit}</span>}
+              {selectedItem.isCustom ? (
+                <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+                  <span className="text-[10px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
+                  <span className="text-xs font-body text-amber-700">No recipe for custom items — send directly to baker.</span>
                 </div>
+              ) : (
+                <>
+                  {selectedOutputUnit && (
+                    <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-primary/5 rounded-lg border border-primary/20">
+                      {UNIT_ICONS[selectedOutputUnit]}
+                      <span className="text-xs font-body text-primary font-semibold">Measured in {UNIT_LABELS[selectedOutputUnit]}</span>
+                      {selectedOutputQty && <span className="ml-auto text-[10px] font-body text-muted-foreground">1 batch = {selectedOutputQty} {selectedOutputUnit}</span>}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <input type="number" min={0.01} step={selectedOutputUnit === 'kg' ? 0.5 : 1}
+                        value={itemQtys[selectedItem.itemId] ?? String(selectedItem.quantity)}
+                        onChange={e => setItemQtys(prev => ({ ...prev, [selectedItem.itemId]: e.target.value }))}
+                        className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      <p className="text-[10px] font-body text-muted-foreground mt-1">Auto-filled from order ({selectedItem.quantity} ordered). Edit if needed.</p>
+                    </div>
+                    <button onClick={handleCalculate} disabled={saving || !hasRecipe} title={!hasRecipe ? 'No recipe data for this item' : undefined}
+                      className="h-10 px-4 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all shrink-0">
+                      {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Calculator className="size-3.5" />}
+                      Calculate
+                    </button>
+                  </div>
+                </>
               )}
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <input type="number" min={0.01} step={selectedOutputUnit === 'kg' ? 0.5 : 1}
-                    value={itemQtys[selectedItem.itemId] ?? String(selectedItem.quantity)}
-                    onChange={e => setItemQtys(prev => ({ ...prev, [selectedItem.itemId]: e.target.value }))}
-                    className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
-                  <p className="text-[10px] font-body text-muted-foreground mt-1">Auto-filled from order ({selectedItem.quantity} ordered). Edit if needed.</p>
-                </div>
-                <button onClick={handleCalculate} disabled={saving || !hasRecipe} title={!hasRecipe ? 'No recipe data for this item' : undefined}
-                  className="h-10 px-4 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all shrink-0">
-                  {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Calculator className="size-3.5" />}
-                  Calculate
-                </button>
-              </div>
             </div>
           )}
 

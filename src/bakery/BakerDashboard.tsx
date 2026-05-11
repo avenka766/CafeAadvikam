@@ -52,10 +52,16 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">Enter Prepared Quantity</p>
           {order.items.map(item => {
             const meta = BAKERY_ITEMS.find(b => b.id === item.itemId);
+            const isCustom = !!item.isCustom;
             return (
               <div key={item.itemId} className="flex items-center gap-3">
                 <div className="flex-1">
-                  <p className="text-sm font-body font-semibold text-foreground">{meta?.icon} {item.itemName}</p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm font-body font-semibold text-foreground">{meta?.icon} {item.itemName}</p>
+                    {isCustom && (
+                      <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
+                    )}
+                  </div>
                   <p className="text-[10px] font-body text-muted-foreground">Ordered: {item.quantity}</p>
                 </div>
                 <input

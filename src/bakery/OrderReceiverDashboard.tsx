@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Inbox, Plus, Trash2, Send, CheckCircle2, Loader2, Phone, User, Hash } from 'lucide-react';
+import { Inbox, Plus, Trash2, Send, CheckCircle2, Loader2, Phone, User, Hash, Sparkles } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useBakeryItemsStore, BAKERY_CATEGORIES } from './bakeryItemsStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -33,6 +33,7 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [lines, setLines] = useState<{ itemId: string; itemName: string; qty: string }[]>([
     { itemId: '', itemName: '', qty: '' },
   ]);
+  const [customLines, setCustomLines] = useState<{ name: string; qty: string }[]>([]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
 
@@ -63,14 +64,34 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
     setLines(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const valid = lines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0);
+  const addCustomLine = () => setCustomLines(prev => [...prev, { name: '', qty: '' }]);
+  const removeCustomLine = (idx: number) => setCustomLines(prev => prev.filter((_, i) => i !== idx));
+  const updateCustomName = (idx: number, val: string) =>
+    setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, name: val } : l));
+  const updateCustomQty = (idx: number, val: string) => {
+    if (val === '' || Number(val) >= 0)
+      setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
+  };
+
+  const valid =
+    lines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
+    customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
+    (lines.length > 0 || customLines.length > 0);
 
   const handleSubmit = async () => {
     if (!currentUser || !valid) return;
     setSubmitting(true);
-    const items: BakeryOrderItem[] = lines.map(l => ({
-      itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty),
-    }));
+    const items: BakeryOrderItem[] = [
+      ...lines.map(l => ({
+        itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty),
+      })),
+      ...customLines.map(l => ({
+        itemId: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        itemName: l.name.trim(),
+        quantity: Number(l.qty),
+        isCustom: true,
+      })),
+    ];
     const label = [
       customerName.trim() || 'Walk-in',
       customerPhone.trim() ? `📞 ${customerPhone.trim()}` : '',
@@ -82,6 +103,7 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
     setSuccess(true);
     setCustomerName(''); setCustomerPhone(''); setOrderRef('');
     if (defaultItem) setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+    setCustomLines([]);
     setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
   };
 
@@ -175,6 +197,59 @@ function NewOrderForm({ onSubmitted }: { onSubmitted: () => void }) {
             ))}
           </div>
         </div>
+
+        {/* ── Custom items section ── */}
+        <div className="border-t border-border pt-3 px-4 pb-2">
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles className="size-3.5 text-amber-500" />
+            <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">
+              Custom Items
+              <span className="ml-1 normal-case text-amber-600 font-normal">not in the list</span>
+            </p>
+          </div>
+          {customLines.length === 0 && (
+            <p className="text-[11px] font-body text-muted-foreground mb-2">
+              Need something special? Add a custom item below.
+            </p>
+          )}
+          <div className="space-y-2">
+            {customLines.map((line, idx) => (
+              <div key={idx} className="flex gap-2 items-center">
+                <input
+                  value={line.name}
+                  onChange={e => updateCustomName(idx, e.target.value)}
+                  placeholder="Item name (e.g. Rose Milk Cake)"
+                  className={cn(
+                    'flex-1 h-10 px-3 rounded-xl border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40',
+                    line.name.trim() === '' ? 'border-amber-400' : 'border-amber-300'
+                  )}
+                />
+                <input
+                  type="number" min={1} value={line.qty}
+                  onChange={e => updateCustomQty(idx, e.target.value)}
+                  placeholder="Qty"
+                  className={cn(
+                    'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-amber-400/40',
+                    line.qty === '' ? 'border-amber-400' : 'border-amber-300'
+                  )}
+                />
+                <button
+                  onClick={() => removeCustomLine(idx)}
+                  className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95 transition-all shrink-0"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={addCustomLine}
+            className="mt-2 h-9 w-full rounded-xl border-2 border-dashed border-amber-300 text-sm font-body font-semibold text-amber-600 hover:border-amber-400 hover:bg-amber-50/60 transition-colors flex items-center justify-center gap-1.5"
+          >
+            <Sparkles className="size-3.5" /> Add Custom Item
+          </button>
+        </div>
+
       </div>
       <div className="px-4 py-3 flex gap-2">
         <button onClick={addLine}
