@@ -6,13 +6,14 @@ import {
   CreditCard, Search, X, Scale, Hash, Pencil, ChevronRight,
   ArrowLeftRight, Percent, Printer, XCircle, Tag, FileText,
   ChevronDown, ChevronUp, Sparkles, Package,
+  Wallet, Edit3, Clock, AlertCircle, User as UserIcon, StickyNote,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
 import { useAuthStore } from '@/stores/authStore';
 import type { Branch } from '../types';
 import { BRANCH_COLORS } from '../types';
-import type { StockItem } from '../branchStore';
+import type { StockItem, BranchAdvanceOrder, BranchAdvanceItem } from '../branchStore';
 import { CAFE_CONFIG } from '@/constants/config';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ interface DiscountState {
 interface Props {
   branch: Branch;
   branchStock: StockItem[];
+  advanceOrders?: BranchAdvanceOrder[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -836,15 +838,569 @@ function BillingSummaryPanel({
   );
 }
 
+// ─── Custom item type ─────────────────────────────────────────────────────────
+
+interface CustomLineItem { id: string; name: string; price: number; qty: number; }
+
+// ─── Pending Advance Card ─────────────────────────────────────────────────────
+
+function PendingAdvanceCard({ order, branch }: { order: BranchAdvanceOrder; branch: Branch }) {
+  const { collectAdvanceBalance } = useBranchStore();
+  const [collecting, setCollecting] = useState(false);
+  const [method, setMethod]         = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [err, setErr]               = useState('');
+  const [done, setDone]             = useState(false);
+
+  const handleCollect = async () => {
+    if (!method) { setErr('Select payment method'); return; }
+    setErr(''); setCollecting(true);
+    const e = await collectAdvanceBalance(branch, order.id, method);
+    if (e) { setErr(e); setCollecting(false); return; }
+    setDone(true); setCollecting(false);
+  };
+
+  const PAY_ICONS = {
+    cash: <Banknote className="size-3.5" />,
+    upi:  <Smartphone className="size-3.5" />,
+    card: <CreditCard className="size-3.5" />,
+  };
+
+  return (
+    <div className={cn(
+      'rounded-2xl border overflow-hidden shadow-soft',
+      done ? 'border-emerald-300 bg-emerald-50/40' : 'border-amber-200 bg-amber-50/30',
+    )}>
+      {/* Header */}
+      <div className="px-4 py-2.5 flex items-center justify-between border-b border-amber-200/50">
+        <div className="flex items-center gap-2">
+          <Wallet className="size-4 text-amber-600" />
+          <span className="text-sm font-body font-bold text-foreground">
+            {order.customerName || 'Advance Order'}
+          </span>
+        </div>
+        {done ? (
+          <span className="text-xs font-body font-bold text-emerald-600 bg-emerald-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+            <CheckCircle2 className="size-3" />Completed
+          </span>
+        ) : (
+          <span className="text-xs font-body font-bold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">
+            Balance Due
+          </span>
+        )}
+      </div>
+
+      {/* Items */}
+      <div className="px-4 py-2 space-y-1">
+        {order.items.map((item, i) => (
+          <div key={i} className="flex justify-between text-xs font-body">
+            <span className="text-foreground flex items-center gap-1">
+              {item.isCustom && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 font-bold">CUSTOM</span>}
+              {item.itemName}
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              {item.sellUnit === 'kg' ? `${item.quantity}kg` : `×${item.quantity}`}
+              {item.price ? ` · ₹${item.lineTotal}` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Amounts */}
+      <div className="px-4 py-2 border-t border-amber-100 space-y-1">
+        <div className="flex justify-between text-xs font-body text-muted-foreground">
+          <span>Total</span><span className="tabular-nums">₹{order.subtotal}</span>
+        </div>
+        <div className="flex justify-between text-xs font-body text-muted-foreground">
+          <span>Advance paid ({order.advanceMethod.toUpperCase()})</span>
+          <span className="tabular-nums text-emerald-600">- ₹{order.advanceAmount}</span>
+        </div>
+        <div className="flex justify-between text-sm font-body font-bold">
+          <span className="text-red-600">Balance Due</span>
+          <span className="tabular-nums text-red-600">₹{order.balanceDue}</span>
+        </div>
+      </div>
+
+      {/* Collect balance */}
+      {!done && (
+        <div className="px-4 pb-4 space-y-2">
+          <p className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest">
+            Collect Balance via *
+          </p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {(['cash', 'upi', 'card'] as const).map((m) => (
+              <button key={m} onClick={() => { setMethod(m); setErr(''); }}
+                className={cn(
+                  'flex flex-col items-center gap-1 py-2.5 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
+                  method === m ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border bg-card text-muted-foreground',
+                )}>
+                {PAY_ICONS[m]}{m.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {err && (
+            <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+              <AlertCircle className="size-3 shrink-0" />{err}
+            </p>
+          )}
+          <button onClick={handleCollect} disabled={collecting}
+            className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white disabled:opacity-60"
+            style={{ background: 'linear-gradient(135deg,#0F6E56,#0a5040)', boxShadow: '0 4px 16px rgba(15,110,86,0.35)' }}>
+            {collecting ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            {collecting ? 'Processing…' : '✅ Collect & Complete Sale'}
+          </button>
+          <p className="text-[10px] font-body text-center text-muted-foreground">
+            Stock will be deducted only after full payment
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Advance Panel ────────────────────────────────────────────────────────────
+
+function AdvancePanel({ branch, branchStock, advanceOrders, soldBy }: {
+  branch: Branch;
+  branchStock: StockItem[];
+  advanceOrders: BranchAdvanceOrder[];
+  soldBy: string;
+}) {
+  const { recordAdvanceOrder } = useBranchStore();
+
+  const [itemMode, setItemMode]     = useState<'stock' | 'custom'>('stock');
+  const [search, setSearch]         = useState('');
+  const [cart, setCart]             = useState<BranchAdvanceItem[]>([]);
+  const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
+  const [customName, setCustomName]   = useState('');
+  const [customPrice, setCustomPrice] = useState('');
+  const [customQty, setCustomQty]     = useState('1');
+  const [customErr, setCustomErr]     = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [advanceAmt, setAdvanceAmt]   = useState('');
+  const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [advanceErr, setAdvanceErr]   = useState('');
+  const [submitting, setSubmitting]   = useState(false);
+  const [success, setSuccess]         = useState(false);
+
+  const pendingOrders = advanceOrders.filter((o) => o.status === 'pending');
+
+  const availableItems = useMemo(() => branchStock.filter((s) => s.quantity > 0), [branchStock]);
+  const filteredItems  = useMemo(() => {
+    if (!search.trim()) return availableItems;
+    return availableItems.filter((s) => s.itemName.toLowerCase().includes(search.toLowerCase()));
+  }, [availableItems, search]);
+
+  const cartTotal   = cart.reduce((s, c) => s + c.lineTotal, 0);
+  const customTotal = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const total       = cartTotal + customTotal;
+  const allEmpty    = cart.length === 0 && customItems.length === 0;
+
+  const addStockItem = (item: StockItem) => {
+    const unit = detectSellUnit(item.itemName);
+    const qty  = unit === 'kg' ? 0.5 : 1;
+    setCart((prev) => {
+      const existing = prev.find((c) => c.itemName === item.itemName);
+      if (existing) {
+        if (unit === 'pcs') {
+          return prev.map((c) => c.itemName === item.itemName
+            ? { ...c, quantity: c.quantity + 1, lineTotal: c.price * (c.quantity + 1) }
+            : c);
+        }
+        return prev;
+      }
+      const price = item.price ?? 0;
+      return [...prev, { itemName: item.itemName, quantity: qty, sellUnit: unit, price, lineTotal: Math.round(price * qty * 100) / 100, isCustom: false }];
+    });
+  };
+
+  const removeStockItem = (name: string) => setCart((prev) => {
+    const it = prev.find((c) => c.itemName === name);
+    if (!it) return prev;
+    if (it.sellUnit === 'kg' || it.quantity <= 1) return prev.filter((c) => c.itemName !== name);
+    return prev.map((c) => c.itemName === name ? { ...c, quantity: c.quantity - 1, lineTotal: c.price * (c.quantity - 1) } : c);
+  });
+
+  const handleAddCustom = () => {
+    const n = customName.trim();
+    const p = parseFloat(customPrice);
+    const q = parseInt(customQty) || 1;
+    if (!n) { setCustomErr('Enter item name'); return; }
+    if (isNaN(p) || p <= 0) { setCustomErr('Enter a valid price'); return; }
+    setCustomErr('');
+    setCustomItems((prev) => {
+      const ex = prev.find((c) => c.name.toLowerCase() === n.toLowerCase());
+      if (ex) return prev.map((c) => c.name.toLowerCase() === n.toLowerCase() ? { ...c, qty: c.qty + q } : c);
+      return [...prev, { id: `c-${Date.now()}`, name: n, price: p, qty: q }];
+    });
+    setCustomName(''); setCustomPrice(''); setCustomQty('1');
+  };
+
+  const updateCustomQty = (id: string, qty: number) => {
+    if (qty <= 0) setCustomItems((prev) => prev.filter((c) => c.id !== id));
+    else setCustomItems((prev) => prev.map((c) => c.id === id ? { ...c, qty } : c));
+  };
+
+  const handleSubmit = async () => {
+    if (allEmpty) return;
+    const amt = parseFloat(advanceAmt);
+    if (isNaN(amt) || amt <= 0) { setAdvanceErr('Enter advance amount'); return; }
+    if (amt >= total)            { setAdvanceErr('Advance must be less than total'); return; }
+    if (!advanceMethod)          { setAdvanceErr('Select payment method'); return; }
+    setAdvanceErr(''); setSubmitting(true);
+
+    // Merge stock cart + custom items into BranchAdvanceItem[]
+    const allItems: BranchAdvanceItem[] = [
+      ...cart,
+      ...customItems.map((c) => ({
+        itemName: c.name, quantity: c.qty, sellUnit: 'pcs' as const,
+        price: c.price, lineTotal: c.price * c.qty, isCustom: true,
+      })),
+    ];
+
+    const err = await recordAdvanceOrder(branch, {
+      branch,
+      customerName: customerName.trim() || null,
+      items: allItems,
+      subtotal: total,
+      advanceAmount: amt,
+      advanceMethod,
+      balanceDue: Math.max(0, total - amt),
+      soldBy,
+    });
+
+    setSubmitting(false);
+    if (err) { setAdvanceErr(err); return; }
+    setSuccess(true);
+    setCart([]); setCustomItems([]); setCustomerName('');
+    setAdvanceAmt(''); setAdvanceMethod(null);
+    setTimeout(() => setSuccess(false), 2000);
+  };
+
+  const PAY_ICONS = {
+    cash: <Banknote className="size-4" />,
+    upi:  <Smartphone className="size-4" />,
+    card: <CreditCard className="size-4" />,
+  };
+
+  return (
+    <div className="space-y-4">
+
+      {/* Success flash */}
+      {success && (
+        <div className="flex flex-col items-center justify-center py-10 gap-3 animate-scale-in text-center">
+          <div className="size-16 rounded-3xl flex items-center justify-center"
+            style={{ background: 'rgba(217,119,6,0.12)', border: '2px solid rgba(217,119,6,0.25)' }}>
+            <Wallet className="size-8 text-amber-600" />
+          </div>
+          <p className="font-display text-xl font-bold text-foreground">Advance Recorded!</p>
+          <p className="text-sm font-body text-muted-foreground">Balance will be collected on delivery.</p>
+          <p className="text-xs font-body text-amber-700 bg-amber-50 px-3 py-1.5 rounded-full border border-amber-200">
+            Stock deducted only when full payment is collected
+          </p>
+        </div>
+      )}
+
+      {!success && (
+        <>
+          {/* ── Item mode toggle ── */}
+          <div className="flex gap-1.5 p-1 rounded-xl bg-muted">
+            <button onClick={() => setItemMode('stock')}
+              className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+                itemMode === 'stock' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground')}>
+              <Package className="size-3.5" />Stock Items
+            </button>
+            <button onClick={() => setItemMode('custom')}
+              className={cn('flex-1 py-2 rounded-lg text-xs font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+                itemMode === 'custom' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground')}>
+              <Edit3 className="size-3.5" />Custom Items
+            </button>
+          </div>
+
+          {itemMode === 'stock' ? (
+            <div className="space-y-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                <input type="text" placeholder="Search stock items…" value={search} onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all" />
+                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+              </div>
+              <div className="space-y-1.5">
+                {filteredItems.map((item) => {
+                  const inCart = cart.find((c) => c.itemName === item.itemName);
+                  const unit = detectSellUnit(item.itemName);
+                  return (
+                    <div key={item.itemName} className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all',
+                      inCart ? 'border-amber-300 bg-amber-50/40' : 'border-border bg-card',
+                    )}>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold truncate">{item.itemName}</p>
+                        <p className="text-xs font-body text-muted-foreground">
+                          {unit === 'kg' ? <><Scale className="size-3 inline mr-0.5" />kg</> : <><Hash className="size-3 inline mr-0.5" />pcs</>}
+                          {item.price ? ` · ₹${item.price}/${unit === 'kg' ? 'kg' : 'pc'}` : ''}
+                        </p>
+                      </div>
+                      {inCart ? (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button onClick={() => removeStockItem(item.itemName)}
+                            className="size-7 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90">
+                            <Minus className="size-3" />
+                          </button>
+                          <span className="w-8 text-center text-sm font-bold tabular-nums">
+                            {unit === 'kg' ? `${inCart.quantity}kg` : inCart.quantity}
+                          </span>
+                          <button onClick={() => addStockItem(item)}
+                            className="size-7 rounded-xl flex items-center justify-center active:scale-90 text-white"
+                            style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}>
+                            <Plus className="size-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => addStockItem(item)}
+                          className="px-3 py-1.5 rounded-xl text-xs font-body font-bold active:scale-95 transition-all text-white"
+                          style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}>
+                          + Add
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            /* Custom items form */
+            <div className="space-y-3">
+              <div className="bg-card border border-amber-200/60 rounded-2xl p-4 space-y-3 shadow-soft">
+                <div className="flex items-center gap-2">
+                  <div className="size-7 rounded-lg flex items-center justify-center" style={{ background: 'rgba(217,119,6,0.15)' }}>
+                    <Edit3 className="size-3.5 text-amber-600" />
+                  </div>
+                  <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Item Name *</label>
+                  <input type="text" placeholder="e.g. Special Cake, Event Platter…"
+                    value={customName} onChange={(e) => { setCustomName(e.target.value); setCustomErr(''); }}
+                    className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40 transition-all"
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddCustom()} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Price (₹) *</label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                      <input type="number" min="0" step="0.5" placeholder="0.00"
+                        value={customPrice} onChange={(e) => { setCustomPrice(e.target.value); setCustomErr(''); }}
+                        className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/40 transition-all" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setCustomQty((q) => String(Math.max(1, parseInt(q || '1') - 1)))}
+                        className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90">
+                        <Minus className="size-3.5" />
+                      </button>
+                      <input type="number" min="1" value={customQty} onChange={(e) => setCustomQty(e.target.value)}
+                        className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-amber-400/40 transition-all" />
+                      <button onClick={() => setCustomQty((q) => String(parseInt(q || '1') + 1))}
+                        className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90">
+                        <Plus className="size-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {customErr && (
+                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                    <AlertCircle className="size-3 shrink-0" />{customErr}
+                  </p>
+                )}
+                <button onClick={handleAddCustom}
+                  className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white"
+                  style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)', boxShadow: '0 4px 16px rgba(184,134,11,0.3)' }}>
+                  <Plus className="size-4" />Add to Bill
+                </button>
+              </div>
+
+              {customItems.length > 0 && (
+                <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
+                  <div className="px-4 py-2.5 border-b border-border flex justify-between items-center bg-amber-50/40">
+                    <span className="text-xs font-body font-bold text-amber-700">Custom Items Added ({customItems.length})</span>
+                    <button onClick={() => setCustomItems([])} className="text-xs font-body text-destructive active:opacity-70">Clear</button>
+                  </div>
+                  {customItems.map((ci) => (
+                    <div key={ci.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border/50 last:border-0">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-body font-semibold truncate">{ci.name}</p>
+                        <p className="text-xs font-body text-muted-foreground tabular-nums">
+                          ₹{ci.price} × {ci.qty} = <span className="font-bold text-amber-600">₹{ci.price * ci.qty}</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)}
+                          className="size-7 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90">
+                          <Minus className="size-3" />
+                        </button>
+                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
+                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)}
+                          className="size-7 rounded-xl text-white flex items-center justify-center active:scale-90"
+                          style={{ background: 'linear-gradient(135deg,#b8860b,#d97706)' }}>
+                          <Plus className="size-3" />
+                        </button>
+                        <button onClick={() => updateCustomQty(ci.id, 0)}
+                          className="size-7 rounded-lg bg-destructive/10 text-destructive border border-destructive/20 flex items-center justify-center active:scale-90 ml-0.5">
+                          <Trash2 className="size-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="px-4 py-2 flex justify-between border-t border-border bg-muted/20">
+                    <span className="text-xs font-body text-muted-foreground">Custom subtotal</span>
+                    <span className="text-sm font-body font-bold text-amber-600 tabular-nums">₹{customTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Cart summary ── */}
+          {!allEmpty && (
+            <div className="bg-card border border-amber-200 rounded-2xl overflow-hidden shadow-soft">
+              <div className="px-4 py-2.5 border-b border-amber-100 flex justify-between items-center bg-amber-50/30">
+                <div className="flex items-center gap-2">
+                  <ShoppingCart className="size-4 text-amber-600" />
+                  <span className="text-sm font-body font-bold text-foreground">Order Summary</span>
+                </div>
+                <button onClick={() => { setCart([]); setCustomItems([]); }}
+                  className="text-xs font-body font-semibold text-destructive active:opacity-70">Clear all</button>
+              </div>
+              <div className="px-4 py-2 space-y-1">
+                {cart.map((c) => (
+                  <div key={c.itemName} className="flex justify-between text-xs font-body py-1">
+                    <span className="text-foreground">{c.itemName}</span>
+                    <span className="text-muted-foreground tabular-nums">
+                      {c.sellUnit === 'kg' ? `${c.quantity}kg` : `×${c.quantity}`} · ₹{c.lineTotal}
+                    </span>
+                  </div>
+                ))}
+                {customItems.map((c) => (
+                  <div key={c.id} className="flex justify-between text-xs font-body py-1 border-l-2 border-amber-300 pl-2">
+                    <span className="text-foreground flex items-center gap-1">
+                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">CUSTOM</span>
+                      {c.name}
+                    </span>
+                    <span className="text-amber-600 font-bold tabular-nums">₹{c.price * c.qty}</span>
+                  </div>
+                ))}
+              </div>
+              {cartTotal > 0 && customTotal > 0 && (
+                <div className="px-4 pb-1 space-y-0.5 border-t border-border/50">
+                  <div className="flex justify-between text-xs font-body text-muted-foreground pt-1">
+                    <span>Stock items</span><span className="tabular-nums">₹{cartTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs font-body text-amber-600">
+                    <span>Custom items</span><span className="tabular-nums">₹{customTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+              <div className="px-4 py-2.5 border-t border-border flex justify-between items-center bg-muted/20">
+                <span className="text-sm font-body font-bold text-foreground">Total</span>
+                <span className="font-display text-xl font-bold text-foreground tabular-nums">₹{total.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* ── Advance details ── */}
+          {!allEmpty && (
+            <div className="bg-card border border-amber-200 rounded-2xl p-4 space-y-3 shadow-soft">
+              <div>
+                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Customer Name</label>
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Optional" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2.5 bg-muted/50 border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40 transition-all" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
+                <div className="relative">
+                  <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="number" placeholder="Enter advance paid" value={advanceAmt}
+                    onChange={(e) => { setAdvanceAmt(e.target.value); setAdvanceErr(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/50 transition-all" />
+                </div>
+                {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
+                  <div className="flex justify-between mt-1.5 px-1">
+                    <span className="text-[11px] font-body text-muted-foreground">Balance due on delivery</span>
+                    <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">
+                      ₹{(total - parseFloat(advanceAmt)).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Payment Method *</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(['cash', 'upi', 'card'] as const).map((m) => (
+                    <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceErr(''); }}
+                      className={cn(
+                        'flex flex-col items-center gap-1.5 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
+                        advanceMethod === m ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border bg-card text-muted-foreground',
+                      )}>
+                      {PAY_ICONS[m]}{m.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {advanceErr && (
+                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                  <AlertCircle className="size-3 shrink-0" />{advanceErr}
+                </p>
+              )}
+              <button onClick={handleSubmit} disabled={submitting}
+                className="w-full py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white disabled:opacity-60"
+                style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: '0 4px 16px rgba(184,134,11,0.35)' }}>
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Wallet className="size-4" />}
+                {submitting ? 'Saving…' : '⏳ Record Advance Order'}
+              </button>
+              <p className="text-[10px] font-body text-center text-muted-foreground">
+                Stock is <span className="font-bold text-amber-700">not deducted</span> until full payment is collected
+              </p>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Pending advance orders ── */}
+      {pendingOrders.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 px-1">
+            <Clock className="size-4 text-amber-600" />
+            <span className="text-sm font-body font-bold text-foreground">Pending Balance Collection</span>
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+              {pendingOrders.length}
+            </span>
+          </div>
+          {pendingOrders.map((o) => (
+            <PendingAdvanceCard key={o.id} order={o} branch={branch} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main BillTab ─────────────────────────────────────────────────────────────
 
 let billCounter = Math.floor(Math.random() * 1000) + 1;
 
-export function BillTab({ branch, branchStock }: Props) {
+export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const { recordSale } = useBranchStore();
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
   const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
+
+  const [billMode, setBillMode]     = useState<'new' | 'advance'>('new');
 
   const [cart, setCart]             = useState<CartItem[]>([]);
   const [search, setSearch]         = useState('');
@@ -1092,12 +1648,49 @@ export function BillTab({ branch, branchStock }: Props) {
         />
       )}
 
-      {/* ── Search ────────────────────────────────────────────────────────── */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-        <input
-          type="text"
-          placeholder="Search items…"
+      {/* ── Bill mode toggle ── */}
+      <div className="flex gap-1.5 p-1 rounded-2xl bg-muted">
+        <button
+          onClick={() => setBillMode('new')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5 active:scale-95',
+            billMode === 'new' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          <Receipt className="size-3.5" />New Bill
+        </button>
+        <button
+          onClick={() => setBillMode('advance')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5 active:scale-95',
+            billMode === 'advance' ? 'bg-amber-500 text-white shadow-md' : 'text-muted-foreground',
+          )}
+        >
+          <Wallet className="size-3.5" />Advance
+          {advanceOrders.filter((o) => o.status === 'pending').length > 0 && (
+            <span className={cn(
+              'text-[10px] font-bold px-1.5 py-0.5 rounded-full',
+              billMode === 'advance' ? 'bg-white/25 text-white' : 'bg-amber-100 text-amber-700',
+            )}>
+              {advanceOrders.filter((o) => o.status === 'pending').length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* ── Advance panel ── */}
+      {billMode === 'advance' && (
+        <AdvancePanel
+          branch={branch}
+          branchStock={branchStock}
+          advanceOrders={advanceOrders}
+          soldBy={soldBy}
+        />
+      )}
+
+      {/* ── New Bill panel (existing UI) ── */}
+      {billMode === 'new' && (
+      <>
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border border-border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
@@ -1223,6 +1816,8 @@ export function BillTab({ branch, branchStock }: Props) {
           Tap any item above to add it to the cart
           <ChevronRight className="size-3.5 ml-auto shrink-0" />
         </div>
+      )}
+      </> /* end New Bill panel */
       )}
     </div>
   );
