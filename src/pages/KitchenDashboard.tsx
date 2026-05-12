@@ -73,7 +73,12 @@ export default function KitchenDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
-  const pending = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
+  const pending    = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
+  const cancelled  = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
+
+  // Track recently cancelled orders to flash them
+  const lastCancelledIdsRef = useRef<Set<string>>(new Set());
+  const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const curr = new Set(pending.map(o => o.id));
@@ -90,6 +95,47 @@ export default function KitchenDashboard() {
     }
     lastIdsRef.current = curr;
   }, [pending, soundEnabled]);
+
+  // Detect newly cancelled orders and alert kitchen
+  useEffect(() => {
+    const currCancelled = new Set(cancelled.map(o => o.id));
+    const newCancelledOrders = cancelled.filter(o => !lastCancelledIdsRef.current.has(o.id));
+    if (newCancelledOrders.length > 0 && lastCancelledIdsRef.current.size >= 0) {
+      const freshIds = new Set(newCancelledOrders.map(o => o.id));
+      setNewlyCancelledIds(prev => new Set([...prev, ...freshIds]));
+      // Play alert beep for cancellations
+      if (soundEnabled) {
+        try {
+          const ctx = new AudioContext();
+          [0, 0.2, 0.4, 0.6].forEach(offset => {
+            const osc = ctx.createOscillator(); const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.frequency.value = 300; osc.type = 'sawtooth';
+            gain.gain.setValueAtTime(0, ctx.currentTime + offset);
+            gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + offset + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.18);
+            osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.2);
+          });
+        } catch { /**/ }
+      }
+      newCancelledOrders.forEach(o => {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`❌ Order CANCELLED #${String(o.orderNumber).padStart(3,'0')}`, {
+            body: `Reason: ${o.cancelReason || 'Not specified'} — STOP preparing this order`, tag: `cancel-${o.id}`,
+          });
+        }
+      });
+      // Auto-clear highlight after 30 seconds
+      setTimeout(() => {
+        setNewlyCancelledIds(prev => {
+          const next = new Set(prev);
+          freshIds.forEach(id => next.delete(id));
+          return next;
+        });
+      }, 30000);
+    }
+    lastCancelledIdsRef.current = currCancelled;
+  }, [cancelled, soundEnabled]);
 
   useEffect(() => {
     if (alertRef.current) { clearInterval(alertRef.current); alertRef.current = null; }
@@ -155,6 +201,28 @@ export default function KitchenDashboard() {
         </div>
       </div>
 
+      {/* ── CANCELLED ORDER ALERT BANNER ── */}
+      {newlyCancelledIds.size > 0 && (
+        <div className="px-4 py-3 flex items-start gap-3 animate-pulse"
+          style={{ background: 'rgba(239,68,68,0.25)', borderBottom: '2px solid #EF4444' }}>
+          <span className="text-2xl shrink-0">🚫</span>
+          <div className="flex-1">
+            <p className="font-body font-black text-sm text-red-300">ORDER CANCELLED — STOP PREPARING!</p>
+            {[...newlyCancelledIds].map(cid => {
+              const o = todayOrders.find(x => x.id === cid);
+              if (!o) return null;
+              return (
+                <p key={cid} className="text-xs font-body text-red-200 mt-0.5">
+                  #{String(o.orderNumber).padStart(3,'0')} — {o.cancelReason || 'Reason not specified'}
+                </p>
+              );
+            })}
+          </div>
+          <button onClick={() => setNewlyCancelledIds(new Set())}
+            className="shrink-0 text-red-400 text-lg font-bold">✕</button>
+        </div>
+      )}
+
       {/* ── Tab strip ── */}
       <div className="flex gap-2 px-4 py-3 overflow-x-auto scrollbar-hide border-b"
         style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
@@ -209,27 +277,28 @@ export default function KitchenDashboard() {
             {filtered.map(order => {
               const elapsed = elapsedMins(order.createdAt);
               const isUrgent = order.status === 'pending' && elapsed > 5;
+              const isNewlyCancelled = newlyCancelledIds.has(order.id);
               const s = STATUS_STYLE[order.status] || { border: '#555', badge: 'bg-gray-600 text-white' };
               return (
                 <div
                   key={order.id}
-                  className={cn('rounded-2xl overflow-hidden transition-all', isUrgent && 'animate-pulse')}
+                  className={cn('rounded-2xl overflow-hidden transition-all', (isUrgent || isNewlyCancelled) && 'animate-pulse')}
                   style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    border: `2px solid ${isUrgent ? '#EF4444' : s.border}`,
-                    boxShadow: `0 4px 24px ${isUrgent ? '#EF444420' : s.border + '20'}`,
+                    background: isNewlyCancelled ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.04)',
+                    border: `2px solid ${isNewlyCancelled ? '#EF4444' : isUrgent ? '#EF4444' : s.border}`,
+                    boxShadow: `0 4px 24px ${isNewlyCancelled ? '#EF444440' : isUrgent ? '#EF444420' : s.border + '20'}`,
                   }}
                 >
                   {/* Card header */}
                   <div className="px-4 py-3 flex items-center justify-between"
-                    style={{ background: `${isUrgent ? '#EF4444' : s.border}18`, borderBottom: `1px solid ${s.border}30` }}>
+                    style={{ background: `${isNewlyCancelled ? '#EF4444' : isUrgent ? '#EF4444' : s.border}18`, borderBottom: `1px solid ${s.border}30` }}>
                     <div className="flex items-center gap-3">
                       <span className="font-display text-3xl font-bold text-white tabular-nums">
-                        #{String(order.orderNumber).padStart(3, '0')}
+                        #{String(order.orderNumber).padStart(3, '00')}
                       </span>
                       <div className="flex flex-col gap-1">
-                        <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full', s.badge)}>
-                          {ORDER_STATUS_LABELS[order.status]}
+                        <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full', isNewlyCancelled ? 'bg-red-600 text-white' : s.badge)}>
+                          {isNewlyCancelled ? '🚫 CANCELLED' : ORDER_STATUS_LABELS[order.status]}
                         </span>
                         <span className="text-[9px] font-body flex items-center gap-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
                           {order.orderSource === 'qr'
