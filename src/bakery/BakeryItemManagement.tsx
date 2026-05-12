@@ -403,36 +403,42 @@ function BakeryItemsPanel() {
   );
 }
 
-// ── Bakery section: Items + Recipe management sub-tabs ────────────────────────
+// ── Bakery section: Items + SNB Items + Recipe management sub-tabs ─────────────
+
+import SnbItemsTab from '@/components/admin/SnbItemsTab';
 
 function BakerySection() {
-  const [subTab, setSubTab] = useState<'items' | 'recipes'>('items');
+  const [subTab, setSubTab] = useState<'items' | 'snb' | 'recipes'>('items');
+
+  const SUBTABS = [
+    { id: 'items'   as const, label: 'Items' },
+    { id: 'snb'     as const, label: 'SNB items' },
+    { id: 'recipes' as const, label: 'Recipe management' },
+  ];
 
   return (
     <div>
       {/* sub-tabs */}
       <div className="flex gap-1.5 p-1 rounded-2xl mb-5" style={{ background: 'hsl(var(--muted))' }}>
-        <button
-          onClick={() => setSubTab('items')}
-          className={cn(
-            'flex-1 py-2 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            subTab === 'items' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          Items
-        </button>
-        <button
-          onClick={() => setSubTab('recipes')}
-          className={cn(
-            'flex-1 py-2 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            subTab === 'recipes' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          Recipe management
-        </button>
+        {SUBTABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            className={cn(
+              'flex-1 py-2 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+              subTab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t.label}
+            {t.id === 'snb' && (
+              <span className="ml-1.5 text-[9px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">196</span>
+            )}
+          </button>
+        ))}
       </div>
 
       {subTab === 'items'   && <BakeryItemsPanel />}
+      {subTab === 'snb'     && <SnbItemsTab />}
       {subTab === 'recipes' && <RecipeManagement />}
     </div>
   );
