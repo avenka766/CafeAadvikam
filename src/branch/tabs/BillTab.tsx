@@ -15,6 +15,8 @@ import type { StockItem } from '../branchStore';
 import type { StockMismatch } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
 import type { SnbItem, SnbCategory } from '../snbItems';
+import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '../vrsnbItems';
+import type { VrsnbItem, VrsnbCategory } from '../vrsnbItems';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,22 +36,13 @@ interface Props { branch: Branch; branchStock: StockItem[]; advanceOrders?: impo
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SNB_BRANCHES: Branch[] = ['SNB', 'Hosur'];
+const SNB_BRANCHES: Branch[] = ['SNB', 'Hosur', 'VRSNB'];
 
-const SHOP_INFO = {
-  vrsnb: {
-    name:   'VRSNB FOODS LLP',
-    brand:  'SNB Sweets & Bakes',
-    address:'#109/1C, Hosur main Road, Berigai,\nSoolagiri TK, Krishnagiri DT,\nTamilnadu 635105',
-    gst:    '33AAZFV1266C1ZZ',
-    fssai:  '12425011000098',
-  },
-  cafe: {
-    name:   'Café Aadvikam',
-    address:'#109/1C, Hosur main Road, Berigai,\nSoolagiri TK, Krishnagiri DT,\nTamilnadu 635105',
-    gst:    '33AAZFV1266C1ZZ',
-    fssai:  '12425011000098',
-  },
+const SNB_INFO = {
+  name:    'Sri Nanjundeshwara Bakery',
+  address: '404, Bagalur Main Road, Berigai Bus Stand,\nBerigai, Shoolagiri Taluk,\nKrishnagiri, Tamil Nadu. Hosur-635105',
+  phone:   '9942266779, 9095445444',
+  gstin:   '33AMTPR1760M1ZF',
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -91,228 +84,198 @@ interface PrintArgs {
   splitAmounts: [string,string]; soldBy: string;
 }
 
-function printKOT(billNo: string, items: CartItem[]) {
-  const now     = new Date();
-  const dateStr = now.toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'2-digit' });
-  const timeStr = now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12: false });
-  const kotNum  = billNo.split('-').pop() ?? billNo;
-
-  const rows = items.map(item => `
-    <tr>
-      <td class="name">${item.itemName}</td>
-      <td class="note">--</td>
-      <td class="qty">${item.sellUnit === 'kg'
-        ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`)
-        : item.quantity}</td>
-    </tr>`).join('');
-
-  const html = `<!DOCTYPE html><html><head><title>KOT – ${kotNum}</title>
-  <style>
-    @page { margin:6mm; size:80mm auto; }
-    * { box-sizing:border-box; }
-    body { font-family:'Arial',sans-serif; font-size:12px; color:#000; max-width:300px; margin:0 auto; padding:6px; }
-    .center { text-align:center; }
-    .bold   { font-weight:bold; }
-    hr { border:none; border-top:1px dashed #666; margin:5px 0; }
-    hr.dot { border-top:2px dotted #000; }
-    table { width:100%; border-collapse:collapse; }
-    td { padding:2px 2px; vertical-align:top; }
-    .name { width:55%; }
-    .note { width:30%; color:#444; }
-    .qty  { width:15%; text-align:right; font-weight:bold; }
-    .th   { font-weight:bold; border-bottom:1px solid #000; padding-bottom:3px; font-size:11px; }
-  </style></head><body>
-  <div class="center" style="font-size:11px">${dateStr} ${timeStr}</div>
-  <div class="center bold" style="font-size:16px;margin:2px 0">KOT - ${kotNum}</div>
-  <div class="center bold" style="font-size:13px">Pick Up</div>
-  <hr class="dot"/>
-  <table>
-    <thead><tr>
-      <td class="th name">Item</td>
-      <td class="th note">Special Note</td>
-      <td class="th qty">Qty.</td>
-    </tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <hr class="dot"/>
-  <script>window.onload=()=>window.print();</script>
-  </body></html>`;
-
-  const w = window.open('','_blank','width=380,height=400');
-  if (w) { w.document.write(html); w.document.close(); }
-}
-
 function printBill(args: PrintArgs) {
   const { branch, billNo, items, subtotal, discount, discountType,
     discountValue, roundOff, finalTotal, cgst, sgst, payMode, singleMethod,
     splitMethods, splitAmounts, soldBy } = args;
 
-  const isSNB  = SNB_BRANCHES.includes(branch);
-  const now    = new Date();
-  const d      = now;
-  const dateStr = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}`;
-  const timeStr = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-  const totalQty = items.reduce((s,i) => s + i.quantity, 0);
-  const billNum  = billNo.split('-').pop() ?? billNo;
+  const isSNB = SNB_BRANCHES.includes(branch);
+  const now   = new Date();
+  const dateStr = now.toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g, '/');
+  const timeStr = now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12: true });
 
-  const capFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   const payLabel = payMode === 'single'
-    ? capFirst(singleMethod ?? 'Cash')
+    ? (singleMethod ?? 'cash').charAt(0).toUpperCase() + (singleMethod ?? 'cash').slice(1)
     : [
-        splitMethods[0] ? `${capFirst(splitMethods[0])}: ₹${splitAmounts[0]}` : '',
-        splitMethods[1] ? `${capFirst(splitMethods[1])}: ₹${splitAmounts[1]}` : '',
+        splitMethods[0] ? `${splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1)}: ₹${splitAmounts[0]}` : '',
+        splitMethods[1] ? `${splitMethods[1].charAt(0).toUpperCase()+splitMethods[1].slice(1)}: ₹${splitAmounts[1]}` : '',
       ].filter(Boolean).join(' + ');
 
-  // ── VRSNB FOODS LLP format (SNB / Hosur branches) ─────────────────────────
-  if (isSNB) {
-    const info = SHOP_INFO.vrsnb;
-    const addrLines = info.address.split('\n').map(l => `<div>${l}</div>`).join('');
+  const totalQty = items.reduce((s,i) => s + i.quantity, 0);
 
-    const rows = items.map((item) => `
+  const isVRSNB_print = branch === 'VRSNB';
+
+  // ── SNB / Hosur format ─────────────────────────────────────────────────────
+  if (isSNB && !isVRSNB_print) {
+    const addrLines = SNB_INFO.address.split('\n').map(l => `<div>${l}</div>`).join('');
+    const rows = items.map((item, idx) => `
       <tr>
+        <td class="sn">${idx+1}</td>
         <td class="name">${item.itemName}</td>
-        <td class="num">${item.quantity}</td>
+        <td class="num">${formatQty(item.quantity, item.sellUnit)}</td>
         <td class="num">${item.price != null ? fmtNum(item.price) : '—'}</td>
         <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
       </tr>`).join('');
 
-    const html = `<!DOCTYPE html><html><head><title>Bill – ${billNum}</title>
+    const payRows = payMode === 'single'
+      ? `<tr><td class="lab">${payLabel}</td><td class="num">${fmtNum(finalTotal)}</td></tr>`
+      : `${splitMethods[0] ? `<tr><td class="lab">${splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1)}</td><td class="num">${fmtNum(parseFloat(splitAmounts[0])||0)}</td></tr>` : ''}
+         ${splitMethods[1] ? `<tr><td class="lab">${splitMethods[1].charAt(0).toUpperCase()+splitMethods[1].slice(1)}</td><td class="num">${fmtNum(parseFloat(splitAmounts[1])||0)}</td></tr>` : ''}`;
+
+    const html = `<!DOCTYPE html><html><head><title>Tax Invoice – ${billNo}</title>
     <style>
-      @page { margin:6mm; size:80mm auto; }
-      * { box-sizing:border-box; }
-      body { font-family:'Arial',sans-serif; font-size:11px; color:#000; max-width:300px; margin:0 auto; padding:6px; }
-      .center { text-align:center; }
-      .bold   { font-weight:bold; }
-      hr  { border:none; border-top:1px solid #000; margin:5px 0; }
-      hr.d{ border-top:1px dashed #888; }
-      table { width:100%; border-collapse:collapse; }
-      td  { padding:2px; vertical-align:top; }
-      .name{ }
-      .num { text-align:right; white-space:nowrap; }
-      .th  { font-weight:bold; border-bottom:1px solid #000; padding-bottom:3px; }
-      .big { font-size:13px; font-weight:bold; }
+      @page { margin: 8mm; size: 80mm auto; }
+      * { box-sizing: border-box; }
+      body { font-family: 'Arial', sans-serif; font-size: 11px; color: #000; max-width: 300px; margin: 0 auto; padding: 8px; }
+      .center { text-align: center; }
+      .bold { font-weight: bold; }
+      hr { border: none; border-top: 1px dashed #666; margin: 6px 0; }
+      hr.solid { border-top: 1px solid #000; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 2px 2px; vertical-align: top; }
+      .sn  { width: 16px; color: #555; }
+      .name { }
+      .num { text-align: right; white-space: nowrap; }
+      .lab { }
+      .th  { font-weight: bold; border-bottom: 1px solid #000; padding-bottom: 3px; }
+      .net { font-size: 13px; font-weight: bold; }
     </style></head><body>
-    <div class="center bold" style="font-size:13px;letter-spacing:1px">SNB</div>
-    <div class="center" style="font-size:9px;letter-spacing:2px">${info.brand.toUpperCase()}</div>
-    <hr/>
-    <div class="center bold">PAID</div>
-    <div class="center bold" style="font-size:13px">${info.name}</div>
-    <div class="center" style="margin-top:2px">${addrLines}</div>
-    <div class="center">GST NO:${info.gst}</div>
-    <div class="center">FSSAI NO:${info.fssai}</div>
-    <hr/>
-    <div>Name:</div>
+    <div class="center bold" style="font-size:14px">${SNB_INFO.name}</div>
+    <div class="center" style="margin-top:3px">${addrLines}</div>
+    <div class="center">Phone: ${SNB_INFO.phone}</div>
+    <div class="center">GSTIN : ${SNB_INFO.gstin}</div>
+    <hr class="solid"/>
+    <div class="center bold" style="font-size:12px">TAX INVOICE</div>
     <hr/>
     <table><tr>
-      <td>Date: ${dateStr}</td><td class="num"><b>Pick Up</b></td>
+      <td>Bill No : <span class="bold">${billNo}</span></td>
+      <td class="num">Date : ${dateStr}</td>
     </tr><tr>
-      <td>${timeStr}</td>
-    </tr><tr>
-      <td>Cashier: ${soldBy}</td><td class="num">Bill No.: ${billNum}</td>
+      <td></td>
+      <td class="num">Time : ${timeStr}</td>
     </tr></table>
     <hr/>
-    <table><thead><tr>
-      <td class="th name">Item</td>
-      <td class="th num">Qty.</td>
-      <td class="th num">Price</td>
-      <td class="th num">Amount</td>
-    </tr></thead>
-    <tbody>${rows}</tbody></table>
-    <hr class="d"/>
+    <table>
+      <thead><tr>
+        <td class="th sn">Sn</td>
+        <td class="th name">Item Name</td>
+        <td class="th num">Qty</td>
+        <td class="th num">Rate</td>
+        <td class="th num">Amount</td>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr style="border-top:1px solid #000">
+        <td></td>
+        <td class="bold">Total</td>
+        <td class="num bold">${fmtNum(totalQty)}</td>
+        <td></td>
+        <td class="num bold">${fmtNum(subtotal)}</td>
+      </tr></tfoot>
+    </table>
+    <hr/>
+    <table>
+      <tr><td class="lab">Discount Amt :</td><td class="num">${fmtNum(discount)}</td></tr>
+      <tr><td class="lab">Delivery Charges:</td><td class="num">.00</td></tr>
+      <tr><td class="lab">GST:</td><td class="num">.00</td></tr>
+      <tr><td class="lab">Round-Off :</td><td class="num">${roundOff >= 0 ? '' : '-'}${Math.abs(roundOff).toFixed(0)}</td></tr>
+    </table>
+    <hr class="solid"/>
     <table><tr>
-      <td>Total Qty: ${totalQty}</td>
-      <td class="num">Sub Total</td>
-      <td class="num">${fmtNum(subtotal)}</td>
+      <td class="net">Net Bill Amount :</td>
+      <td class="net num">Rs. ${fmtNum(finalTotal)}</td>
     </tr></table>
     <hr/>
-    <table><tr>
-      <td class="big">Grand Total</td>
-      <td class="num big">&#8377;${fmtNum(finalTotal)}</td>
-    </tr></table>
-    <div style="margin-top:3px;font-size:10px">Paid via ${payLabel}</div>
+    <div class="bold" style="margin-bottom:3px">Payment Details</div>
+    <table>${payRows}</table>
     <hr/>
-    <div class="center bold" style="margin-top:4px">Thank You & Visit Again...!!!</div>
+    <div class="center bold">Staff Name : ${soldBy}</div>
+    <div class="center bold" style="margin-top:5px;font-size:12px">Thank you, Visit Again</div>
+    <div class="center" style="margin-top:2px">Including all taxes</div>
     <script>window.onload=()=>window.print();</script>
     </body></html>`;
 
-    const w = window.open('','_blank','width=380,height=620');
+    const w = window.open('','_blank','width=380,height=650');
     if (w) { w.document.write(html); w.document.close(); }
     return;
   }
 
-  // ── Café Aadvikam format (VRSNB branch) ───────────────────────────────────
-  const info   = SHOP_INFO.cafe;
-  const addrLines = info.address.split('\n').map(l => `<div>${l}</div>`).join('');
+  // ── Café Aadvikam format (VRSNB & Cafe branches) ──────────────────────────
+  const cafeInfo = isVRSNB_print
+    ? { name: 'Café Aadvikam', addr: '#109/1C, Hosur main Road, Berigai,\nSoolagiri TK, Krishnagiri DT, Tamilnadu 635105', gst: '33AAZFV1266C1ZZ', fssai: '12425011000098' }
+    : { name: 'Café Aadvikam', addr: '109 Bagalur Main Road, Berikai', gst: '', fssai: '' };
+
+  const addrDiv = cafeInfo.addr.split('\n').map(l => `<div style="font-size:10px;color:#555">${l}</div>`).join('');
   const discountedBase = Math.round((subtotal - discount) * 100) / 100;
-  const grandTotal = finalTotal;
 
   const rows = items.map((item) => `
     <tr>
-      <td class="name">${item.itemName}</td>
-      <td class="num">${item.sellUnit === 'kg'
-        ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`)
-        : item.quantity}</td>
-      <td class="num">${item.price != null ? fmtNum(item.price) : '—'}</td>
-      <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
+      <td style="padding:5px 4px;font-size:12px;border-bottom:1px solid #f0f0f0">${item.itemName}</td>
+      <td style="padding:5px 4px;font-size:12px;text-align:center;border-bottom:1px solid #f0f0f0">${item.sellUnit === 'kg' ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`) : `×${item.quantity}`}</td>
+      <td style="padding:5px 4px;font-size:12px;text-align:right;border-bottom:1px solid #f0f0f0">${item.price != null ? fmt(item.price) : '—'}</td>
+      <td style="padding:5px 4px;font-size:12px;text-align:right;font-weight:600;border-bottom:1px solid #f0f0f0">${item.lineTotal != null ? fmt(item.lineTotal) : '—'}</td>
     </tr>`).join('');
 
-  const html = `<!DOCTYPE html><html><head><title>Bill – ${billNum}</title>
+  const discRow = discount > 0 ? `
+    <tr><td colspan="3" style="padding:4px;font-size:12px;text-align:right;color:#16a34a">Discount ${discountType==='percent'?`(${discountValue}%)`:'(Flat)'}</td>
+        <td style="padding:4px;font-size:12px;text-align:right;color:#16a34a">-${fmt(discount)}</td></tr>` : '';
+
+  const gstRows = isVRSNB_print ? `
+    <tr><td colspan="3" style="padding:3px 4px;font-size:11px;text-align:right">CGST@2.5 2.5%</td>
+        <td style="padding:3px 4px;font-size:11px;text-align:right">${fmtNum(cgst)}</td></tr>
+    <tr><td colspan="3" style="padding:3px 4px;font-size:11px;text-align:right">SGST@2.5 2.5%</td>
+        <td style="padding:3px 4px;font-size:11px;text-align:right">${fmtNum(sgst)}</td></tr>` : '';
+
+  const html = `<!DOCTYPE html><html><head><title>Bill – ${billNo}</title>
   <style>
-    @page { margin:6mm; size:80mm auto; }
-    * { box-sizing:border-box; }
-    body { font-family:'Arial',sans-serif; font-size:11px; color:#000; max-width:300px; margin:0 auto; padding:6px; }
-    .center { text-align:center; }
-    .bold   { font-weight:bold; }
-    hr  { border:none; border-top:1px solid #000; margin:5px 0; }
-    hr.d{ border-top:1px dashed #888; }
+    @page { margin:10mm; size:80mm auto; }
+    body { font-family:'Courier New',monospace; color:#111; max-width:320px; margin:0 auto; padding:12px; }
+    .center { text-align:center; } .dashed { border:none; border-top:1px dashed #ccc; margin:8px 0; }
     table { width:100%; border-collapse:collapse; }
-    td  { padding:2px; vertical-align:top; }
-    .name{ }
-    .num { text-align:right; white-space:nowrap; }
-    .th  { font-weight:bold; border-bottom:1px solid #000; padding-bottom:3px; }
-    .big { font-size:13px; font-weight:bold; }
   </style></head><body>
-  <div class="center bold">PAID</div>
-  <div class="center bold" style="font-size:14px">${info.name}</div>
-  <div class="center" style="margin-top:2px">${addrLines}</div>
-  <div class="center">GST No: ${info.gst}</div>
-  <div class="center">FSSAI No: ${info.fssai}</div>
-  <hr/>
-  <div>Name:</div>
-  <hr/>
+  <div class="center">
+    <p style="margin:0;font-size:11px;font-weight:700">PAID</p>
+    <h2 style="margin:2px 0;font-size:16px;font-weight:700;letter-spacing:1px">${cafeInfo.name}</h2>
+    ${addrDiv}
+    ${cafeInfo.gst ? `<div style="font-size:10px;color:#555">GST No: ${cafeInfo.gst}</div>` : ''}
+    ${cafeInfo.fssai ? `<div style="font-size:10px;color:#555">FSSAI No: ${cafeInfo.fssai}</div>` : ''}
+  </div>
+  <hr class="dashed"/>
   <table><tr>
-    <td>Date: ${dateStr}</td><td class="num"><b>Pick Up</b></td>
+    <td style="font-size:10px">Date: <b>${dateStr}</b></td>
+    <td style="font-size:10px;text-align:right">Pick Up</td>
   </tr><tr>
-    <td>${timeStr}</td>
+    <td style="font-size:10px">${timeStr}</td>
+    <td style="font-size:10px;text-align:right">Bill No.: <b>${billNo.split('-').pop()}</b></td>
   </tr><tr>
-    <td>Cashier: ${soldBy}</td><td class="num">Bill No.: ${billNum}</td>
+    <td style="font-size:10px">Cashier: ${soldBy}</td>
   </tr></table>
-  <hr/>
+  <hr class="dashed"/>
   <table><thead><tr>
-    <td class="th name">Item</td>
-    <td class="th num">Qty.</td>
-    <td class="th num">Price</td>
-    <td class="th num">Amount</td>
-  </tr></thead>
-  <tbody>${rows}</tbody></table>
-  <hr class="d"/>
+    <th style="text-align:left;font-size:10px;padding:3px;color:#666">Item</th>
+    <th style="text-align:center;font-size:10px;padding:3px;color:#666">Qty</th>
+    <th style="text-align:right;font-size:10px;padding:3px;color:#666">Price</th>
+    <th style="text-align:right;font-size:10px;padding:3px;color:#666">Amount</th>
+  </tr></thead><tbody>${rows}</tbody></table>
+  <hr class="dashed"/>
   <table>
-    <tr><td>Total Qty: ${totalQty}</td><td class="num">Sub Total</td><td class="num">${fmtNum(discountedBase)}</td></tr>
-    ${cgst > 0 ? `<tr><td></td><td class="num">CGST@2.5 2.5%</td><td class="num">${fmtNum(cgst)}</td></tr>` : ''}
-    ${sgst > 0 ? `<tr><td></td><td class="num">SGST@2.5 2.5%</td><td class="num">${fmtNum(sgst)}</td></tr>` : ''}
+    <tr><td colspan="2" style="font-size:11px;padding:3px;text-align:left">Total Qty: ${totalQty}</td>
+        <td style="font-size:11px;padding:3px;text-align:right">Sub Total</td>
+        <td style="font-size:11px;padding:3px;text-align:right;font-weight:600">${fmtNum(discountedBase)}</td></tr>
+    ${discRow}
+    ${gstRows}
   </table>
-  <hr/>
+  <hr class="dashed"/>
   <table><tr>
-    <td class="big">Grand Total</td>
-    <td class="num big">&#8377;${fmtNum(grandTotal)}</td>
+    <td colspan="3" style="font-size:13px;font-weight:700;padding:6px 3px">Grand Total</td>
+    <td style="text-align:right;font-size:16px;font-weight:700;padding:6px 3px">&#8377;${fmtNum(finalTotal)}</td>
   </tr></table>
-  <div style="margin-top:3px;font-size:10px">Paid via ${payLabel}</div>
-  <hr/>
-  <div class="center bold" style="margin-top:4px">Thank You & Visit Again...!!!</div>
+  <div style="font-size:10px;padding:3px">Paid via ${payLabel}</div>
+  <hr class="dashed"/>
+  <div class="center" style="font-weight:700;margin-top:4px">Thank You &amp; Visit Again...!!!</div>
   <script>window.onload=()=>window.print();</script>
   </body></html>`;
 
-  const w = window.open('','_blank','width=380,height=640');
+  const w = window.open('','_blank','width=380,height=580');
   if (w) { w.document.write(html); w.document.close(); }
 }
 
@@ -600,19 +563,17 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
             <div className="text-center py-4 px-4" style={{ background: '#1a1a1a', color: '#fff' }}>
               {isSNB ? (
                 <>
-                  <p style={{ fontFamily: 'sans-serif', fontWeight: 700, fontSize: 13, letterSpacing: 1, margin: 0 }}>SNB</p>
-                  <p style={{ fontFamily: 'sans-serif', fontSize: 9, letterSpacing: 2, margin: '2px 0', color: '#ccc' }}>{SHOP_INFO.vrsnb.brand.toUpperCase()}</p>
-                  <p style={{ fontWeight: 700, fontSize: 13, margin: '4px 0 2px' }}>{SHOP_INFO.vrsnb.name}</p>
-                  {SHOP_INFO.vrsnb.address.split('\n').map((l,i) => <p key={i} style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>{l}</p>)}
-                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>GST NO: {SHOP_INFO.vrsnb.gst}</p>
-                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>FSSAI NO: {SHOP_INFO.vrsnb.fssai}</p>
+                  <p style={{ fontFamily: 'sans-serif', fontWeight: 700, fontSize: 14, letterSpacing: 0.5, margin: 0 }}>{SNB_INFO.name}</p>
+                  {SNB_INFO.address.split('\n').map((l,i) => <p key={i} style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>{l}</p>)}
+                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>Phone: {SNB_INFO.phone}</p>
+                  <p style={{ color: '#ccc', fontSize: 10, margin: '2px 0' }}>GSTIN: {SNB_INFO.gstin}</p>
+                  <p style={{ fontFamily: 'sans-serif', fontWeight: 700, fontSize: 12, letterSpacing: 2, marginTop: 8 }}>TAX INVOICE</p>
                 </>
               ) : (
                 <>
-                  <p style={{ fontWeight: 700, fontSize: 16, letterSpacing: 1, margin: 0 }}>{SHOP_INFO.cafe.name}</p>
-                  {SHOP_INFO.cafe.address.split('\n').map((l,i) => <p key={i} style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>{l}</p>)}
-                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>GST No: {SHOP_INFO.cafe.gst}</p>
-                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>FSSAI No: {SHOP_INFO.cafe.fssai}</p>
+                  <p style={{ fontWeight: 700, fontSize: 16, letterSpacing: 1, margin: 0 }}>CAFE AADVIKAM</p>
+                  <p style={{ color: '#aaa', fontSize: 10, margin: '3px 0' }}>{branch} Branch</p>
+                  <p style={{ color: '#aaa', fontSize: 10, margin: 0 }}>109 Bagalur Main Road, Berikai</p>
                 </>
               )}
             </div>
@@ -717,14 +678,8 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
                       <span style={{ fontWeight: 600 }}>-{fmt(discount)}</span>
                     </div>
                   )}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555', marginTop: 2 }}>
-                    <span>CGST@2.5 2.5%</span><span>{fmtNum(Math.round((subtotal - discount) * 0.025 * 100) / 100)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
-                    <span>SGST@2.5 2.5%</span><span>{fmtNum(Math.round((subtotal - discount) * 0.025 * 100) / 100)}</span>
-                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'sans-serif', fontWeight: 700, fontSize: 14, borderTop: '2px solid #111', marginTop: 5, paddingTop: 5 }}>
-                    <span>Grand Total</span><span>{fmt(finalTotal)}</span>
+                    <span>TOTAL</span><span>{fmt(finalTotal)}</span>
                   </div>
                 </div>
               )}
@@ -764,12 +719,13 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
   const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
-  const isSNB  = SNB_BRANCHES.includes(branch);  // SNB + Hosur use price list
+  const isVRSNB = branch === 'VRSNB';
+  const isSNB   = SNB_BRANCHES.includes(branch);  // SNB + Hosur + VRSNB all use price list
 
   // Cart
   const [cart, setCart]     = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
-  const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
+  const [activeCategory, setActiveCategory] = useState<SnbCategory | VrsnbCategory | 'All'>('All');
   const billNo              = useRef(generateBillNo());
 
   // Discount
@@ -803,16 +759,19 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
   useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
 
-  // ── Item source: SNB price list (SNB/Hosur) or stock (VRSNB) ─────────────
+  // ── Item source: price list (SNB/Hosur/VRSNB) or stock (Cafe) ─────────────
+
+  const activeItems = isVRSNB ? VRSNB_ITEMS : SNB_ITEMS;
+  const activeCategories = isVRSNB ? VRSNB_CATEGORIES : SNB_CATEGORIES;
 
   const snbFiltered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return SNB_ITEMS.filter((item) => {
+    return activeItems.filter((item) => {
       const matchCat = activeCategory === 'All' || item.category === activeCategory;
       const matchQ   = !q || item.name.toLowerCase().includes(q);
       return matchCat && matchQ;
     });
-  }, [search, activeCategory]);
+  }, [search, activeCategory, activeItems]);
 
   const stockAvailable = useMemo(() => branchStock.filter((s) => s.quantity > 0), [branchStock]);
   const stockFiltered  = useMemo(() => {
@@ -822,7 +781,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
   // Unified display list
   const displayItems   = isSNB ? snbFiltered  : stockFiltered;
-  const totalItemCount = isSNB ? SNB_ITEMS.length : stockAvailable.length;
+  const totalItemCount = isSNB ? activeItems.length : stockAvailable.length;
 
   // ── Cart helpers ─────────────────────────────────────────────────────────────
 
@@ -892,12 +851,14 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     return Math.min(v, subtotal);
   }, [subtotal, discountType, discountValue, allPriced]);
 
-  // Round-off: round finalTotal to nearest rupee for SNB
+  // Round-off / GST
   const preRound   = Math.round((subtotal - discount) * 100) / 100;
-  const roundOff   = isSNB ? Math.round(preRound) - preRound : 0;
-  const cafeCgst   = isSNB ? 0 : Math.round(preRound * 0.025 * 100) / 100;
-  const cafeSgst   = isSNB ? 0 : Math.round(preRound * 0.025 * 100) / 100;
-  const finalTotal = isSNB ? Math.round(preRound) : Math.round((preRound + cafeCgst + cafeSgst) * 100) / 100;
+  const roundOff   = (!isVRSNB && isSNB) ? Math.round(preRound) - preRound : 0;
+  const cafeCgst   = isVRSNB ? Math.round(preRound * 0.025 * 100) / 100 : 0;
+  const cafeSgst   = isVRSNB ? Math.round(preRound * 0.025 * 100) / 100 : 0;
+  const finalTotal = isVRSNB
+    ? Math.round((preRound + cafeCgst + cafeSgst) * 100) / 100
+    : isSNB ? Math.round(preRound) : preRound;
 
   // ── Payment ──────────────────────────────────────────────────────────────────
 
@@ -985,10 +946,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     printBill({ branch, billNo: billNo.current, items: cart, subtotal, discount,
       discountType, discountValue, roundOff, finalTotal, cgst: cafeCgst, sgst: cafeSgst,
       payMode, singleMethod, splitMethods, splitAmounts, soldBy });
-    // Print KOT for Café Aadvikam (non-SNB) branch
-    if (!isSNB) {
-      setTimeout(() => printKOT(billNo.current, cart), 400);
-    }
+    if (isVRSNB) setTimeout(() => printKOT(billNo.current, cart), 400);
     doCheckout();
   };
 
@@ -1018,13 +976,13 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="size-4 text-muted-foreground" /></button>}
       </div>
 
-      {/* Category filter — SNB branches only */}
+      {/* Category filter — price-list branches only */}
       {isSNB && (
         <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
-          {(['All', ...SNB_CATEGORIES] as const).map((cat) => (
+          {(['All', ...activeCategories] as const).map((cat) => (
             <button
               key={cat}
-              onClick={() => setActiveCategory(cat as SnbCategory | 'All')}
+              onClick={() => setActiveCategory(cat as SnbCategory | VrsnbCategory | 'All')}
               className={cn(
                 'shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold border transition whitespace-nowrap',
                 activeCategory === cat
@@ -1176,7 +1134,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
               <div className="flex items-center gap-2">
                 <IndianRupee className="size-3.5 text-muted-foreground" />
                 <span className="text-sm font-bold">
-                  {isSNB ? 'Net Bill Amount' : 'Grand Total (GST incl.)'}
+                  {isSNB ? 'Net Bill Amount' : 'Total'}
                   {discount > 0 && <span className="text-[10px] font-normal text-emerald-600 ml-1">(after discount)</span>}
                 </span>
               </div>
