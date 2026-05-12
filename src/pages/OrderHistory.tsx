@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
-import { cn, formatDate, formatCurrency } from '@/lib/utils';
-import { History, CalendarDays, IndianRupee, TrendingUp } from 'lucide-react';
+import { cn, formatCurrency } from '@/lib/utils';
+import { History, CalendarDays, IndianRupee } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 
 export default function OrderHistory() {

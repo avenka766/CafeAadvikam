@@ -106,7 +106,7 @@ export default function KitchenDashboard() {
   useEffect(() => {
     const currCancelled = new Set(cancelled.map(o => o.id));
     const newCancelledOrders = cancelled.filter(o => !lastCancelledIdsRef.current.has(o.id));
-    if (newCancelledOrders.length > 0 && lastCancelledIdsRef.current.size >= 0) {
+    if (newCancelledOrders.length > 0) {
       const freshIds = new Set(newCancelledOrders.map(o => o.id));
       setNewlyCancelledIds(prev => new Set([...prev, ...freshIds]));
       // Play alert beep for cancellations
@@ -215,7 +215,7 @@ export default function KitchenDashboard() {
           <div className="flex-1">
             <p className="font-body font-black text-sm text-red-300">ORDER CANCELLED — STOP PREPARING!</p>
             {[...newlyCancelledIds].map(cid => {
-              const o = todayOrders.find(x => x.id === cid);
+              const o = orders.find(x => x.id === cid);
               if (!o) return null;
               return (
                 <p key={cid} className="text-xs font-body text-red-200 mt-0.5">
