@@ -59,7 +59,9 @@ export default function KitchenDashboard() {
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const lastIdsRef = useRef<Set<string>>(new Set());
+  const lastIdsRef = useRef<Set<string>>(
+    new Set(orders.filter(o => o.status === 'pending').map(o => o.id))
+  );
   const alertRef  = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -76,8 +78,12 @@ export default function KitchenDashboard() {
   const pending    = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
   const cancelled  = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
 
-  // Track recently cancelled orders to flash them
-  const lastCancelledIdsRef = useRef<Set<string>>(new Set());
+  // Track recently cancelled orders to flash them.
+  // IMPORTANT: seed with ALL currently-cancelled IDs so that on mount / tab switch
+  // we never treat existing cancelled orders as "new".
+  const lastCancelledIdsRef = useRef<Set<string>>(
+    new Set(orders.filter(o => o.status === 'cancelled').map(o => o.id))
+  );
   const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {

@@ -61,15 +61,17 @@ export default function OrderHistory() {
               Today's Orders
             </p>
           </div>
-          <div className="kpi-card" style={{ background: 'linear-gradient(135deg, hsl(164 52% 26% / 0.08), hsl(164 52% 26% / 0.04))', borderColor: 'hsl(164 52% 26% / 0.2)' }}>
-            <div className="size-8 rounded-xl bg-primary/15 flex items-center justify-center mb-2">
-              <IndianRupee className="size-4 text-primary" />
+          {currentUser?.role !== 'kitchen' && currentUser?.role !== 'order_taker' && (
+            <div className="kpi-card" style={{ background: 'linear-gradient(135deg, hsl(164 52% 26% / 0.08), hsl(164 52% 26% / 0.04))', borderColor: 'hsl(164 52% 26% / 0.2)' }}>
+              <div className="size-8 rounded-xl bg-primary/15 flex items-center justify-center mb-2">
+                <IndianRupee className="size-4 text-primary" />
+              </div>
+              <p className="font-display text-2xl font-bold text-primary tabular-nums leading-none">{formatCurrency(todayTotal)}</p>
+              <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wide mt-1">
+                Revenue Today
+              </p>
             </div>
-            <p className="font-display text-2xl font-bold text-primary tabular-nums leading-none">{formatCurrency(todayTotal)}</p>
-            <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wide mt-1">
-              Revenue Today
-            </p>
-          </div>
+          )}
         </div>
       </div>
 
