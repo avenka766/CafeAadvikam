@@ -406,13 +406,15 @@ function BakeryItemsPanel() {
 // ── Bakery section: Items + SNB Items + Recipe management sub-tabs ─────────────
 
 import SnbItemsTab from '@/components/admin/SnbItemsTab';
+import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 
 function BakerySection() {
-  const [subTab, setSubTab] = useState<'items' | 'snb' | 'recipes'>('items');
+  const [subTab, setSubTab] = useState<'items' | 'snb' | 'vrsnb' | 'recipes'>('items');
 
   const SUBTABS = [
     { id: 'items'   as const, label: 'Items' },
     { id: 'snb'     as const, label: 'SNB items' },
+    { id: 'vrsnb'   as const, label: 'VRSNB items' },
     { id: 'recipes' as const, label: 'Recipe management' },
   ];
 
@@ -433,12 +435,16 @@ function BakerySection() {
             {t.id === 'snb' && (
               <span className="ml-1.5 text-[9px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">196</span>
             )}
+            {t.id === 'vrsnb' && (
+              <span className="ml-1.5 text-[9px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">199</span>
+            )}
           </button>
         ))}
       </div>
 
       {subTab === 'items'   && <BakeryItemsPanel />}
       {subTab === 'snb'     && <SnbItemsTab />}
+      {subTab === 'vrsnb'   && <VrsnbItemsTab />}
       {subTab === 'recipes' && <RecipeManagement />}
     </div>
   );
