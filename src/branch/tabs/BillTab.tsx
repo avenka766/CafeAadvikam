@@ -12,6 +12,9 @@ import { useAuthStore } from '@/stores/authStore';
 import type { Branch } from '../types';
 import { BRANCH_COLORS } from '../types';
 import type { StockItem } from '../branchStore';
+import type { StockMismatch } from '../branchStore';
+import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
+import type { SnbItem, SnbCategory } from '../snbItems';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,7 +30,7 @@ interface CartItem {
   lineTotal: number | null;
 }
 
-interface Props { branch: Branch; branchStock: StockItem[] }
+interface Props { branch: Branch; branchStock: StockItem[]; advanceOrders?: import('../branchStore').BranchAdvanceOrder[] }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -362,10 +365,63 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
   );
 }
 
+// ─── SnbItemCard — for SNB/Hosur price-list items ────────────────────────────
+
+function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgChange, colors }: {
+  item: SnbItem; inCart: boolean; cartQty: number; stockQty: number;
+  onAdd: () => void; onRemove: () => void; onKgChange: (v: number) => void;
+  colors: { bg: string; text: string; badge: string };
+}) {
+  const unit: SellUnit = item.uom === 'Kgs' ? 'kg' : 'pcs';
+  const lowStock = stockQty > 0 && stockQty < (unit === 'kg' ? 0.5 : 3);
+  const noStock  = stockQty <= 0;
+  return (
+    <div className={cn('relative bg-card border rounded-2xl p-3 flex flex-col gap-2 transition-all duration-150',
+      inCart ? 'border-primary/40 shadow-md ring-1 ring-primary/10 bg-primary/[0.02]' : 'border-border')}>
+      {inCart && <span className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary animate-pulse" />}
+      <div className="pr-4">
+        <p className="text-sm font-semibold leading-snug line-clamp-2">{item.name}</p>
+        <div className="flex items-center gap-2 mt-1 flex-wrap">
+          <span className="text-[11px] font-bold text-emerald-600">
+            ₹{item.price}{unit === 'kg' ? '/kg' : ''}
+          </span>
+          {noStock
+            ? <span className="ml-auto text-[9px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-full">No stock</span>
+            : lowStock
+            ? <span className="ml-auto flex items-center gap-0.5 text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
+                <AlertTriangle className="size-2.5" /> Low
+              </span>
+            : null}
+        </div>
+      </div>
+      {unit === 'kg' && inCart ? (
+        <KgInput value={cartQty} onChange={onKgChange} max={999} />
+      ) : unit === 'kg' ? (
+        <button onClick={onAdd}
+          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
+          <Scale className="size-3" /> Weigh & Add
+        </button>
+      ) : inCart ? (
+        <div className="flex items-center gap-2 justify-between">
+          <button onClick={onRemove} className="size-8 rounded-xl bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3.5" /></button>
+          <span className="text-sm font-bold tabular-nums">{cartQty}</span>
+          <button onClick={onAdd}
+            className="size-8 rounded-xl cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 transition"><Plus className="size-3.5" /></button>
+        </div>
+      ) : (
+        <button onClick={onAdd}
+          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
+          <Plus className="size-3" /> Add
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── CartLineItem ─────────────────────────────────────────────────────────────
 
-function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange }: {
-  item: CartItem; stockQty: number;
+function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange, isSNB = false }: {
+  item: CartItem; stockQty: number; isSNB?: boolean;
   onAdd: () => void; onRemove: () => void; onDelete: () => void;
   onPriceChange: (p: number | null) => void;
 }) {
@@ -391,7 +447,8 @@ function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange
           <>
             <button onClick={onRemove} className="size-7 rounded-lg bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3" /></button>
             <span className="w-5 text-center text-xs font-bold tabular-nums">{item.quantity}</span>
-            <button onClick={onAdd} disabled={item.quantity >= stockQty}
+            {/* SNB: no stock cap — can sell any quantity */}
+            <button onClick={onAdd} disabled={!isSNB && item.quantity >= stockQty}
               className="size-7 rounded-lg cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 transition"><Plus className="size-3" /></button>
           </>
         )}
@@ -627,12 +684,538 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
 
 // ─── Main BillTab ─────────────────────────────────────────────────────────────
 
-export function BillTab({ branch, branchStock }: Props) {
-  const { recordSale } = useBranchStore();
+export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
+  const { recordSale, recordSnbSale } = useBranchStore();
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
   const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
-  const isSNB  = SNB_BRANCHES.includes(branch);
+  const isSNB  = SNB_BRANCHES.includes(branch);  // SNB + Hosur use price list
+
+  // Cart
+  const [cart, setCart]     = useState<CartItem[]>([]);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
+  const billNo              = useRef(generateBillNo());
+
+  // Discount
+  const [discountType,  setDiscountType]  = useState<DiscountType>('percent');
+  const [discountValue, setDiscountValue] = useState('');
+  const [showDiscount,  setShowDiscount]  = useState(false);
+
+  // Payment
+  const [payMode, setPayMode]           = useState<'single'|'split'>('single');
+  const [singleMethod, setSingle]       = useState<PaymentMethod|null>(null);
+  const [splitMethods, setSplitMethods] = useState<[PaymentMethod|null,PaymentMethod|null]>([null,null]);
+  const [splitAmounts, setSplitAmounts] = useState<[string,string]>(['','']);
+
+  // UI
+  const [submitting,  setSubmitting]  = useState(false);
+  const [error,       setError]       = useState('');
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [showCancel,  setShowCancel]  = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const resetPayment = useCallback(() => {
+    setPayMode('single'); setSingle(null);
+    setSplitMethods([null,null]); setSplitAmounts(['','']); setError('');
+  }, []);
+
+  const clearCart = useCallback(() => {
+    setCart([]); resetPayment();
+    setDiscountValue(''); setShowDiscount(false);
+    billNo.current = generateBillNo();
+  }, [resetPayment]);
+
+  useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
+
+  // ── Item source: SNB price list (SNB/Hosur) or stock (VRSNB) ─────────────
+
+  const snbFiltered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return SNB_ITEMS.filter((item) => {
+      const matchCat = activeCategory === 'All' || item.category === activeCategory;
+      const matchQ   = !q || item.name.toLowerCase().includes(q);
+      return matchCat && matchQ;
+    });
+  }, [search, activeCategory]);
+
+  const stockAvailable = useMemo(() => branchStock.filter((s) => s.quantity > 0), [branchStock]);
+  const stockFiltered  = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? stockAvailable.filter((s) => s.itemName.toLowerCase().includes(q)) : stockAvailable;
+  }, [stockAvailable, search]);
+
+  // Unified display list
+  const displayItems   = isSNB ? snbFiltered  : stockFiltered;
+  const totalItemCount = isSNB ? SNB_ITEMS.length : stockAvailable.length;
+
+  // ── Cart helpers ─────────────────────────────────────────────────────────────
+
+  const getCartItem = (name: string) => cart.find((c) => c.itemName === name);
+  const getStockQty = (name: string) => branchStock.find((s) => s.itemName === name)?.quantity ?? 0;
+  const calcLine    = (price: number|null, qty: number) =>
+    price != null ? Math.round(price * qty * 100) / 100 : null;
+
+  // Add from SNB price list
+  const addSnbItemToCart = (item: SnbItem) => {
+    const unit: SellUnit = item.uom === 'Kgs' ? 'kg' : 'pcs';
+    setCart((prev) => {
+      const ex = prev.find((c) => c.itemName === item.name);
+      if (ex) {
+        if (unit === 'pcs') {
+          const nq = ex.quantity + 1;
+          return prev.map((c) => c.itemName === item.name ? { ...c, quantity: nq, lineTotal: calcLine(c.price, nq) } : c);
+        }
+        return prev;
+      }
+      const qty = unit === 'kg' ? 0.5 : 1;
+      return [...prev, { itemName: item.name, quantity: qty, sellUnit: unit, price: item.price, lineTotal: calcLine(item.price, qty) }];
+    });
+  };
+
+  // Add from stock
+  const addToCart = (item: StockItem) => {
+    const unit = detectSellUnit(item.itemName);
+    setCart((prev) => {
+      const ex = prev.find((c) => c.itemName === item.itemName);
+      if (ex) {
+        if (unit === 'pcs') {
+          const nq = ex.quantity + 1;
+          if (nq > item.quantity) return prev;
+          return prev.map((c) => c.itemName === item.itemName ? { ...c, quantity: nq, lineTotal: calcLine(c.price, nq) } : c);
+        }
+        return prev;
+      }
+      const qty = Math.min(unit === 'kg' ? 0.5 : 1, item.quantity);
+      return [...prev, { itemName: item.itemName, quantity: qty, sellUnit: unit, price: item.price, lineTotal: calcLine(item.price, qty) }];
+    });
+  };
+
+  const removeFromCart = (name: string) => setCart((prev) => {
+    const ex = prev.find((c) => c.itemName === name);
+    if (!ex) return prev;
+    if (ex.sellUnit === 'kg' || ex.quantity <= 1) return prev.filter((c) => c.itemName !== name);
+    const nq = ex.quantity - 1;
+    return prev.map((c) => c.itemName === name ? { ...c, quantity: nq, lineTotal: calcLine(c.price, nq) } : c);
+  });
+
+  const updateKgQty = (name: string, qty: number) =>
+    setCart((prev) => prev.map((c) => c.itemName === name ? { ...c, quantity: qty, lineTotal: calcLine(c.price, qty) } : c));
+  const updatePrice = (name: string, price: number|null) =>
+    setCart((prev) => prev.map((c) => c.itemName === name ? { ...c, price, lineTotal: calcLine(price, c.quantity) } : c));
+  const deleteFromCart = (name: string) => setCart((prev) => prev.filter((c) => c.itemName !== name));
+
+  // ── Totals ───────────────────────────────────────────────────────────────────
+
+  const allPriced = cart.length > 0 && cart.every((c) => c.price != null);
+  const subtotal  = useMemo(() => cart.reduce((s, c) => s + (c.lineTotal ?? 0), 0), [cart]);
+
+  const discount = useMemo(() => {
+    const v = parseFloat(discountValue) || 0;
+    if (!allPriced || v <= 0) return 0;
+    if (discountType === 'percent') return Math.round(subtotal * Math.min(v,100) / 100 * 100) / 100;
+    return Math.min(v, subtotal);
+  }, [subtotal, discountType, discountValue, allPriced]);
+
+  // Round-off: round finalTotal to nearest rupee for SNB
+  const preRound   = Math.round((subtotal - discount) * 100) / 100;
+  const roundOff   = isSNB ? Math.round(preRound) - preRound : 0;
+  const finalTotal = isSNB ? Math.round(preRound) : preRound;
+
+  // ── Payment ──────────────────────────────────────────────────────────────────
+
+  const PAYMENT_OPTIONS: { key: PaymentMethod; label: string; icon: React.ReactNode }[] = [
+    { key: 'cash', label: 'Cash',  icon: <Banknote   className="size-4" /> },
+    { key: 'upi',  label: 'UPI',   icon: <Smartphone className="size-4" /> },
+    { key: 'card', label: 'Card',  icon: <CreditCard className="size-4" /> },
+  ];
+
+  const splitTotal0  = parseFloat(splitAmounts[0]) || 0;
+  const splitTotal1  = parseFloat(splitAmounts[1]) || 0;
+  const splitSum     = Math.round((splitTotal0 + splitTotal1) * 100) / 100;
+  const splitPending = allPriced ? Math.round((finalTotal - splitSum) * 100) / 100 : 0;
+
+  const splitReady = payMode === 'split'
+    ? splitMethods[0] != null && splitMethods[1] != null && splitMethods[0] !== splitMethods[1] &&
+      (allPriced ? Math.abs(splitSum - finalTotal) < 0.01 : splitTotal0 > 0 && splitTotal1 > 0)
+    : singleMethod != null;
+
+  const handleSplitAmount = (idx: 0|1, raw: string) => {
+    setError('');
+    const parsed = parseFloat(raw);
+    if (!isNaN(parsed) && allPriced) {
+      const other = Math.round((finalTotal - parsed) * 100) / 100;
+      setSplitAmounts(idx === 0 ? [raw, other >= 0 ? String(other) : ''] : [other >= 0 ? String(other) : '', raw]);
+    } else {
+      setSplitAmounts((prev) => idx === 0 ? [raw, prev[1]] : [prev[0], raw]);
+    }
+  };
+
+  const selectSplitMethod = (idx: 0|1, method: PaymentMethod) => {
+    setError('');
+    setSplitMethods((prev) => { const n = [...prev] as [PaymentMethod|null,PaymentMethod|null]; n[idx] = method; return n; });
+    if (idx === 0 && allPriced) setSplitAmounts(['','']);
+  };
+
+  const buildMethodLabel = () => {
+    if (payMode === 'single') return singleMethod ?? 'cash';
+    const parts: string[] = [];
+    if (splitMethods[0]) parts.push(`${splitMethods[0]}:${splitAmounts[0]||0}`);
+    if (splitMethods[1]) parts.push(`${splitMethods[1]}:${splitAmounts[1]||0}`);
+    return parts.join('+');
+  };
+
+  // ── Checkout ─────────────────────────────────────────────────────────────────
+
+  const doCheckout = async () => {
+    if (cart.length === 0) return;
+    if (!splitReady) {
+      if (payMode === 'split') {
+        if (!splitMethods[0] || !splitMethods[1]) { setError('Select both methods.'); return; }
+        if (splitMethods[0] === splitMethods[1])  { setError('Choose two different methods.'); return; }
+        if (allPriced && Math.abs(splitSum - finalTotal) >= 0.01) { setError(`Amounts total ${fmt(splitSum)} but bill is ${fmt(finalTotal)}.`); return; }
+      } else { setError('Select a payment method.'); return; }
+    }
+    setError(''); setSubmitting(true);
+    const methodLabel = buildMethodLabel();
+
+    if (isSNB) {
+      // SNB / Hosur — items from price list; deduct stock if available, log mismatch if not
+      for (const item of cart) {
+        const { error: err } = await recordSnbSale(
+          branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0,
+        );
+        if (err) { setError(err); setSubmitting(false); return; }
+      }
+    } else {
+      // VRSNB — stock-gated sale
+      const succeeded: string[] = [];
+      for (const item of cart) {
+        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel);
+        if (err) {
+          setError(`Failed on "${item.itemName}": ${err}.${succeeded.length > 0 ? ` (Saved: ${succeeded.join(', ')})` : ''}`);
+          setSubmitting(false); return;
+        }
+        succeeded.push(item.itemName);
+      }
+    }
+
+    setSubmitting(false); setShowPreview(false); setShowSuccess(true);
+    clearCart(); setTimeout(() => setShowSuccess(false), 2500);
+  };
+
+  const handlePrintAndConfirm = () => {
+    printBill({ branch, billNo: billNo.current, items: cart, subtotal, discount,
+      discountType, discountValue, roundOff, finalTotal, payMode, singleMethod,
+      splitMethods, splitAmounts, soldBy });
+    doCheckout();
+  };
+
+  // ── Success ──────────────────────────────────────────────────────────────────
+
+  if (showSuccess) return (
+    <div className="flex flex-col items-center justify-center py-24 px-6 text-center">
+      <div className="size-20 rounded-full bg-emerald-100 flex items-center justify-center mb-4 shadow-md">
+        <CheckCircle2 className="size-10 text-emerald-600" />
+      </div>
+      <h2 className="font-display text-2xl font-bold">Sale Complete!</h2>
+      <p className="text-muted-foreground text-sm mt-1">Sale recorded successfully.</p>
+    </div>
+  );
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="space-y-3 pb-6">
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+        <input type="text" placeholder={isSNB ? `Search ${totalItemCount} items…` : 'Search items…'} value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40" />
+        {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="size-4 text-muted-foreground" /></button>}
+      </div>
+
+      {/* Category filter — SNB branches only */}
+      {isSNB && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
+          {(['All', ...SNB_CATEGORIES] as const).map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setActiveCategory(cat as SnbCategory | 'All')}
+              className={cn(
+                'shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold border transition whitespace-nowrap',
+                activeCategory === cat
+                  ? 'bg-primary text-primary-foreground border-transparent shadow-sm'
+                  : 'bg-card border-border text-muted-foreground hover:bg-muted/50',
+              )}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[11px] text-muted-foreground px-0.5">
+        {displayItems.length === totalItemCount
+          ? `${totalItemCount} ${isSNB ? 'items' : 'items in stock'}`
+          : `${displayItems.length} of ${totalItemCount} items`}
+      </p>
+
+      {/* Item grid */}
+      {displayItems.length === 0 ? (
+        <div className="text-center py-12 text-sm text-muted-foreground bg-muted/30 rounded-2xl border border-dashed">
+          {totalItemCount === 0 ? 'No items in stock.' : 'No items match your search.'}
+        </div>
+      ) : isSNB ? (
+        <div className="grid grid-cols-2 gap-2">
+          {(displayItems as SnbItem[]).map((item) => {
+            const ci = getCartItem(item.name);
+            const stockQtyForItem = getStockQty(item.name);
+            return (
+              <SnbItemCard
+                key={item.barcode}
+                item={item}
+                inCart={!!ci}
+                cartQty={ci?.quantity ?? 0}
+                stockQty={stockQtyForItem}
+                onAdd={() => addSnbItemToCart(item)}
+                onRemove={() => removeFromCart(item.name)}
+                onKgChange={(v) => updateKgQty(item.name, v)}
+                colors={colors}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          {(displayItems as StockItem[]).map((item) => {
+            const ci = getCartItem(item.itemName);
+            return (
+              <ItemCard key={item.itemName} item={item} inCart={!!ci} cartQty={ci?.quantity ?? 0}
+                onAdd={() => addToCart(item)} onRemove={() => removeFromCart(item.itemName)}
+                onKgChange={(v) => updateKgQty(item.itemName, v)} colors={colors} />
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Billing panel ── */}
+      {cart.length > 0 && (
+        <div className="bg-card border rounded-2xl overflow-hidden shadow-lg">
+
+          {/* Bill header */}
+          <div className="flex items-center justify-between px-4 py-3 bg-zinc-900">
+            <div className="flex items-center gap-2">
+              <Receipt className="size-4 text-amber-400" />
+              <span className="font-semibold text-sm text-white">Bill</span>
+              <span className="text-[10px] font-mono text-zinc-400">{billNo.current}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', colors.badge)}>
+                {cart.length} {cart.length === 1 ? 'item' : 'items'}
+              </span>
+              <button onClick={() => setShowCancel(true)}
+                className="flex items-center gap-1 text-[11px] font-semibold text-red-400 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1 rounded-lg transition">
+                <XCircle className="size-3" /> Cancel
+              </button>
+            </div>
+          </div>
+
+          {/* Line items */}
+          <div className="divide-y max-h-72 overflow-y-scroll overscroll-contain" onWheel={(e) => e.stopPropagation()}>
+            {cart.map((c) => (
+              <CartLineItem key={c.itemName} item={c} stockQty={getStockQty(c.itemName)}
+                onAdd={() => {
+                  if (isSNB) {
+                    const s = SNB_ITEMS.find((i) => i.name === c.itemName);
+                    if (s) addSnbItemToCart(s);
+                  } else {
+                    const s = branchStock.find((si) => si.itemName === c.itemName);
+                    if (s) addToCart(s);
+                  }
+                }}
+                onRemove={() => removeFromCart(c.itemName)}
+                onDelete={() => deleteFromCart(c.itemName)}
+                onPriceChange={(p) => updatePrice(c.itemName, p)}
+                isSNB={isSNB}
+              />
+            ))}
+          </div>
+
+          {/* Totals + Discount + Payment */}
+          <div className="px-4 py-4 space-y-3 border-t bg-muted/10">
+
+            {/* Subtotal */}
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <span>Subtotal</span>
+              <span className="font-semibold tabular-nums text-foreground">{allPriced ? fmt(subtotal) : '—'}</span>
+            </div>
+
+            {/* Discount */}
+            <div>
+              <button onClick={() => setShowDiscount((v) => !v)}
+                className={cn('flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition',
+                  showDiscount ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-muted border-border text-muted-foreground')}>
+                <Tag className="size-3.5" />{showDiscount ? 'Discount Applied' : 'Apply Discount'}
+              </button>
+              {showDiscount && (
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="flex rounded-xl overflow-hidden border bg-muted p-0.5 shrink-0">
+                    {(['percent','flat'] as DiscountType[]).map((t) => (
+                      <button key={t} onClick={() => { setDiscountType(t); setDiscountValue(''); }}
+                        className={cn('px-3 py-1 text-[11px] font-bold rounded-lg transition',
+                          discountType === t ? 'bg-white shadow text-foreground' : 'text-muted-foreground')}>
+                        {t === 'percent' ? '%' : '₹'}
+                      </button>
+                    ))}
+                  </div>
+                  <input type="number" inputMode="decimal" min="0"
+                    max={discountType === 'percent' ? 100 : subtotal} step={discountType === 'percent' ? 1 : 10}
+                    value={discountValue} onChange={(e) => setDiscountValue(e.target.value)}
+                    placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'}
+                    className="flex-1 h-9 px-3 rounded-xl border bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
+                  {discount > 0 && <span className="text-xs font-bold text-emerald-600 shrink-0">-{fmt(discount)}</span>}
+                </div>
+              )}
+            </div>
+
+            {/* Round-off row (SNB only) */}
+            {isSNB && allPriced && roundOff !== 0 && (
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Round-Off</span>
+                <span className="font-semibold tabular-nums">{roundOff > 0 ? '+' : ''}{roundOff.toFixed(2)}</span>
+              </div>
+            )}
+
+            {/* Grand total */}
+            <div className={cn('flex items-center justify-between rounded-xl px-4 py-3',
+              allPriced ? 'bg-primary/5 border border-primary/10' : 'bg-amber-50 border border-amber-100')}>
+              <div className="flex items-center gap-2">
+                <IndianRupee className="size-3.5 text-muted-foreground" />
+                <span className="text-sm font-bold">
+                  {isSNB ? 'Net Bill Amount' : 'Total'}
+                  {discount > 0 && <span className="text-[10px] font-normal text-emerald-600 ml-1">(after discount)</span>}
+                </span>
+              </div>
+              {allPriced
+                ? <span className="font-display text-2xl font-bold tabular-nums">{fmt(finalTotal)}</span>
+                : <span className="text-xs text-amber-600 font-medium">⚠ Enter prices above</span>}
+            </div>
+
+            {/* Payment method */}
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Payment</p>
+              <div className="grid grid-cols-4 gap-2">
+                {PAYMENT_OPTIONS.map((m) => (
+                  <button key={m.key} onClick={() => { setPayMode('single'); setSingle(m.key); setError(''); }}
+                    className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                      payMode === 'single' && singleMethod === m.key ? 'cafe-gradient text-primary-foreground border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
+                    {m.icon}{m.label}
+                  </button>
+                ))}
+                <button onClick={() => { setPayMode('split'); setSingle(null); setSplitMethods([null,null]); setSplitAmounts(['','']); setError(''); }}
+                  className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                    payMode === 'split' ? 'bg-violet-600 text-white border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
+                  <ArrowLeftRight className="size-4" />Part Pay
+                </button>
+              </div>
+
+              {payMode === 'split' && (
+                <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
+                  <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider">Split between 2 methods</p>
+                  {([0,1] as const).map((idx) => {
+                    const other = splitMethods[idx === 0 ? 1 : 0];
+                    return (
+                      <div key={idx} className="space-y-1.5">
+                        <div className="flex gap-1.5">
+                          {PAYMENT_OPTIONS.map((m) => {
+                            const chosen  = splitMethods[idx] === m.key;
+                            const blocked = other === m.key;
+                            return (
+                              <button key={m.key} onClick={() => !blocked && selectSplitMethod(idx, m.key)} disabled={blocked}
+                                className={cn('flex-1 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 border transition active:scale-95',
+                                  chosen ? 'bg-violet-600 text-white border-transparent'
+                                         : blocked ? 'opacity-30 bg-muted border-border cursor-not-allowed'
+                                         : 'bg-white border-border hover:bg-violet-50')}>
+                                {m.icon}{m.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-1.5">
+                          <span className="text-xs text-muted-foreground shrink-0">₹</span>
+                          <input type="number" inputMode="decimal" min="0" step="0.01"
+                            value={splitAmounts[idx]}
+                            onChange={(e) => handleSplitAmount(idx, e.target.value)}
+                            disabled={!splitMethods[idx]}
+                            placeholder={splitMethods[idx] ? (allPriced ? `e.g. ${idx===0?Math.round(finalTotal/2):''}` : '0.00') : 'Pick method first'}
+                            className="flex-1 text-sm font-mono text-right bg-transparent focus:outline-none disabled:opacity-40" />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {allPriced && splitTotal0 > 0 && (
+                    <div className={cn('flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold',
+                      Math.abs(splitPending) < 0.01 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+                      <span>{Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to cover' : 'Over by'}</span>
+                      {Math.abs(splitPending) >= 0.01 && <span className="tabular-nums font-bold">{fmt(Math.abs(splitPending))}</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2.5 rounded-xl">{error}</p>
+            )}
+
+            {/* Action buttons */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                onClick={() => { if (!splitReady) { setError('Select payment method first.'); return; } setError(''); setShowPreview(true); }}
+                disabled={!allPriced || submitting}
+                className="py-3.5 rounded-xl border-2 border-primary text-primary font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
+                <Printer className="size-4" /> Print Bill
+              </button>
+              <button onClick={doCheckout} disabled={submitting || !splitReady}
+                className="py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md">
+                {submitting
+                  ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
+                  : <><Receipt className="size-4" /> Complete Sale</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty hint */}
+      {cart.length === 0 && totalItemCount > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-muted/30 rounded-xl text-xs text-muted-foreground border border-dashed">
+          <ShoppingCart className="size-3.5 shrink-0" />
+          Tap any item above to add it to the cart
+          <ChevronRight className="size-3.5 ml-auto shrink-0" />
+        </div>
+      )}
+
+      {/* ── Overlays ── */}
+      {showCancel && (
+        <CancelDialog onConfirm={() => { clearCart(); setShowCancel(false); }} onClose={() => setShowCancel(false)} />
+      )}
+      {showPreview && (
+        <BillPreviewSheet
+          branch={branch} billNo={billNo.current} items={cart}
+          subtotal={subtotal} discount={discount} discountType={discountType}
+          discountValue={discountValue} roundOff={roundOff} finalTotal={finalTotal}
+          payMode={payMode} singleMethod={singleMethod}
+          splitMethods={splitMethods} splitAmounts={splitAmounts} soldBy={soldBy}
+          onClose={() => setShowPreview(false)}
+          onConfirmPrint={handlePrintAndConfirm} />
+      )}
+    </div>
+  );
+}
 
   // Cart
   const [cart, setCart]     = useState<CartItem[]>([]);
