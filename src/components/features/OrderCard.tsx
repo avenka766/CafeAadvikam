@@ -159,6 +159,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
   // Ready notification badge for billers
   const showReadyBadge = isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const isKitchen = currentUser?.role === 'kitchen' || currentUser?.role === 'order_taker';
 
   return (
     <>
@@ -214,7 +215,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           {(expanded ? order.items : order.items.slice(0, 3)).map((ci) => (
             <div key={ci.menuItem.id} className="flex justify-between py-1 text-sm font-body">
               <span className="text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
-              <span className="text-muted-foreground tabular-nums shrink-0 ml-2">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
+              {!isKitchen && <span className="text-muted-foreground tabular-nums shrink-0 ml-2">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>}
             </div>
           ))}
           {!expanded && order.items.length > 3 && (
@@ -229,7 +230,8 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           </div>
         )}
 
-        {/* Totals */}
+        {/* Totals — hidden for kitchen */}
+        {!isKitchen && (
         <div className="px-3.5 py-2 border-t border-border bg-muted/30">
           {order.discount > 0 && (
             <>
@@ -247,9 +249,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
             <span className="font-display text-lg font-bold text-foreground tabular-nums">{formatCurrency(order.total)}</span>
           </div>
         </div>
+        )}
 
-        {/* Payment badge */}
-        {order.paymentType && order.paymentType !== 'unpaid' && (
+        {/* Payment badge — hidden for kitchen */}
+        {!isKitchen && order.paymentType && order.paymentType !== 'unpaid' && (
           <div className="px-3.5 py-2">
             {order.paymentType === 'advance' && order.fullyPaidAt ? (
               // Fully paid advance order — show full breakdown
