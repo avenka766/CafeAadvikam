@@ -55,35 +55,57 @@ export interface IncomingStock {
   confirmed: boolean;
 }
 
+export interface StockMismatch {
+  id:        string;
+  itemName:  string;
+  branch:    Branch;
+  soldQty:   number;
+  shortage:  number;
+  soldAt:    string;
+  soldBy:    string;
+}
+
 interface BranchState {
-  stock: Record<Branch, StockItem[]>;
-  sales: Record<Branch, SaleRecord[]>;
-  incoming: Record<Branch, IncomingStock[]>;
-  advanceOrders: Record<Branch, BranchAdvanceOrder[]>;
-  thresholds: Record<Branch, Record<string, number>>;
-  loading: boolean;
-  lastCleanedAt: number | null;
+  stock:           Record<Branch, StockItem[]>;
+  sales:           Record<Branch, SaleRecord[]>;
+  incoming:        Record<Branch, IncomingStock[]>;
+  advanceOrders:   Record<Branch, BranchAdvanceOrder[]>;
+  thresholds:      Record<Branch, Record<string, number>>;
+  stockMismatches: StockMismatch[];
+  loading:         boolean;
+  lastCleanedAt:   number | null;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string) => Promise<string | null>;
+  recordSnbSale: (
+    branch: Branch,
+    itemName: string,
+    qty: number,
+    soldBy: string,
+    paymentMethod: string,
+    unitPrice: number,
+  ) => Promise<{ error: string | null; mismatch: boolean }>;
   recordAdvanceOrder: (branch: Branch, order: Omit<BranchAdvanceOrder, 'id' | 'createdAt' | 'fullyPaidAt' | 'balanceMethod' | 'status'>) => Promise<string | null>;
   collectAdvanceBalance: (branch: Branch, orderId: string, balanceMethod: string) => Promise<string | null>;
   updateThreshold: (branch: Branch, itemName: string, threshold: number) => Promise<void>;
   syncIncomingFromDispatches: (branch: Branch) => Promise<void>;
   confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
   confirmAllIncoming: (branch: Branch) => Promise<string | null>;
+  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
+  fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
-  stock:          { VRSNB: [], SNB: [], Hosur: [] },
-  sales:          { VRSNB: [], SNB: [], Hosur: [] },
-  incoming:       { VRSNB: [], SNB: [], Hosur: [] },
-  advanceOrders:  { VRSNB: [], SNB: [], Hosur: [] },
-  thresholds:     { VRSNB: {}, SNB: {}, Hosur: {} },
-  loading:        false,
-  lastCleanedAt:  null,
+  stock:           { VRSNB: [], SNB: [], Hosur: [] },
+  sales:           { VRSNB: [], SNB: [], Hosur: [] },
+  incoming:        { VRSNB: [], SNB: [], Hosur: [] },
+  advanceOrders:   { VRSNB: [], SNB: [], Hosur: [] },
+  thresholds:      { VRSNB: {}, SNB: {}, Hosur: {} },
+  stockMismatches: [],
+  loading:         false,
+  lastCleanedAt:   null,
 
   fetchBranchData: async (branch) => {
     set({ loading: true });
@@ -526,6 +548,166 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (err) return err;
     }
     return null;
+  },
+
+  // ── SNB / Hosur sale — items come from price list, not stock requirement ──
+  // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
+  recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice) => {
+    const now = new Date().toISOString();
+    const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
+    const availableQty = currentStock?.quantity ?? 0;
+    const shortage     = Math.max(0, qty - availableQty);
+    const mismatch     = shortage > 0;
+    const deductQty    = Math.min(qty, availableQty);
+    const newQty       = Math.round((availableQty - deductQty) * 1000) / 1000;
+
+    // 1. Deduct stock if any is available
+    if (deductQty > 0) {
+      if (currentStock) {
+        await supabase
+          .from('branch_stock')
+          .update({ quantity: newQty })
+          .eq('branch', branch)
+          .eq('item_name', itemName);
+      }
+    }
+
+    // 2. Insert sales record
+    const { data: saleData, error: saleErr } = await supabase
+      .from('branch_sales')
+      .insert({
+        branch,
+        item_name:      itemName,
+        quantity_sold:  qty,
+        sold_at:        now,
+        sold_by:        soldBy,
+        payment_method: paymentMethod,
+        unit_price:     unitPrice,
+      })
+      .select()
+      .single();
+    if (saleErr) return { error: `Failed to record sale: ${saleErr.message}`, mismatch };
+
+    // 3. If mismatch, log to branch_stock_mismatches table (best-effort)
+    if (mismatch) {
+      const { data: mm } = await supabase
+        .from('branch_stock_mismatches')
+        .insert({
+          branch,
+          item_name:  itemName,
+          sold_qty:   qty,
+          shortage,
+          sold_at:    now,
+          sold_by:    soldBy,
+        })
+        .select()
+        .single();
+
+      if (mm) {
+        set((s) => ({
+          stockMismatches: [
+            {
+              id:       mm.id,
+              itemName: mm.item_name,
+              branch:   mm.branch as Branch,
+              soldQty:  mm.sold_qty,
+              shortage: mm.shortage,
+              soldAt:   mm.sold_at,
+              soldBy:   mm.sold_by,
+            },
+            ...s.stockMismatches,
+          ],
+        }));
+      }
+    }
+
+    // 4. Update local state
+    const newSale: SaleRecord = {
+      id:            saleData.id,
+      itemName:      saleData.item_name,
+      quantitySold:  saleData.quantity_sold,
+      soldAt:        saleData.sold_at,
+      soldBy:        saleData.sold_by,
+      branch,
+      paymentMethod: saleData.payment_method ?? null,
+    };
+
+    set((s) => {
+      const stock = { ...s.stock };
+      const sales = { ...s.sales };
+      if (currentStock) {
+        stock[branch] = stock[branch].map((si) =>
+          si.itemName === itemName ? { ...si, quantity: newQty } : si,
+        );
+      }
+      sales[branch] = [newSale, ...sales[branch]];
+      return { stock, sales };
+    });
+
+    return { error: null, mismatch };
+  },
+
+  // ── Manual stock update — branch staff sets qty for any item ─────────────
+  manualUpdateStock: async (branch, itemName, quantity, updatedBy) => {
+    const rounded = Math.round(quantity * 1000) / 1000;
+
+    const { data: existing } = await supabase
+      .from('branch_stock')
+      .select('quantity')
+      .eq('branch', branch)
+      .eq('item_name', itemName)
+      .single();
+
+    if (existing) {
+      const { error } = await supabase
+        .from('branch_stock')
+        .update({ quantity: rounded, last_updated_by: updatedBy, last_updated_at: new Date().toISOString() })
+        .eq('branch', branch)
+        .eq('item_name', itemName);
+      if (error) return `Failed to update stock: ${error.message}`;
+    } else {
+      const { error } = await supabase
+        .from('branch_stock')
+        .insert({ branch, item_name: itemName, quantity: rounded, min_threshold: 0, last_updated_by: updatedBy, last_updated_at: new Date().toISOString() });
+      if (error) return `Failed to create stock entry: ${error.message}`;
+    }
+
+    set((s) => {
+      const stock = { ...s.stock };
+      const existing = stock[branch].find((x) => x.itemName === itemName);
+      if (existing) {
+        stock[branch] = stock[branch].map((x) =>
+          x.itemName === itemName ? { ...x, quantity: rounded } : x,
+        );
+      } else {
+        stock[branch] = [...stock[branch], { itemName, quantity: rounded, minThreshold: 0, price: null }];
+      }
+      return { stock };
+    });
+    return null;
+  },
+
+  // ── Fetch stock mismatches for Admin alert ────────────────────────────────
+  fetchStockMismatches: async () => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const { data } = await supabase
+      .from('branch_stock_mismatches')
+      .select('*')
+      .gte('sold_at', thirtyDaysAgo.toISOString())
+      .order('sold_at', { ascending: false });
+    if (!data) return;
+    set({
+      stockMismatches: data.map((d) => ({
+        id:       d.id,
+        itemName: d.item_name,
+        branch:   d.branch as Branch,
+        soldQty:  d.sold_qty,
+        shortage: d.shortage,
+        soldAt:   d.sold_at,
+        soldBy:   d.sold_by,
+      })),
+    });
   },
 
   seedBranchItems: async (branch) => {
