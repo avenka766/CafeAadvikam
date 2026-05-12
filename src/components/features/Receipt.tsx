@@ -18,9 +18,9 @@ function fmt(n: number) { return n.toFixed(2); }
 
 // GST 5% inclusive → split CGST 2.5% + SGST 2.5%
 function calcGst(total: number) {
-  const base = total / 1.05;
-  const half = (total - base) / 2;
-  return { base, cgst: Math.round(half * 100) / 100, sgst: Math.round(half * 100) / 100 };
+  const base = Math.round((total / 1.05) * 100) / 100;
+  const half = Math.round(((total - base) / 2) * 100) / 100;
+  return { base, cgst: half, sgst: half };
 }
 
 interface ReceiptProps {
