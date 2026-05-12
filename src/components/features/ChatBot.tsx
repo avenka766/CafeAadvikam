@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 
 const CAFE_WA = '918883122246';
 const BAKERY_PHONE = '+91 9443388257';
-const MAPS_URL = 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9628595,17z';
+const MAPS_URL = 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p';
 const SNB_WEBSITE = 'https://www.snbbakery.in';
 
 const MENU: Record<string, { timing: string; items: [string, number][] }> = {
@@ -199,9 +199,21 @@ function TypingIndicator() {
 
 function ContactModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (f: ContactForm) => void }) {
   const [form, setForm] = useState<ContactForm>({ name: '', phone: '', type: 'Party Hall Booking', details: '' });
+  const [phoneError, setPhoneError] = useState('');
+
+  const validatePhone = (phone: string) => {
+    const digits = phone.replace(/\D/g, '');
+    // Accept 10-digit Indian numbers, or with +91/91 prefix (12 or 13 digits)
+    if (digits.length === 10 && /^[6-9]/.test(digits)) return true;
+    if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) return true;
+    return false;
+  };
 
   const handleSubmit = () => {
-    if (!form.name.trim() || !form.phone.trim()) { alert('Please enter your name and phone number.'); return; }
+    if (!form.name.trim()) { setPhoneError(''); alert('Please enter your name.'); return; }
+    if (!form.phone.trim()) { setPhoneError('Please enter your phone number.'); return; }
+    if (!validatePhone(form.phone)) { setPhoneError('Enter a valid 10-digit Indian mobile number (e.g. 98765 43210)'); return; }
+    setPhoneError('');
     onSubmit(form);
     onClose();
   };
@@ -222,7 +234,8 @@ function ContactModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (f
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Phone Number</label>
-            <input className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-orange-400" placeholder="+91 XXXXX XXXXX" type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+            <input className={`w-full border rounded-xl px-3 py-2 text-sm outline-none focus:border-orange-400 ${phoneError ? 'border-red-400 bg-red-50' : 'border-gray-200'}`} placeholder="e.g. 98765 43210" type="tel" value={form.phone} onChange={e => { setForm(f => ({ ...f, phone: e.target.value })); setPhoneError(''); }} />
+            {phoneError && <p className="text-xs text-red-500 mt-1 flex items-center gap-1">⚠️ {phoneError}</p>}
           </div>
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Enquiry Type</label>

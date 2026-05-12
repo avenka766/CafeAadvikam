@@ -360,6 +360,9 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
             <div className="flex-1 py-2 rounded-lg bg-muted/50 text-center text-xs font-body font-semibold text-muted-foreground">
               {order.status === 'pending' ? '⏳ Waiting for kitchen to start' : '🍳 Kitchen is preparing'}
             </div>
+            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-xs font-body font-bold active:scale-95 flex items-center gap-1" title="Cancel Order">
+              ✕ Cancel
+            </button>
             <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
               <Printer className="size-4" />
             </button>
