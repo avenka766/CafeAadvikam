@@ -13,7 +13,7 @@ import type { Branch } from '../types';
 import type { StockItem, IncomingStock } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
 import type { SnbItem } from '../snbItems';
-import { BAKERY_ITEMS } from '@/bakery/types';
+import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '../vrsnbItems';
 
 interface Props {
   branch: Branch;
@@ -114,7 +114,7 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
   // Build item list depending on branch
   const allItems: { name: string; uom: string }[] = isSNB
     ? SNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom }))
-    : BAKERY_ITEMS.map((i: { name: string }) => ({ name: i.name, uom: 'pcs' }));
+    : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom }));
 
   const [search, setSearch]         = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -126,11 +126,11 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
 
   const categories = isSNB
     ? ['All', ...SNB_CATEGORIES]
-    : ['All'];
+    : ['All', ...VRSNB_CATEGORIES];
 
   const snbCatMap = isSNB
     ? Object.fromEntries(SNB_ITEMS.map((i) => [i.name, i.category]))
-    : {};
+    : Object.fromEntries(VRSNB_ITEMS.map((i) => [i.name, i.category]));
 
   const filtered = allItems.filter((item) => {
     const matchQ   = !search.trim() || item.name.toLowerCase().includes(search.toLowerCase());
@@ -170,8 +170,8 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
           {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="size-3.5 text-muted-foreground" /></button>}
         </div>
 
-        {/* Category pills — SNB only */}
-        {isSNB && (
+        {/* Category pills — SNB and VRSNB */}
+        {(isSNB || !isSNB) && (
           <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
             {categories.map((cat) => (
               <button key={cat} onClick={() => setActiveCategory(cat)}
@@ -249,8 +249,17 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
 
-  const availableItems  = branchStock.filter((s) => s.quantity > 0);
-  const outOfStockItems = branchStock.filter((s) => s.quantity <= 0);
+  const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
+  const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
+  const allowedItemNames = new Set(
+    isSNBBranch
+      ? SNB_ITEMS.map((i) => i.name)
+      : VRSNB_ITEMS.map((i) => i.name)
+  );
+
+  const filteredStock = branchStock.filter((s) => allowedItemNames.has(s.itemName));
+  const availableItems  = filteredStock.filter((s) => s.quantity > 0);
+  const outOfStockItems = filteredStock.filter((s) => s.quantity <= 0);
 
   const today = new Date().toDateString();
   const todayIncoming = branchIncoming.filter(
