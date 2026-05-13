@@ -1,36 +1,40 @@
 // src/branch/BranchDashboard.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { Package, Settings, Receipt } from 'lucide-react';
+import { Package, Settings, Receipt, History } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import { StatCard, TabBar } from './components';
-import { StockTab }    from './tabs/StockTab';
-import { BillTab }     from './tabs/BillTab';
-import { SettingsTab } from './tabs/SettingsTab';
+import { StockTab }   from './tabs/StockTab';
+import { BillTab }    from './tabs/BillTab';
+import { SettingsTab }from './tabs/SettingsTab';
+import { HistoryTab } from './tabs/HistoryTab';
 import type { Branch } from './types';
 import { BRANCH_COLORS } from './types';
 
-type TabId = 'stock' | 'bill' | 'settings';
+type TabId = 'stock' | 'bill' | 'history' | 'settings';
 
 const TABS = [
-  { id: 'stock'    as const, label: 'Stock',      icon: Package },
-  { id: 'bill'     as const, label: 'Bill',       icon: Receipt },
-  { id: 'settings' as const, label: 'Thresholds', icon: Settings },
+  { id: 'stock'   as const, label: 'Stock',     icon: Package },
+  { id: 'bill'    as const, label: 'Bill',      icon: Receipt },
+  { id: 'history' as const, label: 'History',   icon: History },
+  { id: 'settings'as const, label: 'Thresholds',icon: Settings },
 ];
 
 interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
-  const { stock, sales, incoming, advanceOrders, loading, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems } =
+  const { stock, sales, incoming, advanceOrders, thresholds, loading,
+          fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems } =
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
 
-  const branchStock    = stock[branch]             || [];
-  const branchIncoming = incoming[branch]          || [];
-  const branchAdvance  = advanceOrders?.[branch]   || [];
-  const branchSales    = sales[branch]             || [];
-  const colors         = BRANCH_COLORS[branch];
+  const branchStock      = stock[branch]           || [];
+  const branchIncoming   = incoming[branch]        || [];
+  const branchAdvance    = advanceOrders?.[branch] || [];
+  const branchSales      = sales[branch]           || [];
+  const branchThresholds = thresholds[branch]      || {};
+  const colors           = BRANCH_COLORS[branch];
 
   useEffect(() => {
     fetchBranchData(branch);
@@ -38,17 +42,12 @@ export default function BranchDashboard({ branch }: Props) {
     seedBranchItems(branch);
     cleanOldData();
 
-    // Only poll stock data every 30s — sync is mount-only to prevent stock inflation
-    const id = setInterval(() => {
-      fetchBranchData(branch);
-    }, 30_000);
-
+    const id = setInterval(() => fetchBranchData(branch), 30_000);
     return () => clearInterval(id);
   }, [branch]);
 
   const availableStock = branchStock.filter((s) => s.quantity > 0);
 
-  // Stable today string with midnight rollover
   const [todayString, setTodayString] = useState(() => new Date().toDateString());
   useEffect(() => {
     const now = new Date();
@@ -70,34 +69,39 @@ export default function BranchDashboard({ branch }: Props) {
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-20">
-      {/* Header — warning banner removed */}
       <div className={cn('px-4 pt-4 pb-3 border-b', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
         </h1>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {new Date().toLocaleDateString('en-IN', {
-            weekday: 'long', day: '2-digit', month: 'short',
-          })}
+          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short' })}
         </p>
       </div>
 
-      {/* Quick stats — In Stock (available only) + Sold Today */}
       <div className="px-4 py-3 grid grid-cols-2 gap-2">
         <StatCard label="In Stock"   value={availableStock.length} color={colors.text} />
         <StatCard label="Sold Today" value={totalTodayQty}         color="text-blue-700" />
       </div>
 
-      {/* Tab bar — Sales Log removed */}
       <div className="mx-4 mb-3">
         <TabBar tabs={TABS} active={tab} onChange={setTab} />
       </div>
 
-      {/* Tabs are kept mounted (hidden when inactive) so cart state survives tab switches */}
+      {/* Tabs kept mounted so cart state survives tab switches */}
       <div className="px-4 space-y-3">
-        <div className={tab !== 'stock'    ? 'hidden' : undefined}><StockTab    branch={branch} branchStock={branchStock} branchIncoming={branchIncoming} loading={loading} /></div>
-        <div className={tab !== 'bill'     ? 'hidden' : undefined}><BillTab     branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} /></div>
-        <div className={tab !== 'settings' ? 'hidden' : undefined}><SettingsTab branch={branch} branchStock={branchStock} /></div>
+        <div className={tab !== 'stock'    ? 'hidden' : undefined}>
+          <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
+            branchThresholds={branchThresholds} loading={loading} />
+        </div>
+        <div className={tab !== 'bill'     ? 'hidden' : undefined}>
+          <BillTab branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />
+        </div>
+        <div className={tab !== 'history'  ? 'hidden' : undefined}>
+          <HistoryTab branchSales={branchSales} />
+        </div>
+        <div className={tab !== 'settings' ? 'hidden' : undefined}>
+          <SettingsTab branch={branch} branchStock={branchStock} />
+        </div>
       </div>
     </div>
   );
