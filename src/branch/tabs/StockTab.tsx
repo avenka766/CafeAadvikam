@@ -104,17 +104,20 @@ function ConfirmButton({ onConfirm }: { onConfirm: () => Promise<void> }) {
 
 const SNB_BRANCHES = ['SNB', 'Hosur'] as const;
 
-function ManualStockUpdate({ branch }: { branch: Branch }) {
+function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStock: StockItem[] }) {
   const { manualUpdateStock } = useBranchStore();
   const { currentUser } = useAuthStore();
   const updatedBy = currentUser?.displayName || currentUser?.username || 'Staff';
 
   const isSNB = (SNB_BRANCHES as readonly string[]).includes(branch);
 
-  // Build item list depending on branch
-  const allItems: { name: string; uom: string }[] = isSNB
-    ? SNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom }))
-    : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom }));
+  // Build item list from price list — uom is authoritative for unit display
+  const allItems: { name: string; uom: string; category: string }[] = isSNB
+    ? SNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }))
+    : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }));
+
+  // Build a quick lookup: itemName → current quantity from DB
+  const stockMap = new Map(branchStock.map((s) => [s.itemName, s.quantity]));
 
   const [search, setSearch]         = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -128,13 +131,9 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
     ? ['All', ...SNB_CATEGORIES]
     : ['All', ...VRSNB_CATEGORIES];
 
-  const snbCatMap = isSNB
-    ? Object.fromEntries(SNB_ITEMS.map((i) => [i.name, i.category]))
-    : Object.fromEntries(VRSNB_ITEMS.map((i) => [i.name, i.category]));
-
   const filtered = allItems.filter((item) => {
     const matchQ   = !search.trim() || item.name.toLowerCase().includes(search.toLowerCase());
-    const matchCat = activeCategory === 'All' || snbCatMap[item.name] === activeCategory;
+    const matchCat = activeCategory === 'All' || item.category === activeCategory;
     return matchQ && matchCat;
   });
 
@@ -170,20 +169,17 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
           {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="size-3.5 text-muted-foreground" /></button>}
         </div>
 
-        {/* Category pills — SNB and VRSNB */}
-        {(isSNB || !isSNB) && (
-          <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
-            {categories.map((cat) => (
-              <button key={cat} onClick={() => setActiveCategory(cat)}
-                className={cn('shrink-0 px-3 py-1 rounded-full text-[10px] font-semibold border transition whitespace-nowrap',
-                  activeCategory === cat
-                    ? 'bg-violet-600 text-white border-transparent'
-                    : 'bg-card border-border text-muted-foreground hover:bg-muted/50')}>
-                {cat}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
+          {categories.map((cat) => (
+            <button key={cat} onClick={() => setActiveCategory(cat)}
+              className={cn('shrink-0 px-3 py-1 rounded-full text-[10px] font-semibold border transition whitespace-nowrap',
+                activeCategory === cat
+                  ? 'bg-violet-600 text-white border-transparent'
+                  : 'bg-card border-border text-muted-foreground hover:bg-muted/50')}>
+              {cat}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error && <p className="mx-4 mb-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">{error}</p>}
@@ -192,14 +188,23 @@ function ManualStockUpdate({ branch }: { branch: Branch }) {
         {filtered.length === 0 ? (
           <div className="text-center py-8 text-sm text-muted-foreground">No items match your search.</div>
         ) : filtered.map((item) => {
-          const isEditing = editItem === item.name;
-          const wasSaved  = saved[item.name];
-          const isKg      = item.uom === 'Kgs' || item.uom === 'kg';
+          const isEditing  = editItem === item.name;
+          const wasSaved   = saved[item.name];
+          // Use price list uom as authority: 'Kgs' → kg, anything else → pcs
+          const isKg       = item.uom === 'Kgs' || item.uom === 'kg';
+          const currentQty = stockMap.get(item.name) ?? 0;
           return (
             <div key={item.name} className={cn('flex items-center gap-3 px-4 py-3', wasSaved && 'bg-emerald-50/40')}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{item.name}</p>
-                <p className="text-[10px] text-muted-foreground">{isKg ? 'Kgs' : 'pcs'}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {isKg ? 'Kgs' : 'pcs'} · In stock:{' '}
+                  <span className="font-semibold text-foreground">
+                    {isKg
+                      ? currentQty >= 1 ? `${currentQty} kg` : `${Math.round(currentQty * 1000)}g`
+                      : `${currentQty} pcs`}
+                  </span>
+                </p>
               </div>
               {wasSaved ? (
                 <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
@@ -259,14 +264,26 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
 
   const filteredStock = branchStock.filter((s) => allowedItemNames.has(s.itemName));
 
+  // Build uom lookup from price list — 'Kgs' → 'kg', 'Nos'/'pcs' → 'pcs'
+  const uomMap = new Map<string, 'kg' | 'pcs'>(
+    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i) => [
+      i.name,
+      i.uom === 'Kgs' || i.uom === 'kg' ? 'kg' : 'pcs',
+    ])
+  );
+
   // Build a complete item list: all branch items, with DB quantity if exists, else 0
   const allBranchItemNames = isSNBBranch
     ? SNB_ITEMS.map((i) => i.name)
     : VRSNB_ITEMS.map((i) => i.name);
   const stockMap = new Map(filteredStock.map((s) => [s.itemName, s]));
-  const completeStock = allBranchItemNames.map((name) =>
-    stockMap.get(name) ?? { itemName: name, quantity: 0, minThreshold: 10, price: null }
-  );
+  const completeStock = allBranchItemNames.map((name) => {
+    const s = stockMap.get(name);
+    const unit = uomMap.get(name); // authoritative unit from price list
+    return s
+      ? { ...s, unit }  // override whatever DB says with price list unit
+      : { itemName: name, quantity: 0, minThreshold: 10, price: null, unit };
+  });
 
   const availableItems  = completeStock.filter((s) => s.quantity > 0);
   const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
@@ -416,7 +433,7 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
       )}
 
       {/* ── Manual stock update ──────────────────────────────────────────────── */}
-      {subTab === 'manual' && <ManualStockUpdate branch={branch} />}
+      {subTab === 'manual' && <ManualStockUpdate branch={branch} branchStock={branchStock} />}
 
     </div>
   );

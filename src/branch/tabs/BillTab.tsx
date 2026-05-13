@@ -403,8 +403,8 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
   colors: { bg: string; text: string; badge: string };
 }) {
   const unit: SellUnit = item.uom === 'Kgs' ? 'kg' : 'pcs';
-  const lowStock = stockQty > 0 && stockQty < (unit === 'kg' ? 0.5 : 3);
   const noStock  = stockQty <= 0;
+  const overStock = inCart && cartQty > stockQty && stockQty > 0;
   return (
     <div className={cn('relative bg-card border rounded-2xl p-3 flex flex-col gap-2 transition-all duration-150',
       inCart ? 'border-primary/40 shadow-md ring-1 ring-primary/10 bg-primary/[0.02]' : 'border-border')}>
@@ -415,14 +415,22 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
           <span className="text-[11px] font-bold text-emerald-600">
             ₹{item.price}{unit === 'kg' ? '/kg' : ''}
           </span>
+          {/* Stock indicator */}
           {noStock
             ? <span className="ml-auto text-[9px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-full">No stock</span>
-            : lowStock
-            ? <span className="ml-auto flex items-center gap-0.5 text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
-                <AlertTriangle className="size-2.5" /> Low
+            : <span className="ml-auto text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">
+                {unit === 'kg'
+                  ? stockQty >= 1 ? `${stockQty}kg` : `${Math.round(stockQty * 1000)}g`
+                  : `${stockQty} pcs`} avail
               </span>
-            : null}
+          }
         </div>
+        {/* Over-stock warning — shown but sale still allowed */}
+        {overStock && (
+          <p className="text-[9px] text-amber-600 font-semibold mt-0.5 flex items-center gap-1">
+            ⚠ Exceeds stock — mismatch will be logged
+          </p>
+        )}
       </div>
       {unit === 'kg' && inCart ? (
         <KgInput value={cartQty} onChange={onKgChange} max={999} />
@@ -434,9 +442,11 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
       ) : inCart ? (
         <div className="flex items-center gap-2 justify-between">
           <button onClick={onRemove} className="size-8 rounded-xl bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3.5" /></button>
-          <span className="text-sm font-bold tabular-nums">{cartQty}</span>
+          <span className={cn('text-sm font-bold tabular-nums', overStock && 'text-amber-600')}>{cartQty}</span>
+          {/* Always allow adding — no disabled, just colour-coded */}
           <button onClick={onAdd}
-            className="size-8 rounded-xl cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 transition"><Plus className="size-3.5" /></button>
+            className={cn('size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90 transition',
+              overStock ? 'bg-amber-500' : 'cafe-gradient')}><Plus className="size-3.5" /></button>
         </div>
       ) : (
         <button onClick={onAdd}
