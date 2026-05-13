@@ -7,6 +7,8 @@ import { BAKERY_ITEMS } from '@/bakery/types';
 export interface StockItem {
   itemName: string;
   quantity: number;
+  /** Unit in which quantity is stored — 'pcs' for piece items, 'kg' for weight items. */
+  unit?: 'pcs' | 'kg';
   minThreshold: number;
   price: number | null; // FIX #3 — added price field so BillTab can display/use it
 }
@@ -50,6 +52,8 @@ export interface IncomingStock {
   id: string;
   itemName: string;
   quantity: number;
+  /** Unit in which quantity is expressed — 'pcs' or 'kg'. Defaults to 'kg' for legacy rows. */
+  unit: 'pcs' | 'kg';
   receivedAt: string;
   dispatchedBy: string;
   confirmed: boolean;
@@ -168,6 +172,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           id:            d.id,
           itemName:      d.item_name,
           quantity:      Number(d.quantity),
+          unit:          (d.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg',
           receivedAt:    d.received_at,
           dispatchedBy:  d.dispatched_by,
           confirmed:     d.confirmed ?? false,
@@ -522,12 +527,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (si) {
         stock[branch] = stock[branch].map((x) =>
           x.itemName === inc.itemName
-            ? { ...x, quantity: Math.round((x.quantity + inc.quantity) * 1000) / 1000 }
+            ? { ...x, quantity: Math.round((x.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
             : x
         );
       } else {
         stock[branch] = [...stock[branch], {
-          itemName: inc.itemName, quantity: inc.quantity, minThreshold: 10, price: null,
+          itemName: inc.itemName, quantity: inc.quantity, unit: inc.unit, minThreshold: 10, price: null,
         }];
       }
       return { incoming, stock };
