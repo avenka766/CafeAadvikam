@@ -1,12 +1,12 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
-import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus } from './types';
+import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 
 interface BakeryState {
   orders: BakeryOrder[];
   loading: boolean;
   fetchOrders: () => Promise<void>;
-  submitOrder: (items: BakeryOrderItem[], createdBy: string) => Promise<void>;
+  submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
@@ -27,6 +27,7 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     preparedItems: (d.prepared_items as PreparedItem[]) || [],
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
+    targetBranch: d.target_branch as Branch | undefined,
   };
 }
 
@@ -51,10 +52,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
-  submitOrder: async (items, createdBy) => {
+  submitOrder: async (items, createdBy, targetBranch) => {
     const { data, error } = await supabase
       .from('bakery_orders')
-      .insert({ items, status: 'pending', created_by: createdBy })
+      .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch })
       .select()
       .single();
     if (!error && data) {

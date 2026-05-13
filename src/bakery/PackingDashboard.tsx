@@ -19,15 +19,16 @@ interface PackedEntry {
 
 // ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
 function DispatchRow({
-  itemName, available, onDispatch, submitting,
+  itemName, available, onDispatch, submitting, defaultBranch,
 }: {
-  itemName:   string;
-  available:  number;
-  onDispatch: (qty: number, branch: Branch) => Promise<void>;
-  submitting: boolean;
+  itemName:      string;
+  available:     number;
+  onDispatch:    (qty: number, branch: Branch) => Promise<void>;
+  submitting:    boolean;
+  defaultBranch?: Branch;
 }) {
   const [qty,    setQty]    = useState('');
-  const [branch, setBranch] = useState<Branch>('VRSNB');
+  const [branch, setBranch] = useState<Branch>(defaultBranch ?? 'VRSNB');
   const qtyNum  = parseFloat(qty) || 0;
   const overQty = qtyNum > available;
 
@@ -190,6 +191,14 @@ function PackingOrderCard({
             <span className={cn('text-[10px] font-body font-bold px-2 py-0.5 rounded-full border', statusBadge)}>
               {statusLabel}
             </span>
+            {order.targetBranch && (
+              <span className={cn(
+                'text-[10px] font-body font-bold px-2 py-0.5 rounded-full border flex items-center gap-1',
+                branchColor[order.targetBranch]
+              )}>
+                🏪 {order.targetBranch}
+              </span>
+            )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground">
             {preparedItems.map(p => `${p.itemName} ×${p.quantityPrepared}`).join(', ')}
@@ -206,6 +215,20 @@ function PackingOrderCard({
 
       {expanded && (
         <div className="border-t border-border px-4 pb-4 pt-3 space-y-5">
+
+          {/* ── TARGET BRANCH BANNER ─────────────────────────── */}
+          {order.targetBranch && (
+            <div className={cn(
+              'flex items-center gap-2 rounded-xl border px-3 py-2.5',
+              branchColor[order.targetBranch],
+            )}>
+              <span className="text-base">🏪</span>
+              <div>
+                <p className="text-[10px] font-body font-bold uppercase opacity-70">Pack &amp; Dispatch For</p>
+                <p className="text-sm font-display font-bold">{order.targetBranch}</p>
+              </div>
+            </div>
+          )}
 
           {/* ── PHASE 1: Packing confirmation ────────────────── */}
           <div>
@@ -330,6 +353,7 @@ function PackingOrderCard({
                       available={stock?.available ?? 0}
                       onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
                       submitting={dispatchingItems.size > 0}
+                      defaultBranch={order.targetBranch}
                     />
                   </div>
                 );

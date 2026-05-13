@@ -23,6 +23,7 @@ export interface BakeryOrder {
   preparedItems?: PreparedItem[];
   sentToPackingAt?: string;
   dispatchLog?: DispatchEntry[];
+  targetBranch?: Branch;
 }
 
 export interface PreparedItem {
