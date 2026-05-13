@@ -27,8 +27,8 @@ function DispatchRow({
   submitting:    boolean;
   defaultBranch?: Branch;
 }) {
-  const [qty,    setQty]    = useState('');
-  const [branch, setBranch] = useState<Branch>(defaultBranch ?? 'VRSNB');
+  const [qty, setQty] = useState('');
+  const branch = defaultBranch ?? 'VRSNB';
   const qtyNum  = parseFloat(qty) || 0;
   const overQty = qtyNum > available;
 
@@ -58,10 +58,9 @@ function DispatchRow({
             overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',
           )}
         />
-        <select value={branch} onChange={e => setBranch(e.target.value as Branch)}
-          className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
-          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-        </select>
+        <div className="flex-1 h-10 px-3 rounded-xl border border-border bg-muted/40 text-sm font-body font-semibold flex items-center">
+          🏪 {branch}
+        </div>
         <button
           onClick={handle}
           disabled={submitting || qtyNum <= 0 || available <= 0}
@@ -293,7 +292,10 @@ function PackingOrderCard({
                       className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                     <span className="text-[10px] font-body text-muted-foreground">
-                      (Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'})
+                      Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'}
+                    </span>
+                    <span className="text-[10px] font-body font-semibold text-blue-600">
+                      · Receiver requested: {order.items.find(i => i.itemId === entry.itemId)?.quantity ?? '—'}
                     </span>
                   </div>
                 </div>
