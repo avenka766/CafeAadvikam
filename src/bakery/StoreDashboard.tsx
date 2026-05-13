@@ -8,16 +8,18 @@ import {
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { RECIPE_DEFINITIONS, calculateMaterials } from './recipeDefinitions';
-import type { BakeryOrder } from './types';
+import { resolveRecipeKey } from './itemMatcher';
+import type { BakeryOrder, BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
 
-function getOutputUnit(itemId: string): 'kg' | 'pcs' | 'loaf' | null {
-  const r = RECIPE_DEFINITIONS[itemId];
-  if (!r) return null;
-  return (r.outputUnit as 'kg' | 'pcs' | 'loaf') ?? null;
+function getOutputUnit(item: BakeryOrderItem): 'kg' | 'pcs' | 'loaf' | null {
+  const key = resolveRecipeKey(item.itemId, item.itemName);
+  if (!key) return null;
+  return (RECIPE_DEFINITIONS[key].outputUnit as 'kg' | 'pcs' | 'loaf') ?? null;
 }
-function getOutputQty(itemId: string): number | null {
-  return RECIPE_DEFINITIONS[itemId]?.outputQty ?? null;
+function getOutputQty(item: BakeryOrderItem): number | null {
+  const key = resolveRecipeKey(item.itemId, item.itemName);
+  return key ? (RECIPE_DEFINITIONS[key]?.outputQty ?? null) : null;
 }
 const UNIT_ICONS: Record<string, React.ReactNode> = {
   kg:   <Scale   className="size-3 shrink-0" />,
@@ -47,9 +49,11 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
   const selectedItem = order.items[selectedItemIdx];
   const selectedMeta = selectedItem ? BAKERY_ITEMS.find(b => b.id === selectedItem.itemId) : null;
-  const selectedOutputUnit = selectedItem ? getOutputUnit(selectedItem.itemId) : null;
-  const selectedOutputQty  = selectedItem ? getOutputQty(selectedItem.itemId)  : null;
-  const hasRecipe = selectedItem ? !!RECIPE_DEFINITIONS[selectedItem.itemId] : false;
+  const selectedOutputUnit = selectedItem ? getOutputUnit(selectedItem) : null;
+  const selectedOutputQty  = selectedItem ? getOutputQty(selectedItem)  : null;
+  const hasRecipe = selectedItem
+    ? !!(resolveRecipeKey(selectedItem.itemId, selectedItem.itemName))
+    : false;
 
   const handleCalculate = async () => {
     if (!selectedItem) return;
@@ -57,7 +61,9 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     if (qty <= 0) return;
     setSaving(true);
     await updateExpectedOutput(order.id, qty);
-    const mats = calculateMaterials(selectedItem.itemId, qty, selectedOutputUnit ?? 'kg');
+    // Use resolved recipe key so VRSNB / SNB items match correctly
+    const recipeKey = resolveRecipeKey(selectedItem.itemId, selectedItem.itemName) ?? selectedItem.itemId;
+    const mats = calculateMaterials(recipeKey, qty, selectedOutputUnit ?? 'kg');
     setCalculatedMats(mats);
     setCalcForItem(selectedItem.itemName);
     setCalcUnit(selectedOutputUnit);
@@ -104,11 +110,15 @@ function OrderCard({ order }: { order: BakeryOrder }) {
             <div className="space-y-1.5">
               {order.items.map((item, idx) => {
                 const meta = BAKERY_ITEMS.find(b => b.id === item.itemId);
-                const outUnit = getOutputUnit(item.itemId);
-                const outQty  = getOutputQty(item.itemId);
+                const outUnit = getOutputUnit(item);
+                const outQty  = getOutputQty(item);
                 const isSelected = idx === selectedItemIdx;
-                const hasRec = !!RECIPE_DEFINITIONS[item.itemId];
+                const hasRec  = !!(resolveRecipeKey(item.itemId, item.itemName));
                 const isCustom = !!item.isCustom;
+                // VRSNB pcs → kg: show original pcs if stored
+                const pcsLabel = item.originalPcs != null
+                  ? `${item.originalPcs} pcs → ${item.quantity} kg`
+                  : null;
                 return (
                   <button key={item.itemId} onClick={() => { setSelectedItemIdx(idx); setCalculatedMats([]); setCalcForItem(''); }}
                     className={cn('w-full flex items-center justify-between px-3 py-2.5 rounded-xl border transition-all text-left',
@@ -124,12 +134,16 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                             <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
                           )}
                         </div>
+                        {/* pcs→kg conversion note for VRSNB items */}
+                        {pcsLabel && (
+                          <p className="text-[10px] font-body text-blue-600">📦 {pcsLabel}</p>
+                        )}
                         {!isCustom && outUnit && outQty && <p className="text-[10px] font-body text-muted-foreground">1 batch = {outQty} {outUnit}</p>}
-                        {!isCustom && !hasRec && <p className="text-[10px] font-body text-amber-600">⚠ No recipe — add via Admin</p>}
+                        {!isCustom && !hasRec && <p className="text-[10px] font-body text-amber-600">⚠ No recipe — will be treated as custom</p>}
                         {isCustom && <p className="text-[10px] font-body text-amber-600">Special order — no recipe needed</p>}
                       </div>
                     </div>
-                    <span className="text-xs font-body font-bold text-primary">×{item.quantity} ordered</span>
+                    <span className="text-xs font-body font-bold text-primary">×{item.quantity}{item.originalPcs == null ? ' ordered' : ' kg'}</span>
                   </button>
                 );
               })}
@@ -142,10 +156,16 @@ function OrderCard({ order }: { order: BakeryOrder }) {
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">
                 Step 2 — Qty to Produce{selectedOutputUnit && <span className="ml-1 normal-case text-primary">({selectedOutputUnit})</span>}
               </p>
-              {selectedItem.isCustom ? (
+              {selectedItem.isCustom || (!hasRecipe && !selectedItem.isCustom) ? (
                 <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
-                  <span className="text-[10px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
-                  <span className="text-xs font-body text-amber-700">No recipe for custom items — send directly to baker.</span>
+                  <span className="text-[10px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+                    {selectedItem.isCustom ? '✦ CUSTOM' : '⚠ NO RECIPE'}
+                  </span>
+                  <span className="text-xs font-body text-amber-700">
+                    {selectedItem.isCustom
+                      ? 'No recipe for custom items — send directly to baker.'
+                      : 'No recipe found — item will be sent to baker as custom.'}
+                  </span>
                 </div>
               ) : (
                 <>

@@ -1,63 +1,115 @@
 // ─── BranchStockForm ──────────────────────────────────────────────────────────
 // Stock requirement entry form for a single branch.
-// Used inside OrderReceiverDashboard — one instance per branch tab.
+//
+// Item source is BRANCH-SPECIFIC:
+//   VRSNB  → VRSNB_ITEMS  (same list shown in Admin → Items → VRSNB tab)
+//   SNB    → SNB_ITEMS    (same list shown in Admin → Items → SNB tab)
+//   Hosur  → SNB_ITEMS    (Hosur shares the SNB price list)
+//
+// VRSNB pcs → kg conversion
+//   VRSNB items with uom = "Nos" are sold in pieces. Their name contains the
+//   per-unit weight, e.g. "Banana chips (200g)". When the receiver enters a pcs
+//   quantity the form converts it to kg in real time and submits the kg value so
+//   the Store can calculate raw-material requirements correctly.
+//   Items with no weight in the name are submitted as-is with a warning.
 
-import { useState, useEffect } from 'react';
-import { Plus, Trash2, Send, CheckCircle2, Loader2, Hash, Sparkles } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Plus, Trash2, Send, CheckCircle2, Loader2, Hash, Sparkles, Scale, ArrowRight } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
-import { useBakeryItemsStore, BAKERY_CATEGORIES } from './bakeryItemsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
+import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '@/branch/vrsnbItems';
+import { SNB_ITEMS, SNB_CATEGORIES } from '@/branch/snbItems';
+import { parseWeightGrams, pcsToKg, findRecipeId } from './itemMatcher';
 import type { BakeryOrderItem, Branch } from './types';
-import { BRANCH_COLOR, CATEGORY_LABEL } from './receiverConstants';
+import { BRANCH_COLOR } from './receiverConstants';
 import { cn } from '@/lib/utils';
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface LineItem {
+  itemId:      string;
+  itemName:    string;
+  uom:         'Nos' | 'Kgs';
+  weightGrams: number | null;
+  qty:         string;
+}
 
 interface Props {
   branch:      Branch;
   onSubmitted: () => void;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getBranchSource(branch: Branch) {
+  if (branch === 'VRSNB') {
+    return { items: VRSNB_ITEMS, categories: VRSNB_CATEGORIES as readonly string[] };
+  }
+  return { items: SNB_ITEMS, categories: SNB_CATEGORIES as readonly string[] };
+}
+
+function toItemId(branch: Branch, barcode: number): string {
+  return `${branch === 'VRSNB' ? 'vrsnb' : 'snb'}-${barcode}`;
+}
+
+function makeLine(branch: Branch, item: { barcode: number; name: string; uom: 'Nos' | 'Kgs' }): LineItem {
+  return {
+    itemId:      toItemId(branch, item.barcode),
+    itemName:    item.name,
+    uom:         item.uom,
+    weightGrams: item.uom === 'Nos' ? parseWeightGrams(item.name) : null,
+    qty:         '',
+  };
+}
+
+function hasRecipeFor(itemId: string, itemName: string): boolean {
+  return !!(RECIPE_DEFINITIONS[itemId] ?? findRecipeId(itemName));
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const { submitOrder } = useBakeryStore();
   const { currentUser } = useAuthStore();
-  const { items: bakeryItems, loaded, loading: itemsLoading, loadItems } = useBakeryItemsStore();
+
+  const { items: branchItems, categories } = useMemo(() => getBranchSource(branch), [branch]);
+  const defaultItem = branchItems[0];
 
   const [note, setNote]             = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess]       = useState(false);
-  const [lines, setLines] = useState<{ itemId: string; itemName: string; qty: string }[]>([
-    { itemId: '', itemName: '', qty: '' },
+
+  const [lines, setLines] = useState<LineItem[]>([
+    defaultItem ? makeLine(branch, defaultItem) : { itemId: '', itemName: '', uom: 'Kgs', weightGrams: null, qty: '' },
   ]);
   const [customLines, setCustomLines] = useState<{ name: string; qty: string }[]>([]);
 
-  useEffect(() => { loadItems(); }, [loadItems]);
+  // ── Line manipulation ──────────────────────────────────────────────────────
 
-  const defaultItem = bakeryItems[0];
-  useEffect(() => {
-    if (defaultItem && lines[0].itemId === '') {
-      setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
-    }
-  }, [defaultItem]);
-
-  // ── Regular lines ──────────────────────────────────────────────────────────
   const updateItemSelection = (idx: number, itemId: string) => {
-    const item = bakeryItems.find(b => b.id === itemId);
-    setLines(prev => prev.map((l, i) => i === idx ? { ...l, itemId, itemName: item?.name || '' } : l));
+    const found = branchItems.find(i => toItemId(branch, i.barcode) === itemId);
+    if (!found) return;
+    setLines(prev => prev.map((l, i) => i === idx ? makeLine(branch, found) : l));
   };
+
   const updateQty = (idx: number, val: string) => {
     if (val === '' || Number(val) >= 0)
       setLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
   };
+
   const addLine = () => {
     if (!defaultItem) return;
-    setLines(prev => [...prev, { itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+    setLines(prev => [...prev, makeLine(branch, defaultItem)]);
   };
+
   const removeLine = (idx: number) => {
     if (lines.length === 1) return;
     setLines(prev => prev.filter((_, i) => i !== idx));
   };
 
   // ── Custom lines ───────────────────────────────────────────────────────────
+
   const addCustomLine    = () => setCustomLines(prev => [...prev, { name: '', qty: '' }]);
   const removeCustomLine = (idx: number) => setCustomLines(prev => prev.filter((_, i) => i !== idx));
   const updateCustomName = (idx: number, val: string) =>
@@ -67,25 +119,50 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
   };
 
+  // ── Validation ─────────────────────────────────────────────────────────────
+
   const filledLines = lines.filter(l => l.qty !== '');
+
   const valid =
     filledLines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
     customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
     (filledLines.length > 0 || customLines.length > 0);
+
+  // ── Submit ─────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     if (!currentUser || !valid) return;
     setSubmitting(true);
 
     const items: BakeryOrderItem[] = [
-      ...lines.filter(l => l.itemId !== '' && Number(l.qty) > 0).map(l => ({ itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty) })),
-      ...customLines.map(l => ({
+      ...lines
+        .filter(l => l.itemId !== '' && Number(l.qty) > 0)
+        .map((l): BakeryOrderItem => {
+          const rawQty = Number(l.qty);
+
+          // VRSNB Nos item with parseable weight → convert pcs to kg
+          if (l.uom === 'Nos' && l.weightGrams !== null) {
+            const kgQty = pcsToKg(l.itemName, rawQty) ?? rawQty;
+            return { itemId: l.itemId, itemName: l.itemName, quantity: kgQty, originalPcs: rawQty, weightGrams: l.weightGrams };
+          }
+
+          // VRSNB Nos item without weight in name → submit pcs as-is
+          if (l.uom === 'Nos' && l.weightGrams === null) {
+            return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, originalPcs: rawQty };
+          }
+
+          // Kgs item → direct
+          return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty };
+        }),
+
+      ...customLines.map((l): BakeryOrderItem => ({
         itemId:   `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         itemName: l.name.trim(),
         quantity: Number(l.qty),
         isCustom: true,
       })),
     ];
+
     const label = [
       `${branch} Branch`,
       note.trim() ? `Note: ${note.trim()}` : '',
@@ -93,36 +170,29 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     ].filter(Boolean).join(' ');
 
     await submitOrder(items, label, branch);
+
     setSubmitting(false);
     setSuccess(true);
     setNote('');
-    if (defaultItem) setLines([{ itemId: defaultItem.id, itemName: defaultItem.name, qty: '' }]);
+    setLines([defaultItem ? makeLine(branch, defaultItem) : lines[0]]);
     setCustomLines([]);
     setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
   };
 
+  // ── Grouped items for select optgroups ─────────────────────────────────────
+
   const colors = BRANCH_COLOR[branch];
 
-  // ── Loading / empty states ─────────────────────────────────────────────────
-  if (itemsLoading || !loaded) {
-    return (
-      <div className="p-8 flex items-center justify-center gap-2">
-        <Loader2 className="size-4 animate-spin text-muted-foreground" />
-        <span className="text-sm font-body text-muted-foreground">Loading items…</span>
-      </div>
-    );
-  }
+  const itemsByCategory = useMemo(() => {
+    const map: Record<string, typeof branchItems> = {};
+    for (const cat of categories) {
+      const catItems = branchItems.filter(i => i.category === cat);
+      if (catItems.length > 0) map[cat] = catItems as typeof branchItems;
+    }
+    return map;
+  }, [branchItems, categories]);
 
-  if (bakeryItems.length === 0) {
-    return (
-      <div className="p-8 text-center">
-        <p className="text-sm font-body text-muted-foreground">No active items found.</p>
-        <p className="text-xs font-body text-muted-foreground mt-1">
-          Ask admin to enable items in Bakery Item Management.
-        </p>
-      </div>
-    );
-  }
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div>
@@ -135,6 +205,9 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           </p>
           <p className="text-sm font-display font-bold leading-none">{branch} Branch</p>
         </div>
+        <span className="ml-auto text-[10px] font-body font-semibold opacity-60">
+          {branch === 'VRSNB' ? `${VRSNB_ITEMS.length} items` : `${SNB_ITEMS.length} items`}
+        </span>
       </div>
 
       <div className="px-4 space-y-4">
@@ -153,61 +226,118 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           />
         </div>
 
+        {/* VRSNB pcs info banner */}
+        {branch === 'VRSNB' && (
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-blue-50 border border-blue-200">
+            <ArrowRight className="size-3.5 text-blue-600 mt-0.5 shrink-0" />
+            <p className="text-[11px] font-body text-blue-800 leading-relaxed">
+              <span className="font-bold">VRSNB items sold in pcs</span> — enter the number of packets.
+              Weight is extracted from the item name and automatically converted to kg for the store.
+            </p>
+          </div>
+        )}
+
         {/* Regular items */}
         <div className="border-t border-border pt-3">
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-2.5">
             Items Required
-            <span className="ml-1 normal-case text-primary font-normal">({bakeryItems.length} active)</span>
+            <span className="ml-1 normal-case text-primary font-normal">
+              ({branchItems.length} items · {branch === 'VRSNB' ? 'VRSNB' : 'SNB'} price list)
+            </span>
           </p>
 
           <div className="space-y-2">
-            {lines.map((line, idx) => (
-              <div key={idx} className="flex gap-2 items-center">
-                <select
-                  value={line.itemId}
-                  onChange={e => updateItemSelection(idx, e.target.value)}
-                  className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                >
-                  {BAKERY_CATEGORIES.map(category => {
-                    const catItems = bakeryItems.filter(i => i.category === category);
-                    if (catItems.length === 0) return null;
-                    return (
-                      <optgroup key={category} label={CATEGORY_LABEL[category] || category}>
-                        {catItems.map(item => (
-                          <option key={item.id} value={item.id}>{item.name}</option>
-                        ))}
-                      </optgroup>
-                    );
-                  })}
-                </select>
+            {lines.map((line, idx) => {
+              const convertedKg = line.uom === 'Nos' && line.weightGrams !== null && line.qty !== ''
+                ? pcsToKg(line.itemName, Number(line.qty))
+                : null;
+              const noWeight    = line.uom === 'Nos' && line.weightGrams === null;
+              const recipeFound = line.qty !== '' ? hasRecipeFor(line.itemId, line.itemName) : null;
 
-                <div className="flex flex-col items-center gap-0.5 shrink-0">
-                  <input
-                    type="number" min={1}
-                    value={line.qty}
-                    onChange={e => updateQty(idx, e.target.value)}
-                    placeholder="Qty"
-                    className={cn(
-                      'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
-                      line.qty === '' ? 'border-amber-400' : 'border-border'
-                    )}
-                  />
-                  {line.itemId && RECIPE_DEFINITIONS[line.itemId]?.outputUnit && (
-                    <span className="text-[9px] font-body font-bold text-primary leading-none">
-                      {RECIPE_DEFINITIONS[line.itemId].outputUnit}
-                    </span>
+              return (
+                <div key={idx} className="space-y-1">
+                  <div className="flex gap-2 items-center">
+
+                    {/* Item selector */}
+                    <select
+                      value={line.itemId}
+                      onChange={e => updateItemSelection(idx, e.target.value)}
+                      className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      {Object.entries(itemsByCategory).map(([cat, catItems]) => (
+                        <optgroup key={cat} label={cat}>
+                          {catItems.map(item => (
+                            <option key={item.barcode} value={toItemId(branch, item.barcode)}>
+                              {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+
+                    {/* Quantity */}
+                    <div className="flex flex-col items-center gap-0.5 shrink-0">
+                      <input
+                        type="number"
+                        min={1}
+                        value={line.qty}
+                        onChange={e => updateQty(idx, e.target.value)}
+                        placeholder="Qty"
+                        className={cn(
+                          'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
+                          line.qty === '' ? 'border-amber-400' : 'border-border'
+                        )}
+                      />
+                      <span className="text-[9px] font-body font-bold text-muted-foreground leading-none">
+                        {line.uom === 'Nos' ? 'pcs' : 'kg'}
+                      </span>
+                    </div>
+
+                    {/* Remove */}
+                    <button
+                      onClick={() => removeLine(idx)}
+                      disabled={lines.length === 1}
+                      className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shrink-0"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+
+                  {/* Status chips below the row */}
+                  {line.qty !== '' && (
+                    <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
+
+                      {/* Conversion result for VRSNB Nos */}
+                      {line.uom === 'Nos' && convertedKg !== null && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
+                          <Scale className="size-2.5" />
+                          {Number(line.qty)} pcs → <strong>{convertedKg} kg</strong>
+                        </span>
+                      )}
+
+                      {/* Warning when no weight in name */}
+                      {noWeight && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                          ⚠ No weight found — submitting as {line.qty} pcs
+                        </span>
+                      )}
+
+                      {/* Recipe status */}
+                      {recipeFound !== null && (
+                        <span className={cn(
+                          'inline-flex items-center gap-1 text-[10px] font-body font-semibold px-2 py-0.5 rounded-full border',
+                          recipeFound
+                            ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            : 'text-muted-foreground bg-muted border-border'
+                        )}>
+                          {recipeFound ? '✓ Recipe found' : '– No recipe · will be custom'}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
-
-                <button
-                  onClick={() => removeLine(idx)}
-                  disabled={lines.length === 1}
-                  className="size-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shrink-0"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <button
@@ -224,13 +354,13 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
             <Sparkles className="size-3.5 text-amber-500" />
             <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">
               Custom Items
-              <span className="ml-1 normal-case text-amber-600 font-normal">not in the list</span>
+              <span className="ml-1 normal-case text-amber-600 font-normal">not in the {branch} list</span>
             </p>
           </div>
 
           {customLines.length === 0 && (
             <p className="text-[11px] font-body text-muted-foreground mb-2">
-              Need something not in the list? Add it below.
+              Need something not in the price list? Add it here.
             </p>
           )}
 
@@ -247,7 +377,8 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                   )}
                 />
                 <input
-                  type="number" min={1}
+                  type="number"
+                  min={1}
                   value={line.qty}
                   onChange={e => updateCustomQty(idx, e.target.value)}
                   placeholder="Qty"
@@ -285,9 +416,11 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
             success ? 'bg-emerald-500 text-white' : 'cafe-gradient text-primary-foreground'
           )}
         >
-          {submitting ? <Loader2 className="size-4 animate-spin" />
-            : success  ? <><CheckCircle2 className="size-4" /> Sent to Packing!</>
-            : <><Send className="size-4" /> Send Requirement to Packing</>}
+          {submitting
+            ? <Loader2 className="size-4 animate-spin" />
+            : success
+            ? <><CheckCircle2 className="size-4" /> Sent to Store!</>
+            : <><Send className="size-4" /> Send Requirement to Store</>}
         </button>
       </div>
     </div>
