@@ -13,6 +13,13 @@ export interface BakeryOrderItem {
   originalPcs?: number;
   /** VRSNB Nos items: per-unit weight in grams used for the pcs→kg conversion */
   weightGrams?: number;
+  /**
+   * The unit the receiver chose when placing the requirement.
+   * 'pcs' → receiver entered in pieces; packing must dispatch in pcs.
+   * 'kg'  → receiver entered in kg;    packing must dispatch in kg.
+   * Defaults to 'kg' when absent (legacy orders).
+   */
+  dispatchUnit?: 'pcs' | 'kg';
 }
 
 export interface BakeryOrder {
@@ -35,12 +42,16 @@ export interface PreparedItem {
   itemName: string;
   quantityPrepared: number;
   preparedAt: string;
+  /** Mirrors dispatchUnit from the original order item — passed through so packing knows the unit. */
+  dispatchUnit?: 'pcs' | 'kg';
 }
 
 export interface DispatchEntry {
   id: string;
   itemName: string;
   quantity: number;
+  /** Unit in which quantity is expressed — matches what the receiver originally chose. */
+  unit?: 'pcs' | 'kg';
   branch: Branch;
   dispatchedAt: string;
   dispatchedBy: string;

@@ -18,66 +18,10 @@ interface PackedEntry {
 }
 
 // ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
-function DispatchRow({
-  itemName, available, onDispatch, submitting, defaultBranch,
-}: {
-  itemName:      string;
-  available:     number;
-  onDispatch:    (qty: number, branch: Branch) => Promise<void>;
-  submitting:    boolean;
-  defaultBranch?: Branch;
-}) {
-  const [qty, setQty] = useState('');
-  const branch = defaultBranch ?? 'VRSNB';
-  const qtyNum  = parseFloat(qty) || 0;
-  const overQty = qtyNum > available;
+function DispatchRow({\n  itemName, available, onDispatch, submitting, defaultBranch, unit,\n}: {\n  itemName:      string;\n  available:     number;\n  onDispatch:    (qty: number, branch: Branch) => Promise<void>;\n  submitting:    boolean;\n  defaultBranch?: Branch;\n  unit?: 'pcs' | 'kg';\n}) {
+  const [qty, setQty] = useState('');\n  const branch = defaultBranch ?? 'VRSNB';\n  const qtyNum  = parseFloat(qty) || 0;\n  const overQty = qtyNum > available;\n  const unitLabel = unit === 'pcs' ? 'pcs' : 'kg';
 
-  const handle = async () => {
-    if (qtyNum <= 0) return;
-    await onDispatch(qtyNum, branch);
-    setQty('');
-  };
-
-  return (
-    <div className="space-y-2 py-3 border-b border-border last:border-0">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-body font-semibold text-foreground">{itemName}</span>
-        <span className={cn(
-          'text-xs font-body font-bold',
-          available <= 0 ? 'text-destructive' : 'text-emerald-600',
-        )}>
-          {available} available
-        </span>
-      </div>
-      <div className="flex gap-2">
-        <input
-          type="number" min={0.01} step={0.25} placeholder="Qty"
-          value={qty} onChange={e => setQty(e.target.value)}
-          className={cn(
-            'w-24 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',
-            overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',
-          )}
-        />
-        <div className="flex-1 h-10 px-3 rounded-xl border border-border bg-muted/40 text-sm font-body font-semibold flex items-center">
-          🏪 {branch}
-        </div>
-        <button
-          onClick={handle}
-          disabled={submitting || qtyNum <= 0 || available <= 0}
-          className="h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1 disabled:opacity-40 active:scale-95 transition-all shrink-0"
-        >
-          {submitting ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />}
-          Send
-        </button>
-      </div>
-      {overQty && (
-        <p className="text-[10px] font-body text-amber-600 flex items-center gap-1">
-          <AlertTriangle className="size-3" /> Exceeds available stock
-        </p>
-      )}
-    </div>
-  );
-}
+  const handle = async () => {\n    if (qtyNum <= 0) return;\n    await onDispatch(qtyNum, branch);\n    setQty('');\n  };\n\n  return (\n    <div className=\"space-y-2 py-3 border-b border-border last:border-0\">\n      <div className=\"flex items-center justify-between\">\n        <span className=\"text-sm font-body font-semibold text-foreground\">{itemName}</span>\n        <span className={cn(\n          'text-xs font-body font-bold',\n          available <= 0 ? 'text-destructive' : 'text-emerald-600',\n        )}>\n          {available} {unitLabel} available\n        </span>\n      </div>\n      <div className=\"flex gap-2\">\n        <div className=\"relative flex items-center\">\n          <input\n            type=\"number\" min={0.01} step={unit === 'pcs' ? 1 : 0.25} placeholder=\"Qty\"\n            value={qty} onChange={e => setQty(e.target.value)}\n            className={cn(\n              'w-24 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',\n              overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',\n            )}\n          />\n          <span className=\"absolute -bottom-4 left-0 right-0 text-center text-[9px] font-body font-bold text-muted-foreground\">\n            {unitLabel}\n          </span>\n        </div>\n        <div className=\"flex-1 h-10 px-3 rounded-xl border border-border bg-muted/40 text-sm font-body font-semibold flex items-center\">\n          🏪 {branch}\n        </div>\n        <button\n          onClick={handle}\n          disabled={submitting || qtyNum <= 0 || available <= 0}\n          className=\"h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1 disabled:opacity-40 active:scale-95 transition-all shrink-0\"\n        >\n          {submitting ? <Loader2 className=\"size-3.5 animate-spin\" /> : <Truck className=\"size-3.5\" />}\n          Send\n        </button>\n      </div>\n      {overQty && (\n        <p className=\"text-[10px] font-body text-amber-600 flex items-center gap-1 mt-4\">\n          <AlertTriangle className=\"size-3\" /> Exceeds available stock\n        </p>\n      )}\n    </div>\n  );\n}
 
 // ─── Single order card ──────────────────────────────────────────────────────
 function PackingOrderCard({
@@ -149,7 +93,7 @@ function PackingOrderCard({
     Hosur: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   };
 
-  const handleDispatch = async (itemName: string, qty: number, branch: Branch) => {
+  const handleDispatch = async (itemName: string, qty: number, branch: Branch, unit?: 'pcs' | 'kg') => {
     if (!currentUser) return;
     // Block if any dispatch for this order is already in-flight (prevents race conditions)
     if (dispatchingItems.size > 0) return;
@@ -157,6 +101,7 @@ function PackingOrderCard({
     await submitDispatch(order.id, {
       itemName,
       quantity: qty,
+      unit: unit ?? 'kg',
       branch,
       dispatchedAt: new Date().toISOString(),
       dispatchedBy: currentUser.displayName,
@@ -200,7 +145,11 @@ function PackingOrderCard({
             )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground">
-            {preparedItems.map(p => `${p.itemName} ×${p.quantityPrepared}`).join(', ')}
+            {preparedItems.map(p => {
+              const orderItem = order.items.find(i => i.itemId === p.itemId);
+              const unit = orderItem?.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+              return `${p.itemName} ×${p.quantityPrepared}${unit}`;
+            }).join(', ')}
           </p>
           <p className="text-[10px] font-body text-muted-foreground mt-0.5">
             {packedEntries.filter(e => e.confirmed).length}/{packedEntries.length} items confirmed packed
@@ -291,11 +240,24 @@ function PackingOrderCard({
                       disabled={entry.confirmed}
                       className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
+                    <span className="text-[10px] font-body font-bold text-blue-600">
+                      {(() => {
+                        const orderItem = order.items.find(i => i.itemId === entry.itemId);
+                        return orderItem?.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+                      })()}
+                    </span>
                     <span className="text-[10px] font-body text-muted-foreground">
                       Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'}
                     </span>
                     <span className="text-[10px] font-body font-semibold text-blue-600">
-                      · Receiver requested: {order.items.find(i => i.itemId === entry.itemId)?.quantity ?? '—'}
+                      · Receiver requested: {(() => {
+                        const orderItem = order.items.find(i => i.itemId === entry.itemId);
+                        if (!orderItem) return '—';
+                        if (orderItem.dispatchUnit === 'pcs' && orderItem.originalPcs != null) {
+                          return `${orderItem.originalPcs} pcs`;
+                        }
+                        return `${orderItem.quantity} kg`;
+                      })()}
                     </span>
                   </div>
                 </div>
@@ -353,9 +315,10 @@ function PackingOrderCard({
                     <DispatchRow
                       itemName={p.itemName}
                       available={stock?.available ?? 0}
-                      onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch)}
+                      onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch, p.dispatchUnit ?? order.items.find(i => i.itemId === p.itemId)?.dispatchUnit ?? 'kg')}
                       submitting={dispatchingItems.size > 0}
                       defaultBranch={order.targetBranch}
+                      unit={p.dispatchUnit ?? order.items.find(i => i.itemId === p.itemId)?.dispatchUnit ?? 'kg'}
                     />
                   </div>
                 );
@@ -374,7 +337,7 @@ function PackingOrderCard({
                   <div key={d.id} className="flex items-center gap-2 bg-muted/40 rounded-xl px-3 py-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-[11px] font-body font-semibold text-foreground">
-                        {d.itemName} × {d.quantity}
+                        {d.itemName} × {d.quantity} {d.unit ?? 'kg'}
                       </p>
                       <p className="text-[10px] font-body text-muted-foreground">
                         {new Date(d.dispatchedAt).toLocaleString('en-IN')} · {d.dispatchedBy}

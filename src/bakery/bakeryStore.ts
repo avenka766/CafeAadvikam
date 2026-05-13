@@ -136,6 +136,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       branch:        newEntry.branch,
       item_name:     newEntry.itemName,
       quantity:      parseFloat(String(newEntry.quantity)),
+      unit:          newEntry.unit ?? 'kg',
       received_at:   newEntry.dispatchedAt,
       dispatched_by: newEntry.dispatchedBy,
       confirmed:     false,

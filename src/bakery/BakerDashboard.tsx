@@ -21,6 +21,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
       itemName: item.itemName,
       quantityPrepared: Number(prepQty[item.itemId] ?? item.quantity),
       preparedAt: new Date().toISOString(),
+      dispatchUnit: item.dispatchUnit ?? 'kg',
     }));
     await submitPrepared(order.id, preparedItems);
     setSubmitting(false);

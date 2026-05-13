@@ -143,16 +143,16 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           // VRSNB Nos item with parseable weight → convert pcs to kg
           if (l.uom === 'Nos' && l.weightGrams !== null) {
             const kgQty = pcsToKg(l.itemName, rawQty) ?? rawQty;
-            return { itemId: l.itemId, itemName: l.itemName, quantity: kgQty, originalPcs: rawQty, weightGrams: l.weightGrams };
+            return { itemId: l.itemId, itemName: l.itemName, quantity: kgQty, originalPcs: rawQty, weightGrams: l.weightGrams, dispatchUnit: 'pcs' as const };
           }
 
           // VRSNB Nos item without weight in name → submit pcs as-is
           if (l.uom === 'Nos' && l.weightGrams === null) {
-            return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, originalPcs: rawQty };
+            return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, originalPcs: rawQty, dispatchUnit: 'pcs' as const };
           }
 
           // Kgs item → direct
-          return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty };
+          return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, dispatchUnit: 'kg' as const };
         }),
 
       ...customLines.map((l): BakeryOrderItem => ({
