@@ -1,9 +1,12 @@
 // src/branch/BranchDashboard.tsx
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Package, Settings, Receipt } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
-import { StatCard, TabBar } from './components';\nimport { StockTab }    from './tabs/StockTab';\nimport { BillTab }     from './tabs/BillTab';\nimport { SettingsTab } from './tabs/SettingsTab';
+import { StatCard, TabBar } from './components';
+import { StockTab }    from './tabs/StockTab';
+import { BillTab }     from './tabs/BillTab';
+import { SettingsTab } from './tabs/SettingsTab';
 import type { Branch } from './types';
 import { BRANCH_COLORS } from './types';
 
