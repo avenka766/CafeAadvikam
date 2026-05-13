@@ -67,17 +67,18 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
   };
 
+  const filledLines = lines.filter(l => l.itemId !== '' || l.qty !== '');
   const valid =
-    lines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
+    filledLines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
     customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
-    (lines.length > 0 || customLines.length > 0);
+    (filledLines.length > 0 || customLines.length > 0);
 
   const handleSubmit = async () => {
     if (!currentUser || !valid) return;
     setSubmitting(true);
 
     const items: BakeryOrderItem[] = [
-      ...lines.map(l => ({ itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty) })),
+      ...lines.filter(l => l.itemId !== '' && Number(l.qty) > 0).map(l => ({ itemId: l.itemId, itemName: l.itemName, quantity: Number(l.qty) })),
       ...customLines.map(l => ({
         itemId:   `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         itemName: l.name.trim(),
