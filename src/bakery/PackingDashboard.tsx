@@ -18,10 +18,73 @@ interface PackedEntry {
 }
 
 // ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
-function DispatchRow({\n  itemName, available, onDispatch, submitting, defaultBranch, unit,\n}: {\n  itemName:      string;\n  available:     number;\n  onDispatch:    (qty: number, branch: Branch) => Promise<void>;\n  submitting:    boolean;\n  defaultBranch?: Branch;\n  unit?: 'pcs' | 'kg';\n}) {
-  const [qty, setQty] = useState('');\n  const branch = defaultBranch ?? 'VRSNB';\n  const qtyNum  = parseFloat(qty) || 0;\n  const overQty = qtyNum > available;\n  const unitLabel = unit === 'pcs' ? 'pcs' : 'kg';
+function DispatchRow({
+  itemName, available, onDispatch, submitting, defaultBranch, unit,
+}: {
+  itemName:      string;
+  available:     number;
+  onDispatch:    (qty: number, branch: Branch) => Promise<void>;
+  submitting:    boolean;
+  defaultBranch?: Branch;
+  unit?: 'pcs' | 'kg';
+}) {
+  const [qty, setQty] = useState('');
+  const branch = defaultBranch ?? 'VRSNB';
+  const qtyNum  = parseFloat(qty) || 0;
+  const overQty = qtyNum > available;
+  const unitLabel = unit === 'pcs' ? 'pcs' : 'kg';
 
-  const handle = async () => {\n    if (qtyNum <= 0) return;\n    await onDispatch(qtyNum, branch);\n    setQty('');\n  };\n\n  return (\n    <div className=\"space-y-2 py-3 border-b border-border last:border-0\">\n      <div className=\"flex items-center justify-between\">\n        <span className=\"text-sm font-body font-semibold text-foreground\">{itemName}</span>\n        <span className={cn(\n          'text-xs font-body font-bold',\n          available <= 0 ? 'text-destructive' : 'text-emerald-600',\n        )}>\n          {available} {unitLabel} available\n        </span>\n      </div>\n      <div className=\"flex gap-2\">\n        <div className=\"relative flex items-center\">\n          <input\n            type=\"number\" min={0.01} step={unit === 'pcs' ? 1 : 0.25} placeholder=\"Qty\"\n            value={qty} onChange={e => setQty(e.target.value)}\n            className={cn(\n              'w-24 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',\n              overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',\n            )}\n          />\n          <span className=\"absolute -bottom-4 left-0 right-0 text-center text-[9px] font-body font-bold text-muted-foreground\">\n            {unitLabel}\n          </span>\n        </div>\n        <div className=\"flex-1 h-10 px-3 rounded-xl border border-border bg-muted/40 text-sm font-body font-semibold flex items-center\">\n          🏪 {branch}\n        </div>\n        <button\n          onClick={handle}\n          disabled={submitting || qtyNum <= 0 || available <= 0}\n          className=\"h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1 disabled:opacity-40 active:scale-95 transition-all shrink-0\"\n        >\n          {submitting ? <Loader2 className=\"size-3.5 animate-spin\" /> : <Truck className=\"size-3.5\" />}\n          Send\n        </button>\n      </div>\n      {overQty && (\n        <p className=\"text-[10px] font-body text-amber-600 flex items-center gap-1 mt-4\">\n          <AlertTriangle className=\"size-3\" /> Exceeds available stock\n        </p>\n      )}\n    </div>\n  );\n}
+  const handle = async () => {
+    if (qtyNum <= 0) return;
+    await onDispatch(qtyNum, branch);
+    setQty('');
+  };
+
+  return (
+    <div className="space-y-2 py-3 border-b border-border last:border-0">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-body font-semibold text-foreground">{itemName}</span>
+        <span className={cn(
+          'text-xs font-body font-bold',
+          available <= 0 ? 'text-destructive' : 'text-emerald-600',
+        )}>
+          {available} {unitLabel} available
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <div className="relative flex items-center">
+          <input
+            type="number" min={0.01} step={unit === 'pcs' ? 1 : 0.25} placeholder="Qty"
+            value={qty} onChange={e => setQty(e.target.value)}
+            className={cn(
+              'w-24 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2',
+              overQty ? 'border-destructive focus:ring-destructive/30' : 'border-border focus:ring-primary/30',
+            )}
+          />
+          <span className="absolute -bottom-4 left-0 right-0 text-center text-[9px] font-body font-bold text-muted-foreground">
+            {unitLabel}
+          </span>
+        </div>
+        <div className="flex-1 h-10 px-3 rounded-xl border border-border bg-muted/40 text-sm font-body font-semibold flex items-center">
+          🏪 {branch}
+        </div>
+        <button
+          onClick={handle}
+          disabled={submitting || qtyNum <= 0 || available <= 0}
+          className="h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1 disabled:opacity-40 active:scale-95 transition-all shrink-0"
+        >
+          {submitting ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />}
+          Send
+        </button>
+      </div>
+      {overQty && (
+        <p className="text-[10px] font-body text-amber-600 flex items-center gap-1 mt-4">
+          <AlertTriangle className="size-3" /> Exceeds available stock
+        </p>
+      )}
+    </div>
+  );
+}
 
 // ─── Single order card ──────────────────────────────────────────────────────
 function PackingOrderCard({
