@@ -83,12 +83,16 @@ export default function OrderReceiverDashboard() {
           })}
         </div>
 
-        {/* Form — key forces full reset when switching tabs */}
-        <BranchStockForm
-          key={activeTab}
-          branch={activeTab}
-          onSubmitted={() => setRefreshKey(k => k + 1)}
-        />
+        {/* All 3 forms rendered at once — only active one is visible.
+            This preserves each branch's entered data when switching tabs. */}
+        {BRANCHES.map(b => (
+          <div key={b} className={b === activeTab ? '' : 'hidden'}>
+            <BranchStockForm
+              branch={b}
+              onSubmitted={() => setRefreshKey(k => k + 1)}
+            />
+          </div>
+        ))}
       </div>
 
       {/* Recent requirements for the active branch */}
