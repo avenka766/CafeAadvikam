@@ -67,7 +67,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, qty: val } : l));
   };
 
-  const filledLines = lines.filter(l => l.itemId !== '' || l.qty !== '');
+  const filledLines = lines.filter(l => l.qty !== '');
   const valid =
     filledLines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
     customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
