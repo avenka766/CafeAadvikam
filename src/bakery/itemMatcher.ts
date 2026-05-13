@@ -40,6 +40,21 @@ export function pcsToKg(itemName: string, pcs: number): number | null {
   return Math.round((pcs * grams / 1000) * 1000) / 1000;
 }
 
+/**
+ * Convert a kg quantity back to pcs using the per-unit weight in grams.
+ *
+ * Used in Packing: baker sends prepared qty in kg; once the packer
+ * confirms receipt, the kg is converted to pcs for dispatch.
+ *
+ * @param kg          weight in kg received from baker
+ * @param weightGrams per-unit weight in grams (stored on BakeryOrderItem)
+ * @returns           whole-number pcs count (floor), or null if inputs invalid
+ */
+export function kgToPcs(kg: number, weightGrams: number): number | null {
+  if (kg <= 0 || weightGrams <= 0) return null;
+  return Math.floor((kg * 1000) / weightGrams);
+}
+
 // ── Recipe key matching ────────────────────────────────────────────────────────
 
 /**

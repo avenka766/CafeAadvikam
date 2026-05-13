@@ -7,14 +7,25 @@ import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { BRANCHES } from './types';
 import type { Branch, PreparedItem } from './types';
+import { kgToPcs } from './itemMatcher';
 import { cn } from '@/lib/utils';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface PackedEntry {
-  itemId:   string;
-  itemName: string;
-  qty:      number;
-  confirmed: boolean;
+  itemId:      string;
+  itemName:    string;
+  qty:         number;   // always kg while baker sends kg
+  confirmed:   boolean;
+  /** Per-unit weight in grams — present when receiver chose pcs */
+  weightGrams?: number;
+  /** dispatchUnit from the original order item */
+  dispatchUnit?: 'pcs' | 'kg';
+  /**
+   * Set after the packer confirms receipt.
+   * For pcs items: kg quantity converted to whole pcs.
+   * For kg items: same as qty.
+   */
+  confirmedPcs?: number;
 }
 
 // ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
@@ -99,14 +110,20 @@ function PackingOrderCard({
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
 
   // ── Phase 1: Pack confirmation state ──────────────────────────────────────
-  // Pre-populate from preparedItems (set by baker)
+  // Pre-populate from preparedItems (set by baker). qty is always in kg here
+  // because baker always works in kg — conversion to pcs happens on confirm.
   const [packedEntries, setPackedEntries] = useState<PackedEntry[]>(() =>
-    (order.preparedItems || []).map(p => ({
-      itemId:    p.itemId,
-      itemName:  p.itemName,
-      qty:       p.quantityPrepared,
-      confirmed: false,
-    }))
+    (order.preparedItems || []).map(p => {
+      const orderItem = order.items.find(i => i.itemId === p.itemId);
+      return {
+        itemId:      p.itemId,
+        itemName:    p.itemName,
+        qty:         p.quantityPrepared,  // kg from baker
+        confirmed:   false,
+        weightGrams: orderItem?.weightGrams ?? undefined,
+        dispatchUnit: orderItem?.dispatchUnit ?? 'kg',
+      };
+    })
   );
 
   // Look up isCustom from original order items
@@ -116,10 +133,18 @@ function PackingOrderCard({
   const allConfirmed = packedEntries.length > 0 && packedEntries.every(e => e.confirmed);
 
   const confirmEntry = (idx: number) => {
-    setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: true } : e));
+    setPackedEntries(prev => prev.map((e, i) => {
+      if (i !== idx) return e;
+      // For pcs items: convert the kg qty to pcs on confirm
+      let confirmedPcs: number | undefined;
+      if (e.dispatchUnit === 'pcs' && e.weightGrams != null) {
+        confirmedPcs = kgToPcs(e.qty, e.weightGrams) ?? undefined;
+      }
+      return { ...e, confirmed: true, confirmedPcs };
+    }));
   };
   const unconfirmEntry = (idx: number) => {
-    setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: false } : e));
+    setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: false, confirmedPcs: undefined } : e));
   };
   const updateEntryQty = (idx: number, val: string) => {
     const n = parseFloat(val);
@@ -133,19 +158,26 @@ function PackingOrderCard({
   const dispatchLog   = order.dispatchLog   || [];
 
   const stockByItem = useMemo(() => {
-    const result: Record<string, { prepared: number; dispatched: number; available: number }> = {};
+    const result: Record<string, { prepared: number; dispatched: number; available: number; unit: 'pcs' | 'kg' }> = {};
     preparedItems.forEach(p => {
+      const entry = packedEntries.find(e => e.itemId === p.itemId);
+      const isPcs = entry?.dispatchUnit === 'pcs';
+      // Use confirmedPcs if available (pcs items after confirm), else quantityPrepared (kg)
+      const effectiveQty = (isPcs && entry?.confirmedPcs != null)
+        ? entry.confirmedPcs
+        : p.quantityPrepared;
       const dispatched = dispatchLog
         .filter(d => d.itemName === p.itemName)
         .reduce((s, d) => s + d.quantity, 0);
       result[p.itemName] = {
-        prepared:   p.quantityPrepared,
+        prepared:   effectiveQty,
         dispatched,
-        available:  p.quantityPrepared - dispatched,
+        available:  effectiveQty - dispatched,
+        unit:       isPcs ? 'pcs' : 'kg',
       };
     });
     return result;
-  }, [preparedItems, dispatchLog]);
+  }, [preparedItems, dispatchLog, packedEntries]);
 
   const allDispatched = preparedItems.length > 0 &&
     preparedItems.every(p => (stockByItem[p.itemName]?.available ?? 1) <= 0);
@@ -292,9 +324,9 @@ function PackingOrderCard({
                       )
                     }
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <label className="text-[10px] font-body text-muted-foreground shrink-0">
-                      Packed qty:
+                      Packed qty (kg):
                     </label>
                     <input
                       type="number" min={0.01} step={0.25}
@@ -303,14 +335,8 @@ function PackingOrderCard({
                       disabled={entry.confirmed}
                       className="w-24 h-8 px-2 rounded-lg border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
-                    <span className="text-[10px] font-body font-bold text-blue-600">
-                      {(() => {
-                        const orderItem = order.items.find(i => i.itemId === entry.itemId);
-                        return orderItem?.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-                      })()}
-                    </span>
                     <span className="text-[10px] font-body text-muted-foreground">
-                      Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'}
+                      kg · Baker prepared: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'} kg
                     </span>
                     <span className="text-[10px] font-body font-semibold text-blue-600">
                       · Receiver requested: {(() => {
@@ -323,6 +349,17 @@ function PackingOrderCard({
                       })()}
                     </span>
                   </div>
+                  {/* Show kg → pcs conversion once confirmed */}
+                  {entry.confirmed && entry.dispatchUnit === 'pcs' && entry.confirmedPcs != null && (
+                    <div className="mt-1.5 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-50 border border-blue-200">
+                      <span className="text-[11px] font-body font-bold text-blue-700">
+                        ✓ {entry.qty} kg → <span className="text-emerald-700">{entry.confirmedPcs} pcs</span>
+                      </span>
+                      <span className="text-[10px] font-body text-blue-500 ml-1">
+                        (ready to dispatch in pcs)
+                      </span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -378,10 +415,14 @@ function PackingOrderCard({
                     <DispatchRow
                       itemName={p.itemName}
                       available={stock?.available ?? 0}
-                      onDispatch={(qty, branch) => handleDispatch(p.itemName, qty, branch, p.dispatchUnit ?? order.items.find(i => i.itemId === p.itemId)?.dispatchUnit ?? 'kg')}
+                      onDispatch={(qty, branch) => {
+                        const entry = packedEntries.find(e => e.itemId === p.itemId);
+                        const unit = entry?.dispatchUnit ?? 'kg';
+                        handleDispatch(p.itemName, qty, branch, unit);
+                      }}
                       submitting={dispatchingItems.size > 0}
                       defaultBranch={order.targetBranch}
-                      unit={p.dispatchUnit ?? order.items.find(i => i.itemId === p.itemId)?.dispatchUnit ?? 'kg'}
+                      unit={stock?.unit ?? 'kg'}
                     />
                   </div>
                 );
