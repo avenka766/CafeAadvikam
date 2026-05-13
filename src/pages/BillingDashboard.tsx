@@ -396,10 +396,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
 
   return (
-    <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
+    <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 h-[calc(100vh-112px)] overflow-hidden">
 
       {/* ═══ LEFT: Item picker ═══════════════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
         {/* Mode toggle — Menu vs Custom */}
         <div className="px-4 pt-3 pb-2">
@@ -424,7 +424,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         {itemMode === 'menu' ? (
           <>
             {/* Search */}
-            <div className="px-4 pb-2">
+            <div className="px-4 pb-2 shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder="Search menu items…" value={search} onChange={e => setSearch(e.target.value)}
@@ -453,7 +453,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
           </>
         ) : (
           /* ── Custom items panel ── */
-          <div className="px-4 py-3 space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
             {/* Add custom item form */}
             <div className="bg-card border border-amber-200/60 rounded-2xl p-4 space-y-3 shadow-soft"
               style={{ background: 'linear-gradient(135deg,rgba(251,191,36,0.04),rgba(251,191,36,0.02))' }}>
@@ -890,13 +890,13 @@ function NewBillPanel() {
   }
 
   return (
-    <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 min-h-[calc(100vh-112px)]">
+    <div className="flex flex-col md:flex-row gap-0 md:gap-4 md:px-4 md:pt-4 md:pb-6 h-[calc(100vh-112px)] overflow-hidden">
 
       {/* ═══ LEFT: Item picker ═══════════════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
         {/* Mode toggle */}
-        <div className="px-4 pt-3 pb-2">
+        <div className="px-4 pt-3 pb-2 shrink-0">
           <div className="flex gap-1.5 p-1 rounded-xl bg-muted">
             <button onClick={() => setItemMode('menu')}
               className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
@@ -913,7 +913,7 @@ function NewBillPanel() {
 
         {itemMode === 'menu' ? (
           <>
-            <div className="px-4 pb-2">
+            <div className="px-4 pb-2 shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder="Search menu items…" value={search} onChange={e => setSearch(e.target.value)}
@@ -921,10 +921,10 @@ function NewBillPanel() {
                 {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
               </div>
             </div>
-            <div className="border-b border-border">
+            <div className="border-b border-border shrink-0">
               <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
             </div>
-            <div className="px-4 py-3">
+            <div className="flex-1 overflow-y-auto px-4 py-3">
               {filteredItems.length === 0 ? (
                 <div className="text-center py-12 space-y-2">
                   <p className="font-body text-muted-foreground text-sm">No items found</p>

@@ -59,10 +59,12 @@ export default function KitchenDashboard() {
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const lastIdsRef = useRef<Set<string>>(
-    new Set(orders.filter(o => o.status === 'pending').map(o => o.id))
-  );
-  const alertRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastIdsRef = useRef<Set<string>>(new Set());
+  const alertRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastCancelledIdsRef = useRef<Set<string>>(new Set());
+  const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
+  // Flag: have we done the first-load seed yet?
+  const seededRef = useRef(false);
 
   useEffect(() => {
     startPolling();
@@ -75,16 +77,19 @@ export default function KitchenDashboard() {
     return orders.filter(o => new Date(o.createdAt).toDateString() === today);
   }, [orders]);
 
-  const pending    = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
-  const cancelled  = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
+  const pending   = useMemo(() => todayOrders.filter(o => o.status === 'pending'),   [todayOrders]);
+  const cancelled = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
 
-  // Track recently cancelled orders to flash them.
-  // IMPORTANT: seed with ALL currently-cancelled IDs so that on mount / tab switch
-  // we never treat existing cancelled orders as "new".
-  const lastCancelledIdsRef = useRef<Set<string>>(
-    new Set(orders.filter(o => o.status === 'cancelled').map(o => o.id))
-  );
-  const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
+  // Seed tracking refs on first real data load so we NEVER alert on pre-existing orders.
+  // The seededRef flag handles duplicate-tab / page-refresh cases where orders[] is
+  // empty at mount (store hasn't fetched yet) — we wait until the first poll returns data.
+  useEffect(() => {
+    if (seededRef.current) return;
+    if (orders.length === 0) return; // not loaded yet — wait for next poll cycle
+    lastIdsRef.current          = new Set(orders.filter(o => o.status === 'pending').map(o => o.id));
+    lastCancelledIdsRef.current = new Set(orders.filter(o => o.status === 'cancelled').map(o => o.id));
+    seededRef.current = true;
+  }, [orders]);
 
   useEffect(() => {
     const curr = new Set(pending.map(o => o.id));
