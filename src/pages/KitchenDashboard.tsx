@@ -16,19 +16,44 @@ const TABS: { key: OrderStatus | 'active'; label: string; accent: string; textCo
   { key: 'ready',     label: 'Ready',    accent: '#10B981', textColor: '#fff' },
 ];
 
+// Shared AudioContext — created once, resumed on first user gesture.
+// Browsers block sound until a tap/click; this handles that correctly.
+let _audioCtx: AudioContext | null = null;
+function getAudioCtx(): AudioContext {
+  if (!_audioCtx) _audioCtx = new AudioContext();
+  if (_audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
 function playBeep() {
   try {
-    const ctx = new AudioContext();
+    const ctx = getAudioCtx();
     [0, 0.35, 0.7].forEach(offset => {
       const osc = ctx.createOscillator(); const gain = ctx.createGain();
       osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = 960; osc.type = 'square';
+      osc.frequency.value = 880; osc.type = 'square';
       gain.gain.setValueAtTime(0, ctx.currentTime + offset);
-      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + offset + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.28);
-      osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.3);
+      gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.3);
+      osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.32);
     });
-  } catch { /**/ }
+  } catch (e) { console.warn('playBeep failed:', e); }
+}
+
+function playCancelBeep() {
+  try {
+    const ctx = getAudioCtx();
+    // Low descending buzz — clearly different from new-order beep
+    [0, 0.25, 0.5, 0.75].forEach((offset, i) => {
+      const osc = ctx.createOscillator(); const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 400 - i * 60; osc.type = 'sawtooth';
+      gain.gain.setValueAtTime(0, ctx.currentTime + offset);
+      gain.gain.linearRampToValueAtTime(0.35, ctx.currentTime + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.22);
+      osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.24);
+    });
+  } catch (e) { console.warn('playCancelBeep failed:', e); }
 }
 
 function printKot(order: Order) {
@@ -69,7 +94,15 @@ export default function KitchenDashboard() {
   useEffect(() => {
     startPolling();
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-    return () => stopPolling();
+    // Resume AudioContext on first user interaction (required by browsers)
+    const resume = () => { getAudioCtx(); document.removeEventListener('click', resume); document.removeEventListener('touchstart', resume); };
+    document.addEventListener('click', resume);
+    document.addEventListener('touchstart', resume);
+    return () => {
+      stopPolling();
+      document.removeEventListener('click', resume);
+      document.removeEventListener('touchstart', resume);
+    };
   }, [startPolling, stopPolling]);
 
   const todayOrders = useMemo(() => {
@@ -94,7 +127,7 @@ export default function KitchenDashboard() {
   useEffect(() => {
     const curr = new Set(pending.map(o => o.id));
     const newO = pending.filter(o => !lastIdsRef.current.has(o.id));
-    if (newO.length > 0 && lastIdsRef.current.size > 0) {
+    if (newO.length > 0 && seededRef.current) {
       if (soundEnabled) playBeep();
       newO.forEach(o => {
         if ('Notification' in window && Notification.permission === 'granted') {
@@ -111,24 +144,11 @@ export default function KitchenDashboard() {
   useEffect(() => {
     const currCancelled = new Set(cancelled.map(o => o.id));
     const newCancelledOrders = cancelled.filter(o => !lastCancelledIdsRef.current.has(o.id));
-    if (newCancelledOrders.length > 0) {
+    if (newCancelledOrders.length > 0 && seededRef.current) {
       const freshIds = new Set(newCancelledOrders.map(o => o.id));
       setNewlyCancelledIds(prev => new Set([...prev, ...freshIds]));
       // Play alert beep for cancellations
-      if (soundEnabled) {
-        try {
-          const ctx = new AudioContext();
-          [0, 0.2, 0.4, 0.6].forEach(offset => {
-            const osc = ctx.createOscillator(); const gain = ctx.createGain();
-            osc.connect(gain); gain.connect(ctx.destination);
-            osc.frequency.value = 300; osc.type = 'sawtooth';
-            gain.gain.setValueAtTime(0, ctx.currentTime + offset);
-            gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + offset + 0.02);
-            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.18);
-            osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.2);
-          });
-        } catch { /**/ }
-      }
+      if (soundEnabled) playCancelBeep();
       newCancelledOrders.forEach(o => {
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification(`❌ Order CANCELLED #${String(o.orderNumber).padStart(3,'0')}`, {
