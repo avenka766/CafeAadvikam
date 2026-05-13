@@ -35,19 +35,21 @@ function detectSellUnit(itemName: string): 'kg' | 'pcs' {
   return weightKeywords.some((kw) => lower.includes(kw)) ? 'kg' : 'pcs';
 }
 
-function formatQtyLabel(qty: number, itemName: string): string {
-  const unit = detectSellUnit(itemName);
+function formatQtyLabel(qty: number, itemName: string, explicitUnit?: 'pcs' | 'kg'): string {
+  // Use explicit unit when provided (e.g. from branch_incoming.unit) so pcs items
+  // dispatched in pcs are displayed as pcs even if the item name looks like a kg item.
+  const unit = explicitUnit ?? detectSellUnit(itemName);
   const clean = (n: number) => parseFloat(n.toFixed(3)).toString();
   if (unit === 'kg') {
     if (qty >= 1) return `${clean(qty)} kg`;
     const grams = Math.round(qty * 1000);
     return `${grams}g`;
   }
-  return `${clean(qty)} pcs`;
+  return `${Math.round(qty)} pcs`;
 }
 
-function SmartStockBadge({ qty, threshold, itemName }: { qty: number; threshold: number; itemName: string }) {
-  const unit = detectSellUnit(itemName);
+function SmartStockBadge({ qty, threshold, itemName, unit }: { qty: number; threshold: number; itemName: string; unit?: 'pcs' | 'kg' }) {
+  const displayUnit = unit ?? detectSellUnit(itemName);
   const low  = qty <= threshold;
   return (
     <span className={cn(
@@ -55,11 +57,11 @@ function SmartStockBadge({ qty, threshold, itemName }: { qty: number; threshold:
       low ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700',
     )}>
       {low && <AlertTriangle className="size-3 shrink-0" />}
-      {unit === 'kg'
+      {displayUnit === 'kg'
         ? <Scale className="size-3 shrink-0 opacity-60" />
         : <Hash  className="size-3 shrink-0 opacity-60" />
       }
-      {formatQtyLabel(qty, itemName)}
+      {formatQtyLabel(qty, itemName, displayUnit)}
     </span>
   );
 }
@@ -309,11 +311,11 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
           ) : (
             <div className="divide-y">
               {todayIncoming.map((inc) => {
-                const unit = detectSellUnit(inc.itemName);
+                const displayUnit = inc.unit ?? detectSellUnit(inc.itemName);
                 return (
                   <div key={inc.id} className="flex items-center justify-between px-4 py-3 gap-3">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {unit === 'kg' ? <Scale className="size-3.5 text-muted-foreground shrink-0" /> : <Hash className="size-3.5 text-muted-foreground shrink-0" />}
+                      {displayUnit === 'kg' ? <Scale className="size-3.5 text-muted-foreground shrink-0" /> : <Hash className="size-3.5 text-muted-foreground shrink-0" />}
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{inc.itemName}</p>
                         <p className="text-xs text-muted-foreground">{fmt(inc.receivedAt)} · {inc.dispatchedBy}</p>
@@ -321,7 +323,7 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
-                        +{formatQtyLabel(inc.quantity, inc.itemName)}
+                        +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
                       </span>
                       <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id).then(() => {})} />
                     </div>
@@ -358,10 +360,10 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
                       {s.quantity <= s.minThreshold && <AlertTriangle className="size-3.5 text-amber-500 shrink-0" />}
                       <div>
                         <p className="text-sm font-medium">{s.itemName}</p>
-                        <p className="text-xs text-muted-foreground">Min: {formatQtyLabel(s.minThreshold, s.itemName)}</p>
+                        <p className="text-xs text-muted-foreground">Min: {formatQtyLabel(s.minThreshold, s.itemName, s.unit)}</p>
                       </div>
                     </div>
-                    <SmartStockBadge qty={s.quantity} threshold={s.minThreshold} itemName={s.itemName} />
+                    <SmartStockBadge qty={s.quantity} threshold={s.minThreshold} itemName={s.itemName} unit={s.unit} />
                   </div>
                 ))}
               </div>
