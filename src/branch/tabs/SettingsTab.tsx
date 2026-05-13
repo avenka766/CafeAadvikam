@@ -3,13 +3,28 @@ import { Settings } from 'lucide-react';
 import { SectionHeader, ThresholdEditor, EmptyState } from '../components';
 import type { Branch } from '../types';
 import type { StockItem } from '../branchStore';
+import { SNB_ITEMS } from '../snbItems';
+import { VRSNB_ITEMS } from '../vrsnbItems';
 
 interface Props {
   branch: Branch;
   branchStock: StockItem[];
 }
 
+const SNB_BRANCHES = ['SNB', 'Hosur'] as const;
+
 export function SettingsTab({ branch, branchStock }: Props) {
+  const isSNB = (SNB_BRANCHES as readonly string[]).includes(branch);
+  const allItemNames = isSNB
+    ? SNB_ITEMS.map((i) => i.name)
+    : VRSNB_ITEMS.map((i) => i.name);
+
+  // Merge DB stock data with full item list — items not yet in DB get defaults
+  const stockMap = new Map(branchStock.map((s) => [s.itemName, s]));
+  const allItems = allItemNames.map((name) =>
+    stockMap.get(name) ?? { itemName: name, quantity: 0, minThreshold: 10, price: null }
+  );
+
   return (
     <div className="bg-card border rounded-xl overflow-hidden">
       <SectionHeader
@@ -21,11 +36,11 @@ export function SettingsTab({ branch, branchStock }: Props) {
           </span>
         }
       />
-      {branchStock.length === 0 ? (
-        <EmptyState message="No stock data yet." />
+      {allItems.length === 0 ? (
+        <EmptyState message="No items configured for this branch." />
       ) : (
         <div className="divide-y">
-          {branchStock.map((s) => (
+          {allItems.map((s) => (
             <div key={s.itemName} className="flex items-center justify-between px-4 py-3">
               <div>
                 <p className="text-sm font-medium">{s.itemName}</p>

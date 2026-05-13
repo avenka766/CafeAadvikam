@@ -258,8 +258,18 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
   );
 
   const filteredStock = branchStock.filter((s) => allowedItemNames.has(s.itemName));
-  const availableItems  = filteredStock.filter((s) => s.quantity > 0);
-  const outOfStockItems = filteredStock.filter((s) => s.quantity <= 0);
+
+  // Build a complete item list: all branch items, with DB quantity if exists, else 0
+  const allBranchItemNames = isSNBBranch
+    ? SNB_ITEMS.map((i) => i.name)
+    : VRSNB_ITEMS.map((i) => i.name);
+  const stockMap = new Map(filteredStock.map((s) => [s.itemName, s]));
+  const completeStock = allBranchItemNames.map((name) =>
+    stockMap.get(name) ?? { itemName: name, quantity: 0, minThreshold: 10, price: null }
+  );
+
+  const availableItems  = completeStock.filter((s) => s.quantity > 0);
+  const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
 
   const today = new Date().toDateString();
   const todayIncoming = branchIncoming.filter(

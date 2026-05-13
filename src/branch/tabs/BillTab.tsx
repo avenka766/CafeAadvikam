@@ -881,10 +881,13 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const handleSplitAmount = (idx: 0|1, raw: string) => {
     setError('');
     const parsed = parseFloat(raw);
-    if (!isNaN(parsed) && allPriced) {
+    if (!isNaN(parsed) && parsed >= 0 && allPriced) {
+      // Auto-fill the other slot so both always sum to finalTotal
       const other = Math.round((finalTotal - parsed) * 100) / 100;
-      setSplitAmounts(idx === 0 ? [raw, other >= 0 ? String(other) : ''] : [other >= 0 ? String(other) : '', raw]);
+      const otherStr = other >= 0 ? String(other) : '';
+      setSplitAmounts(idx === 0 ? [raw, otherStr] : [otherStr, raw]);
     } else {
+      // No prices yet — just store what the user typed, no auto-fill
       setSplitAmounts((prev) => idx === 0 ? [raw, prev[1]] : [prev[0], raw]);
     }
   };
@@ -1195,7 +1198,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                       </div>
                     );
                   })}
-                  {allPriced && splitTotal0 > 0 && (
+                  {allPriced && (splitTotal0 > 0 || splitTotal1 > 0) && (
                     <div className={cn('flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold',
                       Math.abs(splitPending) < 0.01 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
                       <span>{Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to cover' : 'Over by'}</span>
