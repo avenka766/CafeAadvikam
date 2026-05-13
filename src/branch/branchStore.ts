@@ -154,6 +154,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         stock[branch] = (stockData || []).map((d) => ({
           itemName:     d.item_name,
           quantity:     d.quantity,
+          // Persist the unit stored in DB so pcs items always display as pcs
+          unit:         (d.unit === 'pcs' ? 'pcs' : d.unit === 'kg' ? 'kg' : undefined) as 'pcs' | 'kg' | undefined,
           minThreshold: d.min_threshold ?? 10,
           price:        priceMap[d.item_name] ?? null,
         }));
@@ -509,11 +511,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (existing) {
       const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
       await supabase.from('branch_stock')
-        .update({ quantity: newQty })
+        .update({ quantity: newQty, unit: inc.unit })
         .eq('branch', branch).eq('item_name', inc.itemName);
     } else {
       await supabase.from('branch_stock')
-        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, min_threshold: 10 });
+        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
     }
 
     // Update local state

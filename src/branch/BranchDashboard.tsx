@@ -1,12 +1,9 @@
 // src/branch/BranchDashboard.tsx
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Package, Settings, Receipt } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
-import { StatCard, TabBar } from './components';
-import { StockTab }    from './tabs/StockTab';
-import { BillTab }     from './tabs/BillTab';
-import { SettingsTab } from './tabs/SettingsTab';
+import { StatCard, TabBar } from './components';\nimport { StockTab }    from './tabs/StockTab';\nimport { BillTab }     from './tabs/BillTab';\nimport { SettingsTab } from './tabs/SettingsTab';
 import type { Branch } from './types';
 import { BRANCH_COLORS } from './types';
 
@@ -93,10 +90,11 @@ export default function BranchDashboard({ branch }: Props) {
         <TabBar tabs={TABS} active={tab} onChange={setTab} />
       </div>
 
+      {/* Tabs are kept mounted (hidden when inactive) so cart state survives tab switches */}
       <div className="px-4 space-y-3">
-        {tab === 'stock'    && <StockTab    branch={branch} branchStock={branchStock} branchIncoming={branchIncoming} loading={loading} />}
-        {tab === 'bill'     && <BillTab     branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />}
-        {tab === 'settings' && <SettingsTab branch={branch} branchStock={branchStock} />}
+        <div className={tab !== 'stock'    ? 'hidden' : undefined}><StockTab    branch={branch} branchStock={branchStock} branchIncoming={branchIncoming} loading={loading} /></div>
+        <div className={tab !== 'bill'     ? 'hidden' : undefined}><BillTab     branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} /></div>
+        <div className={tab !== 'settings' ? 'hidden' : undefined}><SettingsTab branch={branch} branchStock={branchStock} /></div>
       </div>
     </div>
   );
