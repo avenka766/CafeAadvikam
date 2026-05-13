@@ -679,18 +679,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (error) return `Failed to create stock entry: ${error.message}`;
     }
 
-    set((s) => {
-      const stock = { ...s.stock };
-      const existing = stock[branch].find((x) => x.itemName === itemName);
-      if (existing) {
-        stock[branch] = stock[branch].map((x) =>
-          x.itemName === itemName ? { ...x, quantity: rounded } : x,
-        );
-      } else {
-        stock[branch] = [...stock[branch], { itemName, quantity: rounded, minThreshold: 0, price: null }];
-      }
-      return { stock };
-    });
+    // Re-fetch from DB to ensure local state matches exactly what was saved
+    await get().fetchBranchData(branch);
     return null;
   },
 
