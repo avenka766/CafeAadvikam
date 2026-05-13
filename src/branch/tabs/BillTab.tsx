@@ -45,6 +45,13 @@ const SNB_INFO = {
   gstin:   '33AMTPR1760M1ZF',
 };
 
+const VRSNB_INFO = {
+  name:    'VRSNB FOODS LLP',
+  address: '#109/1C, Hosur main Road, Berigai,\nSoolagiri TK, Krishnagiri DT,\nTamilnadu 635105',
+  gstin:   '33AAZFV1266C1ZZ',
+  fssai:   '12425011000098',
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const fmt = (n: number) =>
@@ -199,10 +206,93 @@ function printBill(args: PrintArgs) {
     return;
   }
 
-  // ── Café Aadvikam format (VRSNB & Cafe branches) ──────────────────────────
-  const cafeInfo = isVRSNB_print
-    ? { name: 'Café Aadvikam', addr: '#109/1C, Hosur main Road, Berigai,\nSoolagiri TK, Krishnagiri DT, Tamilnadu 635105', gst: '33AAZFV1266C1ZZ', fssai: '12425011000098' }
-    : { name: 'Café Aadvikam', addr: '109 Bagalur Main Road, Berikai', gst: '', fssai: '' };
+  // ── VRSNB FOODS LLP format (matches physical receipt) ─────────────────────
+  if (isVRSNB_print) {
+    const addrLines = VRSNB_INFO.address.split('\n').map(l => `<div>${l}</div>`).join('');
+    const totalQtyVR = items.reduce((s,i) => s + i.quantity, 0);
+    const rows = items.map((item, idx) => `
+      <tr>
+        <td class="name">${item.itemName}</td>
+        <td class="num">${item.sellUnit === 'kg' ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`) : item.quantity}</td>
+        <td class="num">${item.price != null ? fmtNum(item.price) : '—'}</td>
+        <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
+      </tr>`).join('');
+
+    const payLabel2 = payMode === 'single'
+      ? (singleMethod ?? 'cash').charAt(0).toUpperCase() + (singleMethod ?? 'cash').slice(1)
+      : [
+          splitMethods[0] ? splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1) : '',
+          splitMethods[1] ? splitMethods[1].charAt(0).toUpperCase()+splitMethods[1].slice(1) : '',
+        ].filter(Boolean).join(' + ');
+
+    const discountedBase2 = Math.round((subtotal - discount) * 100) / 100;
+
+    const html = `<!DOCTYPE html><html><head><title>Bill – ${billNo}</title>
+    <style>
+      @page { margin: 8mm; size: 80mm auto; }
+      * { box-sizing: border-box; }
+      body { font-family: 'Arial', sans-serif; font-size: 11px; color: #000; max-width: 300px; margin: 0 auto; padding: 8px; }
+      .center { text-align: center; }
+      .bold { font-weight: bold; }
+      hr { border: none; border-top: 1px dashed #666; margin: 6px 0; }
+      hr.solid { border-top: 1px solid #000; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 2px 2px; vertical-align: top; }
+      .name { } .num { text-align: right; white-space: nowrap; }
+      .th { font-weight: bold; border-bottom: 1px solid #000; padding-bottom: 3px; }
+      .net { font-size: 13px; font-weight: bold; }
+    </style></head><body>
+    <div class="center bold" style="font-size:11px">PAID</div>
+    <div class="center bold" style="font-size:14px;margin-top:2px">${VRSNB_INFO.name}</div>
+    <div class="center" style="margin-top:3px">${addrLines}</div>
+    <div class="center">GST NO: ${VRSNB_INFO.gstin}</div>
+    <div class="center">FSSAI NO: ${VRSNB_INFO.fssai}</div>
+    <hr class="solid"/>
+    <table><tr>
+      <td>Name: </td>
+    </tr><tr>
+      <td>Date: <span class="bold">${dateStr}</span></td>
+      <td class="num bold">Pick Up</td>
+    </tr><tr>
+      <td>${timeStr}</td>
+    </tr><tr>
+      <td>Cashier: ${soldBy}</td>
+      <td class="num">Bill No.: <span class="bold">${billNo.split('-').pop()}</span></td>
+    </tr></table>
+    <hr/>
+    <table>
+      <thead><tr>
+        <td class="th name">Item</td>
+        <td class="th num">Qty.</td>
+        <td class="th num">Price</td>
+        <td class="th num">Amount</td>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr style="border-top:1px solid #000;margin-top:4px">
+        <td class="bold">Total Qty: ${totalQtyVR}</td>
+        <td></td>
+        <td class="num">Sub Total</td>
+        <td class="num bold">${fmtNum(discountedBase2)}</td>
+      </tr></tfoot>
+    </table>
+    <hr class="solid"/>
+    <table><tr>
+      <td colspan="3" class="net">Grand Total</td>
+      <td class="net num">&#8377;${fmtNum(finalTotal)}</td>
+    </tr></table>
+    <div style="font-size:10px;padding:2px 0">Paid via ${payLabel2}</div>
+    <hr/>
+    <div class="center bold" style="margin-top:4px">Thank You &amp; Visit Again...!!!</div>
+    <script>window.onload=()=>window.print();</script>
+    </body></html>`;
+
+    const w = window.open('','_blank','width=380,height=650');
+    if (w) { w.document.write(html); w.document.close(); }
+    return;
+  }
+
+  // ── Café Aadvikam format (other cafe branches) ────────────────────────────
+  const cafeInfo = { name: 'Café Aadvikam', addr: '109 Bagalur Main Road, Berikai', gst: '', fssai: '' };
 
   const addrDiv = cafeInfo.addr.split('\n').map(l => `<div style="font-size:10px;color:#555">${l}</div>`).join('');
   const discountedBase = Math.round((subtotal - discount) * 100) / 100;
@@ -218,12 +308,6 @@ function printBill(args: PrintArgs) {
   const discRow = discount > 0 ? `
     <tr><td colspan="3" style="padding:4px;font-size:12px;text-align:right;color:#16a34a">Discount ${discountType==='percent'?`(${discountValue}%)`:'(Flat)'}</td>
         <td style="padding:4px;font-size:12px;text-align:right;color:#16a34a">-${fmt(discount)}</td></tr>` : '';
-
-  const gstRows = isVRSNB_print ? `
-    <tr><td colspan="3" style="padding:3px 4px;font-size:11px;text-align:right">CGST@2.5 2.5%</td>
-        <td style="padding:3px 4px;font-size:11px;text-align:right">${fmtNum(cgst)}</td></tr>
-    <tr><td colspan="3" style="padding:3px 4px;font-size:11px;text-align:right">SGST@2.5 2.5%</td>
-        <td style="padding:3px 4px;font-size:11px;text-align:right">${fmtNum(sgst)}</td></tr>` : '';
 
   const html = `<!DOCTYPE html><html><head><title>Bill – ${billNo}</title>
   <style>
@@ -262,7 +346,6 @@ function printBill(args: PrintArgs) {
         <td style="font-size:11px;padding:3px;text-align:right">Sub Total</td>
         <td style="font-size:11px;padding:3px;text-align:right;font-weight:600">${fmtNum(discountedBase)}</td></tr>
     ${discRow}
-    ${gstRows}
   </table>
   <hr class="dashed"/>
   <table><tr>
@@ -861,14 +944,13 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     return Math.min(v, subtotal);
   }, [subtotal, discountType, discountValue, allPriced]);
 
-  // Round-off / GST
+  // Round-off for SNB/Hosur only
   const preRound   = Math.round((subtotal - discount) * 100) / 100;
   const roundOff   = (!isVRSNB && isSNB) ? Math.round(preRound) - preRound : 0;
-  const cafeCgst   = isVRSNB ? Math.round(preRound * 0.025 * 100) / 100 : 0;
-  const cafeSgst   = isVRSNB ? Math.round(preRound * 0.025 * 100) / 100 : 0;
-  const finalTotal = isVRSNB
-    ? Math.round((preRound + cafeCgst + cafeSgst) * 100) / 100
-    : isSNB ? Math.round(preRound) : preRound;
+  // GST is INCLUDED in prices — do not add on top
+  const cafeCgst   = 0;
+  const cafeSgst   = 0;
+  const finalTotal = isSNB ? Math.round(preRound) : preRound;
 
   // ── Payment ──────────────────────────────────────────────────────────────────
 
@@ -910,9 +992,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
   const buildMethodLabel = () => {
     if (payMode === 'single') return singleMethod ?? 'cash';
+    // Store as "method1+method2" — allowed by DB check constraint (see migration)
     const parts: string[] = [];
-    if (splitMethods[0]) parts.push(`${splitMethods[0]}:${splitAmounts[0]||0}`);
-    if (splitMethods[1]) parts.push(`${splitMethods[1]}:${splitAmounts[1]||0}`);
+    if (splitMethods[0]) parts.push(splitMethods[0]);
+    if (splitMethods[1]) parts.push(splitMethods[1]);
     return parts.join('+');
   };
 
@@ -1175,46 +1258,72 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
               </div>
 
               {payMode === 'split' && (
-                <div className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/40 p-3">
-                  <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider">Split between 2 methods</p>
-                  {([0,1] as const).map((idx) => {
-                    const other = splitMethods[idx === 0 ? 1 : 0];
-                    return (
-                      <div key={idx} className="space-y-1.5">
-                        <div className="flex gap-1.5">
-                          {PAYMENT_OPTIONS.map((m) => {
-                            const chosen  = splitMethods[idx] === m.key;
-                            const blocked = other === m.key;
-                            return (
-                              <button key={m.key} onClick={() => !blocked && selectSplitMethod(idx, m.key)} disabled={blocked}
-                                className={cn('flex-1 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 border transition active:scale-95',
-                                  chosen ? 'bg-violet-600 text-white border-transparent'
-                                         : blocked ? 'opacity-30 bg-muted border-border cursor-not-allowed'
-                                         : 'bg-white border-border hover:bg-violet-50')}>
-                                {m.icon}{m.label}
-                              </button>
-                            );
-                          })}
+                <div className="rounded-2xl border-2 border-violet-200 bg-violet-50/60 overflow-hidden">
+                  <div className="px-4 py-2 bg-violet-600">
+                    <p className="text-xs font-bold text-white uppercase tracking-wider text-center">Part Payment</p>
+                  </div>
+                  <div className="p-4 space-y-4">
+                    {([0,1] as const).map((idx) => {
+                      const other = splitMethods[idx === 0 ? 1 : 0];
+                      const label = idx === 0 ? '1st Payment' : '2nd Payment';
+                      return (
+                        <div key={idx} className="space-y-2">
+                          <p className="text-[11px] font-bold text-violet-700">{label}</p>
+                          {/* Method selector */}
+                          <div className="grid grid-cols-3 gap-2">
+                            {PAYMENT_OPTIONS.map((m) => {
+                              const chosen  = splitMethods[idx] === m.key;
+                              const blocked = other === m.key;
+                              return (
+                                <button key={m.key}
+                                  onClick={() => !blocked && selectSplitMethod(idx, m.key)}
+                                  disabled={blocked}
+                                  className={cn(
+                                    'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1 border-2 transition active:scale-95',
+                                    chosen  ? 'bg-violet-600 text-white border-violet-600 shadow-md'
+                                    : blocked ? 'opacity-25 bg-muted border-muted cursor-not-allowed'
+                                    : 'bg-white border-border hover:border-violet-300',
+                                  )}>
+                                  {m.icon}{m.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {/* Amount input */}
+                          <div className={cn(
+                            'flex items-center gap-3 rounded-xl border-2 px-4 py-3 bg-white transition',
+                            splitMethods[idx] ? 'border-violet-300' : 'border-border opacity-50',
+                          )}>
+                            <span className="text-lg font-bold text-muted-foreground">₹</span>
+                            <input
+                              type="number" inputMode="decimal" min="0" step="1"
+                              value={splitAmounts[idx]}
+                              onChange={(e) => handleSplitAmount(idx, e.target.value)}
+                              disabled={!splitMethods[idx]}
+                              placeholder={splitMethods[idx] ? (allPriced ? String(Math.round(finalTotal / 2)) : '0') : 'Select method first'}
+                              className="flex-1 text-xl font-bold tabular-nums bg-transparent focus:outline-none disabled:cursor-not-allowed placeholder:text-muted-foreground/40 placeholder:text-sm placeholder:font-normal"
+                            />
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 bg-white rounded-lg border px-3 py-1.5">
-                          <span className="text-xs text-muted-foreground shrink-0">₹</span>
-                          <input type="number" inputMode="decimal" min="0" step="0.01"
-                            value={splitAmounts[idx]}
-                            onChange={(e) => handleSplitAmount(idx, e.target.value)}
-                            disabled={!splitMethods[idx]}
-                            placeholder={splitMethods[idx] ? (allPriced ? `e.g. ${idx===0?Math.round(finalTotal/2):''}` : '0.00') : 'Pick method first'}
-                            className="flex-1 text-sm font-mono text-right bg-transparent focus:outline-none disabled:opacity-40" />
-                        </div>
+                      );
+                    })}
+                    {/* Balance indicator */}
+                    {allPriced && (splitTotal0 > 0 || splitTotal1 > 0) && (
+                      <div className={cn(
+                        'flex items-center justify-between rounded-xl px-4 py-3 font-bold',
+                        Math.abs(splitPending) < 0.01
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-amber-100 text-amber-700',
+                      )}>
+                        <span className="text-sm">
+                          {Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to collect' : 'Over by'}
+                        </span>
+                        {Math.abs(splitPending) >= 0.01 && (
+                          <span className="text-lg tabular-nums">{fmt(Math.abs(splitPending))}</span>
+                        )}
                       </div>
-                    );
-                  })}
-                  {allPriced && (splitTotal0 > 0 || splitTotal1 > 0) && (
-                    <div className={cn('flex items-center justify-between rounded-lg px-3 py-2 text-xs font-semibold',
-                      Math.abs(splitPending) < 0.01 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
-                      <span>{Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to cover' : 'Over by'}</span>
-                      {Math.abs(splitPending) >= 0.01 && <span className="tabular-nums font-bold">{fmt(Math.abs(splitPending))}</span>}
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
             </div>

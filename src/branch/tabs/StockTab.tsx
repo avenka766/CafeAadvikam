@@ -19,6 +19,7 @@ interface Props {
   branch: Branch;
   branchStock: StockItem[];
   branchIncoming: IncomingStock[];
+  branchThresholds: Record<string, number>;
   loading: boolean;
 }
 
@@ -248,7 +249,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
 
 type StockSubTab = 'incoming' | 'current' | 'manual';
 
-export function StockTab({ branch, branchStock, branchIncoming, loading }: Props) {
+export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading }: Props) {
   const { confirmIncoming, confirmAllIncoming } = useBranchStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
@@ -279,10 +280,12 @@ export function StockTab({ branch, branchStock, branchIncoming, loading }: Props
   const stockMap = new Map(filteredStock.map((s) => [s.itemName, s]));
   const completeStock = allBranchItemNames.map((name) => {
     const s = stockMap.get(name);
-    const unit = uomMap.get(name); // authoritative unit from price list
+    const unit = uomMap.get(name);
+    // Use saved threshold from store, fallback to DB row value, then default 10
+    const minThreshold = branchThresholds[name] ?? s?.minThreshold ?? 10;
     return s
-      ? { ...s, unit }  // override whatever DB says with price list unit
-      : { itemName: name, quantity: 0, minThreshold: 10, price: null, unit };
+      ? { ...s, unit, minThreshold }
+      : { itemName: name, quantity: 0, minThreshold, price: null, unit };
   });
 
   const availableItems  = completeStock.filter((s) => s.quantity > 0);
