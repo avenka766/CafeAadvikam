@@ -8,6 +8,9 @@ export default defineConfig({
     host: "::",
     port: 8080,
   },
+  build: {
+    sourcemap: false, // SEC-14: never expose source in production
+  },
   plugins: [
     react(),
   ],

@@ -1,61 +1,60 @@
-# Welcome to your OnSpace project
+# Cafe Aadvikam — Point of Sale System
 
-## How can I edit this code?
+A multi-role POS system for Cafe Aadvikam and associated bakery/branch outlets.
+Built with **React 18 + Vite + TypeScript + Zustand + Supabase**.
 
-There are several ways of editing your application.
+## Quick Start
 
-**Use OnSpace**
-
-Simply visit the [OnSpace Project]() and start prompting.
-
-Changes made via OnSpace will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in OnSpace.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+cp .env.example .env.local   # fill in your Supabase URL + anon key
+npm ci
+# In Supabase SQL Editor, run: supabase/migrations/001_security.sql
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Roles & Routes
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+| Role | Default Route |
+|------|--------------|
+| `admin` | `/admin-dashboard` |
+| `billing` | `/billing` |
+| `order_taker` | `/order-pad` |
+| `kitchen` | `/kitchen` |
+| `baker` | `/bakery/baker` |
+| `store` | `/bakery/store` |
+| `packing` | `/bakery/packing` |
+| `order_receiver` | `/bakery/receive` |
+| `branch_vrsnb` | `/branch/vrsnb` |
+| `branch_snb` | `/branch/snb` |
+| `branch_hosur` | `/branch/hosur` |
 
-**Use GitHub Codespaces**
+## Required Supabase Tables
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+`staff_users`, `menu_items`, `orders`, `employees`, `attendance`,
+`bakery_orders`, `bakery_items`, `branch_stock`, `branch_sales`,
+`branch_incoming`, `branch_advance_orders`, `branch_thresholds`,
+`branch_stock_mismatches`, `login_attempts`
 
-## What technologies are used for this project?
+## Required RPCs (all in 001_security.sql)
 
-This project is built with:
+| RPC | Purpose |
+|-----|---------|
+| `login_staff` | Bcrypt auth + rate limiting |
+| `get_next_order_number` | Atomic sequence order numbers |
+| `decrement_branch_stock` | Atomic stock decrement (race-safe) |
+| `increment_branch_stock` | Rollback helper |
+| `confirm_incoming_stock` | Atomic incoming confirmation |
+| `archive_old_branch_sales` | Soft-archive old sales |
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Git Workflow
 
-## How can I deploy this project?
+- `main` — production (protected: 1 PR review + CI pass required)
+- `feature/*` — new features
+- `fix/*` — bug fixes
 
-Simply open [OnSpace]() and click on Share -> Publish.
+## Deployment (Vercel)
+
+Set these environment variables in Vercel (never the `service_role` key):
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
