@@ -1,14 +1,15 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
-
+# Allow only public-facing pages to be indexed
 User-agent: *
 Allow: /
+Allow: /menu
+Allow: /order
+
+# Block all internal staff/admin routes from crawlers
+Disallow: /admin-dashboard
+Disallow: /billing
+Disallow: /staff-management
+Disallow: /kitchen
+Disallow: /order-pad
+Disallow: /bakery/
+Disallow: /branch/
+Disallow: /attendance
