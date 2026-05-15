@@ -1,5 +1,5 @@
 // src/branch/BranchDashboard.tsx
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Package, Settings, Receipt, History } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
@@ -28,6 +28,9 @@ export default function BranchDashboard({ branch }: Props) {
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
+  // B10 FIX: these heavy operations must only run once per branch change,
+  // not on every React re-render / Strict Mode double-invoke.
+  const initializedRef = useRef<Branch | null>(null);
 
   const branchStock      = stock[branch]           || [];
   const branchIncoming   = incoming[branch]        || [];
@@ -38,9 +41,16 @@ export default function BranchDashboard({ branch }: Props) {
 
   useEffect(() => {
     fetchBranchData(branch);
-    syncIncomingFromDispatches(branch);
-    seedBranchItems(branch);
-    cleanOldData();
+
+    // B10 FIX: syncIncomingFromDispatches and seedBranchItems are expensive one-time
+    // operations.  Only run them when the branch actually changes, not on every re-render.
+    // The branchStore.syncIncomingFromDispatches also has an internal 5-min guard (B5 fix).
+    if (initializedRef.current !== branch) {
+      initializedRef.current = branch;
+      syncIncomingFromDispatches(branch);
+      seedBranchItems(branch);
+      cleanOldData();
+    }
 
     const id = setInterval(() => fetchBranchData(branch), 30_000);
     return () => clearInterval(id);

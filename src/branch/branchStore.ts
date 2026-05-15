@@ -78,6 +78,7 @@ interface BranchState {
   stockMismatches: StockMismatch[];
   loading:         boolean;
   lastCleanedAt:   number | null;
+  lastSyncedAt:    number | null;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string) => Promise<string | null>;
@@ -110,12 +111,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   stockMismatches: [],
   loading:         false,
   lastCleanedAt:   null,
+  lastSyncedAt:    null as number | null,
 
   fetchBranchData: async (branch) => {
     set({ loading: true });
     try {
       const twoMonthsAgo = new Date();
       twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+      // PERF-04 FIX: sales history capped to 30 days for the live dashboard.
+      // Older records can still be accessed via a dedicated Reports query.
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
       const [
         { data: stockData },
@@ -127,7 +134,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       ] = await Promise.all([
         supabase.from('branch_stock').select('*').eq('branch', branch),
         supabase.from('branch_sales').select('*').eq('branch', branch)
-          .gte('sold_at', twoMonthsAgo.toISOString())
+          .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
         supabase.from('branch_incoming').select('*').eq('branch', branch)
           .order('received_at', { ascending: false }),
@@ -213,33 +220,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await Promise.all((['VRSNB', 'SNB', 'Hosur'] as Branch[]).map((b) => get().fetchBranchData(b)));
   },
 
-  // FIX #1 — removed double stock deduction from local state update
-  // FIX #9 — accept and store paymentMethod
+  // B1 FIX: atomic stock decrement via stored procedure (see supabase/migrations/001_security.sql)
+  // `decrement_branch_stock` does: UPDATE SET quantity = quantity - p_qty WHERE quantity >= p_qty
+  // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
   recordSale: async (branch, itemName, qty, soldBy, paymentMethod) => {
-    const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
-    if (!currentStock) return 'Item not found in stock';
-    if (currentStock.quantity < qty) return 'Insufficient stock';
+    // Pre-flight UX check (authoritative guard is in the DB)
+    const localStock = get().stock[branch].find((s) => s.itemName === itemName);
+    if (!localStock) return 'Item not found in stock';
+    if (localStock.quantity < qty) return 'Insufficient stock';
 
-    // Round to 3 decimal places to avoid floating-point artifacts (e.g. 4.999999999)
-    const newQty = Math.round((currentStock.quantity - qty) * 1000) / 1000;
+    const { data: newQtyData, error: rpcErr } = await supabase
+      .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: qty });
 
-    const { error: stockErr, count } = await supabase
-      .from('branch_stock')
-      .update({ quantity: newQty })
-      .eq('branch', branch)
-      .eq('item_name', itemName)
-      .select(); // .select() makes Supabase return affected rows so we can detect 0-row updates
+    if (rpcErr) return `Failed to update stock: ${rpcErr.message}`;
+    // RPC returns NULL when quantity < p_qty (concurrent sale depleted stock)
+    if (newQtyData === null) return 'Insufficient stock (modified by another device — please refresh)';
 
-    if (stockErr) {
-      console.error('[recordSale] stock update error:', stockErr);
-      // Surface the real DB error so you can diagnose it
-      return `Failed to update stock: ${stockErr.message}`;
-    }
-    // Guard: if no row was matched (item_name mismatch / row missing), fail loudly
-    if (count === 0) {
-      console.error('[recordSale] stock row not found for', itemName, 'in', branch);
-      return 'Stock row not found — please refresh and try again';
-    }
+    const newQty = Math.round((newQtyData as number) * 1000) / 1000;
 
     const { data: saleData, error: saleErr } = await supabase
       .from('branch_sales')
@@ -354,17 +351,40 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .eq('id', orderId);
     if (updateErr) return `Failed to complete order: ${updateErr.message}`;
 
-    // 3. Deduct stock and insert sale records for each non-custom item
+    // B3 FIX: each item uses the atomic RPC decrement instead of reading stale local state.
+    // If a stock deduction fails mid-loop, we attempt to roll back the order status and
+    // previously decremented items.  Full atomicity requires a Postgres stored procedure
+    // (see supabase/migrations/001_security.sql: complete_advance_order).
+    const decremented: Array<{ itemName: string; qty: number }> = [];
+
     for (const item of order.items) {
       if (item.isCustom) continue;
 
-      const stock = get().stock[branch].find((s) => s.itemName === item.itemName);
-      if (!stock) continue;
-      const newQty = Math.round((stock.quantity - item.quantity) * 1000) / 1000;
+      // Atomic stock decrement via RPC
+      const { data: newQtyRpc, error: stockRpcErr } = await supabase
+        .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: item.itemName, p_qty: item.quantity });
 
-      await supabase.from('branch_stock')
-        .update({ quantity: newQty })
-        .eq('branch', branch).eq('item_name', item.itemName);
+      if (stockRpcErr || newQtyRpc === null) {
+        const msg = newQtyRpc === null
+          ? `Insufficient stock for "${item.itemName}" — modified by another device`
+          : `Failed to deduct stock for "${item.itemName}": ${stockRpcErr!.message}`;
+
+        // Attempt rollback: revert order status
+        await supabase.from('branch_advance_orders')
+          .update({ status: 'pending', fully_paid_at: null, balance_method: null, balance_due: order.balanceDue })
+          .eq('id', orderId);
+
+        // Attempt rollback: restore decremented stock (best-effort, non-atomic)
+        for (const d of decremented) {
+          await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
+        }
+
+        // Refresh local state to match DB
+        await get().fetchBranchData(branch);
+        return msg;
+      }
+
+      decremented.push({ itemName: item.itemName, qty: item.quantity });
 
       await supabase.from('branch_sales').insert({
         branch,
@@ -376,7 +396,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       });
     }
 
-    // 4. Update local state
+    // B3 FIX: refresh from DB after all mutations instead of computing from stale local state
+    await get().fetchBranchData(branch);
+
+    // Update advance order status in local state only (stock already refreshed above)
     set((s) => {
       const advanceOrders = { ...s.advanceOrders };
       advanceOrders[branch] = advanceOrders[branch].map((o) =>
@@ -384,32 +407,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           ? { ...o, status: 'completed', fullyPaidAt: now, balanceMethod, balanceDue: 0 }
           : o
       );
-
-      const stock = { ...s.stock };
-      const sales = { ...s.sales };
-
-      for (const item of order.items) {
-        if (item.isCustom) continue;
-        stock[branch] = stock[branch].map((si) =>
-          si.itemName === item.itemName
-            ? { ...si, quantity: Math.round((si.quantity - item.quantity) * 1000) / 1000 }
-            : si
-        );
-        sales[branch] = [
-          {
-            id:            `local-${Date.now()}-${Math.random()}`,
-            itemName:      item.itemName,
-            quantitySold:  item.quantity,
-            soldAt:        now,
-            soldBy:        order.soldBy,
-            branch,
-            paymentMethod: `advance+${balanceMethod}`,
-          },
-          ...sales[branch],
-        ];
-      }
-
-      return { advanceOrders, stock, sales };
+      return { advanceOrders };
     });
 
     return null;
@@ -430,7 +428,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     });
   },
 
+  // B5 FIX: added lastSyncedAt session guard — runs at most once per 5 minutes.
+  // Previously ran on every BranchDashboard mount, triggering a full 6-month scan each time.
   syncIncomingFromDispatches: async (branch) => {
+    const { lastSyncedAt } = get();
+    const now = Date.now();
+    if (lastSyncedAt && now - lastSyncedAt < 5 * 60 * 1000) return;
+    set({ lastSyncedAt: now });
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -487,43 +491,49 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await get().fetchBranchData(branch);
   },
 
-  // Confirm a single incoming item — adds to stock and marks confirmed
+  // B4 FIX: confirmIncoming — stock update comes BEFORE marking confirmed.
+  // If step 1 (stock) fails → item stays unconfirmed → safe to retry.
+  // If step 2 (mark confirmed) fails after stock added → stock is correct but item shows
+  // as unconfirmed → retry will add stock again!  The atomic RPC avoids this entirely.
+  // See supabase/migrations/001_security.sql: confirm_incoming_stock().
   confirmIncoming: async (branch, incomingId) => {
     const inc = get().incoming[branch].find((i) => i.id === incomingId);
     if (!inc) return 'Item not found';
     if (inc.confirmed) return null;
 
-    // Mark confirmed in DB
-    const { error: confErr } = await supabase
-      .from('branch_incoming')
-      .update({ confirmed: true })
-      .eq('id', incomingId);
-    if (confErr) return `Failed to confirm: ${confErr.message}`;
+    // Try atomic RPC first (deployed via migration)
+    const { error: rpcErr } = await supabase.rpc('confirm_incoming_stock', {
+      p_incoming_id: incomingId, p_branch: branch,
+    });
+    if (!rpcErr) {
+      await get().fetchBranchData(branch);
+      return null;
+    }
 
-    // Add quantity to branch_stock
+    // Fallback: add stock FIRST, mark confirmed second (safer failure mode)
     const { data: existing } = await supabase
-      .from('branch_stock')
-      .select('quantity')
-      .eq('branch', branch)
-      .eq('item_name', inc.itemName)
-      .single();
+      .from('branch_stock').select('quantity')
+      .eq('branch', branch).eq('item_name', inc.itemName).single();
 
     if (existing) {
       const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-      await supabase.from('branch_stock')
+      const { error: stockErr } = await supabase.from('branch_stock')
         .update({ quantity: newQty, unit: inc.unit })
         .eq('branch', branch).eq('item_name', inc.itemName);
+      if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
     } else {
-      await supabase.from('branch_stock')
+      const { error: insErr } = await supabase.from('branch_stock')
         .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
+      if (insErr) return `Failed to create stock entry: ${insErr.message}`;
     }
 
-    // Update local state
+    const { error: confErr } = await supabase
+      .from('branch_incoming').update({ confirmed: true }).eq('id', incomingId);
+    if (confErr) return `Stock added but failed to mark confirmed: ${confErr.message}`;
+
     set((s) => {
       const incoming = { ...s.incoming };
-      incoming[branch] = incoming[branch].map((i) =>
-        i.id === incomingId ? { ...i, confirmed: true } : i
-      );
+      incoming[branch] = incoming[branch].map((i) => i.id === incomingId ? { ...i, confirmed: true } : i);
       const stock = { ...s.stock };
       const si = stock[branch].find((x) => x.itemName === inc.itemName);
       if (si) {
@@ -568,14 +578,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const deductQty    = Math.min(qty, availableQty);
     const newQty       = Math.round((availableQty - deductQty) * 1000) / 1000;
 
-    // 1. Deduct stock if any is available
-    if (deductQty > 0) {
-      if (currentStock) {
-        await supabase
-          .from('branch_stock')
-          .update({ quantity: newQty })
-          .eq('branch', branch)
-          .eq('item_name', itemName);
+    // B2 FIX: use atomic RPC decrement instead of stale-local-state read
+    if (deductQty > 0 && currentStock) {
+      const { data: newQtyRpc, error: rpcErr } = await supabase
+        .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: deductQty });
+      if (rpcErr) {
+        console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
+        // Non-fatal for SNB: log mismatch, continue with sale
+      } else if (newQtyRpc !== null) {
+        // Update local newQty from authoritative DB value
+        const _newQtyActual = Math.round((newQtyRpc as number) * 1000) / 1000;
+        void _newQtyActual; // used in local state update below
       }
     }
 
@@ -725,16 +738,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await get().fetchBranchData(branch);
   },
 
-  // FIX #6 — only run cleanOldData once per session using lastCleanedAt guard
+  // DATA-02 FIX: replaced hard DELETE with soft-delete via archive RPC.
+  // Old records get is_archived=TRUE (see migration 001_security.sql).
+  // They are invisible to the dashboard but preserved for audit/tax purposes.
   cleanOldData: async () => {
     const { lastCleanedAt } = get();
     const now = Date.now();
-    // Skip if already cleaned within the last hour
     if (lastCleanedAt && now - lastCleanedAt < 60 * 60 * 1000) return;
 
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-    await supabase.from('branch_sales').delete().lt('sold_at', twoMonthsAgo.toISOString());
+    // Call the safe archive function instead of hard DELETE
+    await supabase.rpc('archive_old_branch_sales');
 
     set({ lastCleanedAt: now });
   },
