@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/authStore';
 import Header from '@/components/layout/Header';
 import BottomNav from '@/components/layout/BottomNav';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
+import ErrorBoundary from '@/components/layout/ErrorBoundary';
+import { getRoleDefaultPath } from '@/lib/routing';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 import MenuPage from '@/pages/MenuPage';
@@ -47,24 +49,17 @@ function AppRoutes() {
     }
   }, [hydrated]);
 
-  if (!hydrated) return null;
+  if (!hydrated) return (
+    <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-10 rounded-2xl bg-primary/10 animate-pulse" />
+        <p className="text-sm font-body text-muted-foreground animate-pulse">Loading…</p>
+      </div>
+    </div>
+  );
 
-  const getDefaultRoute = () => {
-    if (!currentUser) return '/';
-    if (currentUser.role === 'order_taker')   return '/order-pad';
-    if (currentUser.role === 'admin')          return '/admin-dashboard';
-    if (currentUser.role === 'kitchen')        return '/kitchen';
-    if (currentUser.role === 'order_receiver') return '/bakery/receive';
-    if (currentUser.role === 'store')          return '/bakery/store';
-    if (currentUser.role === 'baker')          return '/bakery/baker';
-    if (currentUser.role === 'packing')        return '/bakery/packing';
-    // ── NEW ──────────────────────────────────────────────────────────────────
-    if (currentUser.role === 'branch_vrsnb')   return '/branch/vrsnb';
-    if (currentUser.role === 'branch_snb')     return '/branch/snb';
-    if (currentUser.role === 'branch_hosur')   return '/branch/hosur';
-    // ─────────────────────────────────────────────────────────────────────────
-    return '/billing';
-  };
+  const getDefaultRoute = () =>
+    currentUser ? getRoleDefaultPath(currentUser.role) : '/';
 
   return (
     <>
@@ -110,8 +105,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AppRoutes />
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
