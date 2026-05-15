@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import QRCode from 'qrcode';
 import { QrCode, Download, ExternalLink, RefreshCw, ChevronDown } from 'lucide-react';
 import { CAFE_CONFIG, TABLE_NUMBERS } from '@/constants/config';
 import { cn } from '@/lib/utils';
 
 export default function QRMenuPage() {
-  const qrContainerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [selectedTable, setSelectedTable] = useState<number | 'general'>('general');
   const [menuUrl, setMenuUrl] = useState('');
   const [qrReady, setQrReady] = useState(false);
@@ -20,61 +21,29 @@ export default function QRMenuPage() {
   }, [selectedTable]);
 
   useEffect(() => {
-    if (!menuUrl || !qrContainerRef.current) return;
+    if (!menuUrl || !canvasRef.current) return;
 
-    qrContainerRef.current.innerHTML = '';
     setQrReady(false);
     setLoading(true);
 
-    const loadAndGenerate = () => {
-      // FIX: extract generate into its own function so it can be called
-      // immediately if the library is already on window (avoids re-fetching
-      // the script on every table switch and prevents the onload-never-fires
-      // race on cached scripts).
-      const generate = () => {
-        if (!qrContainerRef.current) return;
-        qrContainerRef.current.innerHTML = '';
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        new (window as any).QRCode(qrContainerRef.current, {
-          text: menuUrl,
-          width: 256,
-          height: 256,
-          colorDark: '#1a1a1a',
-          colorLight: '#ffffff',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          correctLevel: (window as any).QRCode.CorrectLevel.H,
-        });
-        setTimeout(() => {
-          setQrReady(true);
-          setLoading(false);
-        }, 150);
-      };
-
-      // FIX: if library already loaded, skip script injection entirely
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((window as any).QRCode) {
-        generate();
-        return;
-      }
-
-      const existing = document.getElementById('qrcode-script');
-      if (existing) existing.remove();
-
-      const script = document.createElement('script');
-      script.id = 'qrcode-script';
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-      script.onload = generate;
-      script.onerror = () => setLoading(false);
-      document.head.appendChild(script);
-    };
-
-    loadAndGenerate();
+    QRCode.toCanvas(canvasRef.current, menuUrl, {
+      width: 256,
+      margin: 2,
+      color: { dark: '#1a1a1a', light: '#ffffff' },
+      errorCorrectionLevel: 'H',
+    })
+      .then(() => {
+        setQrReady(true);
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error('QR generation failed:', err);
+        setLoading(false);
+      });
   }, [menuUrl]);
 
   const downloadQR = () => {
-    if (!qrContainerRef.current || !qrReady) return;
-    const img = qrContainerRef.current.querySelector('img') as HTMLImageElement | null;
-    const canvas = qrContainerRef.current.querySelector('canvas') as HTMLCanvasElement | null;
+    if (!canvasRef.current || !qrReady) return;
 
     const pad = 32;
     const size = 256;
@@ -85,78 +54,66 @@ export default function QRMenuPage() {
 
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(canvasRef.current, pad, pad, size, size);
 
-    const draw = (source: CanvasImageSource) => {
-      ctx.drawImage(source, pad, pad, size, size);
+    ctx.fillStyle = '#1a1a1a';
+    ctx.font = 'bold 20px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
+
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#666666';
+    const label = selectedTable === 'general' ? 'Scan to order' : `Table ${selectedTable} · Scan to order`;
+    ctx.fillText(label, out.width / 2, size + pad + 56);
+
+    const link = document.createElement('a');
+    link.download = selectedTable === 'general'
+      ? 'cafe-aadvikam-order-qr.png'
+      : `cafe-aadvikam-table-${selectedTable}-qr.png`;
+    link.href = out.toDataURL('image/png');
+    link.click();
+  };
+
+  const downloadAllTables = async () => {
+    for (let idx = 0; idx < TABLE_NUMBERS.length; idx++) {
+      const tableNum = TABLE_NUMBERS[idx];
+      const url = `${window.location.origin}/order?table=${tableNum}`;
+
+      const tempCanvas = document.createElement('canvas');
+      await QRCode.toCanvas(tempCanvas, url, {
+        width: 256,
+        margin: 2,
+        color: { dark: '#1a1a1a', light: '#ffffff' },
+        errorCorrectionLevel: 'H',
+      });
+
+      const pad = 32;
+      const size = 256;
+      const out = document.createElement('canvas');
+      out.width = size + pad * 2;
+      out.height = size + pad * 2 + 80;
+      const ctx = out.getContext('2d')!;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(tempCanvas, pad, pad, size, size);
+
       ctx.fillStyle = '#1a1a1a';
       ctx.font = 'bold 20px serif';
       ctx.textAlign = 'center';
       ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
+
       ctx.font = '14px sans-serif';
       ctx.fillStyle = '#666666';
-      const label = selectedTable === 'general' ? 'Scan to order' : `Table ${selectedTable} · Scan to order`;
-      ctx.fillText(label, out.width / 2, size + pad + 56);
+      ctx.fillText(`Table ${tableNum} · Scan to order`, out.width / 2, size + pad + 56);
+
       const link = document.createElement('a');
-      link.download = selectedTable === 'general'
-        ? 'cafe-aadvikam-order-qr.png'
-        : `cafe-aadvikam-table-${selectedTable}-qr.png`;
+      link.download = `cafe-aadvikam-table-${tableNum}-qr.png`;
       link.href = out.toDataURL('image/png');
       link.click();
-    };
 
-    if (canvas) {
-      draw(canvas);
-    } else if (img) {
-      const tmp = new Image();
-      tmp.crossOrigin = 'anonymous';
-      tmp.onload = () => draw(tmp);
-      tmp.src = img.src;
+      await new Promise((r) => setTimeout(r, 300));
     }
-  };
-
-  const downloadAllTables = () => {
-    TABLE_NUMBERS.forEach((tableNum, idx) => {
-      setTimeout(() => {
-        const tempDiv = document.createElement('div');
-        document.body.appendChild(tempDiv);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        new (window as any).QRCode(tempDiv, {
-          text: `${window.location.origin}/order?table=${tableNum}`,
-          width: 256,
-          height: 256,
-          colorDark: '#1a1a1a',
-          colorLight: '#ffffff',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          correctLevel: (window as any).QRCode.CorrectLevel.H,
-        });
-        setTimeout(() => {
-          const canvas = tempDiv.querySelector('canvas') as HTMLCanvasElement | null;
-          if (canvas) {
-            const pad = 32;
-            const size = 256;
-            const out = document.createElement('canvas');
-            out.width = size + pad * 2;
-            out.height = size + pad * 2 + 80;
-            const ctx = out.getContext('2d')!;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, out.width, out.height);
-            ctx.drawImage(canvas, pad, pad, size, size);
-            ctx.fillStyle = '#1a1a1a';
-            ctx.font = 'bold 20px serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(CAFE_CONFIG.name, out.width / 2, size + pad + 30);
-            ctx.font = '14px sans-serif';
-            ctx.fillStyle = '#666666';
-            ctx.fillText(`Table ${tableNum} · Scan to order`, out.width / 2, size + pad + 56);
-            const link = document.createElement('a');
-            link.download = `cafe-aadvikam-table-${tableNum}-qr.png`;
-            link.href = out.toDataURL('image/png');
-            link.click();
-          }
-          document.body.removeChild(tempDiv);
-        }, 200);
-      }, idx * 300);
-    });
   };
 
   return (
@@ -189,15 +146,26 @@ export default function QRMenuPage() {
               <div className="mt-2 grid grid-cols-5 gap-2">
                 <button
                   onClick={() => { setSelectedTable('general'); setShowTablePicker(false); }}
-                  className={cn('col-span-5 py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
-                    selectedTable === 'general' ? 'cafe-gradient text-primary-foreground border-transparent' : 'bg-background border-border text-foreground')}
+                  className={cn(
+                    'col-span-5 py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
+                    selectedTable === 'general'
+                      ? 'cafe-gradient text-primary-foreground border-transparent'
+                      : 'bg-background border-border text-foreground',
+                  )}
                 >
                   📋 General (No table)
                 </button>
-                {TABLE_NUMBERS.map(n => (
-                  <button key={n} onClick={() => { setSelectedTable(n); setShowTablePicker(false); }}
-                    className={cn('py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
-                      selectedTable === n ? 'cafe-gradient text-primary-foreground border-transparent shadow-sm' : 'bg-background border-border text-foreground')}>
+                {TABLE_NUMBERS.map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => { setSelectedTable(n); setShowTablePicker(false); }}
+                    className={cn(
+                      'py-2.5 rounded-xl text-sm font-body font-bold border transition-all active:scale-95',
+                      selectedTable === n
+                        ? 'cafe-gradient text-primary-foreground border-transparent shadow-sm'
+                        : 'bg-background border-border text-foreground',
+                    )}
+                  >
                     {n}
                   </button>
                 ))}
@@ -215,12 +183,9 @@ export default function QRMenuPage() {
             </p>
 
             <div className="relative size-[260px] bg-white rounded-2xl border-2 border-border flex items-center justify-center shadow-sm overflow-hidden">
-              {/* FIX: removed 'hidden' class — was hiding the container while QRCode
-                  library injected canvas into it, causing invisible/zero-size renders.
-                  The spinner overlay already covers it while loading. */}
-              <div ref={qrContainerRef} className="flex items-center justify-center" />
+              <canvas ref={canvasRef} className={qrReady ? 'block' : 'invisible'} />
               {loading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white">
+                <div className="absolute inset-0 bg-white flex flex-col items-center justify-center gap-3">
                   <RefreshCw className="size-8 text-muted-foreground animate-spin" />
                   <p className="text-xs font-body text-muted-foreground">Generating QR code...</p>
                 </div>
