@@ -67,12 +67,7 @@ function Row({ label, value, bold, highlight }: { label: string; value: string; 
 
 // ─── CAFE DASHBOARD TAB (today only) ─────────────────────────────────────────
 function CafeDashboardTab() {
-  const { orders, startPolling, stopPolling, polling } = useOrderStore();
-
-  useEffect(() => {
-    startPolling();
-    return () => stopPolling();
-  }, [startPolling, stopPolling]);
+  const { orders, polling } = useOrderStore();
 
   const todayStr = useMemo(() => new Date().toDateString(), []);
   const todayOrders = useMemo(() => orders.filter(o => new Date(o.createdAt).toDateString() === todayStr), [orders, todayStr]);
@@ -475,12 +470,7 @@ function BakerySalesTab() {
 
 // ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
 function CafeReportsTab() {
-  const { orders, startPolling, stopPolling } = useOrderStore();
-
-  useEffect(() => {
-    startPolling();
-    return () => stopPolling();
-  }, [startPolling, stopPolling]);
+  const { orders } = useOrderStore();
 
   const todayISO = new Date().toISOString().split('T')[0];
   const [dateFrom, setDateFrom] = useState(todayISO);
@@ -1143,6 +1133,13 @@ function BakeryView() {
 // ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
 export default function AdminDashboard() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
+  // BUG-03 FIX: single polling registration at root — previously registered twice
+  // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
+  const { startPolling, stopPolling } = useOrderStore();
+  useEffect(() => {
+    startPolling(60); // 60-day window for admin reports
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">

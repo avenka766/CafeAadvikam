@@ -120,27 +120,24 @@ export default function StaffManagement() {
       setAddError('All fields are required');
       return;
     }
-    if (staffList.some((u) => u.username.toLowerCase() === newUsername.trim().toLowerCase())) {
-      setAddError('Username already exists');
-      return;
-    }
-    const ok = await addStaff({
+    const err = await addStaff({
       username: newUsername.trim(), password: newPassword,
       displayName: newDisplayName.trim(), role: newRole,
     });
-    if (ok) {
+    if (!err) {
       setNewUsername(''); setNewPassword(''); setNewDisplayName(''); setNewRole('billing');
       setAddSuccess(`${newDisplayName.trim()} added successfully`);
       setTimeout(() => setAddSuccess(''), 3000);
       setShowAdd(false);
     } else {
-      setAddError('Failed to add staff. Username may already exist.');
+      setAddError(err);
     }
   };
 
   const handleChangePw = async (userId: string) => {
     if (!newPw.trim()) return;
-    await updateStaffPassword(userId, newPw);
+    const err = await updateStaffPassword(userId, newPw);
+    if (err) { setError(err); return; }
     setChangingPwId(null); setNewPw('');
     setPwSuccess(userId);
     setTimeout(() => setPwSuccess(null), 2500);
@@ -204,7 +201,7 @@ export default function StaffManagement() {
               className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
             <input
-              placeholder="Password" type="text" value={newPassword}
+              placeholder="Password (min 6 chars)" type="password" value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
             />
@@ -364,8 +361,8 @@ export default function StaffManagement() {
                       <p className="text-xs font-semibold text-foreground">New Password</p>
                       <div className="flex gap-2">
                         <input
-                          type="text"
-                          placeholder="Enter new password"
+                          type="password"
+                          placeholder="Enter new password (min 6 chars)"
                           value={newPw}
                           onChange={(e) => setNewPw(e.target.value)}
                           className="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm font-body"

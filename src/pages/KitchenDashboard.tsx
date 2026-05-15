@@ -92,7 +92,7 @@ export default function KitchenDashboard() {
   const seededRef = useRef(false);
 
   useEffect(() => {
-    startPolling();
+    startPolling(1); // PERF-01: kitchen only needs today's orders
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     // Resume AudioContext on first user interaction (required by browsers)
     const resume = () => { getAudioCtx(); document.removeEventListener('click', resume); document.removeEventListener('touchstart', resume); };

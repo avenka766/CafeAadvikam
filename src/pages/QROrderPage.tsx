@@ -56,32 +56,44 @@ export default function QROrderPage() {
     return ci ? ci.quantity : 0;
   };
 
+  // SEC-08: guards against order flooding from the public QR endpoint
+  const MAX_ITEMS_PER_ORDER = 20;
+  const MAX_QTY_PER_ITEM   = 10;
+
   const handleSubmitOrder = async () => {
     if (cart.length === 0) return;
-    setSubmitting(true);
-
-    const tn = orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined;
-
-    const returnedId = await submitOrder({
-      tableNumber: tn,
-      orderType,
-      notes: notes || undefined,
-      customerName: customerName || undefined,
-      createdBy: tableNum ? `QR-Table-${tableNum}` : 'QR-Customer',
-      orderSource: 'qr',
-    });
-
-    const storeOrders = useOrderStore.getState().orders;
-    const placed = storeOrders.find((o) => o.id === returnedId);
-    if (placed) {
-      setOrderNumber(placed.orderNumber);
-      setTrackingId(placed.id);
+    if (cart.length > MAX_ITEMS_PER_ORDER) {
+      alert(`Maximum ${MAX_ITEMS_PER_ORDER} different items per order.`);
+      return;
     }
+    if (cart.some((c) => c.quantity > MAX_QTY_PER_ITEM)) {
+      alert(`Maximum ${MAX_QTY_PER_ITEM} of any single item.`);
+      return;
+    }
+    const safeName  = customerName.replace(/<[^>]*>/g, '').trim().slice(0, 80);
+    const safeNotes = notes.replace(/<[^>]*>/g, '').trim().slice(0, 300);
 
-    setSubmitting(false);
-    setOrderPlaced(true);
-    setNotes('');
-    setCustomerName('');
+    setSubmitting(true);
+    try {
+      const tn = orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined;
+      const returnedId = await submitOrder({
+        tableNumber: tn, orderType,
+        notes: safeNotes || undefined,
+        customerName: safeName || undefined,
+        createdBy: tableNum ? `QR-Table-${tableNum}` : 'QR-Customer',
+        orderSource: 'qr',
+      });
+
+      const storeOrders = useOrderStore.getState().orders;
+      const placed = storeOrders.find((o) => o.id === returnedId);
+      if (placed) { setOrderNumber(placed.orderNumber); setTrackingId(placed.id); }
+      setOrderPlaced(true); setNotes(''); setCustomerName('');
+    } catch (err) {
+      alert('Failed to place order. Please check your connection and try again.');
+      console.error('[QROrderPage] submitOrder error:', err);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (orderPlaced) {

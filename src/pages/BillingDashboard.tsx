@@ -1245,7 +1245,7 @@ export default function BillingDashboard() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
-    startPolling();
+    startPolling(1); // PERF-01: billing only needs today's orders
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
