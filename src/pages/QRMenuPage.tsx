@@ -27,13 +27,11 @@ export default function QRMenuPage() {
     setLoading(true);
 
     const loadAndGenerate = () => {
-      const existing = document.getElementById('qrcode-script');
-      if (existing) existing.remove();
-
-      const script = document.createElement('script');
-      script.id = 'qrcode-script';
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-      script.onload = () => {
+      // FIX: extract generate into its own function so it can be called
+      // immediately if the library is already on window (avoids re-fetching
+      // the script on every table switch and prevents the onload-never-fires
+      // race on cached scripts).
+      const generate = () => {
         if (!qrContainerRef.current) return;
         qrContainerRef.current.innerHTML = '';
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,6 +41,7 @@ export default function QRMenuPage() {
           height: 256,
           colorDark: '#1a1a1a',
           colorLight: '#ffffff',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           correctLevel: (window as any).QRCode.CorrectLevel.H,
         });
         setTimeout(() => {
@@ -50,6 +49,21 @@ export default function QRMenuPage() {
           setLoading(false);
         }, 150);
       };
+
+      // FIX: if library already loaded, skip script injection entirely
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((window as any).QRCode) {
+        generate();
+        return;
+      }
+
+      const existing = document.getElementById('qrcode-script');
+      if (existing) existing.remove();
+
+      const script = document.createElement('script');
+      script.id = 'qrcode-script';
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+      script.onload = generate;
       script.onerror = () => setLoading(false);
       document.head.appendChild(script);
     };
@@ -112,6 +126,7 @@ export default function QRMenuPage() {
           height: 256,
           colorDark: '#1a1a1a',
           colorLight: '#ffffff',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           correctLevel: (window as any).QRCode.CorrectLevel.H,
         });
         setTimeout(() => {
@@ -200,9 +215,12 @@ export default function QRMenuPage() {
             </p>
 
             <div className="relative size-[260px] bg-white rounded-2xl border-2 border-border flex items-center justify-center shadow-sm overflow-hidden">
-              <div ref={qrContainerRef} className={qrReady ? 'flex items-center justify-center' : 'hidden'} />
+              {/* FIX: removed 'hidden' class — was hiding the container while QRCode
+                  library injected canvas into it, causing invisible/zero-size renders.
+                  The spinner overlay already covers it while loading. */}
+              <div ref={qrContainerRef} className="flex items-center justify-center" />
               {loading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white">
                   <RefreshCw className="size-8 text-muted-foreground animate-spin" />
                   <p className="text-xs font-body text-muted-foreground">Generating QR code...</p>
                 </div>
