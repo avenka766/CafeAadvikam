@@ -56,6 +56,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [splitUpi, setSplitUpi] = useState('');
   const [splitCard, setSplitCard] = useState('');
   const [splitError, setSplitError] = useState('');
+  const [paymentError, setPaymentError] = useState('');
 
   const billerName = currentUser?.displayName || currentUser?.username || '';
 
@@ -68,16 +69,21 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const handleApplyDiscount = () => {
     const val = parseFloat(discValue);
     if (!isNaN(val) && val > 0) {
-      applyDiscount(order.id, discType, val);
+      applyDiscount(order.id, discType, val).catch(() => {});
       setShowDiscount(false);
       setDiscValue('');
     }
   };
 
-  const handleSinglePayment = (pt: PaymentType) => {
-    setPaymentType(order.id, pt, billerName);
-    updateOrderStatus(order.id, 'served');
-    setShowPayment(false);
+  const handleSinglePayment = async (pt: PaymentType) => {
+    setPaymentError('');
+    try {
+      await setPaymentType(order.id, pt, billerName);
+      await updateOrderStatus(order.id, 'served');
+      setShowPayment(false);
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
+    }
   };
 
   const toggleSplitMethod = (method: SplitMethod) => {
@@ -125,7 +131,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     }
   };
 
-  const handleSplitPayment = () => {
+  const handleSplitPayment = async () => {
     const cashAmt = splitMethods.includes('cash') ? (parseFloat(splitCash) || 0) : 0;
     const upiAmt = splitMethods.includes('upi') ? (parseFloat(splitUpi) || 0) : 0;
     const cardAmt = splitMethods.includes('card') ? (parseFloat(splitCard) || 0) : 0;
@@ -141,10 +147,15 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     }
 
     setSplitError('');
+    setPaymentError('');
     const breakdown: PaymentBreakdown = { cash: cashAmt, upi: upiAmt, card: cardAmt };
-    setPaymentType(order.id, 'part_payment', billerName, breakdown);
-    updateOrderStatus(order.id, 'served');
-    resetPaymentState();
+    try {
+      await setPaymentType(order.id, 'part_payment', billerName, breakdown);
+      await updateOrderStatus(order.id, 'served');
+      resetPaymentState();
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
+    }
   };
 
   const resetPaymentState = () => {
@@ -504,6 +515,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                     🔀 Split Payment
                   </button>
                 </div>
+                {paymentError && <p className="text-xs font-body text-destructive text-center">{paymentError}</p>}
                 <button onClick={resetPaymentState} className="w-full py-2 text-xs font-body text-muted-foreground active:opacity-70">Cancel</button>
               </>
             ) : (
@@ -580,6 +592,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                 )}
 
                 {splitError && <p className="text-xs font-body text-destructive">{splitError}</p>}
+                {paymentError && <p className="text-xs font-body text-destructive">{paymentError}</p>}
 
                 <div className="flex gap-2">
                   <button
