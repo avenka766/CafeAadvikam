@@ -53,28 +53,29 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   submitOrder: async (items, createdBy, targetBranch) => {
+    // BAKERY-FIX: throw on failure so BranchStockForm's try/catch surfaces the error.
+    // Previously silent: DB failure showed nothing to the user.
     const { data, error } = await supabase
       .from('bakery_orders')
       .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch })
       .select()
       .single();
-    if (!error && data) {
-      set(s => ({ orders: [rowToOrder(data as Record<string, unknown>), ...s.orders] }));
-    }
+    if (error || !data) throw new Error('Failed to submit order. Please try again.');
+    set(s => ({ orders: [rowToOrder(data as Record<string, unknown>), ...s.orders] }));
   },
 
   updateExpectedOutput: async (orderId, qty) => {
+    // BAKERY-FIX: throw on failure so StoreDashboard's try/catch can show the error.
     const { error } = await supabase
       .from('bakery_orders')
       .update({ expected_output: qty, materials_calculated_at: new Date().toISOString() })
       .eq('id', orderId);
-    if (!error) {
-      set(s => ({
-        orders: s.orders.map(o =>
-          o.id === orderId ? { ...o, expectedOutput: qty, materialsCalculatedAt: new Date().toISOString() } : o
-        ),
-      }));
-    }
+    if (error) throw new Error('Failed to save — please try again.');
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === orderId ? { ...o, expectedOutput: qty, materialsCalculatedAt: new Date().toISOString() } : o
+      ),
+    }));
   },
 
   sendToBaker: async (orderId) => {
