@@ -206,9 +206,14 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
     if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
     if (!method) { setError('Select payment method'); return; }
     setSaving(true);
-    await setAdvancePayment(order.id, amt, method, billedBy);
-    setSaving(false);
-    onClose();
+    try {
+      await setAdvancePayment(order.id, amt, method, billedBy);
+      onClose();
+    } catch {
+      setError('Failed to save — please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -368,20 +373,24 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     // Small delay to let Zustand batch the addToCart calls
     await new Promise(r => setTimeout(r, 50));
 
-    await submitAdvanceOrder({
-      orderType: 'takeaway',
-      notes: notes || undefined,
-      customerName: customerName || undefined,
-      createdBy: currentUser.username,
-      advanceAmount: amt,
-      advancePaidBy: advanceMethod,
-    });
-
-    setSubmitting(false);
-    setShowSuccess(true);
-    setNotes(''); setCustomerName(''); setAdvanceAmt(''); setAdvanceMethod(null);
-    setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-    setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
+    try {
+      await submitAdvanceOrder({
+        orderType: 'takeaway',
+        notes: notes || undefined,
+        customerName: customerName || undefined,
+        createdBy: currentUser.username,
+        advanceAmount: amt,
+        advancePaidBy: advanceMethod,
+      });
+      setShowSuccess(true);
+      setNotes(''); setCustomerName(''); setAdvanceAmt(''); setAdvanceMethod(null);
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
+    } catch {
+      setAdvanceError('Failed to submit order — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (showSuccess) {
@@ -813,8 +822,7 @@ function NewBillPanel() {
   const [customPrice, setCustomPrice] = useState('');
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
-
-  useEffect(() => { loadMenu(); }, [loadMenu]);
+  const [submitError, setSubmitError] = useState('');
 
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
   const filteredItems = useMemo(() => {
@@ -865,19 +873,25 @@ function NewBillPanel() {
     }
     await new Promise(r => setTimeout(r, 50));
 
-    await submitOrder({
-      tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
-      orderType,
-      notes: notes || undefined,
-      customerName: customerName || undefined,
-      createdBy: currentUser.username,
-      orderSource: 'staff',
-    });
-    setSubmitting(false);
-    setShowSuccess(true);
-    setNotes(''); setCustomerName(''); setTableNumber(null);
-    setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-    setTimeout(() => setShowSuccess(false), 2200);
+    setSubmitError('');
+    try {
+      await submitOrder({
+        tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+        orderType,
+        notes: notes || undefined,
+        customerName: customerName || undefined,
+        createdBy: currentUser.username,
+        orderSource: 'staff',
+      });
+      setShowSuccess(true);
+      setNotes(''); setCustomerName(''); setTableNumber(null);
+      setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setTimeout(() => setShowSuccess(false), 2200);
+    } catch {
+      setSubmitError('Failed to submit order — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (showSuccess) {
@@ -1222,6 +1236,9 @@ function NewBillPanel() {
                   <span className="font-body text-sm font-bold text-foreground">Total</span>
                   <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                 </div>
+                {submitError && (
+                  <p className="text-xs font-body text-destructive text-center">{submitError}</p>
+                )}
                 <button onClick={handleSubmit} disabled={submitting}
                   className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all shadow-teal disabled:opacity-60 flex items-center justify-center gap-2 text-primary-foreground"
                   style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>

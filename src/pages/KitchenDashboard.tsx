@@ -84,6 +84,9 @@ export default function KitchenDashboard() {
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  // KITCHEN-FIX: track which order is in-flight; show inline error instead of alert()
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<Record<string, string>>({});
   const lastIdsRef = useRef<Set<string>>(new Set());
   const alertRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastCancelledIdsRef = useRef<Set<string>>(new Set());
@@ -398,19 +401,46 @@ export default function KitchenDashboard() {
                   )}
 
                   {/* Action */}
+                  {statusError[order.id] && (
+                    <p className="mx-4 mb-1 text-xs text-destructive bg-destructive/10 px-3 py-1.5 rounded-lg">
+                      {statusError[order.id]}
+                    </p>
+                  )}
                   <div className="px-4 pb-4 flex gap-2">
                     {order.status === 'pending' && (
                       <button
-                        onClick={() => updateOrderStatus(order.id, 'preparing').catch(e => alert(e.message))}
-                        className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+                        disabled={updatingId === order.id}
+                        onClick={async () => {
+                          setUpdatingId(order.id);
+                          setStatusError(prev => ({ ...prev, [order.id]: '' }));
+                          try {
+                            await updateOrderStatus(order.id, 'preparing');
+                          } catch (e) {
+                            setStatusError(prev => ({ ...prev, [order.id]: e instanceof Error ? e.message : 'Failed to update — please retry.' }));
+                          } finally {
+                            setUpdatingId(null);
+                          }
+                        }}
+                        className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-50"
                         style={{ background: '#3B82F6', color: '#fff', boxShadow: '0 4px 16px rgba(59,130,246,0.4)' }}>
                         <ChefHat className="size-4" />Start Cooking
                       </button>
                     )}
                     {order.status === 'preparing' && (
                       <button
-                        onClick={() => updateOrderStatus(order.id, 'ready').catch(e => alert(e.message))}
-                        className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
+                        disabled={updatingId === order.id}
+                        onClick={async () => {
+                          setUpdatingId(order.id);
+                          setStatusError(prev => ({ ...prev, [order.id]: '' }));
+                          try {
+                            await updateOrderStatus(order.id, 'ready');
+                          } catch (e) {
+                            setStatusError(prev => ({ ...prev, [order.id]: e instanceof Error ? e.message : 'Failed to update — please retry.' }));
+                          } finally {
+                            setUpdatingId(null);
+                          }
+                        }}
+                        className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-50"
                         style={{ background: '#10B981', color: '#fff', boxShadow: '0 4px 16px rgba(16,185,129,0.4)' }}>
                         <CheckCircle2 className="size-4" />Mark Ready
                       </button>

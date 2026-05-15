@@ -408,13 +408,16 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
   const [saving, setSaving] = useState(false);
   const valid = name.trim() && dept.trim();
 
+  const [saveError, setSaveError] = useState('');
+
   const handleSave = async () => {
     if (!valid) return;
     const updated: Employee = { ...emp, name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined };
-    setSaving(true);
+    setSaving(true); setSaveError('');
     const ok = await updateEmployee(updated);
     setSaving(false);
-    if (ok) onSave(updated);
+    // EMP-FIX: show inline error instead of silently ignoring failure
+    if (ok) { onSave(updated); } else { setSaveError('Failed to save — please try again.'); }
   };
 
   return (
@@ -452,6 +455,9 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
           </div>
         </div>
         <div className="px-5 pb-5 flex gap-2">
+          {saveError && (
+            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-lg -mb-1">{saveError}</p>
+          )}
           <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
           <button disabled={!valid || saving} onClick={handleSave} className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2">
             {saving ? <Loader2 className="size-4 animate-spin" /> : <Pencil className="size-4" />} Save Changes
@@ -957,13 +963,19 @@ export default function AttendanceSalary() {
   };
 
   const addEmp = (emp: Employee) => { setEmployees(prev => [...prev, emp]); setShowAddModal(false); };
+  const [removeEmpError, setRemoveEmpError] = useState('');
+  const [removingEmpId, setRemovingEmpId]   = useState<string | null>(null);
+
   const removeEmp = async (id: string) => {
+    setRemovingEmpId(id); setRemoveEmpError('');
     try {
       await deactivateEmployee(id);
       setEmployees(prev => prev.filter(e => e.id !== id));
     } catch {
-      // deactivateEmployee throws on DB failure — don't remove from UI if DB failed
-      alert('Failed to remove employee — please try again.');
+      // EMP-FIX: replace blocking alert() with inline error state
+      setRemoveEmpError('Failed to remove employee — please try again.');
+    } finally {
+      setRemovingEmpId(null);
     }
   };
   const saveEmp = (emp: Employee) => { setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e)); setEditEmp(null); };
@@ -1160,10 +1172,19 @@ export default function AttendanceSalary() {
                   <p className="text-[10px] font-body text-muted-foreground">Gross</p>
                 </div>
                 <button onClick={() => setEditEmp(e)} className="size-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors mt-0.5"><Pencil className="size-3.5" /></button>
-                <button onClick={() => removeEmp(e.id)} className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors mt-0.5"><Trash2 className="size-3.5" /></button>
+                <button
+                  onClick={() => removeEmp(e.id)}
+                  disabled={removingEmpId === e.id}
+                  className="size-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center hover:bg-destructive/20 transition-colors mt-0.5 disabled:opacity-40"
+                >
+                  {removingEmpId === e.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                </button>
               </div>
             </div>
           ))}
+          {removeEmpError && (
+            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{removeEmpError}</p>
+          )}
           <button onClick={() => setShowAddModal(true)} className="w-full h-12 rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center gap-2">
             <Plus className="size-4" /> Add New Employee
           </button>
