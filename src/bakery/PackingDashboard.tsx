@@ -108,6 +108,7 @@ function PackingOrderCard({
 
   const [expanded,  setExpanded]  = useState(order.status === 'packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   // ── Phase 1: Pack confirmation state ──────────────────────────────────────
   // Pre-populate from preparedItems (set by baker). qty is always in kg here
@@ -193,15 +194,21 @@ function PackingOrderCard({
     // Block if any dispatch for this order is already in-flight (prevents race conditions)
     if (dispatchingItems.size > 0) return;
     setDispatchingItems(prev => new Set(prev).add(itemName));
-    await submitDispatch(order.id, {
-      itemName,
-      quantity: qty,
-      unit: unit ?? 'kg',
-      branch,
-      dispatchedAt: new Date().toISOString(),
-      dispatchedBy: currentUser.displayName,
-    });
-    setDispatchingItems(prev => { const s = new Set(prev); s.delete(itemName); return s; });
+    setDispatchError(null);
+    try {
+      await submitDispatch(order.id, {
+        itemName,
+        quantity: qty,
+        unit: unit ?? 'kg',
+        branch,
+        dispatchedAt: new Date().toISOString(),
+        dispatchedBy: currentUser.displayName,
+      });
+    } catch {
+      setDispatchError('Dispatch failed — please try again.');
+    } finally {
+      setDispatchingItems(prev => { const s = new Set(prev); s.delete(itemName); return s; });
+    }
   };
 
   // Status badge
@@ -429,6 +436,10 @@ function PackingOrderCard({
               })}
             </div>
           </div>
+
+          {dispatchError && (
+            <p className="text-xs font-body text-destructive text-center">{dispatchError}</p>
+          )}
 
           {/* ── Dispatch Log ───────────────────────────────── */}
           {dispatchLog.length > 0 && (

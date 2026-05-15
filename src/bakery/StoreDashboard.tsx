@@ -46,6 +46,8 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(order.status !== 'pending');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [calcError, setCalcError] = useState<string | null>(null);
 
   const selectedItem = order.items[selectedItemIdx];
   const selectedMeta = selectedItem ? BAKERY_ITEMS.find(b => b.id === selectedItem.itemId) : null;
@@ -60,22 +62,34 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     const qty = parseFloat(itemQtys[selectedItem.itemId] ?? String(selectedItem.quantity)) || 0;
     if (qty <= 0) return;
     setSaving(true);
-    await updateExpectedOutput(order.id, qty);
-    // Use resolved recipe key so VRSNB / SNB items match correctly
-    const recipeKey = resolveRecipeKey(selectedItem.itemId, selectedItem.itemName) ?? selectedItem.itemId;
-    const mats = calculateMaterials(recipeKey, qty, selectedOutputUnit ?? 'kg');
-    setCalculatedMats(mats);
-    setCalcForItem(selectedItem.itemName);
-    setCalcUnit(selectedOutputUnit);
-    setCalcQtyUsed(qty);
-    setSaving(false);
+    setCalcError(null);
+    try {
+      await updateExpectedOutput(order.id, qty);
+      // Use resolved recipe key so VRSNB / SNB items match correctly
+      const recipeKey = resolveRecipeKey(selectedItem.itemId, selectedItem.itemName) ?? selectedItem.itemId;
+      const mats = calculateMaterials(recipeKey, qty, selectedOutputUnit ?? 'kg');
+      setCalculatedMats(mats);
+      setCalcForItem(selectedItem.itemName);
+      setCalcUnit(selectedOutputUnit);
+      setCalcQtyUsed(qty);
+    } catch {
+      setCalcError('Failed to save — please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSendToBaker = async () => {
     setSending(true);
-    await sendToBaker(order.id);
-    setSending(false);
-    setSent(true);
+    setSendError(null);
+    try {
+      await sendToBaker(order.id);
+      setSent(true);
+    } catch {
+      setSendError('Failed to send — please try again.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const statusColor: Record<string, string> = {
@@ -190,6 +204,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                       Calculate
                     </button>
                   </div>
+                  {calcError && <p className="text-xs font-body text-destructive">{calcError}</p>}
                 </>
               )}
             </div>
@@ -215,11 +230,14 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           )}
 
           {order.status === 'pending' && !sent && (
-            <button onClick={handleSendToBaker} disabled={sending}
-              className="w-full h-11 rounded-xl bg-orange-500 text-white text-sm font-body font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">
-              {sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
-              Send to Baker
-            </button>
+            <>
+              <button onClick={handleSendToBaker} disabled={sending}
+                className="w-full h-11 rounded-xl bg-orange-500 text-white text-sm font-body font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
+                Send to Baker
+              </button>
+              {sendError && <p className="text-xs font-body text-destructive text-center">{sendError}</p>}
+            </>
           )}
           {(order.status !== 'pending' || sent) && (
             <div className="flex items-center justify-center gap-2 py-2 rounded-xl bg-orange-50 border border-orange-200">

@@ -13,9 +13,11 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
     () => Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)]))
   );
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSend = async () => {
     setSubmitting(true);
+    setError(null);
     const preparedItems: PreparedItem[] = order.items.map(item => ({
       itemId: item.itemId,
       itemName: item.itemName,
@@ -23,8 +25,13 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
       preparedAt: new Date().toISOString(),
       dispatchUnit: item.dispatchUnit ?? 'kg',
     }));
-    await submitPrepared(order.id, preparedItems);
-    setSubmitting(false);
+    try {
+      await submitPrepared(order.id, preparedItems);
+    } catch {
+      setError('Failed to submit — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const valid = order.items.every(i => prepQty[i.itemId] !== '' && Number(prepQty[i.itemId]) >= 0);
@@ -83,6 +90,9 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
             Send to Packing
           </button>
+          {error && (
+            <p className="text-xs font-body text-destructive text-center">{error}</p>
+          )}
         </div>
       )}
     </div>

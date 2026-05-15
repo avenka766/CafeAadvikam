@@ -82,9 +82,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .from('bakery_orders')
       .update({ status: 'baking' })
       .eq('id', orderId);
-    if (!error) {
-      set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
-    }
+    if (error) throw error;
+    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
   },
 
   submitPrepared: async (orderId, preparedItems) => {
@@ -92,15 +91,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .from('bakery_orders')
       .update({ prepared_items: preparedItems, sent_to_packing_at: new Date().toISOString(), status: 'packed' })
       .eq('id', orderId);
-    if (!error) {
-      set(s => ({
-        orders: s.orders.map(o =>
-          o.id === orderId
-            ? { ...o, preparedItems, sentToPackingAt: new Date().toISOString(), status: 'packed' }
-            : o
-        ),
-      }));
-    }
+    if (error) throw error;
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === orderId
+          ? { ...o, preparedItems, sentToPackingAt: new Date().toISOString(), status: 'packed' }
+          : o
+      ),
+    }));
   },
 
   submitDispatch: async (orderId, entry) => {

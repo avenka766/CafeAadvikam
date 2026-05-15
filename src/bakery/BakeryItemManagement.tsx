@@ -177,7 +177,7 @@ function EditSheet({
   );
 }
 
-function DeleteDialog({ item, onConfirm, onClose }: { item: BakeryItem; onConfirm: () => void; onClose: () => void }) {
+function DeleteDialog({ item, onConfirm, onClose, error }: { item: BakeryItem; onConfirm: () => void; onClose: () => void; error?: string | null }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6" onClick={onClose}>
       <div className="w-full max-w-sm bg-background rounded-2xl p-5 space-y-4" onClick={e => e.stopPropagation()}>
@@ -192,6 +192,7 @@ function DeleteDialog({ item, onConfirm, onClose }: { item: BakeryItem; onConfir
             </p>
           </div>
         </div>
+        {error && <p className="text-xs font-body text-destructive">{error}</p>}
         <div className="flex gap-2">
           <button onClick={onClose} className="flex-1 h-10 rounded-xl border border-border text-sm font-body font-semibold">Cancel</button>
           <button onClick={onConfirm} className="flex-1 h-10 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-bold active:scale-95 transition">Delete</button>
@@ -295,6 +296,7 @@ function BakeryItemsPanel() {
   const [editTarget,   setEditTarget]   = useState<BakeryItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BakeryItem | null>(null);
   const [showDisabled, setShowDisabled] = useState(true);
+  const [deleteError,  setDeleteError]  = useState<string | null>(null);
 
   useEffect(() => { loadAllItems(); }, [loadAllItems]);
 
@@ -323,8 +325,13 @@ function BakeryItemsPanel() {
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    await deleteItem(deleteTarget.id);
-    setDeleteTarget(null);
+    setDeleteError(null);
+    try {
+      await deleteItem(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch {
+      setDeleteError('Failed to delete — please try again.');
+    }
   };
 
   return (
@@ -398,7 +405,7 @@ function BakeryItemsPanel() {
 
       {showAdd && <AddItemSheet onClose={() => setShowAdd(false)} />}
       {editTarget && <EditSheet item={editTarget} onSave={updateItem} onSavePrice={updatePrice} onClose={() => setEditTarget(null)} />}
-      {deleteTarget && <DeleteDialog item={deleteTarget} onConfirm={handleDelete} onClose={() => setDeleteTarget(null)} />}
+      {deleteTarget && <DeleteDialog item={deleteTarget} onConfirm={handleDelete} onClose={() => { setDeleteTarget(null); setDeleteError(null); }} error={deleteError} />}
     </div>
   );
 }
