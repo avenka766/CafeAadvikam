@@ -81,7 +81,7 @@ interface BranchState {
   lastSyncedAt:    number | null;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
-  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string) => Promise<string | null>;
+  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string) => Promise<string | null>;
   recordSnbSale: (
     branch: Branch,
     itemName: string,
@@ -89,6 +89,7 @@ interface BranchState {
     soldBy: string,
     paymentMethod: string,
     unitPrice: number,
+    billNo?: string,
   ) => Promise<{ error: string | null; mismatch: boolean }>;
   recordAdvanceOrder: (branch: Branch, order: Omit<BranchAdvanceOrder, 'id' | 'createdAt' | 'fullyPaidAt' | 'balanceMethod' | 'status'>) => Promise<string | null>;
   collectAdvanceBalance: (branch: Branch, orderId: string, balanceMethod: string) => Promise<string | null>;
@@ -223,7 +224,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // B1 FIX: atomic stock decrement via stored procedure (see supabase/migrations/001_security.sql)
   // `decrement_branch_stock` does: UPDATE SET quantity = quantity - p_qty WHERE quantity >= p_qty
   // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
-  recordSale: async (branch, itemName, qty, soldBy, paymentMethod) => {
+  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo) => {
     // Pre-flight UX check (authoritative guard is in the DB)
     const localStock = get().stock[branch].find((s) => s.itemName === itemName);
     if (!localStock) return 'Item not found in stock';
@@ -247,6 +248,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_at:        new Date().toISOString(),
         sold_by:        soldBy,
         payment_method: paymentMethod,
+        bill_no:        billNo ?? null,
       })
       .select().single();
     if (saleErr) {
@@ -571,7 +573,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   // ── SNB / Hosur sale — items come from price list, not stock requirement ──
   // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
-  recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice) => {
+  recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice, billNo) => {
     const now = new Date().toISOString();
     const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
     const availableQty = currentStock?.quantity ?? 0;
@@ -605,6 +607,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_by:        soldBy,
         payment_method: paymentMethod,
         unit_price:     unitPrice,
+        bill_no:        billNo ?? null,
       })
       .select()
       .single();
