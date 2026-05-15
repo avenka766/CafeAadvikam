@@ -401,7 +401,7 @@ export default function KitchenDashboard() {
                   <div className="px-4 pb-4 flex gap-2">
                     {order.status === 'pending' && (
                       <button
-                        onClick={() => updateOrderStatus(order.id, 'preparing')}
+                        onClick={() => updateOrderStatus(order.id, 'preparing').catch(e => alert(e.message))}
                         className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
                         style={{ background: '#3B82F6', color: '#fff', boxShadow: '0 4px 16px rgba(59,130,246,0.4)' }}>
                         <ChefHat className="size-4" />Start Cooking
@@ -409,7 +409,7 @@ export default function KitchenDashboard() {
                     )}
                     {order.status === 'preparing' && (
                       <button
-                        onClick={() => updateOrderStatus(order.id, 'ready')}
+                        onClick={() => updateOrderStatus(order.id, 'ready').catch(e => alert(e.message))}
                         className="flex-1 py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all"
                         style={{ background: '#10B981', color: '#fff', boxShadow: '0 4px 16px rgba(16,185,129,0.4)' }}>
                         <CheckCircle2 className="size-4" />Mark Ready

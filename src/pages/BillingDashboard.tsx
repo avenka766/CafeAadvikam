@@ -49,9 +49,15 @@ function AdvanceOrderCard({ order }: { order: Order }) {
   const handleCollect = async () => {
     if (!collectMethod) return;
     setCollecting(true);
-    await collectBalance(order.id, collectMethod, billedBy);
-    setCollecting(false);
-    setShowCollect(false);
+    try {
+      await collectBalance(order.id, collectMethod, billedBy);
+      setShowCollect(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to collect payment. Please try again.';
+      alert(msg);
+    } finally {
+      setCollecting(false);
+    }
   };
 
   const PAYMENT_ICONS: Record<string, React.ReactNode> = {
