@@ -155,11 +155,13 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
 }
 
 async function clearAdvance(employeeId: string): Promise<void> {
-  await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
+  const { error } = await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
+  if (error) throw error;
 }
 
 async function deactivateEmployee(id: string): Promise<void> {
-  await supabase.from('employees').update({ is_active: false }).eq('id', id);
+  const { error } = await supabase.from('employees').update({ is_active: false }).eq('id', id);
+  if (error) throw error;
 }
 
 async function deleteOldAttendance(currentYear: number, currentMonth: number): Promise<void> {
@@ -194,7 +196,7 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   const uniformDed = decision.deductUniform ? emp.uniformDeduction : 0;
   const otherDed = decision.deductOther ? emp.otherDeduction : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed;
-  return { presentDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, net: earned - totalDed };
+  return { presentDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, net: Math.max(0, earned - totalDed) };
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
@@ -580,6 +582,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
   onAdvanceCleared: (empId: string) => void;
 }) {
   const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
   const { presentDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, net } = calcSalary(emp, att, daysInMonth, decision);
   const hasAdvance = emp.salaryAdvance > 0;
   const hasOther = emp.otherDeduction > 0;
@@ -588,9 +591,15 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
   const handleMarkPaid = async () => {
     if (!decision.deductAdvance || emp.salaryAdvance <= 0) return;
     setClearing(true);
-    await clearAdvance(emp.id);
-    setClearing(false);
-    onAdvanceCleared(emp.id);
+    setClearError(null);
+    try {
+      await clearAdvance(emp.id);
+      onAdvanceCleared(emp.id);
+    } catch {
+      setClearError('Failed to clear advance — please try again.');
+    } finally {
+      setClearing(false);
+    }
   };
 
   return (
@@ -644,6 +653,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           <button onClick={handleMarkPaid} disabled={clearing} className="w-full h-9 rounded-xl bg-emerald-500 text-white text-xs font-body font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all disabled:opacity-50">
             {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark Advance Cleared (removes from record)
           </button>
+          {clearError && <p className="text-xs font-body text-destructive text-center mt-1">{clearError}</p>}
         </div>
       )}
 
@@ -947,7 +957,15 @@ export default function AttendanceSalary() {
   };
 
   const addEmp = (emp: Employee) => { setEmployees(prev => [...prev, emp]); setShowAddModal(false); };
-  const removeEmp = async (id: string) => { await deactivateEmployee(id); setEmployees(prev => prev.filter(e => e.id !== id)); };
+  const removeEmp = async (id: string) => {
+    try {
+      await deactivateEmployee(id);
+      setEmployees(prev => prev.filter(e => e.id !== id));
+    } catch {
+      // deactivateEmployee throws on DB failure — don't remove from UI if DB failed
+      alert('Failed to remove employee — please try again.');
+    }
+  };
   const saveEmp = (emp: Employee) => { setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e)); setEditEmp(null); };
 
   const filtered = useMemo(() => {
