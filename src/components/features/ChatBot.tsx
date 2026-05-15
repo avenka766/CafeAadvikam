@@ -174,9 +174,12 @@ function MessageBubble({ msg }: { msg: Message }) {
             ? 'bg-orange-50 text-gray-800 rounded-bl-sm border border-orange-100'
             : 'bg-[#8B4513] text-white rounded-br-sm',
         )}
-        dangerouslySetInnerHTML={isBot ? { __html: msg.text } : undefined}
-        >{isBot ? undefined : msg.text}
-      />
+      >
+        {isBot
+          ? <span dangerouslySetInnerHTML={{ __html: msg.text }} />
+          : msg.text
+        }
+      </div>
       <span className={cn('text-[10px] text-gray-400 px-1', !isBot && 'self-end')}>{msg.time}</span>
     </div>
   );
