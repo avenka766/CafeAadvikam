@@ -414,9 +414,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   updateThreshold: async (branch, itemName, threshold) => {
-    await supabase.from('branch_thresholds').upsert({ branch, item_name: itemName, threshold });
-    await supabase.from('branch_stock').update({ min_threshold: threshold })
+    const { error: t1 } = await supabase.from('branch_thresholds').upsert({ branch, item_name: itemName, threshold });
+    if (t1) { console.error('[updateThreshold] thresholds upsert failed:', t1.message); return; }
+    const { error: t2 } = await supabase.from('branch_stock').update({ min_threshold: threshold })
       .eq('branch', branch).eq('item_name', itemName);
+    if (t2) console.error('[updateThreshold] stock update failed:', t2.message);
     set((s) => {
       const thresholds = { ...s.thresholds };
       thresholds[branch] = { ...thresholds[branch], [itemName]: threshold };
@@ -652,6 +654,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       paymentMethod: saleData.payment_method ?? null,
     };
 
+    // B2 local state fix: use the RPC-returned quantity for local state
+    // to avoid showing a stale value after a concurrent sale on another device.
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
@@ -663,6 +667,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
     });
+    // Sync from DB after SNB sale to pick up any concurrent changes
+    void get().fetchBranchData(branch);
 
     return { error: null, mismatch };
   },
