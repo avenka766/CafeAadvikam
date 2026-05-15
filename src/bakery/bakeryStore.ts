@@ -185,10 +185,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         .maybeSingle();
 
       if (existingStock) {
-        await supabase.from('branch_stock')
-          .update({ quantity: Math.max(0, existingStock.quantity - removedEntry.quantity) })
-          .eq('branch', removedEntry.branch)
-          .eq('item_name', removedEntry.itemName);
+        // Use atomic RPC to reverse stock — avoids stale-read race condition
+        await supabase.rpc('decrement_branch_stock', {
+          p_branch:    removedEntry.branch,
+          p_item_name: removedEntry.itemName,
+          p_qty:       removedEntry.quantity,
+        });
       }
 
       // TXN-03 FIX: branch_incoming was inserted with dispatch_id = entryId,
