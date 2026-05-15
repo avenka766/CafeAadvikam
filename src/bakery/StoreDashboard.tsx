@@ -239,7 +239,13 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
 export default function StoreDashboard() {
   const { orders, fetchOrders, loading } = useBakeryStore();
-  useEffect(() => { fetchOrders(); }, []);
+  // SYNC-01 FIX: bakery dashboards previously only fetched once on mount.
+  // Multi-role workflow (OrderReceiver → Baker → Packer) requires auto-refresh.
+  useEffect(() => {
+    fetchOrders();
+    const id = setInterval(() => fetchOrders(), 15_000); // 15s refresh
+    return () => clearInterval(id);
+  }, []);
   const pending    = orders.filter(o => o.status === 'pending');
   const inProgress = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
 

@@ -143,7 +143,13 @@ export default function BakerDashboard() {
   const { orders, fetchOrders, loading } = useBakeryStore();
 
   // ✅ Load data immediately on mount
-  useEffect(() => { fetchOrders(); }, []);
+  // SYNC-01 FIX: bakery dashboards previously only fetched once on mount.
+  // Multi-role workflow (OrderReceiver → Baker → Packer) requires auto-refresh.
+  useEffect(() => {
+    fetchOrders();
+    const id = setInterval(() => fetchOrders(), 15_000); // 15s refresh
+    return () => clearInterval(id);
+  }, []);
 
   const bakingOrders = orders.filter(o => o.status === 'baking');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));

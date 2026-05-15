@@ -17,7 +17,11 @@ export default function OrderReceiverDashboard() {
   const [activeTab, setActiveTab]   = useState<Branch>(BRANCHES[0]);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => { fetchOrders(); }, [refreshKey]);
+  useEffect(() => {
+    fetchOrders();
+    const id = setInterval(() => fetchOrders(), 15_000);
+    return () => { clearInterval(id); };
+  }, [refreshKey]);
 
   const todayCount   = orders.filter(o => new Date(o.createdAt).toDateString() === new Date().toDateString()).length;
   const pendingCount = orders.filter(o => o.status === 'pending').length;
