@@ -2,7 +2,11 @@
 // Main screen for the Order Receiver role.
 // Tabs per branch → BranchStockForm → sends requirement to Packing.
 
-import { useState, useEffect } from 'react';
+// ORD-RCV FIX: Split the polling interval and the manual-refresh trigger into two
+// separate effects so that calling onSubmitted() (which bumps refreshKey) doesn't
+// tear down and recreate the interval — previously that caused a brief window where
+// two intervals were running simultaneously.
+import { useState, useEffect, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BRANCHES } from './types';
@@ -17,11 +21,22 @@ export default function OrderReceiverDashboard() {
   const [activeTab, setActiveTab]   = useState<Branch>(BRANCHES[0]);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Stable fetch callback — identity never changes so the interval effect below
+  // has an empty dep array and is never torn down by a refreshKey change.
+  const stableFetch = useCallback(() => { fetchOrders(); }, [fetchOrders]);
+
+  // Effect 1: start polling once on mount; never restarts.
   useEffect(() => {
-    fetchOrders();
-    const id = setInterval(() => fetchOrders(), 15_000);
+    stableFetch();
+    const id = setInterval(stableFetch, 15_000);
     return () => { clearInterval(id); };
-  }, [refreshKey]);
+  }, [stableFetch]);
+
+  // Effect 2: immediate re-fetch when a form submission fires (refreshKey bumps).
+  // This effect has no interval — it just does a one-shot fetch.
+  useEffect(() => {
+    if (refreshKey > 0) stableFetch();
+  }, [refreshKey, stableFetch]);
 
   const todayCount   = orders.filter(o => new Date(o.createdAt).toDateString() === new Date().toDateString()).length;
   const pendingCount = orders.filter(o => o.status === 'pending').length;

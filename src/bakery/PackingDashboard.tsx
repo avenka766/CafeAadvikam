@@ -422,10 +422,14 @@ function PackingOrderCard({
                     <DispatchRow
                       itemName={p.itemName}
                       available={stock?.available ?? 0}
-                      onDispatch={(qty, branch) => {
+                      onDispatch={async (qty, branch) => {
                         const entry = packedEntries.find(e => e.itemId === p.itemId);
                         const unit = entry?.dispatchUnit ?? 'kg';
-                        handleDispatch(p.itemName, qty, branch, unit);
+                        // PACKING-FIX: await so errors from handleDispatch propagate
+                        // to DispatchRow's handle(), which awaits onDispatch and then
+                        // resets its own qty input. Without await the input cleared
+                        // even if the dispatch failed.
+                        await handleDispatch(p.itemName, qty, branch, unit);
                       }}
                       submitting={dispatchingItems.size > 0}
                       defaultBranch={order.targetBranch}
