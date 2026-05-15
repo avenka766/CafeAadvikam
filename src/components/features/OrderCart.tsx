@@ -37,22 +37,26 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
 
     setTableError(false);
     setSubmitting(true);
-
-    await submitOrder({
-      tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
-      orderType,
-      notes: notes || undefined,
-      customerName: customerName || undefined,
-      createdBy: currentUser.username,
-      orderSource: 'staff',
-    });
-
-    setSubmitting(false);
-    setShowSuccess(true);
-    setNotes('');
-    setCustomerName('');
-    setTableNumber(null);
-    setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
+    try {
+      await submitOrder({
+        tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+        orderType,
+        notes: notes || undefined,
+        customerName: customerName || undefined,
+        createdBy: currentUser.username,
+        orderSource: 'staff',
+      });
+      setShowSuccess(true);
+      setNotes('');
+      setCustomerName('');
+      setTableNumber(null);
+      setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to place order. Please try again.';
+      alert(msg);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (!isOpen) return null;
