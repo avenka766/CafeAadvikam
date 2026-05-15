@@ -271,6 +271,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
+  const [confirmAllError, setConfirmAllError] = useState('');
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -315,8 +316,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
   const handleConfirmAll = async () => {
     setConfirmingAll(true);
-    await confirmAllIncoming(branch);
+    setConfirmAllError('');
+    // STOCK-FIX: confirmAllIncoming returns string|null — capture and display it.
+    // Previously the return value was discarded, so partial failures were invisible.
+    const err = await confirmAllIncoming(branch);
     setConfirmingAll(false);
+    if (err) setConfirmAllError(err);
   };
 
   const SUBTABS: { id: StockSubTab; label: string }[] = [
@@ -362,6 +367,11 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
               )
             }
           />
+          {confirmAllError && (
+            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
+              {confirmAllError}
+            </p>
+          )}
           {todayIncoming.length === 0 ? (
             <EmptyState message="No incoming stock today. Items dispatched from Packing will appear here." />
           ) : (

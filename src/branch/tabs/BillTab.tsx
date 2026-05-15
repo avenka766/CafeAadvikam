@@ -1028,6 +1028,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     }
     setError(''); setSubmitting(true);
     const methodLabel = buildMethodLabel();
+    // BILL-FIX: wrap entire checkout in try/finally so setSubmitting(false) is
+    // guaranteed even if recordSale/recordSnbSale throws unexpectedly.
+    try {
 
     if (isSNB) {
       // SNB / Hosur — items from price list; deduct stock if available, log mismatch if not
@@ -1035,7 +1038,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         const { error: err } = await recordSnbSale(
           branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0,
         );
-        if (err) { setError(err); setSubmitting(false); return; }
+        if (err) { setError(err); return; }
       }
     } else {
       // VRSNB — stock-gated sale
@@ -1044,14 +1047,19 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel);
         if (err) {
           setError(`Failed on "${item.itemName}": ${err}.${succeeded.length > 0 ? ` (Saved: ${succeeded.join(', ')})` : ''}`);
-          setSubmitting(false); return;
+          return;
         }
         succeeded.push(item.itemName);
       }
     }
 
-    setSubmitting(false); setShowPreview(false); setShowSuccess(true);
-    clearCart(); setTimeout(() => setShowSuccess(false), 2500);
+      setShowPreview(false); setShowSuccess(true);
+      clearCart(); setTimeout(() => setShowSuccess(false), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Checkout failed — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handlePrintAndConfirm = async () => {
