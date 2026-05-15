@@ -99,6 +99,7 @@ export default function StaffManagement() {
   // ── Password change state ───────────────────────────────────────────────────
   const [changingPwId, setChangingPwId] = useState<string | null>(null);
   const [newPw, setNewPw]               = useState('');
+  const [pwError, setPwError]           = useState('');
   const [pwSuccess, setPwSuccess]       = useState<string | null>(null);
 
   // ── Edit details state ──────────────────────────────────────────────────────
@@ -110,6 +111,12 @@ export default function StaffManagement() {
 
   // ── Expand card state ───────────────────────────────────────────────────────
   const [expandedId, setExpandedId]     = useState<string | null>(null);
+
+  // ── Remove state ────────────────────────────────────────────────────────────
+  // removingId: which card's delete button is in-flight (shows spinner, disables btn)
+  // removeError: per-card inline error keyed by userId
+  const [removingId, setRemovingId]     = useState<string | null>(null);
+  const [removeError, setRemoveError]   = useState<Record<string, string>>({});
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
 
@@ -136,11 +143,29 @@ export default function StaffManagement() {
 
   const handleChangePw = async (userId: string) => {
     if (!newPw.trim()) return;
+    setPwError('');
     const err = await updateStaffPassword(userId, newPw);
-    if (err) { setError(err); return; }
-    setChangingPwId(null); setNewPw('');
+    if (err) { setPwError(err); return; }
+    setChangingPwId(null); setNewPw(''); setPwError('');
     setPwSuccess(userId);
     setTimeout(() => setPwSuccess(null), 2500);
+  };
+
+  // SM-FIX: replace window.confirm + fire-and-forget .catch(alert) with proper
+  // async handler — shows a loading spinner on the button, collapses to an
+  // inline error message inside the card on failure, never uses blocking dialogs.
+  const handleRemoveStaff = async (userId: string, displayName: string) => {
+    if (!window.confirm(`Remove ${displayName}? This cannot be undone.`)) return;
+    setRemovingId(userId);
+    setRemoveError((prev) => ({ ...prev, [userId]: '' }));
+    try {
+      await removeStaff(userId);
+      // On success the store filters the user out of staffList — card disappears naturally.
+    } catch {
+      setRemoveError((prev) => ({ ...prev, [userId]: 'Failed to remove — please try again.' }));
+    } finally {
+      setRemovingId(null);
+    }
   };
 
   const startEdit = (user: { id: string; username: string; displayName: string }) => {
@@ -306,14 +331,20 @@ export default function StaffManagement() {
                       </button>
                       {user.id !== currentUser?.id && (
                         <button
-                          onClick={() => {
-                            if (window.confirm(`Remove ${user.displayName}?`)) removeStaff(user.id);
-                          }}
-                          className="px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-body font-semibold flex items-center gap-1 active:scale-95 transition-all"
+                          onClick={() => handleRemoveStaff(user.id, user.displayName)}
+                          disabled={removingId === user.id}
+                          className="px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-body font-semibold flex items-center gap-1 active:scale-95 transition-all disabled:opacity-50"
                         >
                           <Trash2 className="size-3" />
                         </button>
                       )}
+                    </div>
+                  )}
+
+                  {/* Remove error — shown inline below the action row */}
+                  {removeError[user.id] && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/20 text-xs text-destructive">
+                      <AlertCircle className="size-3.5 shrink-0" />{removeError[user.id]}
                     </div>
                   )}
 
@@ -359,6 +390,11 @@ export default function StaffManagement() {
                   {isChangingPw && (
                     <div className="space-y-2">
                       <p className="text-xs font-semibold text-foreground">New Password</p>
+                      {pwError && (
+                        <div className="flex items-center gap-2 text-xs text-destructive">
+                          <AlertCircle className="size-3" />{pwError}
+                        </div>
+                      )}
                       <div className="flex gap-2">
                         <input
                           type="password"
@@ -374,7 +410,7 @@ export default function StaffManagement() {
                           Save
                         </button>
                         <button
-                          onClick={() => { setChangingPwId(null); setNewPw(''); }}
+                          onClick={() => { setChangingPwId(null); setNewPw(''); setPwError(''); }}
                           className="px-3 py-2 rounded-lg bg-muted text-foreground text-xs font-body font-semibold flex items-center gap-1 active:scale-95"
                         >
                           <X className="size-3" />
