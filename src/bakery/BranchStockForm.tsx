@@ -79,6 +79,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const [note, setNote]             = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess]       = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [lines, setLines] = useState<LineItem[]>([
     defaultItem ? makeLine(branch, defaultItem) : { itemId: '', itemName: '', uom: 'Kgs', weightGrams: null, qty: '' },
@@ -169,14 +170,19 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       `| ${currentUser.displayName}`,
     ].filter(Boolean).join(' ');
 
-    await submitOrder(items, label, branch);
-
-    setSubmitting(false);
-    setSuccess(true);
-    setNote('');
-    setLines([defaultItem ? makeLine(branch, defaultItem) : lines[0]]);
-    setCustomLines([]);
-    setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
+    setSubmitError(null);
+    try {
+      await submitOrder(items, label, branch);
+      setSuccess(true);
+      setNote('');
+      setLines([defaultItem ? makeLine(branch, defaultItem) : lines[0]]);
+      setCustomLines([]);
+      setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
+    } catch {
+      setSubmitError('Failed to submit — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // ── Grouped items for select optgroups ─────────────────────────────────────
@@ -408,6 +414,9 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
       {/* Submit */}
       <div className="px-4 py-3 border-t border-border mt-2">
+        {submitError && (
+          <p className="text-xs font-body text-destructive text-center mb-2">{submitError}</p>
+        )}
         <button
           onClick={handleSubmit}
           disabled={submitting || success || !valid}

@@ -123,11 +123,10 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
       .from('bakery_items')
       .update({ enabled: newEnabled })
       .eq('id', id);
-    if (!error) {
-      set(s => ({
-        items: s.items.map(i => i.id === id ? { ...i, enabled: newEnabled } : i),
-      }));
-    }
+    if (error) throw error;
+    set(s => ({
+      items: s.items.map(i => i.id === id ? { ...i, enabled: newEnabled } : i),
+    }));
   },
 
   // ── Update name / icon / category ─────────────────────────────────────────
@@ -163,8 +162,7 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
   // ── Hard delete ───────────────────────────────────────────────────────────
   deleteItem: async (id) => {
     const { error } = await supabase.from('bakery_items').delete().eq('id', id);
-    if (!error) {
-      set(s => ({ items: s.items.filter(i => i.id !== id) }));
-    }
+    if (error) throw error;
+    set(s => ({ items: s.items.filter(i => i.id !== id) }));
   },
 }));
