@@ -10,6 +10,7 @@ interface OrderState {
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
   _pollRefCount: number;
+  _pollFailCount: number; // consecutive load failures — used for backoff
 
   addToCart: (item: MenuItem) => void;
   removeFromCart: (itemId: string) => void;
@@ -71,6 +72,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   polling: false,
   pollTimer: null,
   _pollRefCount: 0,
+  _pollFailCount: 0,
 
   // === Cart (local) ===
   addToCart: (item: MenuItem) =>
@@ -98,17 +100,41 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   // === Orders (DB-synced) ===
   // PERF-01: accepts days parameter — kitchen/billing use 1, reports use 60
   loadOrders: async (days = 60) => {
+    set({ loading: true });
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
 
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .gte('created_at', cutoff.toISOString())
-      .order('created_at', { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .gte('created_at', cutoff.toISOString())
+        .order('created_at', { ascending: false });
 
-    if (!error && data) {
-      set({ orders: data.map(dbRowToOrder) });
+      if (error) throw error;
+      if (data) set({ orders: data.map(dbRowToOrder), _pollFailCount: 0 }); // reset backoff on success
+    } catch (e) {
+      // POLL-FIX: exponential backoff on repeated failures — reschedule the interval
+      // at 3s * 2^failCount (capped at 60s) so a DB outage doesn't hammer the server.
+      const failCount = (get()._pollFailCount || 0) + 1;
+      set({ _pollFailCount: failCount });
+      const backoffMs = Math.min(3000 * Math.pow(2, failCount - 1), 60_000);
+      console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
+
+      // If we're in a polling loop, reschedule at the backoff interval
+      const { pollTimer } = get();
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        const retryTimer = setTimeout(() => {
+          const newTimer = setInterval(() => { get().loadOrders(days); }, 3000);
+          set({ pollTimer: newTimer });
+          get().loadOrders(days);
+        }, backoffMs);
+        // Store timeout id in pollTimer slot temporarily (same cleanup path)
+        set({ pollTimer: retryTimer as unknown as ReturnType<typeof setInterval> });
+      }
+    } finally {
+      set({ loading: false });
     }
   },
 

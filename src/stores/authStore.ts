@@ -126,7 +126,8 @@ export const useAuthStore = create<AuthState>()(
 
       removeStaff: async (userId) => {
         const { error } = await supabase.from('staff_users').update({ is_active: false }).eq('id', userId);
-        if (!error) set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
+        if (error) throw error;
+        set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
       },
     }),
     {
