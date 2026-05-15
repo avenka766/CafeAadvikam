@@ -659,7 +659,8 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
   splitAmounts: [string,string]; soldBy: string;
   onClose: () => void; onConfirmPrint: () => void;
 }) {
-  const isSNB    = SNB_BRANCHES.includes(branch);
+  const isVRSNB  = branch === 'VRSNB';
+  const isSNB    = SNB_BRANCHES.includes(branch) && !isVRSNB;
   const now      = new Date();
   const totalQty = items.reduce((s,i) => s + i.quantity, 0);
 
@@ -690,7 +691,17 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
 
             {/* Header band */}
             <div className="text-center py-4 px-4" style={{ background: '#1a1a1a', color: '#fff' }}>
-              {isSNB ? (
+              {isVRSNB ? (
+                <>
+                  <p style={{ fontFamily: 'sans-serif', fontWeight: 900, fontSize: 24, letterSpacing: 2, border: '2px solid #fff', display: 'inline-block', padding: '2px 12px', margin: '0 0 4px' }}>SNB</p>
+                  <p style={{ color: '#aaa', fontSize: 9, margin: '2px 0', letterSpacing: 3 }}>SWEETS &amp; SNACKS</p>
+                  <p style={{ fontWeight: 700, fontSize: 12, margin: '6px 0 2px', color: '#fff' }}>PAID</p>
+                  <p style={{ fontFamily: 'sans-serif', fontWeight: 700, fontSize: 14, letterSpacing: 0.5, margin: 0 }}>{VRSNB_INFO.name}</p>
+                  {VRSNB_INFO.address.split('\n').map((l,i) => <p key={i} style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>{l}</p>)}
+                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>GST NO:{VRSNB_INFO.gstin}</p>
+                  <p style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>FSSAI NO:{VRSNB_INFO.fssai}</p>
+                </>
+              ) : isSNB ? (
                 <>
                   <p style={{ fontFamily: 'sans-serif', fontWeight: 700, fontSize: 14, letterSpacing: 0.5, margin: 0 }}>{SNB_INFO.name}</p>
                   {SNB_INFO.address.split('\n').map((l,i) => <p key={i} style={{ color: '#aaa', fontSize: 10, margin: '2px 0' }}>{l}</p>)}
@@ -759,7 +770,22 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
 
             {/* Totals */}
             <div className="px-4 pb-3" style={{ borderTop: '1px dashed #ccc' }}>
-              {isSNB ? (
+              {isVRSNB ? (
+                /* VRSNB FOODS LLP summary — matches physical receipt */
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+                    <span style={{ color: '#555' }}>Sub Total</span>
+                    <span style={{ fontWeight: 600 }}>{fmtNum(Math.round((subtotal - discount) * 100) / 100)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'sans-serif', fontWeight: 700, fontSize: 13, borderTop: '2px solid #111', marginTop: 5, paddingTop: 5 }}>
+                    <span>Grand Total</span>
+                    <span>₹{fmtNum(finalTotal)}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
+                    Paid via {payLabel}
+                  </div>
+                </div>
+              ) : isSNB ? (
                 /* SNB summary rows */
                 <div style={{ marginTop: 6 }}>
                   {[
@@ -816,9 +842,11 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
 
             {/* Footer */}
             <div className="text-center px-4 pb-4" style={{ borderTop: '1px dashed #ccc' }}>
-              <p style={{ fontWeight: 700, fontSize: 10, fontFamily: 'sans-serif', marginTop: 6 }}>Staff Name: {soldBy}</p>
+              <p style={{ fontWeight: 700, fontSize: 10, fontFamily: 'sans-serif', marginTop: 6 }}>
+                {isVRSNB ? `Cashier: ${soldBy}` : `Staff Name: ${soldBy}`}
+              </p>
               <p style={{ fontWeight: 700, fontSize: 11, fontFamily: 'sans-serif', marginTop: 5 }}>
-                {isSNB ? 'Thank you, Visit Again' : 'Thank you for visiting!'}
+                {isVRSNB ? 'Thank You & Visit Again...!!!' : isSNB ? 'Thank you, Visit Again' : 'Thank you for visiting!'}
               </p>
               {isSNB && <p style={{ fontSize: 9, color: '#888', marginTop: 2 }}>Including all taxes</p>}
             </div>
@@ -1612,12 +1640,12 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         </button>
       </div>
 
-      {/* ── Advance tab ── */}
-      {activeTab === 'advance' && (
+      {/* ── Advance tab — always mounted so cart survives tab switches ── */}
+      <div className={activeTab !== 'advance' ? 'hidden' : undefined}>
         <BranchAdvancePanel branch={branch} advanceOrders={advanceOrders} />
-      )}
+      </div>
 
-      {/* ── Bill tab ── */}
+      {/* ── Bill tab — always mounted so cart survives tab switches ── */}
       {activeTab === 'bill' && (<>
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
