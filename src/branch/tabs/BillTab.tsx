@@ -54,6 +54,18 @@ const VRSNB_INFO = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// B8 FIX: escape dynamic values before injecting into innerHTML / document.write
+// Prevents a DB item name containing </td><script> from executing in the print window.
+function escHtml(s: string | number | null | undefined): string {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const fmt = (n: number) =>
   `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
@@ -74,9 +86,13 @@ function detectSellUnit(name: string): SellUnit {
   return kws.some((k) => lower.includes(k)) ? 'kg' : 'pcs';
 }
 
+// B7 FIX: use crypto.randomUUID (available in all modern browsers) for the suffix
+// instead of Math.random() × 9000 which collides ~1-in-9000 within the same second.
 function generateBillNo() {
   const d = new Date();
-  return `CA-${d.getFullYear().toString().slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}-${Math.floor(1000+Math.random()*9000)}`;
+  const datePart = `${d.getFullYear().toString().slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
+  return `CA-${datePart}-${suffix}`;
 }
 
 // ─── Print Bill ───────────────────────────────────────────────────────────────
@@ -118,7 +134,7 @@ function printBill(args: PrintArgs) {
     const rows = items.map((item, idx) => `
       <tr>
         <td class="sn">${idx+1}</td>
-        <td class="name">${item.itemName}</td>
+        <td class="name">${escHtml(item.itemName)}</td>
         <td class="num">${formatQty(item.quantity, item.sellUnit)}</td>
         <td class="num">${item.price != null ? fmtNum(item.price) : '—'}</td>
         <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
@@ -195,7 +211,7 @@ function printBill(args: PrintArgs) {
     <div class="bold" style="margin-bottom:3px">Payment Details</div>
     <table>${payRows}</table>
     <hr/>
-    <div class="center bold">Staff Name : ${soldBy}</div>
+    <div class="center bold">Staff Name : ${escHtml(soldBy)}</div>
     <div class="center bold" style="margin-top:5px;font-size:12px">Thank you, Visit Again</div>
     <div class="center" style="margin-top:2px">Including all taxes</div>
     <script>window.onload=()=>window.print();</script>
@@ -212,7 +228,7 @@ function printBill(args: PrintArgs) {
     const totalQtyVR = items.reduce((s,i) => s + i.quantity, 0);
     const rows = items.map((item, idx) => `
       <tr>
-        <td class="name">${item.itemName}</td>
+        <td class="name">${escHtml(item.itemName)}</td>
         <td class="num">${item.sellUnit === 'kg' ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`) : item.quantity}</td>
         <td class="num">${item.price != null ? fmtNum(item.price) : '—'}</td>
         <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
@@ -299,7 +315,7 @@ function printBill(args: PrintArgs) {
 
   const rows = items.map((item) => `
     <tr>
-      <td style="padding:5px 4px;font-size:12px;border-bottom:1px solid #f0f0f0">${item.itemName}</td>
+      <td style="padding:5px 4px;font-size:12px;border-bottom:1px solid #f0f0f0">${escHtml(item.itemName)}</td>
       <td style="padding:5px 4px;font-size:12px;text-align:center;border-bottom:1px solid #f0f0f0">${item.sellUnit === 'kg' ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`) : `×${item.quantity}`}</td>
       <td style="padding:5px 4px;font-size:12px;text-align:right;border-bottom:1px solid #f0f0f0">${item.price != null ? fmt(item.price) : '—'}</td>
       <td style="padding:5px 4px;font-size:12px;text-align:right;font-weight:600;border-bottom:1px solid #f0f0f0">${item.lineTotal != null ? fmt(item.lineTotal) : '—'}</td>
@@ -1038,12 +1054,15 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     clearCart(); setTimeout(() => setShowSuccess(false), 2500);
   };
 
-  const handlePrintAndConfirm = () => {
+  const handlePrintAndConfirm = async () => {
+    // B6 FIX: guard against double-fire (submitting already true from direct checkout btn)
+    if (submitting) return;
     printBill({ branch, billNo: billNo.current, items: cart, subtotal, discount,
       discountType, discountValue, roundOff, finalTotal, cgst: cafeCgst, sgst: cafeSgst,
       payMode, singleMethod, splitMethods, splitAmounts, soldBy });
     if (isVRSNB) setTimeout(() => printKOT(billNo.current, cart), 400);
-    doCheckout();
+    // B6 FIX: await so errors surface instead of being silently swallowed
+    await doCheckout();
   };
 
   // ── Success ──────────────────────────────────────────────────────────────────
