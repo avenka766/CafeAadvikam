@@ -191,9 +191,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           .eq('item_name', removedEntry.itemName);
       }
 
+      // TXN-03 FIX: branch_incoming was inserted with dispatch_id = entryId,
+      // NOT with id = entryId (those are different columns).
+      // Using .eq('id', entryId) matched 0 rows — cancelled dispatches never cleaned up.
       await supabase.from('branch_incoming')
         .delete()
-        .eq('id', entryId);
+        .eq('dispatch_id', entryId);
     }
 
     // 3. Update local state
