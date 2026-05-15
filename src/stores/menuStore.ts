@@ -53,13 +53,27 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     const item = get().items.find((i) => i.id === id);
     if (!item) return;
     const newEnabled = !item.enabled;
+    // Optimistic update
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, enabled: newEnabled } : i)),
     }));
-    await supabase.from('menu_items').update({ enabled: newEnabled, updated_at: new Date().toISOString() }).eq('id', id);
+    const { error } = await supabase
+      .from('menu_items')
+      .update({ enabled: newEnabled, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) {
+      // Rollback on DB failure
+      set((state) => ({
+        items: state.items.map((i) => (i.id === id ? { ...i, enabled: item.enabled } : i)),
+      }));
+      throw error;
+    }
   },
 
   updateItem: async (id: string, updates: Partial<MenuItem>) => {
+    const prevItem = get().items.find((i) => i.id === id);
+    if (!prevItem) return;
+    // Optimistic update
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),
     }));
@@ -67,7 +81,14 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     if (updates.price !== undefined) dbUpdates.price = updates.price;
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.enabled !== undefined) dbUpdates.enabled = updates.enabled;
-    await supabase.from('menu_items').update(dbUpdates).eq('id', id);
+    const { error } = await supabase.from('menu_items').update(dbUpdates).eq('id', id);
+    if (error) {
+      // Rollback on DB failure
+      set((state) => ({
+        items: state.items.map((i) => (i.id === id ? prevItem : i)),
+      }));
+      throw error;
+    }
   },
 
   addItem: async (item) => {
@@ -97,9 +118,23 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
   },
 
   setItemImage: async (id: string, imageUrl: string) => {
+    const prevItem = get().items.find((i) => i.id === id);
+    // Optimistic update
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, imageUrl } : i)),
     }));
-    await supabase.from('menu_items').update({ image_url: imageUrl, updated_at: new Date().toISOString() }).eq('id', id);
+    const { error } = await supabase
+      .from('menu_items')
+      .update({ image_url: imageUrl, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) {
+      // Rollback on DB failure
+      if (prevItem) {
+        set((state) => ({
+          items: state.items.map((i) => (i.id === id ? prevItem : i)),
+        }));
+      }
+      throw error;
+    }
   },
 }));
