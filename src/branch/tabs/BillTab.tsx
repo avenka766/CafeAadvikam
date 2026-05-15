@@ -86,13 +86,18 @@ function detectSellUnit(name: string): SellUnit {
   return kws.some((k) => lower.includes(k)) ? 'kg' : 'pcs';
 }
 
-// B7 FIX: use crypto.randomUUID (available in all modern browsers) for the suffix
-// instead of Math.random() × 9000 which collides ~1-in-9000 within the same second.
-function generateBillNo() {
-  const d = new Date();
-  const datePart = `${d.getFullYear().toString().slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-  const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
-  return `CA-${datePart}-${suffix}`;
+// Fetch a shared sequential bill number from the DB so all branches
+// (VRSNB, SNB, Hosur) share the same incrementing counter.
+async function fetchNextBillNo(): Promise<string> {
+  const { data, error } = await supabase.rpc('get_next_bill_number');
+  if (error || data == null) {
+    // Fallback to local random if RPC fails — avoids blocking the biller
+    const d = new Date();
+    const datePart = `${d.getFullYear().toString().slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
+    return `${datePart}-${suffix}`;
+  }
+  return String(data);
 }
 
 // ─── Print Bill ───────────────────────────────────────────────────────────────
@@ -226,7 +231,7 @@ function printBill(args: PrintArgs) {
   if (isVRSNB_print) {
     const addrLines = VRSNB_INFO.address.split('\n').map(l => `<div>${l}</div>`).join('');
     const totalQtyVR = items.reduce((s,i) => s + i.quantity, 0);
-    const rows = items.map((item, idx) => `
+    const rows = items.map((item) => `
       <tr>
         <td class="name">${escHtml(item.itemName)}</td>
         <td class="num">${item.sellUnit === 'kg' ? (item.quantity < 1 ? `${Math.round(item.quantity*1000)}g` : `${item.quantity}kg`) : item.quantity}</td>
@@ -243,6 +248,11 @@ function printBill(args: PrintArgs) {
 
     const discountedBase2 = Math.round((subtotal - discount) * 100) / 100;
 
+    // Date as DD/MM/YY (2-digit year) to match physical receipt
+    const vrDate = now.toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'2-digit' }).replace(/\//g, '/');
+    // Time as HH:MM (24-hour) to match physical receipt
+    const vrTime = now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12: false });
+
     const html = `<!DOCTYPE html><html><head><title>Bill – ${billNo}</title>
     <style>
       @page { margin: 8mm; size: 80mm auto; }
@@ -257,24 +267,34 @@ function printBill(args: PrintArgs) {
       .name { } .num { text-align: right; white-space: nowrap; }
       .th { font-weight: bold; border-bottom: 1px solid #000; padding-bottom: 3px; }
       .net { font-size: 13px; font-weight: bold; }
+      .snb-logo { font-size: 28px; font-weight: 900; letter-spacing: 2px; border: 2px solid #000; display: inline-block; padding: 2px 14px; }
+      .snb-sub { font-size: 9px; letter-spacing: 3px; }
+      .snb-tagline { font-size: 9px; }
     </style></head><body>
+    <div class="center snb-tagline">SINCE 1988</div>
+    <div class="center"><span class="snb-logo">SNB</span></div>
+    <div class="center snb-sub">SWEETS &amp; SNACKS</div>
+    <div class="center snb-tagline" style="margin-bottom:4px">SHOP NO. 10/1C</div>
     <div class="center bold" style="font-size:11px">PAID</div>
     <div class="center bold" style="font-size:14px;margin-top:2px">${VRSNB_INFO.name}</div>
     <div class="center" style="margin-top:3px">${addrLines}</div>
-    <div class="center">GST NO: ${VRSNB_INFO.gstin}</div>
-    <div class="center">FSSAI NO: ${VRSNB_INFO.fssai}</div>
+    <div class="center">GST NO:${VRSNB_INFO.gstin}</div>
+    <div class="center">FSSAI NO:${VRSNB_INFO.fssai}</div>
     <hr class="solid"/>
-    <table><tr>
-      <td>Name: </td>
-    </tr><tr>
-      <td>Date: <span class="bold">${dateStr}</span></td>
-      <td class="num bold">Pick Up</td>
-    </tr><tr>
-      <td>${timeStr}</td>
-    </tr><tr>
-      <td>Cashier: ${soldBy}</td>
-      <td class="num">Bill No.: <span class="bold">${billNo.split('-').pop()}</span></td>
-    </tr></table>
+    <table>
+      <tr><td colspan="2">Name:</td></tr>
+      <tr style="border-top:1px solid #000;border-bottom:1px solid #000;padding:2px 0">
+        <td>Date: <span class="bold">${vrDate}</span></td>
+        <td class="num bold">Pick Up</td>
+      </tr>
+      <tr>
+        <td>${vrTime}</td>
+      </tr>
+      <tr>
+        <td>Cashier: ${escHtml(soldBy)}</td>
+        <td class="num">Bill No.: <span class="bold">${billNo.split('-').pop()}</span></td>
+      </tr>
+    </table>
     <hr/>
     <table>
       <thead><tr>
@@ -835,7 +855,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const [cart, setCart]     = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | VrsnbCategory | 'All'>('All');
-  const billNo              = useRef(generateBillNo());
+  const billNo = useRef<string>('…');
+  // Fetch the first bill number on mount
+  useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }); }, []);
 
   // Discount
   const [discountType,  setDiscountType]  = useState<DiscountType>('percent');
@@ -863,7 +885,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const clearCart = useCallback(() => {
     setCart([]); resetPayment();
     setDiscountValue(''); setShowDiscount(false);
-    billNo.current = generateBillNo();
+    fetchNextBillNo().then(n => { billNo.current = n; });
   }, [resetPayment]);
 
   useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
@@ -1036,7 +1058,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       // SNB / Hosur — items from price list; deduct stock if available, log mismatch if not
       for (const item of cart) {
         const { error: err } = await recordSnbSale(
-          branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0,
+          branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0, billNo.current,
         );
         if (err) { setError(err); return; }
       }
@@ -1044,7 +1066,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       // VRSNB — stock-gated sale
       const succeeded: string[] = [];
       for (const item of cart) {
-        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel);
+        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current);
         if (err) {
           setError(`Failed on "${item.itemName}": ${err}.${succeeded.length > 0 ? ` (Saved: ${succeeded.join(', ')})` : ''}`);
           return;
