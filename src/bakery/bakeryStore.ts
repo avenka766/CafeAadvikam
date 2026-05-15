@@ -5,7 +5,9 @@ import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, Workflo
 interface BakeryState {
   orders: BakeryOrder[];
   loading: boolean;
-  fetchOrders: () => Promise<void>;
+  // FIX: added `silent` param — background polls pass true so loading stays false,
+  // preventing the StoreDashboard list from unmounting and resetting card state.
+  fetchOrders: (silent?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
@@ -35,8 +37,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   orders: [],
   loading: false,
 
-  fetchOrders: async () => {
-    set({ loading: true });
+  // FIX: `silent=true` skips setting loading:true so background 15s polls
+  // don't cause the StoreDashboard list to flash/unmount and lose local state.
+  fetchOrders: async (silent = false) => {
+    if (!silent) set({ loading: true });
     try {
       const { data, error } = await supabase
         .from('bakery_orders')
@@ -48,13 +52,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     } catch (e) {
       console.error('fetchOrders error:', e);
     } finally {
-      set({ loading: false });
+      if (!silent) set({ loading: false });
     }
   },
 
   submitOrder: async (items, createdBy, targetBranch) => {
-    // BAKERY-FIX: throw on failure so BranchStockForm's try/catch surfaces the error.
-    // Previously silent: DB failure showed nothing to the user.
     const { data, error } = await supabase
       .from('bakery_orders')
       .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch })
@@ -65,7 +67,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   updateExpectedOutput: async (orderId, qty) => {
-    // BAKERY-FIX: throw on failure so StoreDashboard's try/catch can show the error.
     const { error } = await supabase
       .from('bakery_orders')
       .update({ expected_output: qty, materials_calculated_at: new Date().toISOString() })
@@ -105,9 +106,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   submitDispatch: async (orderId, entry) => {
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
 
-    // 1. Fetch the LATEST dispatch_log directly from DB to avoid race conditions.
-    //    Using local state (get().orders) risks overwriting sibling dispatches that
-    //    were written between the last fetchOrders and now.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
       .select('dispatch_log')
@@ -120,16 +118,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       newEntry,
     ];
 
-    // 2. Update bakery_orders dispatch_log
     const { error } = await supabase
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: 'dispatched' })
       .eq('id', orderId);
     if (error) return;
 
-    // 2. Write to branch_incoming
-    //    quantity is explicitly cast to float to avoid silent failure if DB column is integer type.
-    //    confirmed:false ensures it shows in Incoming Stock awaiting branch confirmation.
     const { error: incomingErr } = await supabase.from('branch_incoming').upsert({
       dispatch_id:   newEntry.id,
       branch:        newEntry.branch,
@@ -144,12 +138,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
     }
 
-
-    // NOTE: branch_stock is NOT updated here intentionally.
-    // Stock is only added when the branch confirms the incoming item (confirmIncoming).
-    // This ensures dispatched items appear in Incoming Stock first, waiting for branch confirmation.
-
-    // 4. Update local state
     set(s => ({
       orders: s.orders.map(o =>
         o.id === orderId ? { ...o, dispatchLog: updatedLog, status: 'dispatched' } : o
@@ -157,9 +145,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }));
   },
 
-  // ✅ Deletes a dispatch entry and restores stock automatically
-  // Stock is computed as: prepared - sum(remaining dispatch log)
-  // If all dispatches are removed, status reverts to 'packed'
   deleteDispatchEntry: async (orderId, entryId) => {
     const order = get().orders.find(o => o.id === orderId);
     if (!order) return;
@@ -167,14 +152,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const updatedLog = (order.dispatchLog || []).filter(d => d.id !== entryId);
     const newStatus: WorkflowStatus = updatedLog.length === 0 ? 'packed' : 'dispatched';
 
-    // 1. Update bakery_orders
     const { error } = await supabase
       .from('bakery_orders')
       .update({ dispatch_log: updatedLog, status: newStatus })
       .eq('id', orderId);
     if (error) return;
 
-    // 2. Reverse branch_stock and remove branch_incoming entry
     if (removedEntry) {
       const { data: existingStock } = await supabase
         .from('branch_stock')
@@ -184,7 +167,6 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         .maybeSingle();
 
       if (existingStock) {
-        // Use atomic RPC to reverse stock — avoids stale-read race condition
         await supabase.rpc('decrement_branch_stock', {
           p_branch:    removedEntry.branch,
           p_item_name: removedEntry.itemName,
@@ -192,15 +174,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         });
       }
 
-      // TXN-03 FIX: branch_incoming was inserted with dispatch_id = entryId,
-      // NOT with id = entryId (those are different columns).
-      // Using .eq('id', entryId) matched 0 rows — cancelled dispatches never cleaned up.
       await supabase.from('branch_incoming')
         .delete()
         .eq('dispatch_id', entryId);
     }
 
-    // 3. Update local state
     set(s => ({
       orders: s.orders.map(o =>
         o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o

@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
+// src/bakery/PackingDashboard.tsx
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock, Unlock,
@@ -14,21 +15,14 @@ import { cn } from '@/lib/utils';
 interface PackedEntry {
   itemId:      string;
   itemName:    string;
-  qty:         number;   // always kg while baker sends kg
+  qty:         number;
   confirmed:   boolean;
-  /** Per-unit weight in grams — present when receiver chose pcs */
   weightGrams?: number;
-  /** dispatchUnit from the original order item */
   dispatchUnit?: 'pcs' | 'kg';
-  /**
-   * Set after the packer confirms receipt.
-   * For pcs items: kg quantity converted to whole pcs.
-   * For kg items: same as qty.
-   */
   confirmedPcs?: number;
 }
 
-// ─── Per-item dispatch row inside Dispatch Panel ────────────────────────────
+// ─── Per-item dispatch row ────────────────────────────────────────────────────
 function DispatchRow({
   itemName, available, onDispatch, submitting, defaultBranch, unit,
 }: {
@@ -40,9 +34,9 @@ function DispatchRow({
   unit?: 'pcs' | 'kg';
 }) {
   const [qty, setQty] = useState('');
-  const branch = defaultBranch ?? 'VRSNB';
-  const qtyNum  = parseFloat(qty) || 0;
-  const overQty = qtyNum > available;
+  const branch    = defaultBranch ?? 'VRSNB';
+  const qtyNum    = parseFloat(qty) || 0;
+  const overQty   = qtyNum > available;
   const unitLabel = unit === 'pcs' ? 'pcs' : 'kg';
 
   const handle = async () => {
@@ -97,37 +91,43 @@ function DispatchRow({
   );
 }
 
-// ─── Single order card ──────────────────────────────────────────────────────
+// ─── Single order card ────────────────────────────────────────────────────────
 function PackingOrderCard({
   order,
 }: {
   order: ReturnType<typeof useBakeryStore.getState>['orders'][0];
 }) {
   const { submitDispatch } = useBakeryStore();
-  const { currentUser } = useAuthStore();
+  const { currentUser }   = useAuthStore();
 
-  const [expanded,  setExpanded]  = useState(order.status === 'packed');
+  const [expanded,         setExpanded]         = useState(order.status === 'packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
-  const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [dispatchError,    setDispatchError]    = useState<string | null>(null);
 
-  // ── Phase 1: Pack confirmation state ──────────────────────────────────────
-  // Pre-populate from preparedItems (set by baker). qty is always in kg here
-  // because baker always works in kg — conversion to pcs happens on confirm.
-  const [packedEntries, setPackedEntries] = useState<PackedEntry[]>(() =>
-    (order.preparedItems || []).map(p => {
-      const orderItem = order.items.find(i => i.itemId === p.itemId);
-      return {
-        itemId:      p.itemId,
-        itemName:    p.itemName,
-        qty:         p.quantityPrepared,  // kg from baker
-        confirmed:   false,
-        weightGrams: orderItem?.weightGrams ?? undefined,
-        dispatchUnit: orderItem?.dispatchUnit ?? 'kg',
-      };
-    })
-  );
+  // FIX: packedEntries is initialised once from preparedItems on first mount.
+  // The ref guard means the 15s background poll never resets confirmation state
+  // the packer has already set (confirmed, qty edits, confirmedPcs conversions).
+  const initialised = useRef(false);
+  const [packedEntries, setPackedEntries] = useState<PackedEntry[]>([]);
+  useEffect(() => {
+    if (!initialised.current && order.preparedItems && order.preparedItems.length > 0) {
+      setPackedEntries(
+        order.preparedItems.map(p => {
+          const orderItem = order.items.find(i => i.itemId === p.itemId);
+          return {
+            itemId:      p.itemId,
+            itemName:    p.itemName,
+            qty:         p.quantityPrepared,
+            confirmed:   false,
+            weightGrams: orderItem?.weightGrams ?? undefined,
+            dispatchUnit: orderItem?.dispatchUnit ?? 'kg',
+          };
+        })
+      );
+      initialised.current = true;
+    }
+  }, [order.preparedItems, order.items]);
 
-  // Look up isCustom from original order items
   const isCustomItem = (itemId: string) =>
     order.items.find(i => i.itemId === itemId)?.isCustom ?? false;
 
@@ -136,7 +136,6 @@ function PackingOrderCard({
   const confirmEntry = (idx: number) => {
     setPackedEntries(prev => prev.map((e, i) => {
       if (i !== idx) return e;
-      // For pcs items: convert the kg qty to pcs on confirm
       let confirmedPcs: number | undefined;
       if (e.dispatchUnit === 'pcs' && e.weightGrams != null) {
         confirmedPcs = kgToPcs(e.qty, e.weightGrams) ?? undefined;
@@ -154,16 +153,14 @@ function PackingOrderCard({
     }
   };
 
-  // ── Phase 2: Dispatch ─────────────────────────────────────────────────────
   const preparedItems = order.preparedItems || [];
   const dispatchLog   = order.dispatchLog   || [];
 
   const stockByItem = useMemo(() => {
     const result: Record<string, { prepared: number; dispatched: number; available: number; unit: 'pcs' | 'kg' }> = {};
     preparedItems.forEach(p => {
-      const entry = packedEntries.find(e => e.itemId === p.itemId);
-      const isPcs = entry?.dispatchUnit === 'pcs';
-      // Use confirmedPcs if available (pcs items after confirm), else quantityPrepared (kg)
+      const entry      = packedEntries.find(e => e.itemId === p.itemId);
+      const isPcs      = entry?.dispatchUnit === 'pcs';
       const effectiveQty = (isPcs && entry?.confirmedPcs != null)
         ? entry.confirmedPcs
         : p.quantityPrepared;
@@ -171,10 +168,10 @@ function PackingOrderCard({
         .filter(d => d.itemName === p.itemName)
         .reduce((s, d) => s + d.quantity, 0);
       result[p.itemName] = {
-        prepared:   effectiveQty,
+        prepared:  effectiveQty,
         dispatched,
-        available:  effectiveQty - dispatched,
-        unit:       isPcs ? 'pcs' : 'kg',
+        available: effectiveQty - dispatched,
+        unit:      isPcs ? 'pcs' : 'kg',
       };
     });
     return result;
@@ -191,7 +188,6 @@ function PackingOrderCard({
 
   const handleDispatch = async (itemName: string, qty: number, branch: Branch, unit?: 'pcs' | 'kg') => {
     if (!currentUser) return;
-    // Block if any dispatch for this order is already in-flight (prevents race conditions)
     if (dispatchingItems.size > 0) return;
     setDispatchingItems(prev => new Set(prev).add(itemName));
     setDispatchError(null);
@@ -211,7 +207,6 @@ function PackingOrderCard({
     }
   };
 
-  // Status badge
   const statusBadge = allDispatched
     ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
     : allConfirmed
@@ -226,7 +221,6 @@ function PackingOrderCard({
 
   return (
     <div className="bg-card border border-border rounded-2xl overflow-hidden">
-      {/* Header */}
       <button
         className="w-full px-4 py-3 flex items-center gap-3 text-left"
         onClick={() => setExpanded(v => !v)}
@@ -266,7 +260,6 @@ function PackingOrderCard({
       {expanded && (
         <div className="border-t border-border px-4 pb-4 pt-3 space-y-5">
 
-          {/* ── TARGET BRANCH BANNER ─────────────────────────── */}
           {order.targetBranch && (
             <div className={cn(
               'flex items-center gap-2 rounded-xl border px-3 py-2.5',
@@ -280,7 +273,7 @@ function PackingOrderCard({
             </div>
           )}
 
-          {/* ── PHASE 1: Packing confirmation ────────────────── */}
+          {/* ── PHASE 1: Packing confirmation ── */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <ClipboardCheck className="size-4 text-primary" />
@@ -356,7 +349,6 @@ function PackingOrderCard({
                       })()}
                     </span>
                   </div>
-                  {/* Show kg → pcs conversion once confirmed */}
                   {entry.confirmed && entry.dispatchUnit === 'pcs' && entry.confirmedPcs != null && (
                     <div className="mt-1.5 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-50 border border-blue-200">
                       <span className="text-[11px] font-body font-bold text-blue-700">
@@ -371,7 +363,6 @@ function PackingOrderCard({
               ))}
             </div>
 
-            {/* All confirmed banner */}
             {allConfirmed && (
               <div className="mt-3 flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
                 <Unlock className="size-4 text-emerald-600 shrink-0" />
@@ -390,7 +381,7 @@ function PackingOrderCard({
             )}
           </div>
 
-          {/* ── PHASE 2: Dispatch (locked until all confirmed) ── */}
+          {/* ── PHASE 2: Dispatch ── */}
           <div className={cn(
             'rounded-2xl border transition-all',
             allConfirmed ? 'border-emerald-200 bg-emerald-50/30' : 'border-border bg-muted/20 opacity-50 pointer-events-none select-none',
@@ -410,7 +401,7 @@ function PackingOrderCard({
 
             <div className="px-4 pb-3">
               {preparedItems.map(p => {
-                const stock = stockByItem[p.itemName];
+                const stock    = stockByItem[p.itemName];
                 const isCustom = isCustomItem(p.itemId);
                 return (
                   <div key={p.itemId}>
@@ -424,11 +415,7 @@ function PackingOrderCard({
                       available={stock?.available ?? 0}
                       onDispatch={async (qty, branch) => {
                         const entry = packedEntries.find(e => e.itemId === p.itemId);
-                        const unit = entry?.dispatchUnit ?? 'kg';
-                        // PACKING-FIX: await so errors from handleDispatch propagate
-                        // to DispatchRow's handle(), which awaits onDispatch and then
-                        // resets its own qty input. Without await the input cleared
-                        // even if the dispatch failed.
+                        const unit  = entry?.dispatchUnit ?? 'kg';
                         await handleDispatch(p.itemName, qty, branch, unit);
                       }}
                       submitting={dispatchingItems.size > 0}
@@ -445,7 +432,7 @@ function PackingOrderCard({
             <p className="text-xs font-body text-destructive text-center">{dispatchError}</p>
           )}
 
-          {/* ── Dispatch Log ───────────────────────────────── */}
+          {/* ── Dispatch Log ── */}
           {dispatchLog.length > 0 && (
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">
@@ -469,11 +456,9 @@ function PackingOrderCard({
                   </div>
                 ))}
               </div>
-
             </div>
           )}
 
-          {/* All dispatched */}
           {allDispatched && (
             <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
               <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
@@ -488,20 +473,22 @@ function PackingOrderCard({
   );
 }
 
-// ─── Main dashboard ─────────────────────────────────────────────────────────
+// ─── Main dashboard ───────────────────────────────────────────────────────────
 export default function PackingDashboard() {
-  const { orders, fetchOrders, loading } = useBakeryStore();
-  // SYNC-01 FIX: bakery dashboards previously only fetched once on mount.
-  // Multi-role workflow (OrderReceiver → Baker → Packer) requires auto-refresh.
+  const { orders, fetchOrders } = useBakeryStore();
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // FIX: only show spinner on first load; background polls are silent
+  // so PackingOrderCard components are never unmounted and packedEntries
+  // confirmation state is preserved between polls.
   useEffect(() => {
-    fetchOrders();
-    const id = setInterval(() => fetchOrders(), 15_000); // 15s refresh
+    fetchOrders().finally(() => setInitialLoading(false));
+    const id = setInterval(() => fetchOrders(true), 15_000);
     return () => clearInterval(id);
   }, []);
 
   const packingOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
 
-  // Today's dispatch totals per branch
   const branchTotals: Record<Branch, number> = { VRSNB: 0, SNB: 0, Hosur: 0 };
   const today = new Date().toDateString();
   packingOrders.forEach(o =>
@@ -511,8 +498,8 @@ export default function PackingDashboard() {
     })
   );
 
-  const toPackCount      = packingOrders.filter(o => o.status === 'packed').length;
-  const dispatchedCount  = packingOrders.filter(o => o.status === 'dispatched').length;
+  const toPackCount     = packingOrders.filter(o => o.status === 'packed').length;
+  const dispatchedCount = packingOrders.filter(o => o.status === 'dispatched').length;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24 px-4">
@@ -548,7 +535,7 @@ export default function PackingDashboard() {
         ))}
       </div>
 
-      {loading ? (
+      {initialLoading ? (
         <div className="flex justify-center py-16">
           <Loader2 className="size-6 animate-spin text-muted-foreground" />
         </div>

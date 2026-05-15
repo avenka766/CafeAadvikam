@@ -1,6 +1,5 @@
-// src/bakery/StoreDashboard.tsx — UPDATED
-// Uses RECIPE_DEFINITIONS from Excel data; supports kg / pcs / loaf orders
-import { useState, useEffect } from 'react';
+// src/bakery/StoreDashboard.tsx
+import { useState, useEffect, useRef } from 'react';
 import {
   Store, Calculator, ChevronDown, ChevronUp, ArrowRight,
   Loader2, CheckCircle2, Package, Scale, Hash,
@@ -35,9 +34,19 @@ const UNIT_LABELS: Record<string, string> = {
 function OrderCard({ order }: { order: BakeryOrder }) {
   const { updateExpectedOutput, sendToBaker } = useBakeryStore();
   const [selectedItemIdx, setSelectedItemIdx] = useState(0);
-  const [itemQtys, setItemQtys] = useState<Record<string, string>>(
-    () => Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)]))
-  );
+
+  // FIX-1: itemQtys is initialised once from the order snapshot at mount time.
+  // The ref guard ensures re-renders from the 15s poll never re-initialise it,
+  // so whatever the user types stays intact between refreshes.
+  const initialised = useRef(false);
+  const [itemQtys, setItemQtys] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!initialised.current) {
+      setItemQtys(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
+      initialised.current = true;
+    }
+  }, [order.items]);
+
   const [calculatedMats, setCalculatedMats] = useState<{ material: string; quantity: number; unit: string }[]>([]);
   const [calcForItem, setCalcForItem] = useState('');
   const [calcUnit, setCalcUnit] = useState<string | null>(null);
@@ -50,7 +59,6 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const [calcError, setCalcError] = useState<string | null>(null);
 
   const selectedItem = order.items[selectedItemIdx];
-  const selectedMeta = selectedItem ? BAKERY_ITEMS.find(b => b.id === selectedItem.itemId) : null;
   const selectedOutputUnit = selectedItem ? getOutputUnit(selectedItem) : null;
   const selectedOutputQty  = selectedItem ? getOutputQty(selectedItem)  : null;
   const hasRecipe = selectedItem
@@ -65,8 +73,14 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     setCalcError(null);
     try {
       await updateExpectedOutput(order.id, qty);
-      // Use resolved recipe key so VRSNB / SNB items match correctly
       const recipeKey = resolveRecipeKey(selectedItem.itemId, selectedItem.itemName) ?? selectedItem.itemId;
+
+      // FIX-2: calculateMaterials already does: qty / recipe.outputQty × each ingredient.
+      // The third argument (unit) was silently ignored by the function — passing it gave
+      // false confidence that unit conversion was happening. We pass the output unit only
+      // for labelling; the actual scaling is purely ratio-based (qty ÷ outputQty), which
+      // is correct as long as qty and outputQty are in the same unit — which they are,
+      // since outputUnit on the recipe and the input qty come from the same item definition.
       const mats = calculateMaterials(recipeKey, qty, selectedOutputUnit ?? 'kg');
       setCalculatedMats(mats);
       setCalcForItem(selectedItem.itemName);
@@ -129,7 +143,6 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 const isSelected = idx === selectedItemIdx;
                 const hasRec  = !!(resolveRecipeKey(item.itemId, item.itemName));
                 const isCustom = !!item.isCustom;
-                // VRSNB pcs → kg: show original pcs if stored
                 const pcsLabel = item.originalPcs != null
                   ? `${item.originalPcs} pcs → ${item.quantity} kg`
                   : null;
@@ -148,7 +161,6 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                             <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">✦ CUSTOM</span>
                           )}
                         </div>
-                        {/* pcs→kg conversion note for VRSNB items */}
                         {pcsLabel && (
                           <p className="text-[10px] font-body text-blue-600">📦 {pcsLabel}</p>
                         )}
@@ -256,14 +268,20 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 }
 
 export default function StoreDashboard() {
-  const { orders, fetchOrders, loading } = useBakeryStore();
-  // SYNC-01 FIX: bakery dashboards previously only fetched once on mount.
-  // Multi-role workflow (OrderReceiver → Baker → Packer) requires auto-refresh.
+  const { orders, fetchOrders } = useBakeryStore();
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // FIX-1: Separate initial load from background refresh.
+  // Previously `loading` was set true on every 15s poll, which caused the
+  // `loading ? <Loader2> : <list>` ternary to tear down and recreate every
+  // OrderCard — wiping all local state (typed qty, calculated materials, etc).
+  // Now: show spinner only on first load; subsequent polls are silent.
   useEffect(() => {
-    fetchOrders();
-    const id = setInterval(() => fetchOrders(), 15_000); // 15s refresh
+    fetchOrders().finally(() => setInitialLoading(false));
+    const id = setInterval(() => fetchOrders(true), 15_000);
     return () => clearInterval(id);
   }, []);
+
   const pending    = orders.filter(o => o.status === 'pending');
   const inProgress = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
 
@@ -276,7 +294,8 @@ export default function StoreDashboard() {
         </div>
         <div className="bg-amber-100 border border-amber-200 text-amber-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">{pending.length} New</div>
       </div>
-      {loading ? (
+
+      {initialLoading ? (
         <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
       ) : (
         <>

@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+// src/bakery/BakerDashboard.tsx
+import { useState, useEffect, useRef } from 'react';
 import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -9,9 +10,18 @@ import { cn } from '@/lib/utils';
 function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
   const { submitPrepared } = useBakeryStore();
   const [expanded, setExpanded] = useState(true);
-  const [prepQty, setPrepQty] = useState<Record<string, string>>(
-    () => Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)]))
-  );
+
+  // FIX: guard initialisation with a ref so the 15s background poll
+  // never re-initialises the quantities the baker has typed.
+  const initialised = useRef(false);
+  const [prepQty, setPrepQty] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!initialised.current) {
+      setPrepQty(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
+      initialised.current = true;
+    }
+  }, [order.items]);
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,7 +110,6 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
 }
 
 // ─── Completed card (status = 'packed' | 'dispatched') ─────────────────────────
-// ✅ Shows summary ONLY — no Send to Packing button
 function CompletedCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -150,18 +159,18 @@ function CompletedCard({ order }: { order: ReturnType<typeof useBakeryStore.getS
 }
 
 export default function BakerDashboard() {
-  const { orders, fetchOrders, loading } = useBakeryStore();
+  const { orders, fetchOrders } = useBakeryStore();
+  const [initialLoading, setInitialLoading] = useState(true);
 
-  // ✅ Load data immediately on mount
-  // SYNC-01 FIX: bakery dashboards previously only fetched once on mount.
-  // Multi-role workflow (OrderReceiver → Baker → Packer) requires auto-refresh.
+  // FIX: only show spinner on first load; subsequent 15s polls are silent
+  // so ActiveBakeCard components are never unmounted mid-entry.
   useEffect(() => {
-    fetchOrders();
-    const id = setInterval(() => fetchOrders(), 15_000); // 15s refresh
+    fetchOrders().finally(() => setInitialLoading(false));
+    const id = setInterval(() => fetchOrders(true), 15_000);
     return () => clearInterval(id);
   }, []);
 
-  const bakingOrders = orders.filter(o => o.status === 'baking');
+  const bakingOrders    = orders.filter(o => o.status === 'baking');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
 
   return (
@@ -169,14 +178,14 @@ export default function BakerDashboard() {
       <div className="pt-4 pb-2 flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Baker Dashboard</h1>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">Prepare items & send to Packing</p>
+          <p className="text-xs font-body text-muted-foreground mt-0.5">Prepare items &amp; send to Packing</p>
         </div>
         <div className="bg-orange-100 border border-orange-200 text-orange-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">
           {bakingOrders.length} To Bake
         </div>
       </div>
 
-      {loading ? (
+      {initialLoading ? (
         <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
       ) : (
         <>
