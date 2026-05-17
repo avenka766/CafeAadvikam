@@ -8,8 +8,8 @@ import { cn } from '@/lib/utils';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CAFE_WA = '918883122246';
-const BAKERY_PHONE = '+91 9443388257';
+const CAFE_WA = '919095445444';
+const BAKERY_PHONE = '+91 9095445444';
 const MAPS_URL = 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p';
 const SNB_WEBSITE = 'https://www.snbbakery.in';
 
@@ -81,7 +81,7 @@ function getResponse(q: string): string {
     return 'Vanakkam! 🙏 Welcome to Cafe Aadvikam — pure veg Restaurant & Party Hall, Berikai.\n\nAsk me about our menu & prices, bakery sweets & savouries, or party hall booking!';
 
   if (/order.*online|how.*order|place.*order|delivery|takeaway|online/i.test(ql))
-    return 'You can order in 3 easy ways:\n\n1. 💬 WhatsApp — +91 88831 22246\n2. 📞 Call — +91 9443388257\n3. 🚶 Walk in — 109 Bagalur Main Road, Berikai\n\nFor bakery items, WhatsApp a day in advance!';
+    return 'You can order in 3 easy ways:\n\n1. 💬 WhatsApp — +91 90954 45444\n2. 📞 Call — +91 9095445444\n3. 🚶 Walk in — 109 Bagalur Main Road, Berikai\n\nFor bakery items, WhatsApp a day in advance!';
 
   if (/location|address|where|map|direction|berikai|how to reach/i.test(ql))
     return '📍 Cafe Aadvikam\n109 Bagalur Main Road, Berikai 635105\n\n⏰ Open 6 AM – 10 PM daily\n\nAmple parking available!';
@@ -93,7 +93,7 @@ function getResponse(q: string): string {
     return '🎉 Party Hall — Cafe Aadvikam\n\nPerfect for:\n• Birthday parties\n• Family gatherings\n• Corporate events\n• Receptions & celebrations\n\n✅ Spacious hall with ample parking\n✅ Pure veg catering from our kitchen\n✅ Customisable arrangements\n\n📍 109 Bagalur Main Road, Berikai\n\nTap "Book Party Hall" below to send your details via WhatsApp!';
 
   if (/contact|enquir|reach.*us|get.*touch/i.test(ql))
-    return '📞 +91 9443388257\n💬 WhatsApp: +91 88831 22246\n🌐 www.snbbakery.in\n📍 109 Bagalur Main Road, Berikai 635105';
+    return '📞 +91 9095445444\n💬 WhatsApp: +91 90954 45444\n🌐 www.snbbakery.in\n📍 109 Bagalur Main Road, Berikai 635105';
 
   if (/about|who are|what is cafe|aadvikam|vrsnb/i.test(ql))
     return 'Cafe Aadvikam — Restaurant & Party Hall\n\nA pure vegetarian restaurant serving authentic South Indian breakfast, North Indian cuisine, Chinese dishes, and freshly baked goods.\n\n• Type: Pure Vegetarian 🌿\n• Hours: 6 AM – 10 PM Daily\n• Address: 109 Bagalur Main Road, Berikai 635105\n• Venture of: VRSNB Foods LLP\n• Website: www.snbbakery.in';
