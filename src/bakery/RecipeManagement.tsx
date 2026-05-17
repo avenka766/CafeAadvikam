@@ -7,7 +7,7 @@ import {
   Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { BAKERY_ITEMS } from './types';
+import { useBakeryItemsStore } from './bakeryItemsStore';
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
 import type { RecipeDefinition } from './recipeDefinitions';
 import { cn } from '@/lib/utils';
@@ -237,6 +237,10 @@ export default function RecipeManagement() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddItemId, setQuickAddItemId] = useState('');
 
+  // Load live bakery items from Supabase (so newly added items appear here)
+  const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
+  useEffect(() => { loadAllItems(); }, [loadAllItems]);
+
   // Load DB overrides
   useEffect(() => {
     (async () => {
@@ -276,17 +280,17 @@ export default function RecipeManagement() {
   };
 
   const filteredItems = useMemo(() => {
-    return BAKERY_ITEMS.filter(item => {
+    return bakeryItems.filter(item => {
       const matchesCat  = catFilter === 'All' || item.category === catFilter;
       const matchesSearch = search.trim() === '' || item.name.toLowerCase().includes(search.toLowerCase());
       return matchesCat && matchesSearch;
     });
-  }, [search, catFilter]);
+  }, [bakeryItems, search, catFilter]);
 
   const handleSave = async (itemId: string, data: Omit<RecipeRow,'itemId'|'source'>) => {
     setSaving(true);
     try {
-      const item = BAKERY_ITEMS.find(b => b.id === itemId)!;
+      const item = bakeryItems.find(b => b.id === itemId)!;
       const payload = {
         item_id:     itemId,
         item_name:   item.name,
@@ -314,7 +318,7 @@ export default function RecipeManagement() {
     setSaving(false);
   };
 
-  const editingItem = editingId ? BAKERY_ITEMS.find(b => b.id === editingId) : null;
+  const editingItem = editingId ? bakeryItems.find(b => b.id === editingId) : null;
   const editingInitial = editingId ? (getRecipe(editingId) ?? { ...blankRecipe() }) : blankRecipe();
 
   const recipeCounts = {
@@ -367,7 +371,7 @@ export default function RecipeManagement() {
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
                 >
                   <option value="">— Choose an item —</option>
-                  {BAKERY_ITEMS.map(item => (
+                  {bakeryItems.map(item => (
                     <option key={item.id} value={item.id}>
                       {item.name}{getRecipe(item.id) ? ' ✓' : ''}
                     </option>
