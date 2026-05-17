@@ -8,6 +8,7 @@ import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star, Send, SmilePlus } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
+import snbLogo from '@/assets/snb-logo.png';
 import ChatBot from '@/components/features/ChatBot';
 
 
@@ -760,7 +761,7 @@ function BakeryContent() {
         <div className="relative px-5 pt-10 pb-8 flex flex-col items-center text-center">
           <div className="mb-5 relative">
             <div className="size-24 rounded-3xl overflow-hidden border-2 shadow-2xl mx-auto" style={{ borderColor: 'rgba(255,215,0,0.5)', boxShadow: '0 8px 40px rgba(255,107,53,0.4), 0 0 0 1px rgba(255,215,0,0.1)' }}>
-              <img src={BAKERY.logo} alt="SNB Bakery" className="w-full h-full object-contain bg-white p-2" onError={e => { (e.target as HTMLImageElement).style.display='none'; }} />
+              <img src={snbLogo} alt="SNB Bakery" className="w-full h-full object-contain p-2" />
             </div>
             <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full font-body text-[9px] font-bold whitespace-nowrap" style={{ background: 'linear-gradient(90deg,#b8860b,#ffd700)', color: '#1a0a00' }}>
               EST. {BAKERY.since}
@@ -942,7 +943,7 @@ function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange
               }
         }
       >
-        <span className={cn('text-base transition-all leading-none', active === 'bakery' ? 'drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')}>🥐</span>
+        <img src={snbLogo} alt="SNB" className={cn('size-6 object-contain transition-all', active === 'bakery' ? 'opacity-100 drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')} />
         <span
           className={cn('text-[9px] font-body font-bold tracking-wide leading-none transition-all', active === 'bakery' ? 'text-white' : 'text-white/35')}
         >
@@ -1017,7 +1018,7 @@ export default function Landing() {
         <div className="flex items-center justify-center gap-4 mb-4">
           <img src={cafeLogo} alt="Cafe" className="size-10 rounded-xl object-cover border border-white/20" />
           <div className="size-6 rounded-full bg-white/10 flex items-center justify-center"><span className="text-white/60 text-xs">+</span></div>
-          <img src={BAKERY.logo} alt="SNB Bakery" className="size-10 rounded-xl object-contain bg-white p-1 border border-white/20" onError={e => { (e.target as HTMLImageElement).style.display='none'; }} />
+          <img src={snbLogo} alt="SNB Bakery" className="size-10 rounded-xl object-contain p-1 border border-white/20" />
         </div>
         <p className="font-display text-base font-bold text-white mb-0.5">Cafe Aadvikam · SNB Bakery</p>
         <p className="text-[10px] font-body font-bold mb-2" style={{ color: '#FFD700' }}>A Unit of SNB · VRSNB Foods LLP · Since 1988</p>
