@@ -4,7 +4,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   ChefHat, Plus, Trash2, Pencil, Check, X, Loader2,
-  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info,
+  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { BAKERY_ITEMS } from './types';
@@ -234,6 +234,8 @@ export default function RecipeManagement() {
   const [loading, setLoading]     = useState(true);
   const [saving,  setSaving]      = useState(false);
   const [toast,   setToast]       = useState('');
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddItemId, setQuickAddItemId] = useState('');
 
   // Load DB overrides
   useEffect(() => {
@@ -324,15 +326,78 @@ export default function RecipeManagement() {
     <div className="min-h-screen bg-background pt-14 pb-24 px-4">
       {/* Header */}
       <div className="pt-4 pb-3">
-        <div className="flex items-center gap-3 mb-1">
-          <ChefHat className="size-6 text-primary" />
-          <h1 className="font-display text-2xl font-bold text-foreground">Recipe Management</h1>
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-3">
+            <ChefHat className="size-6 text-primary" />
+            <h1 className="font-display text-2xl font-bold text-foreground">Recipe Management</h1>
+          </div>
+          <button
+            onClick={() => { setQuickAddOpen(true); setQuickAddItemId(''); }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition shrink-0"
+          >
+            <Plus className="size-3.5" />
+            Add Recipe
+          </button>
         </div>
         <p className="text-xs font-body text-muted-foreground">
           View and edit ingredient recipes for all items.
           Excel data auto-loaded · {recipeCounts.withRecipe}/{recipeCounts.total} items have recipes.
         </p>
       </div>
+
+      {/* Quick Add Recipe modal */}
+      {quickAddOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm px-4 pb-4">
+          <div className="w-full max-w-sm bg-card rounded-2xl border border-border shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <BookOpen className="size-4 text-primary" />
+                <p className="font-display font-bold text-foreground text-base">Add Recipe</p>
+              </div>
+              <button onClick={() => setQuickAddOpen(false)} className="size-8 rounded-xl hover:bg-muted flex items-center justify-center transition">
+                <X className="size-4 text-muted-foreground" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">Select Bakery Item *</label>
+                <select
+                  value={quickAddItemId}
+                  onChange={e => setQuickAddItemId(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                >
+                  <option value="">— Choose an item —</option>
+                  {BAKERY_ITEMS.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}{getRecipe(item.id) ? ' ✓' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-muted-foreground mt-1">Items marked ✓ already have a recipe</p>
+              </div>
+            </div>
+            <div className="flex gap-2 px-5 pb-5">
+              <button
+                onClick={() => setQuickAddOpen(false)}
+                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!quickAddItemId) return;
+                  setEditingId(quickAddItemId);
+                  setQuickAddOpen(false);
+                }}
+                disabled={!quickAddItemId}
+                className="flex-1 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-40"
+              >
+                Open Editor
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Info banner */}
       <div className="flex items-start gap-2 px-3 py-2 mb-3 bg-blue-50 border border-blue-200 rounded-xl">
