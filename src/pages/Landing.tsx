@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { useVenueStore } from '@/stores/venueStore';
-import { useBakeryItemsStore } from '@/bakery/bakeryItemsStore';
+import { VRSNB_ITEMS, VRSNB_CATEGORIES, type VrsnbCategory } from '@/branch/vrsnbItems';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
 import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, MessageCircle, Phone, Star, Send, SmilePlus } from 'lucide-react';
@@ -31,13 +31,13 @@ const CAFE = {
   name: 'Cafe Aadvikam', address: '109 Bagalur Main Road, Berikai 635105',
   hours: '6 AM – 10 PM Daily', type: 'Pure Vegetarian',
   mapsUrl: 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9628595,17z',
-  waWhatsapp: '918883122246', waPretext: 'Hi, I need to enquire and book the Party Hall.',
+  waWhatsapp: '919095445444', waPretext: 'Hi, I need to enquire and book the Party Hall.',
 };
 const BAKERY = {
   name: 'SNB Bakery', tagline: 'Sri Nanjundeshwara Bakery',
   since: '1988', address: 'Berigai, Hosur',
-  phone: '+91 9443388257', website: 'https://www.snbbakery.in',
-  waPhone: '919443388257',
+  phone: '+91 9095445444', website: 'https://www.snbbakery.in',
+  waPhone: '919095445444',
   about: 'Mr. Venugopal\'s father started Sri Nanjundeshwara Bakery (SNB) in 1988. Over 36 years of serving unforgettable melting sweets, cookies, cakes and the most exquisite savouries.',
   logo: 'https://www.snbbakery.in/img/SNB.png',
 };
@@ -703,25 +703,46 @@ function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setSho
   );
 }
 
+// ─── Category → emoji map for VRSNB items ────────────────────────────────────
+const VRSNB_CAT_EMOJI: Record<VrsnbCategory, string> = {
+  'CHIPS':          '🥔',
+  'MURUK':          '🌀',
+  'MIXTURE':        '🥣',
+  'PAKODA':         '🧆',
+  'NIPPAT':         '🫓',
+  'DAL':            '🫘',
+  'BAKERY':         '🥐',
+  'CAKE':           '🎂',
+  'COOKIES':        '🍪',
+  'HALWA':          '🍮',
+  'JAMUN':          '🍡',
+  'MYSORE PAK':     '🟡',
+  'BAKLAVA':        '🍯',
+  'CASHEW SWEETS':  '🥜',
+  'CASHEW BISCUIT': '🍘',
+  'CAKE ROLL':      '🧁',
+  'BURFI':          '🍬',
+  'PEDA':           '🟤',
+  'LADDU':          '🟠',
+  'CASHEW LADDU':   '🟡',
+  'MIX':            '🎁',
+  'CHOCOLATE':      '🍫',
+  'SWEETS':         '🍭',
+  'SPL SWEETS':     '✨',
+};
+
 // ─── Bakery Content ───────────────────────────────────────────────────────────
 function BakeryContent() {
-  const { items, loadAllItems } = useBakeryItemsStore();
-  const [activeCat, setActiveCat] = useState('All');
+  const [activeCat, setActiveCat] = useState<'All' | VrsnbCategory>('All');
 
-  useEffect(() => { loadAllItems(); }, [loadAllItems]);
-
-  // Only show enabled items
-  const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
-
-  // Derive categories dynamically from the store
-  const categories = useMemo(() => {
-    const cats = Array.from(new Set(enabledItems.map(i => i.category))).sort();
-    return ['All', ...cats];
-  }, [enabledItems]);
+  const categories: ('All' | VrsnbCategory)[] = useMemo(() => {
+    const present = VRSNB_CATEGORIES.filter(c => VRSNB_ITEMS.some(i => i.category === c));
+    return ['All', ...present];
+  }, []);
 
   const filtered = useMemo(() =>
-    activeCat === 'All' ? enabledItems : enabledItems.filter(i => i.category === activeCat),
-    [enabledItems, activeCat],
+    activeCat === 'All' ? VRSNB_ITEMS : VRSNB_ITEMS.filter(i => i.category === activeCat),
+    [activeCat],
   );
 
   return (
@@ -749,7 +770,7 @@ function BakeryContent() {
           <p className="text-sm font-body mb-1" style={{ color: 'rgba(255,200,100,0.8)' }}>Sri Nanjundeshwara Bakery</p>
           <p className="text-white/50 font-body text-xs mb-5">{BAKERY.address}</p>
           <div className="flex flex-wrap gap-2 justify-center mb-6">
-            {[['🎂','Cakes'],['🍪','Biscuits'],['🍬','Sweets'],['🥐','Bakery'],['🧆','Snacks']].map(([icon,label])=>(
+            {[['🥐','Bakery'],['🎂','Cakes'],['🍪','Cookies'],['🍭','Sweets'],['🥔','Chips'],['🌀','Muruku'],['🧆','Snacks']].map(([icon,label])=>(
               <span key={label} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-body font-semibold" style={{ background: 'rgba(255,215,0,0.12)', border: '1px solid rgba(255,215,0,0.25)', color: '#FFD700' }}>{icon} {label}</span>
             ))}
           </div>
@@ -809,23 +830,19 @@ function BakeryContent() {
       </div>
 
       {/* Product grid */}
-      {enabledItems.length === 0 ? (
+      {filtered.length === 0 ? (
         <div className="mx-4 py-16 text-center bg-muted/30 rounded-2xl">
           <p className="text-3xl mb-2">🥐</p>
-          <p className="text-sm font-body text-muted-foreground">Menu coming soon…</p>
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="mx-4 py-12 text-center bg-muted/30 rounded-2xl">
           <p className="text-sm font-body text-muted-foreground">No items in this category.</p>
         </div>
       ) : (
         <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
           {filtered.map(item => (
-            <TiltCard key={item.id}>
+            <TiltCard key={item.barcode}>
               <div className="bg-card rounded-2xl overflow-hidden border border-border shadow-sm h-full flex flex-col" style={{ transformStyle: 'preserve-3d' }}>
                 {/* Emoji icon display */}
                 <div className="flex items-center justify-center bg-amber-50 border-b border-border" style={{ height: 100 }}>
-                  <span className="text-5xl">{item.icon}</span>
+                  <span className="text-5xl">{VRSNB_CAT_EMOJI[item.category] ?? '🛍️'}</span>
                 </div>
                 {/* Info */}
                 <div className="p-3 flex flex-col gap-1 flex-1">
@@ -834,10 +851,10 @@ function BakeryContent() {
                     {item.category}
                   </span>
                   <p className="font-body font-bold text-foreground text-xs leading-tight line-clamp-2">{item.name}</p>
-                  {item.price != null
-                    ? <span className="font-display font-bold text-base tabular-nums mt-auto" style={{ color: '#C84B0A' }}>₹{item.price}</span>
-                    : <span className="text-[10px] text-muted-foreground mt-auto italic">Price on request</span>
-                  }
+                  <span className="font-display font-bold text-base tabular-nums mt-auto" style={{ color: '#C84B0A' }}>
+                    ₹{item.price}
+                    <span className="text-[10px] font-body font-normal text-muted-foreground ml-1">/{item.uom}</span>
+                  </span>
                 </div>
               </div>
             </TiltCard>
