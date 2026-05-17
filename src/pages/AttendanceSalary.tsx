@@ -32,6 +32,7 @@ interface Employee {
 
 interface DayAttendance {
   present: boolean;
+  half: boolean;   // half day
   woff: boolean;
   bf: boolean;
   lunch: boolean;
@@ -44,8 +45,19 @@ interface DeductionDecision {
   deductAdvance: boolean;
   deductOther: boolean;
   deductUniform: boolean;
+  deductESI: boolean;
+  deductPF: boolean;
 }
 type DeductionDecisions = Record<string, DeductionDecision>;
+
+// ESI: 0.75% employee deduction (applicable if gross <= 21000)
+// PF: 12% of gross
+const ESI_RATE = 0.0075;
+const PF_RATE  = 0.12;
+const ESI_WAGE_LIMIT = 21000;
+
+function calcESI(gross: number) { return gross <= ESI_WAGE_LIMIT ? Math.round(gross * ESI_RATE) : 0; }
+function calcPF(gross: number)  { return Math.round(gross * PF_RATE); }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -65,8 +77,8 @@ const BRANCH_SHORT: Record<Branch, string> = {
 const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7C3AED'];
 
 const ak = (eid: string, d: number) => `${eid}_${d}`;
-const defaultDay = (): DayAttendance => ({ present: false, woff: false, bf: false, lunch: false, dinner: false });
-const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true });
+const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, bf: false, lunch: false, dinner: false });
+const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
 
 // ─── Month helpers ─────────────────────────────────────────────────────────────
 function getMonthMeta(year: number, month: number) {
@@ -116,13 +128,13 @@ async function fetchAttendance(year: number, month: number): Promise<MonthAttend
   const result: MonthAttendance = {};
   for (const row of (data || [])) {
     const k = ak(row.employee_id as string, row.day as number);
-    result[k] = { present: row.present as boolean, woff: row.woff as boolean, bf: row.bf as boolean, lunch: row.lunch as boolean, dinner: row.dinner as boolean };
+    result[k] = { present: row.present as boolean, half: (row.half ?? false) as boolean, woff: row.woff as boolean, bf: row.bf as boolean, lunch: row.lunch as boolean, dinner: row.dinner as boolean };
   }
   return result;
 }
 
 async function upsertAttendance(employeeId: string, year: number, month: number, day: number, val: DayAttendance) {
-  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, woff: val.woff, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
+  const { error } = await supabase.from('attendance').upsert({ employee_id: employeeId, year, month, day, present: val.present, half: val.half, woff: val.woff, bf: val.bf, lunch: val.lunch, dinner: val.dinner }, { onConflict: 'employee_id,year,month,day' });
   if (error) console.error('Attendance upsert failed:', error.message);
 }
 
@@ -131,13 +143,13 @@ async function fetchDeductionDecisions(year: number, month: number): Promise<Ded
   if (error) { console.warn('deduction_decisions fetch:', error.message); return {}; }
   const result: DeductionDecisions = {};
   for (const row of (data || [])) {
-    result[row.employee_id as string] = { deductAdvance: row.deduct_advance as boolean, deductOther: row.deduct_other as boolean, deductUniform: row.deduct_uniform as boolean };
+    result[row.employee_id as string] = { deductAdvance: row.deduct_advance as boolean, deductOther: row.deduct_other as boolean, deductUniform: row.deduct_uniform as boolean, deductESI: (row.deduct_esi ?? false) as boolean, deductPF: (row.deduct_pf ?? false) as boolean };
   }
   return result;
 }
 
 async function upsertDeductionDecision(employeeId: string, year: number, month: number, decision: DeductionDecision) {
-  const { error } = await supabase.from('deduction_decisions').upsert({ employee_id: employeeId, year, month, deduct_advance: decision.deductAdvance, deduct_other: decision.deductOther, deduct_uniform: decision.deductUniform }, { onConflict: 'employee_id,year,month' });
+  const { error } = await supabase.from('deduction_decisions').upsert({ employee_id: employeeId, year, month, deduct_advance: decision.deductAdvance, deduct_other: decision.deductOther, deduct_uniform: decision.deductUniform, deduct_esi: decision.deductESI, deduct_pf: decision.deductPF }, { onConflict: 'employee_id,year,month' });
   if (error) console.error('Deduction decision upsert failed:', error.message);
 }
 
@@ -178,25 +190,28 @@ async function deleteOldAttendance(currentYear: number, currentMonth: number): P
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
 function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, decision: DeductionDecision) {
-  let presentDays = 0, woffDays = 0, canteenTotal = 0;
+  let presentDays = 0, halfDays = 0, woffDays = 0, canteenTotal = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const a = att[ak(emp.id, d)];
     if (!a) continue;
     if (a.present) presentDays++;
-    if (a.woff) woffDays++;
-    if (a.present) {
+    if (a.half)    halfDays++;
+    if (a.woff)    woffDays++;
+    if (a.present || a.half) {
       const m = [a.bf, a.lunch, a.dinner].filter(Boolean).length;
       canteenTotal += m === 3 ? 30 : m * 10;
     }
   }
-  const worked = presentDays + woffDays;
+  const worked = presentDays + halfDays * 0.5 + woffDays;
   const wagePd = emp.grossSalary > 0 ? emp.grossSalary / daysInMonth : 0;
   const earned = Math.round(wagePd * worked);
-  const advanceDed = decision.deductAdvance ? emp.salaryAdvance : 0;
-  const uniformDed = decision.deductUniform ? emp.uniformDeduction : 0;
-  const otherDed = decision.deductOther ? emp.otherDeduction : 0;
-  const totalDed = advanceDed + canteenTotal + uniformDed + otherDed;
-  return { presentDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, net: Math.max(0, earned - totalDed) };
+  const advanceDed  = decision.deductAdvance ? emp.salaryAdvance : 0;
+  const uniformDed  = decision.deductUniform ? emp.uniformDeduction : 0;
+  const otherDed    = decision.deductOther   ? emp.otherDeduction : 0;
+  const esiDed      = decision.deductESI     ? calcESI(emp.grossSalary) : 0;
+  const pfDed       = decision.deductPF      ? calcPF(emp.grossSalary)  : 0;
+  const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
+  return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
@@ -212,30 +227,32 @@ function exportExcel(
 
   // ── Sheet 1: Salary Summary ──
   const salaryHeaders = [
-    '#', 'Name', 'Branch', 'Department', 'Gross Salary', 'Days Present',
+    '#', 'Name', 'Branch', 'Department', 'Gross Salary', 'Days Present', 'Half Days',
     'Week Offs', 'Days Worked', 'Earned', 'Food Deduction', 'Advance Ded.',
-    'Uniform Ded.', 'Other Ded.', 'Total Deductions', 'Net Payable', 'Bank', 'Account No.', 'IFSC',
+    'Uniform Ded.', 'Other Ded.', 'ESI (0.75%)', 'PF (12%)', 'Total Deductions', 'Net Payable', 'Bank', 'Account No.', 'IFSC',
   ];
   const salaryRows = employees.map((e, i) => {
     const d = getDecision(e.id);
     const c = calcSalary(e, att, daysInMonth, d);
     return [
       i + 1, e.name, e.branch, e.department,
-      e.grossSalary, c.presentDays, c.woffDays, c.worked,
+      e.grossSalary, c.presentDays, c.halfDays, c.woffDays, c.worked,
       c.earned, c.canteenTotal, c.advanceDed, c.uniformDed, c.otherDed,
-      c.totalDed, c.net,
+      c.esiDed, c.pfDed, c.totalDed, c.net,
       e.bankName || '', e.accountNumber || '', e.ifscCode || '',
     ];
   });
 
   // Totals row
   const totals = ['', 'TOTAL', '', '',
-    employees.reduce((s, e) => s + e.grossSalary, 0), '', '', '',
+    employees.reduce((s, e) => s + e.grossSalary, 0), '', '', '', '',
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).earned, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).canteenTotal, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).advanceDed, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).uniformDed, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).otherDed, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).esiDed, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).pfDed, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).totalDed, 0),
     employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).net, 0),
     '', '', '',
@@ -271,6 +288,7 @@ function exportExcel(
       const a = att[ak(e.id, di + 1)];
       if (!a) return '';
       if (a.present) return 'P';
+      if (a.half)    return 'H';
       if (a.woff) return 'W';
       return '';
     });
@@ -476,7 +494,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
   decision: DeductionDecision;
   onDecisionChange: (empId: string, d: DeductionDecision) => void;
 }) {
-  const { presentDays, woffDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
+  const { presentDays, halfDays, woffDays, canteenTotal, net } = calcSalary(emp, att, daysInMonth, decision);
 
   const woffCount = useMemo(() =>
     Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => att[ak(emp.id, d)]?.woff).length,
@@ -487,16 +505,22 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
     const k = ak(emp.id, day);
     const cur = att[k] ?? defaultDay();
     let next: DayAttendance;
-    if (!cur.present && !cur.woff) {
-      next = { ...cur, present: true };
+    if (!cur.present && !cur.half && !cur.woff) {
+      // empty → Present
+      next = { ...cur, present: true, half: false };
     } else if (cur.present) {
+      // Present → Half day
+      next = { ...cur, present: false, half: true, bf: false, lunch: false, dinner: false };
+    } else if (cur.half) {
+      // Half → Week Off (if slots remain) or Absent
       if (woffCount < 4) {
-        next = { ...cur, present: false, woff: true, bf: false, lunch: false, dinner: false };
+        next = { ...cur, present: false, half: false, woff: true, bf: false, lunch: false, dinner: false };
       } else {
-        next = { ...cur, present: false, woff: false, bf: false, lunch: false, dinner: false };
+        next = { ...cur, present: false, half: false, woff: false, bf: false, lunch: false, dinner: false };
       }
     } else {
-      next = { ...cur, present: false, woff: false };
+      // Week Off → empty
+      next = { ...cur, present: false, half: false, woff: false };
     }
     onUpdate(emp.id, day, next);
   };
@@ -504,7 +528,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
   const toggleMeal = (day: number, meal: 'bf' | 'lunch' | 'dinner') => {
     const k = ak(emp.id, day);
     const cur = att[k];
-    if (!cur?.present) return;
+    if (!cur?.present && !cur?.half) return;
     onUpdate(emp.id, day, { ...cur, [meal]: !cur[meal] });
   };
 
@@ -524,7 +548,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
           </p>
         </div>
         <div className="text-right shrink-0 mr-1">
-          <p className="text-xs font-body font-bold tabular-nums">{presentDays + woffDays}d</p>
+          <p className="text-xs font-body font-bold tabular-nums">{presentDays + halfDays * 0.5 + woffDays}d</p>
           <p className={cn('text-[10px] font-body font-semibold tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>₹{net.toLocaleString('en-IN')}</p>
         </div>
         {expanded ? <ChevronUp className="size-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />}
@@ -550,10 +574,15 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
                 return (
                   <div key={day} className="flex flex-col items-center gap-0.5" style={{ minWidth: 32 }}>
                     <span className="text-[9px] font-body font-semibold text-muted-foreground">{day}</span>
-                    <button onClick={() => toggleDay(day)} className={cn('size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center', !a.present && !a.woff && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40', a.present && 'bg-emerald-500 border-emerald-600 text-white', a.woff && 'bg-sky-100 border-sky-300 text-sky-700')}>
-                      {a.present ? '✓' : a.woff ? 'W' : ''}
+                    <button onClick={() => toggleDay(day)} className={cn('size-7 rounded-lg text-[9px] font-bold transition-all active:scale-90 border flex items-center justify-center',
+                      !a.present && !a.half && !a.woff && 'bg-muted border-border text-muted-foreground/60 hover:border-primary/40',
+                      a.present && 'bg-emerald-500 border-emerald-600 text-white',
+                      a.half    && 'bg-yellow-400 border-yellow-500 text-white',
+                      a.woff    && 'bg-sky-100 border-sky-300 text-sky-700',
+                    )}>
+                      {a.present ? '✓' : a.half ? '½' : a.woff ? 'W' : ''}
                     </button>
-                    {a.present ? (
+                    {(a.present || a.half) ? (
                       <div className="flex gap-[2px] mt-0.5">
                         {(['bf', 'lunch', 'dinner'] as const).map(m => (
                           <button key={m} onClick={e => { e.stopPropagation(); toggleMeal(day, m); }} title={m === 'bf' ? 'Breakfast ₹10' : m === 'lunch' ? 'Lunch ₹10' : 'Dinner ₹10'}
@@ -570,6 +599,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
           </div>
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-emerald-500 inline-block" /> Present</span>
+            <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-yellow-400 inline-block" /> ½ Half Day</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-sky-200 inline-block" /> W = Week Off ({woffCount}/4)</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-orange-400 inline-block" /> BF / Lunch / Dinner ₹10</span>
             <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 ₹{canteenTotal}</span>
@@ -589,7 +619,9 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
 }) {
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const { presentDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, net } = calcSalary(emp, att, daysInMonth, decision);
+  const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calcSalary(emp, att, daysInMonth, decision);
+  const esiAmount = calcESI(emp.grossSalary);
+  const pfAmount  = calcPF(emp.grossSalary);
   const hasAdvance = emp.salaryAdvance > 0;
   const hasOther = emp.otherDeduction > 0;
   const hasUniform = emp.uniformDeduction > 0;
@@ -625,21 +657,22 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
         </div>
       </div>
 
-      {(hasAdvance || hasOther || hasUniform) && (
-        <div className="px-4 pt-3 space-y-1.5">
+      <div className="px-4 pt-3 space-y-1.5">
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">Deductions — select what to apply</p>
           {hasAdvance && <DeductToggle label="Salary Advance" amount={emp.salaryAdvance} checked={decision.deductAdvance} onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })} />}
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
+          <DeductToggle label={`ESI (0.75%${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
+          <DeductToggle label="PF (12% of gross)" amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
         </div>
-      )}
 
       <div className="px-4 py-3 grid grid-cols-2 gap-x-6 gap-y-1.5">
         <SalRow label="Gross Salary" value={`₹${emp.grossSalary.toLocaleString('en-IN')}`} />
         <SalRow label="Days Present" value={String(presentDays)} />
+        {halfDays > 0 && <SalRow label="Half Days" value={`${halfDays} (= ${halfDays * 0.5}d)`} />}
         <SalRow label="Week Offs" value={String(woffDays)} />
         <SalRow label="Total Worked" value={`${worked} / ${daysInMonth}`} highlight />
         <SalRow label="Earned" value={`₹${earned.toLocaleString('en-IN')}`} highlight />
@@ -648,6 +681,8 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
         {!decision.deductAdvance && hasAdvance && <SalRow label="Advance (Carry Fwd)" value={`₹${emp.salaryAdvance.toLocaleString('en-IN')}`} />}
         {decision.deductUniform && uniformDed > 0 && <SalRow label="Uniform Ded." value={`-₹${uniformDed}`} neg />}
         {decision.deductOther && otherDed > 0 && <SalRow label="Other Ded." value={`-₹${otherDed}`} neg />}
+        {decision.deductESI && esiDed > 0 && <SalRow label="ESI (0.75%)" value={`-₹${esiDed}`} neg />}
+        {decision.deductPF && pfDed > 0 && <SalRow label="PF (12%)" value={`-₹${pfDed.toLocaleString('en-IN')}`} neg />}
         <div className="col-span-2 border-t border-border pt-2 mt-0.5 flex justify-between items-center">
           <span className="text-sm font-body font-bold text-foreground">Net Payable</span>
           <span className={cn('font-display font-bold text-lg tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>₹{net.toLocaleString('en-IN')}</span>
@@ -706,19 +741,23 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
 
   // 2. Deduction breakdown (pie)
   const deductionData = useMemo(() => {
-    let canteen = 0, advance = 0, uniform = 0, other = 0;
+    let canteen = 0, advance = 0, uniform = 0, other = 0, esi = 0, pf = 0;
     employees.forEach(e => {
       const c = calcSalary(e, att, daysInMonth, getDecision(e.id));
       canteen += c.canteenTotal;
       advance += c.advanceDed;
       uniform += c.uniformDed;
-      other += c.otherDed;
+      other   += c.otherDed;
+      esi     += c.esiDed;
+      pf      += c.pfDed;
     });
     return [
-      { name: 'Food', value: canteen },
+      { name: 'Food',    value: canteen },
       { name: 'Advance', value: advance },
       { name: 'Uniform', value: uniform },
-      { name: 'Other', value: other },
+      { name: 'Other',   value: other },
+      { name: 'ESI',     value: esi },
+      { name: 'PF',      value: pf },
     ].filter(d => d.value > 0);
   }, [employees, att, daysInMonth, getDecision]);
 
@@ -753,7 +792,7 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
 
   const totalNet = employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).net, 0);
   const totalGross = employees.reduce((s, e) => s + e.grossSalary, 0);
-  const totalDed = employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).totalDed, 0);
+  const totalDed   = employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).totalDed, 0);
   const avgAttPct = attendanceData.length > 0 ? Math.round(attendanceData.reduce((s, d) => s + d.pct, 0) / attendanceData.length) : 0;
 
   const fmt = (n: number) => n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : `₹${n.toLocaleString('en-IN')}`;
