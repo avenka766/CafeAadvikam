@@ -1,8 +1,10 @@
 // src/bakery/StoreDashboard.tsx
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Store, Calculator, ChevronDown, ChevronUp, ArrowRight,
   Loader2, CheckCircle2, Package, Scale, Hash,
+  Warehouse, Plus, Pencil, Trash2, AlertTriangle,
+  Search, X, Check, RefreshCw,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -10,6 +12,10 @@ import { RECIPE_DEFINITIONS, calculateMaterials } from './recipeDefinitions';
 import { resolveRecipeKey } from './itemMatcher';
 import type { BakeryOrder, BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
+import {
+  useStoreStockStore, getAllRecipeMaterials, normaliseName,
+  type StockUnit, type StockItem,
+} from './storeStockStore';
 
 function getOutputUnit(item: BakeryOrderItem): 'kg' | 'pcs' | 'loaf' | null {
   const key = resolveRecipeKey(item.itemId, item.itemName);
@@ -33,6 +39,7 @@ const UNIT_LABELS: Record<string, string> = {
 
 function OrderCard({ order }: { order: BakeryOrder }) {
   const { updateExpectedOutput, sendToBaker } = useBakeryStore();
+  const { deductMaterials } = useStoreStockStore();
   const [selectedItemIdx, setSelectedItemIdx] = useState(0);
 
   // FIX-1: itemQtys is initialised once from the order snapshot at mount time.
@@ -97,6 +104,12 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     setSending(true);
     setSendError(null);
     try {
+      // Deduct all calculated materials from raw stock
+      if (calculatedMats.length > 0) {
+        const deductions = calculatedMats.map(m => ({ name: m.material, qty: m.quantity }));
+        const warn = await deductMaterials(deductions);
+        if (warn) console.warn('Stock deduction note:', warn);
+      }
       await sendToBaker(order.id);
       setSent(true);
     } catch {
@@ -267,15 +280,343 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   );
 }
 
-export default function StoreDashboard() {
+// ─── Raw Stock Inventory Tab ─────────────────────────────────────────────────
+
+const UNITS: StockUnit[] = ['kg', 'L', 'g', 'pcs', 'nos', 'bunch', 'ltr'];
+
+function StockRow({ item, onEdit, onDelete }: {
+  item: StockItem;
+  onEdit: (item: StockItem) => void;
+  onDelete: (id: string) => void;
+}) {
+  const isLow = item.quantity <= item.minThreshold;
+  return (
+    <div className={cn(
+      "flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-all",
+      isLow ? "bg-red-50 border-red-200" : "bg-card border-border"
+    )}>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          {isLow && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
+          <span className="text-sm font-body font-semibold text-foreground truncate">{item.name}</span>
+        </div>
+        <span className="text-[10px] font-body text-muted-foreground">
+          Min: {item.minThreshold} {item.unit}
+          {isLow && <span className="text-red-600 font-bold ml-1">LOW STOCK</span>}
+        </span>
+      </div>
+      <span className={cn("text-sm font-body font-bold tabular-nums px-2 py-0.5 rounded-lg",
+        isLow ? "text-red-700 bg-red-100" : "text-primary bg-primary/10"
+      )}>
+        {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(2)} {item.unit}
+      </span>
+      <button onClick={() => onEdit(item)} className="size-7 flex items-center justify-center rounded-lg hover:bg-muted active:scale-90 transition-all">
+        <Pencil className="size-3.5 text-muted-foreground" />
+      </button>
+      <button onClick={() => onDelete(item.id)} className="size-7 flex items-center justify-center rounded-lg hover:bg-red-50 active:scale-90 transition-all">
+        <Trash2 className="size-3.5 text-red-400" />
+      </button>
+    </div>
+  );
+}
+
+function AddItemModal({ onClose, onSave }: {
+  onClose: () => void;
+  onSave: (name: string, unit: StockUnit, qty: number, min: number) => Promise<void>;
+}) {
+  const recipeMats = useMemo(() => getAllRecipeMaterials(), []);
+  const { items: existingItems } = useStoreStockStore();
+  const [search, setSearch] = useState('');
+  const [name, setName] = useState('');
+  const [unit, setUnit] = useState<StockUnit>('kg');
+  const [qty, setQty] = useState('0');
+  const [min, setMin] = useState('1');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Suggestions from recipe materials not yet in stock
+  const suggestions = useMemo(() => {
+    const q = search.toLowerCase();
+    return recipeMats
+      .filter(m => {
+        const alreadyAdded = existingItems.some(e => normaliseName(e.name) === normaliseName(m.name));
+        return !alreadyAdded && (q === '' || m.name.toLowerCase().includes(q));
+      })
+      .slice(0, 40);
+  }, [recipeMats, existingItems, search]);
+
+  const selectSuggestion = (m: { name: string; unit: StockUnit }) => {
+    setName(m.name);
+    setUnit(m.unit);
+    setSearch(m.name);
+    setShowSuggestions(false);
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) { setError('Enter a name'); return; }
+    const q = parseFloat(qty); const m = parseFloat(min);
+    if (isNaN(q) || q < 0) { setError('Invalid quantity'); return; }
+    if (isNaN(m) || m < 0) { setError('Invalid minimum'); return; }
+    setSaving(true); setError('');
+    await onSave(name, unit, q, m);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/40" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-2xl px-4 pt-4 pb-8 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-display font-bold text-foreground">Add Stock Item</h3>
+          <button onClick={onClose} className="size-7 flex items-center justify-center rounded-lg hover:bg-muted"><X className="size-4" /></button>
+        </div>
+
+        {/* Name with recipe suggestion */}
+        <div className="relative">
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Name</label>
+          <input
+            value={search}
+            onChange={e => { setSearch(e.target.value); setName(e.target.value); setShowSuggestions(true); }}
+            onFocus={() => setShowSuggestions(true)}
+            placeholder="Type or pick from recipe materials…"
+            className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          {showSuggestions && suggestions.length > 0 && (
+            <div className="absolute top-full left-0 right-0 z-10 bg-background border border-border rounded-xl mt-1 max-h-52 overflow-y-auto shadow-lg">
+              {suggestions.map(s => (
+                <button key={s.name} onClick={() => selectSuggestion(s)}
+                  className="w-full text-left px-3 py-2 text-sm font-body hover:bg-muted flex items-center justify-between">
+                  <span>{s.name}</span>
+                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{s.unit}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Unit */}
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Unit</label>
+          <div className="flex gap-2 flex-wrap">
+            {UNITS.map(u => (
+              <button key={u} onClick={() => setUnit(u)}
+                className={cn("px-3 py-1.5 rounded-xl border text-xs font-body font-semibold transition-all",
+                  unit === u ? "bg-primary text-primary-foreground border-primary" : "border-border text-foreground hover:border-primary/40")}>
+                {u}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Qty + Min side by side */}
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Current Stock ({unit})</label>
+            <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)}
+              className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+          <div className="flex-1">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Low Stock Alert ({unit})</label>
+            <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)}
+              className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+        </div>
+
+        {error && <p className="text-xs font-body text-destructive">{error}</p>}
+
+        <button onClick={handleSave} disabled={saving}
+          className="w-full h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+          Add to Stock
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EditItemModal({ item, onClose, onSave }: {
+  item: StockItem;
+  onClose: () => void;
+  onSave: (updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<void>;
+}) {
+  const [qty, setQty] = useState(String(item.quantity));
+  const [min, setMin] = useState(String(item.minThreshold));
+  const [unit, setUnit] = useState<StockUnit>(item.unit);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    const q = parseFloat(qty); const m = parseFloat(min);
+    if (isNaN(q) || isNaN(m)) return;
+    setSaving(true);
+    await onSave({ quantity: q, minThreshold: m, unit });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/40" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-2xl px-4 pt-4 pb-8 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <div>
+            <h3 className="font-display font-bold text-foreground">{item.name}</h3>
+            <p className="text-[10px] font-body text-muted-foreground">Update stock quantity or threshold</p>
+          </div>
+          <button onClick={onClose} className="size-7 flex items-center justify-center rounded-lg hover:bg-muted"><X className="size-4" /></button>
+        </div>
+
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Unit</label>
+          <div className="flex gap-2 flex-wrap">
+            {UNITS.map(u => (
+              <button key={u} onClick={() => setUnit(u)}
+                className={cn("px-3 py-1.5 rounded-xl border text-xs font-body font-semibold transition-all",
+                  unit === u ? "bg-primary text-primary-foreground border-primary" : "border-border text-foreground hover:border-primary/40")}>
+                {u}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Stock ({unit})</label>
+            <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)}
+              className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+          <div className="flex-1">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 block">Low Alert ({unit})</label>
+            <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)}
+              className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+        </div>
+
+        <button onClick={handleSave} disabled={saving}
+          className="w-full h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+          Save Changes
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StoreInventoryTab() {
+  const { items, loaded, loading, load, addItem, updateItem, deleteItem } = useStoreStockStore();
+  const [search, setSearch] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState<StockItem | null>(null);
+
+  useEffect(() => { if (!loaded) load(); }, [loaded]);
+
+  const lowStockItems = items.filter(i => i.quantity <= i.minThreshold);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return items.filter(i => !q || i.name.toLowerCase().includes(q));
+  }, [items, search]);
+
+  return (
+    <div className="space-y-3">
+      {/* Low stock banner */}
+      {lowStockItems.length > 0 && (
+        <div className="flex items-start gap-2 px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl">
+          <AlertTriangle className="size-4 text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-body font-bold text-red-700">{lowStockItems.length} item{lowStockItems.length > 1 ? 's' : ''} running low</p>
+            <p className="text-[10px] font-body text-red-600">{lowStockItems.map(i => i.name).join(', ')}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="flex gap-2">
+        <div className="flex-1 relative">
+          <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search ingredients…"
+            className="w-full h-9 pl-8 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+        </div>
+        <button onClick={() => load()} disabled={loading}
+          className="size-9 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90 transition-all">
+          <RefreshCw className={cn("size-3.5 text-muted-foreground", loading && "animate-spin")} />
+        </button>
+        <button onClick={() => setShowAdd(true)}
+          className="h-9 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95 transition-all">
+          <Plus className="size-3.5" /> Add
+        </button>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-card border border-border rounded-xl p-2.5 text-center">
+          <p className="font-display text-lg font-bold text-foreground">{items.length}</p>
+          <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold">Total Items</p>
+        </div>
+        <div className={cn("border rounded-xl p-2.5 text-center", lowStockItems.length > 0 ? "bg-red-50 border-red-200" : "bg-card border-border")}>
+          <p className={cn("font-display text-lg font-bold", lowStockItems.length > 0 ? "text-red-600" : "text-foreground")}>{lowStockItems.length}</p>
+          <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold">Low Stock</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-2.5 text-center">
+          <p className="font-display text-lg font-bold text-foreground">{items.filter(i => i.quantity > i.minThreshold).length}</p>
+          <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold">OK</p>
+        </div>
+      </div>
+
+      {/* List */}
+      {loading && !loaded ? (
+        <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-16 text-muted-foreground gap-3">
+          <Warehouse className="size-10 opacity-20" />
+          <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add' : 'No matches'}</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {/* Low stock first */}
+          {lowStockItems.length > 0 && (
+            <>
+              <p className="text-[10px] font-body font-bold text-red-600 uppercase">⚠ Low Stock</p>
+              {lowStockItems.filter(i => !search || i.name.toLowerCase().includes(search.toLowerCase())).map(i => (
+                <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
+              ))}
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mt-2">All Stock</p>
+            </>
+          )}
+          {filtered.filter(i => i.quantity > i.minThreshold).map(i => (
+            <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <AddItemModal
+          onClose={() => setShowAdd(false)}
+          onSave={async (name, unit, qty, min) => {
+            await addItem(name, unit, qty, min);
+          }}
+        />
+      )}
+      {editItem && (
+        <EditItemModal
+          item={editItem}
+          onClose={() => setEditItem(null)}
+          onSave={async (updates) => {
+            await updateItem(editItem.id, updates);
+            setEditItem(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Modified OrderCard with stock deduction on Send to Baker ────────────────
+
+function OrdersTab() {
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // FIX-1: Separate initial load from background refresh.
-  // Previously `loading` was set true on every 15s poll, which caused the
-  // `loading ? <Loader2> : <list>` ternary to tear down and recreate every
-  // OrderCard — wiping all local state (typed qty, calculated materials, etc).
-  // Now: show spinner only on first load; subsequent polls are silent.
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     const id = setInterval(() => fetchOrders(true), 15_000);
@@ -285,40 +626,74 @@ export default function StoreDashboard() {
   const pending    = orders.filter(o => o.status === 'pending');
   const inProgress = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
 
+  if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
+
+  return (
+    <>
+      {pending.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs font-body font-bold text-muted-foreground uppercase mb-2">New Orders</p>
+          <div className="space-y-3">{pending.map(o => <OrderCard key={o.id} order={o} />)}</div>
+        </div>
+      )}
+      {inProgress.length > 0 && (
+        <div>
+          <p className="text-xs font-body font-bold text-muted-foreground uppercase mb-2">In Progress / Done</p>
+          <div className="space-y-3">{inProgress.map(o => <OrderCard key={o.id} order={o} />)}</div>
+        </div>
+      )}
+      {orders.length === 0 && (
+        <div className="flex flex-col items-center py-20 text-muted-foreground gap-3">
+          <Store className="size-10 opacity-20" />
+          <p className="text-sm font-body">No orders yet</p>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default function StoreDashboard() {
+  const { orders } = useBakeryStore();
+  const { items: stockItems } = useStoreStockStore();
+  const [tab, setTab] = useState<'orders' | 'inventory'>('orders');
+
+  const pending    = orders.filter(o => o.status === 'pending');
+  const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
+
+  const tabs = [
+    { id: 'orders',    label: 'Orders',    badge: pending.length > 0 ? String(pending.length) : null },
+    { id: 'inventory', label: 'Inventory', badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
+  ] as const;
+
   return (
     <div className="min-h-screen bg-background pt-14 pb-24 px-4">
-      <div className="pt-4 pb-2 flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-bold text-foreground">Store Dashboard</h1>
-          <p className="text-xs font-body text-muted-foreground mt-0.5">Review orders · calculate materials · send to baker</p>
-        </div>
-        <div className="bg-amber-100 border border-amber-200 text-amber-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">{pending.length} New</div>
+      <div className="pt-4 pb-3">
+        <h1 className="font-display text-2xl font-bold text-foreground">Store Dashboard</h1>
+        <p className="text-xs font-body text-muted-foreground mt-0.5">Review orders · manage raw stock · send to baker</p>
       </div>
 
-      {initialLoading ? (
-        <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>
-      ) : (
-        <>
-          {pending.length > 0 && (
-            <div className="mb-4">
-              <p className="text-xs font-body font-bold text-muted-foreground uppercase mb-2">New Orders</p>
-              <div className="space-y-3">{pending.map(o => <OrderCard key={o.id} order={o} />)}</div>
-            </div>
-          )}
-          {inProgress.length > 0 && (
-            <div>
-              <p className="text-xs font-body font-bold text-muted-foreground uppercase mb-2">In Progress / Done</p>
-              <div className="space-y-3">{inProgress.map(o => <OrderCard key={o.id} order={o} />)}</div>
-            </div>
-          )}
-          {orders.length === 0 && (
-            <div className="flex flex-col items-center py-20 text-muted-foreground gap-3">
-              <Store className="size-10 opacity-20" />
-              <p className="text-sm font-body">No orders yet</p>
-            </div>
-          )}
-        </>
-      )}
+      {/* Tabs */}
+      <div className="flex gap-1 bg-muted p-1 rounded-xl mb-4">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-body font-semibold transition-all',
+              tab === t.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            )}>
+            {t.id === 'orders' ? <Store className="size-3.5" /> : <Warehouse className="size-3.5" />}
+            {t.label}
+            {t.badge && (
+              <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full text-white min-w-[18px] text-center',
+                t.badgeColor ?? 'bg-amber-500')}>
+                {t.badge}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'orders'    && <OrdersTab />}
+      {tab === 'inventory' && <StoreInventoryTab />}
     </div>
   );
 }
