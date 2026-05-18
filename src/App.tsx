@@ -33,6 +33,13 @@ import RecipeManagement from '@/bakery/RecipeManagement';
 import VRSNBDashboard from '@/pages/VRSNBDashboard';
 import SNBDashboard   from '@/pages/SNBDashboard';
 import HosurDashboard from '@/pages/HosurDashboard';
+import AdminVRSNBDashboard from '@/pages/AdminVRSNBDashboard';
+import AdminSNBDashboard   from '@/pages/AdminSNBDashboard';
+import OwnerDashboard      from '@/pages/OwnerDashboard';
+import VRSNBItemsPage      from '@/pages/VRSNBItemsPage';
+import SNBItemsPage        from '@/pages/SNBItemsPage';
+import VRSNBHistoryPage    from '@/pages/VRSNBHistoryPage';
+import SNBHistoryPage      from '@/pages/SNBHistoryPage';
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AppRoutes() {
@@ -96,6 +103,13 @@ function AppRoutes() {
         <Route path="/branch/hosur"    element={<ProtectedRoute allowedRoles={['branch_hosur','admin']}><HosurDashboard /></ProtectedRoute>} />
         {/* ─────────────────────────────────────────────────────────────── */}
 
+        <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><AdminVRSNBDashboard /></ProtectedRoute>} />
+        <Route path="/admin-vrsnb/items"   element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><VRSNBItemsPage /></ProtectedRoute>} />
+        <Route path="/admin-vrsnb/history" element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><VRSNBHistoryPage /></ProtectedRoute>} />
+        <Route path="/admin-snb"           element={<ProtectedRoute allowedRoles={['admin_snb']}><AdminSNBDashboard /></ProtectedRoute>} />
+        <Route path="/admin-snb/items"     element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBItemsPage /></ProtectedRoute>} />
+        <Route path="/admin-snb/history"   element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBHistoryPage /></ProtectedRoute>} />
+        <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
       {currentUser && <BottomNav />}
