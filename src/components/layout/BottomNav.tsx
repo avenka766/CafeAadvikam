@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   ClipboardList, Receipt, UtensilsCrossed, History,
   LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
-  Inbox, Store, Flame, Package, ShoppingCart, Settings2,
+  Inbox, Store, Flame, Package, ShoppingCart, Settings2, BarChart3,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -55,6 +55,22 @@ export default function BottomNav() {
     navItems.push({ label: 'SNB',     icon: <ShoppingCart className="size-5" />, path: '/branch/snb' });
   } else if (currentUser.role === 'branch_hosur') {
     navItems.push({ label: 'Hosur',   icon: <ShoppingCart className="size-5" />, path: '/branch/hosur' });
+  } else if (currentUser.role === 'admin_vrsnb') {
+    navItems.push(
+      { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-vrsnb' },
+      { label: 'Items',     icon: <Settings2       className="size-5" />, path: '/admin-vrsnb/items' },
+      { label: 'History',   icon: <History         className="size-5" />, path: '/admin-vrsnb/history' },
+    );
+  } else if (currentUser.role === 'admin_snb') {
+    navItems.push(
+      { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-snb' },
+      { label: 'Items',     icon: <Settings2       className="size-5" />, path: '/admin-snb/items' },
+      { label: 'History',   icon: <History         className="size-5" />, path: '/admin-snb/history' },
+    );
+  } else if (currentUser.role === 'owner') {
+    navItems.push(
+      { label: 'Sales',      icon: <BarChart3      className="size-5" />, path: '/owner' },
+    );
   }
 
   if (navItems.length === 0) return null;
