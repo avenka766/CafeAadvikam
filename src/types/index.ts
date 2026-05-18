@@ -9,12 +9,9 @@ export type UserRole =
   | 'baker'
   | 'packing'
   | 'order_receiver'
-  | 'branch_vrsnb'
-  | 'branch_snb'
-  | 'branch_hosur'
-  | 'admin_vrsnb'   // VRSNB Admin Dashboard
-  | 'admin_snb'     // SNB Admin Dashboard
-  | 'owner';        // Owner Dashboard
+  | 'branch_vrsnb'   // NEW
+  | 'branch_snb'     // NEW
+  | 'branch_hosur';  // NEW
 
 export interface User {
   id: string;
