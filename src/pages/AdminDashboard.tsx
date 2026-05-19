@@ -594,7 +594,9 @@ function CafeReportsTab() {
   const orderTypeData = [
     { name: 'Dine In', value: dineInCount },
     { name: 'Takeaway', value: takeawayCount },
-  ].filter(d => d.value > 0); = async () => {
+  ].filter(d => d.value > 0);
+
+  const handleDownload = async () => {
     const XLSX = await import('xlsx');
 
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
