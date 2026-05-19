@@ -420,24 +420,11 @@ function StoreInventoryTab() {
         <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
           <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
         </button>
-        <button onClick={handleImport} disabled={importing}
-          className="h-10 px-3 rounded-xl border border-primary text-primary text-xs font-body font-bold flex items-center gap-1.5 active:scale-95 disabled:opacity-50">
-          {importing ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />} Import
-        </button>
         <button onClick={() => setShowAdd(true)}
           className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
           <Plus className="size-3.5" /> Add
         </button>
       </div>
-      {importToast && (
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl">
-          <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-          <p className="text-xs font-body text-emerald-700">
-            <span className="font-bold">{importToast.added} new ingredients</span> added from recipes
-            {importToast.skipped > 0 && <span className="text-emerald-600"> · {importToast.skipped} skipped (already exist)</span>}
-          </p>
-        </div>
-      )}
       <div className="grid grid-cols-3 gap-2">
         {[
           { label: 'Total', value: items.length, color: 'text-foreground' },
