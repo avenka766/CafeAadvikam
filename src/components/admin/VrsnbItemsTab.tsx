@@ -1,7 +1,7 @@
 // src/components/admin/VrsnbItemsTab.tsx
 // Admin → Items → Bakery → VRSNB Items
 import { useEffect, useState, useMemo } from 'react';
-import { AlertTriangle, AlertCircle, Search, X, Scale, Hash, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import { AlertTriangle, AlertCircle, Search, X, Scale, Hash, ChevronDown, ChevronUp, Plus, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
 import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '@/branch/vrsnbItems';
@@ -157,6 +157,63 @@ function AddItemModal({
   );
 }
 
+// ── Edit Item Modal ─────────────────────────────────────────────────────────────
+function EditItemModal({
+  item,
+  onClose,
+  onSave,
+}: {
+  item: (typeof VRSNB_ITEMS[0]) | CustomVrsnbItem;
+  onClose: () => void;
+  onSave: (barcode: number, updates: { name: string; price: number }) => void;
+}) {
+  const [name, setName] = useState(item.name);
+  const [price, setPrice] = useState(String(item.price));
+  const [error, setError] = useState('');
+
+  const handleSubmit = () => {
+    if (!name.trim()) { setError('Item name is required.'); return; }
+    const p = Number(price);
+    if (!price || isNaN(p) || p <= 0) { setError('Enter a valid price.'); return; }
+    setError('');
+    onSave(item.barcode, { name: name.trim(), price: p });
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm px-4 pb-4">
+      <div className="w-full max-w-sm bg-card rounded-2xl border border-border shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <p className="font-display font-bold text-foreground text-base">Edit VRSNB Item</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">Barcode #{item.barcode}</p>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-xl hover:bg-muted flex items-center justify-center transition">
+            <X className="size-4 text-muted-foreground" />
+          </button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <label className="text-xs font-semibold text-muted-foreground mb-1 block">Item Name *</label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-muted-foreground mb-1 block">Price (₹) *</label>
+            <input type="number" value={price} onChange={e => setPrice(e.target.value)} min={0}
+              className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
+          </div>
+          {error && <p className="text-xs text-destructive flex items-center gap-1">⚠ {error}</p>}
+        </div>
+        <div className="flex gap-2 px-5 pb-5">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition">Cancel</button>
+          <button onClick={handleSubmit} className="flex-1 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Tab ───────────────────────────────────────────────────────────────────
 export default function VrsnbItemsTab() {
   const { stockMismatches, fetchStockMismatches } = useBranchStore();
@@ -165,6 +222,8 @@ export default function VrsnbItemsTab() {
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]     = useState(false);
   const [customItems, setCustomItems]       = useState<CustomVrsnbItem[]>([]);
+  const [editTarget, setEditTarget]         = useState<(typeof VRSNB_ITEMS[0]) | CustomVrsnbItem | null>(null);
+  const [priceOverrides, setPriceOverrides] = useState<Record<number, { name: string; price: number }>>({});
 
   useEffect(() => { fetchStockMismatches(); }, []);
 
@@ -192,9 +251,18 @@ export default function VrsnbItemsTab() {
   }, [stockMismatches]);
 
   const allItems = useMemo(() => [
-    ...VRSNB_ITEMS,
+    ...VRSNB_ITEMS.map(i => ({
+      ...i,
+      name: priceOverrides[i.barcode]?.name ?? i.name,
+      price: priceOverrides[i.barcode]?.price ?? i.price,
+    })),
     ...customItems,
-  ], [customItems]);
+  ], [customItems, priceOverrides]);
+
+  const handleSaveEdit = (barcode: number, updates: { name: string; price: number }) => {
+    setPriceOverrides(prev => ({ ...prev, [barcode]: updates }));
+    setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -342,9 +410,17 @@ export default function VrsnbItemsTab() {
                       <span className="text-[10px] text-muted-foreground">{item.category}</span>
                     </div>
                   </div>
-                  <span className="text-sm font-semibold text-emerald-700 tabular-nums shrink-0">
-                    {fmt(item.price)}{item.uom === 'Kgs' ? '/kg' : ''}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-sm font-semibold text-emerald-700 tabular-nums">
+                      {fmt(item.price)}{item.uom === 'Kgs' ? '/kg' : ''}
+                    </span>
+                    <button
+                      onClick={() => setEditTarget(item)}
+                      className="size-7 rounded-lg bg-muted hover:bg-muted/80 flex items-center justify-center transition"
+                    >
+                      <Pencil className="size-3 text-muted-foreground" />
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -358,6 +434,13 @@ export default function VrsnbItemsTab() {
           onClose={() => setShowAddModal(false)}
           onAdd={(item) => setCustomItems(prev => [...prev, item])}
           nextBarcode={nextBarcode}
+        />
+      )}
+      {editTarget && (
+        <EditItemModal
+          item={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSave={handleSaveEdit}
         />
       )}
     </div>
