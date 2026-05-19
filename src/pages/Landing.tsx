@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { useVenueStore } from '@/stores/venueStore';
+import { getRoleDefaultPath } from '@/lib/routing';
 import { VRSNB_ITEMS, VRSNB_CATEGORIES, type VrsnbCategory } from '@/branch/vrsnbItems';
 import { MENU_CATEGORIES } from '@/constants/config';
 import { formatCurrency, cn } from '@/lib/utils';
@@ -970,10 +971,16 @@ export default function Landing() {
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
-  if (currentUser) {
-    const path = currentUser.role === 'order_taker' ? '/order-pad' : currentUser.role === 'admin' ? '/admin-dashboard' : currentUser.role === 'kitchen' ? '/kitchen' : '/billing';
-    navigate(path, { replace: true }); return null;
-  }
+  // Fix: redirect inside useEffect so it never returns null during hydration
+  useEffect(() => {
+    if (currentUser) {
+      const path = getRoleDefaultPath(currentUser.role);
+      navigate(path, { replace: true });
+    }
+  }, [currentUser, navigate]);
+
+  // While a logged-in user is being redirected, show nothing (avoids flash)
+  if (currentUser) return null;
 
   const bookPartyHall = () => window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
 
