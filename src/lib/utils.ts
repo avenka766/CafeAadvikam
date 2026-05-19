@@ -6,7 +6,8 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number): string {
-  return `₹${amount.toFixed(0)}`;
+  const safe = typeof amount === 'number' && isFinite(amount) ? amount : 0;
+  return `₹${safe.toFixed(0)}`;
 }
 
 export function formatTime(dateString: string): string {
