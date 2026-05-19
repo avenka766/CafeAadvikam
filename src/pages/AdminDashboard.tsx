@@ -514,11 +514,6 @@ function BakerySalesTab() {
 }
 
 
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
-
-
 // ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
 function CafeReportsTab() {
   const { orders } = useOrderStore();
@@ -1247,15 +1242,6 @@ function BakeryReportsTab() {
     </div>
   );
 }
-
-
-  const todayISO = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
-
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
 
 
 // ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
