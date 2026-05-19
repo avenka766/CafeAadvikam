@@ -3,6 +3,7 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
 import { useOrderStore } from '@/stores/orderStore';
+import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { Download, Filter } from 'lucide-react';
 
@@ -11,23 +12,39 @@ function SNBBakeryDashboardTab() {
   const { stock, sales, fetchBranchData } = useBranchStore();
   useEffect(() => { fetchBranchData('SNB'); }, [fetchBranchData]);
   const today = new Date().toDateString();
-  const todaySales = useMemo(() => (sales['SNB'] || []).filter(s => new Date(s.soldAt).toDateString() === today), [sales, today]);
+
+  const todaySales = useMemo(() =>
+    (sales['SNB'] || []).map(s => ({
+      ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+    })).filter(s => new Date(s.soldAt).toDateString() === today),
+    [sales, today]);
+
+  const totalRevenue = todaySales.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
   const totalQty = todaySales.reduce((a, s) => a + s.quantitySold, 0);
   const stockItems = stock['SNB'] || [];
   const lowStock = stockItems.filter(s => s.quantity <= s.minThreshold).length;
+
   const topItems = useMemo(() => {
-    const map = new Map<string, number>();
-    todaySales.forEach(s => map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const map = new Map<string, { qty: number; revenue: number }>();
+    todaySales.forEach(s => {
+      const ex = map.get(s.itemName);
+      const rev = s.unitPrice * s.quantitySold;
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
+      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8);
   }, [todaySales]);
+
+  const maxRev = Math.max(...topItems.map(([, v]) => v.revenue), 1);
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
-          <p className="font-display text-2xl font-bold tabular-nums text-amber-700">{totalQty}</p>
-          <p className="text-[10px] font-semibold uppercase text-amber-600">Qty Sold</p>
-        </div>
+      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+        <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Today's Revenue – SNB</p>
+        <p className="font-display text-3xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        <p className="text-xs text-muted-foreground mt-1">{totalQty} items sold · {todaySales.length} transactions</p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
         <div className="bg-card border border-border rounded-xl p-3 text-center">
           <p className="font-display text-2xl font-bold tabular-nums">{stockItems.length}</p>
           <p className="text-[10px] font-semibold uppercase text-muted-foreground">In Stock</p>
@@ -38,16 +55,28 @@ function SNBBakeryDashboardTab() {
         </div>
       </div>
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3">Today's Top Items – SNB</h3>
+        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">Today · SNB branch</p>
         {topItems.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">No sales today</p>
         ) : (
-          <div className="space-y-2">
-            {topItems.map(([item, qty], i) => (
-              <div key={item} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <span className="text-sm font-bold tabular-nums">{qty}</span>
+          <div className="space-y-2.5">
+            {topItems.map(([item, v], i) => (
+              <div key={item}>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
+                      i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
+                    <p className="text-sm font-medium truncate">{item}</p>
+                  </div>
+                  <div className="text-right ml-2 shrink-0">
+                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
+                    <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
+                  </div>
+                </div>
+                <div className="h-1.5 bg-muted rounded-full">
+                  <div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${Math.round((v.revenue / maxRev) * 100)}%` }} />
+                </div>
               </div>
             ))}
           </div>
@@ -76,17 +105,31 @@ function SNBBakerySalesTab() {
   const [filterItem, setFilterItem] = useState('');
   const [filterDate, setFilterDate] = useState('');
   useEffect(() => { fetchBranchData('SNB'); }, [fetchBranchData]);
-  const snbSales = useMemo(() => (sales['SNB'] || []).sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime()), [sales]);
+
+  const snbSales = useMemo(() =>
+    (sales['SNB'] || []).map(s => ({
+      ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+    })).sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime()),
+    [sales]);
+
   const allItems = useMemo(() => [...new Set(snbSales.map(s => s.itemName))].sort(), [snbSales]);
+
   const filtered = useMemo(() => snbSales.filter(s => {
     if (filterItem && s.itemName !== filterItem) return false;
     if (filterDate && new Date(s.soldAt).toDateString() !== new Date(filterDate).toDateString()) return false;
     return true;
   }), [snbSales, filterItem, filterDate]);
 
+  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
+  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
-    const rows = filtered.map((s, i) => ({ 'S.No': i + 1, 'Item': s.itemName, 'Qty': s.quantitySold, 'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'Sold By': s.soldBy }));
+    const rows = filtered.map((s, i) => ({
+      'S.No': i + 1, 'Item': s.itemName, 'Qty': s.quantitySold,
+      'Unit Price': s.unitPrice, 'Revenue': s.unitPrice * s.quantitySold,
+      'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'Sold By': s.soldBy,
+    }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Note: 'No data' }]), 'SNB Sales');
     XLSX.writeFile(wb, `SNB_Sales_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -94,8 +137,21 @@ function SNBBakerySalesTab() {
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
+          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
+          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
+        </div>
+      </div>
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – SNB Branch</h3></div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – SNB</h3></div>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <select value={filterItem} onChange={e => setFilterItem(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
             <option value="">All Items</option>
@@ -103,25 +159,28 @@ function SNBBakerySalesTab() {
           </select>
           <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2" />
         </div>
-        <div className="flex justify-between items-center">
-          <p className="text-xs text-muted-foreground">{filtered.length} records</p>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
+        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
       </div>
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales found.</p>
         ) : (
           <div className="divide-y">
-            {filtered.slice(0, 50).map(s => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-medium">{s.itemName}</p>
-                  <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+            {filtered.slice(0, 50).map(s => {
+              const lineRev = s.unitPrice * s.quantitySold;
+              return (
+                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                  <div>
+                    <p className="text-sm font-medium">{s.itemName}</p>
+                    <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
+                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
+                  </div>
                 </div>
-                <span className="text-sm font-bold tabular-nums text-amber-600">×{s.quantitySold}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -135,22 +194,39 @@ function SNBBakeryReportsTab() {
   useEffect(() => { fetchBranchData('SNB'); }, [fetchBranchData]);
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const snbSales = useMemo(() => sales['SNB'] || [], [sales]);
+
+  const snbSales = useMemo(() =>
+    (sales['SNB'] || []).map(s => ({
+      ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+    })), [sales]);
+
   const filtered = useMemo(() => {
     const s = new Date(startDate); s.setHours(0, 0, 0, 0);
     const e = new Date(endDate); e.setHours(23, 59, 59, 999);
     return snbSales.filter(sale => { const d = new Date(sale.soldAt); return d >= s && d <= e; });
   }, [snbSales, startDate, endDate]);
+
+  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
   const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+
   const topItems = useMemo(() => {
-    const map = new Map<string, number>();
-    filtered.forEach(s => map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const map = new Map<string, { qty: number; revenue: number }>();
+    filtered.forEach(s => {
+      const ex = map.get(s.itemName);
+      const rev = s.unitPrice * s.quantitySold;
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
+      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
   }, [filtered]);
 
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
-    const rows = filtered.map((s, i) => ({ 'S.No': i + 1, 'Item': s.itemName, 'Qty': s.quantitySold, 'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'By': s.soldBy }));
+    const rows = filtered.map((s, i) => ({
+      'S.No': i + 1, 'Item': s.itemName, 'Qty': s.quantitySold,
+      'Unit Price': s.unitPrice, 'Revenue': s.unitPrice * s.quantitySold,
+      'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'By': s.soldBy,
+    }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Note: 'No data' }]), 'SNB Report');
     XLSX.writeFile(wb, `SNB_Report_${startDate}_${endDate}.xlsx`);
@@ -158,29 +234,50 @@ function SNBBakeryReportsTab() {
 
   return (
     <div className="space-y-4">
+      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+        <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Revenue – SNB</p>
+        <p className="font-display text-2xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        <p className="text-xs text-muted-foreground mt-1">{totalQty} items · {filtered.length} transactions</p>
+      </div>
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <h3 className="font-semibold text-sm">Date Range – SNB Branch</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Date Range – SNB</h3>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
           <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
         </div>
-        <div className="flex justify-between items-center">
-          <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} qty</p>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
       </div>
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3">Top Items (SNB)</h3>
-        {topItems.length === 0 ? <p className="text-sm text-muted-foreground text-center py-4">No data</p> : (
-          <div className="space-y-2">
-            {topItems.slice(0, 10).map(([item, qty], i) => (
-              <div key={item} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <span className="text-sm font-bold tabular-nums">{qty}</span>
-              </div>
-            ))}
-          </div>
+        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">SNB branch</p>
+        {topItems.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-4">No data</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground border-b">
+                <th className="text-left py-1.5">Item</th>
+                <th className="text-right py-1.5 text-primary font-semibold">Revenue</th>
+                <th className="text-right py-1.5">Qty</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {topItems.slice(0, 10).map(([item, v]) => (
+                <tr key={item}>
+                  <td className="py-2 text-sm truncate max-w-[140px]">{item}</td>
+                  <td className="py-2 text-right font-bold text-primary tabular-nums">{formatCurrency(v.revenue)}</td>
+                  <td className="py-2 text-right text-muted-foreground tabular-nums text-xs">{v.qty}</td>
+                </tr>
+              ))}
+              <tr className="font-bold border-t-2">
+                <td className="py-2">Total</td>
+                <td className="py-2 text-right text-primary">{formatCurrency(totalRevenue)}</td>
+                <td className="py-2 text-right text-muted-foreground text-xs">{totalQty}</td>
+              </tr>
+            </tbody>
+          </table>
         )}
       </div>
     </div>

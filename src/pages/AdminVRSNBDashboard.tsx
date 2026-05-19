@@ -236,21 +236,32 @@ function VRSNBBakeryDashboardTab() {
   const today = new Date().toDateString();
   const todaySales = useMemo(() => (sales['VRSNB'] || []).filter(s => new Date(s.soldAt).toDateString() === today), [sales, today]);
   const totalQty = todaySales.reduce((a, s) => a + s.quantitySold, 0);
+  const totalRevenue = todaySales.reduce((a, s) => {
+    const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
+    return a + unitPrice * s.quantitySold;
+  }, 0);
   const stockItems = (stock['VRSNB'] || []);
   const lowStock = stockItems.filter(s => s.quantity <= s.minThreshold).length;
   const topItems = useMemo(() => {
-    const map = new Map<string, number>();
-    todaySales.forEach(s => map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const map = new Map<string, { qty: number; revenue: number }>();
+    todaySales.forEach(s => {
+      const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
+      const ex = map.get(s.itemName);
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += unitPrice * s.quantitySold; }
+      else map.set(s.itemName, { qty: s.quantitySold, revenue: unitPrice * s.quantitySold });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8);
   }, [todaySales]);
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
-          <p className="font-display text-2xl font-bold tabular-nums text-blue-700">{totalQty}</p>
-          <p className="text-[10px] font-semibold uppercase text-blue-600">Qty Sold</p>
-        </div>
+      {/* Revenue KPI */}
+      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+        <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Today's Revenue – VRSNB</p>
+        <p className="font-display text-3xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        <p className="text-xs text-muted-foreground mt-1">{totalQty} items sold today</p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
         <div className="bg-card border border-border rounded-xl p-3 text-center">
           <p className="font-display text-2xl font-bold tabular-nums">{stockItems.length}</p>
           <p className="text-[10px] font-semibold uppercase text-muted-foreground">In Stock</p>
@@ -261,16 +272,20 @@ function VRSNBBakeryDashboardTab() {
         </div>
       </div>
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3">Today's Top Items – VRSNB</h3>
+        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">Today · VRSNB branch</p>
         {topItems.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">No sales today</p>
         ) : (
           <div className="space-y-2">
-            {topItems.map(([item, qty], i) => (
+            {topItems.map(([item, v], i) => (
               <div key={item} className="flex items-center gap-3">
                 <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
                 <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <span className="text-sm font-bold tabular-nums">{qty}</span>
+                <div className="text-right">
+                  <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
+                  <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
+                </div>
               </div>
             ))}
           </div>
@@ -293,13 +308,16 @@ function VRSNBBakeryDashboardTab() {
   );
 }
 
+
 // ── VRSNB Bakery Sales Tab ────────────────────────────────────────────────────
 function VRSNBBakerySalesTab() {
   const { sales, fetchBranchData } = useBranchStore();
   const [filterItem, setFilterItem] = useState('');
   const [filterDate, setFilterDate] = useState('');
   useEffect(() => { fetchBranchData('VRSNB'); }, [fetchBranchData]);
-  const vrsnbSales = useMemo(() => (sales['VRSNB'] || []).sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime()), [sales]);
+  const vrsnbSales = useMemo(() => (sales['VRSNB'] || [])
+    .map(s => ({ ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0 }))
+    .sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime()), [sales]);
   const allItems = useMemo(() => [...new Set(vrsnbSales.map(s => s.itemName))].sort(), [vrsnbSales]);
   const filtered = useMemo(() => vrsnbSales.filter(s => {
     if (filterItem && s.itemName !== filterItem) return false;
@@ -307,10 +325,14 @@ function VRSNBBakerySalesTab() {
     return true;
   }), [vrsnbSales, filterItem, filterDate]);
 
+  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
+  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
     const rows = filtered.map((s, i) => ({
       'S.No': i + 1, 'Item': s.itemName, 'Qty Sold': s.quantitySold,
+      'Unit Price': s.unitPrice, 'Revenue': s.unitPrice * s.quantitySold,
       'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'Sold By': s.soldBy,
     }));
     const wb = XLSX.utils.book_new();
@@ -320,8 +342,22 @@ function VRSNBBakerySalesTab() {
 
   return (
     <div className="space-y-4">
+      {/* Summary KPIs */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
+          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
+          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
+        </div>
+      </div>
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – VRSNB Branch</h3></div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – VRSNB</h3></div>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <select value={filterItem} onChange={e => setFilterItem(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
             <option value="">All Items</option>
@@ -329,31 +365,37 @@ function VRSNBBakerySalesTab() {
           </select>
           <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2" />
         </div>
-        <div className="flex justify-between items-center">
-          <p className="text-xs text-muted-foreground">{filtered.length} records</p>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
+        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
       </div>
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales found.</p>
         ) : (
           <div className="divide-y">
-            {filtered.slice(0, 50).map(s => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-medium">{s.itemName}</p>
-                  <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+            {filtered.slice(0, 50).map(s => {
+              const lineRev = s.unitPrice * s.quantitySold;
+              return (
+                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                  <div>
+                    <p className="text-sm font-medium">{s.itemName}</p>
+                    <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
+                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
+                  </div>
                 </div>
-                <span className="text-sm font-bold tabular-nums text-blue-600">×{s.quantitySold}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+
+
 
 // ── VRSNB Bakery Reports Tab ──────────────────────────────────────────────────
 function VRSNBBakeryReportsTab() {
@@ -362,24 +404,35 @@ function VRSNBBakeryReportsTab() {
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
 
-  const vrsnbSales = useMemo(() => sales['VRSNB'] || [], [sales]);
+  const vrsnbSales = useMemo(() => (sales['VRSNB'] || []).map(s => ({
+    ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+  })), [sales]);
+
   const filtered = useMemo(() => {
     const s = new Date(startDate); s.setHours(0, 0, 0, 0);
     const e = new Date(endDate); e.setHours(23, 59, 59, 999);
     return vrsnbSales.filter(sale => { const d = new Date(sale.soldAt); return d >= s && d <= e; });
   }, [vrsnbSales, startDate, endDate]);
 
+  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
   const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+
   const topItems = useMemo(() => {
-    const map = new Map<string, number>();
-    filtered.forEach(s => map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const map = new Map<string, { qty: number; revenue: number }>();
+    filtered.forEach(s => {
+      const ex = map.get(s.itemName);
+      const rev = s.unitPrice * s.quantitySold;
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
+      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
   }, [filtered]);
 
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
     const rows = filtered.map((s, i) => ({
       'S.No': i + 1, 'Item': s.itemName, 'Qty': s.quantitySold,
+      'Unit Price': s.unitPrice, 'Revenue': s.unitPrice * s.quantitySold,
       'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'Sold By': s.soldBy,
     }));
     const wb = XLSX.utils.book_new();
@@ -389,36 +442,53 @@ function VRSNBBakeryReportsTab() {
 
   return (
     <div className="space-y-4">
+      {/* Revenue KPI */}
+      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+        <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Revenue – VRSNB</p>
+        <p className="font-display text-2xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+        <p className="text-xs text-muted-foreground mt-1">{totalQty} items · {filtered.length} transactions</p>
+      </div>
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <h3 className="font-semibold text-sm">Date Range – VRSNB Branch</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Date Range – VRSNB</h3>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
           <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
         </div>
-        <div className="flex justify-between items-center">
-          <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} qty total</p>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
       </div>
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3">Top Items (VRSNB)</h3>
+        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">VRSNB branch</p>
         {topItems.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">No data in range</p>
         ) : (
           <div className="space-y-2">
-            {topItems.slice(0, 10).map(([item, qty], i) => (
+            {topItems.slice(0, 10).map(([item, v], i) => (
               <div key={item} className="flex items-center gap-3">
                 <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
                 <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <span className="text-sm font-bold tabular-nums">{qty}</span>
+                <div className="text-right">
+                  <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
+                  <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
+                </div>
               </div>
             ))}
+            <div className="flex justify-between text-sm font-bold border-t pt-2 mt-1">
+              <span>Total</span>
+              <span className="text-primary">{formatCurrency(totalRevenue)}</span>
+            </div>
           </div>
         )}
       </div>
     </div>
   );
 }
+
+
+
+
 
 // ── Cafe Sub-View ─────────────────────────────────────────────────────────────
 function CafeView() {

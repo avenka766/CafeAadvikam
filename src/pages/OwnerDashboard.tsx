@@ -9,20 +9,25 @@ import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, LineChart, Line,
+  PieChart, Pie, Cell, Legend, LineChart, Line, AreaChart, Area, RadialBarChart, RadialBar,
 } from 'recharts';
 import {
   IndianRupee, ShoppingBag, TrendingUp, Users,
-  Building2, BarChart3, CalendarCheck, LogOut,
+  Building2, BarChart3, CalendarCheck, ArrowUpRight, ArrowDownRight,
+  Store, Layers,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
-function KPI({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: string; sub?: string; color: string }) {
+function KPI({ icon, label, value, sub, color, trend }: { icon: React.ReactNode; label: string; value: string; sub?: string; color: string; trend?: 'up' | 'down' | null }) {
   return (
     <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
       <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6" style={{ background: 'hsl(var(--primary))' }} />
-      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3', color)}>{icon}</div>
+      <div className="flex items-start justify-between mb-2">
+        <div className={cn('size-9 rounded-xl flex items-center justify-center', color)}>{icon}</div>
+        {trend === 'up' && <ArrowUpRight className="size-4 text-emerald-500" />}
+        {trend === 'down' && <ArrowDownRight className="size-4 text-red-500" />}
+      </div>
       <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
       <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1">{label}</p>
       {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
@@ -51,20 +56,30 @@ function SalesOverviewTab() {
   const cafeRevenue = cafeOrders.reduce((s, o) => s + o.total, 0);
   const cafeCount = cafeOrders.length;
 
-  // Bakery branch sales
+  // Bakery branch sales — revenue = qty * unit_price where available, fallback to qty
   const branchSales = useMemo(() => {
-    const branches: Record<string, { qty: number; count: number }> = { VRSNB: { qty: 0, count: 0 }, SNB: { qty: 0, count: 0 }, Hosur: { qty: 0, count: 0 } };
+    const branches: Record<string, { qty: number; count: number; revenue: number }> = {
+      VRSNB: { qty: 0, count: 0, revenue: 0 },
+      SNB: { qty: 0, count: 0, revenue: 0 },
+      Hosur: { qty: 0, count: 0, revenue: 0 },
+    };
     (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
       (sales[b] || []).filter(s => new Date(s.soldAt) >= cutoff).forEach(s => {
         branches[b].qty += s.quantitySold;
         branches[b].count += 1;
+        // Use unit_price field if available on the record
+        const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
+        branches[b].revenue += unitPrice * s.quantitySold;
       });
     });
     return branches;
   }, [sales, cutoff]);
-  const totalBakeryQty = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
 
-  // Daily cafe revenue chart (last 7/30 days)
+  const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
+  const totalBakeryQty = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
+  const grandTotal = cafeRevenue + totalBakeryRevenue;
+
+  // Daily cafe revenue chart
   const dailyRevenueData = useMemo(() => {
     const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
     const result = [];
@@ -72,20 +87,20 @@ function SalesOverviewTab() {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = d.toDateString();
-      const revenue = cafeOrders.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
+      const cafeRev = cafeOrders.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
       const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-      result.push({ date: label, revenue });
+      result.push({ date: label, cafe: cafeRev });
     }
     return result;
   }, [cafeOrders, dateRange]);
 
-  // Branch comparison
-  const branchCompareData = [
+  // Revenue share pie
+  const revShareData = [
     { name: 'Cafe', value: cafeRevenue, color: COLORS[0] },
-    { name: 'VRSNB', value: branchSales.VRSNB.qty, color: COLORS[1] },
-    { name: 'SNB', value: branchSales.SNB.qty, color: COLORS[2] },
-    { name: 'Hosur', value: branchSales.Hosur.qty, color: COLORS[3] },
-  ];
+    { name: 'VRSNB', value: branchSales.VRSNB.revenue, color: COLORS[1] },
+    { name: 'SNB', value: branchSales.SNB.revenue, color: COLORS[2] },
+    { name: 'Hosur', value: branchSales.Hosur.revenue, color: COLORS[3] },
+  ].filter(d => d.value > 0);
 
   // Cafe payment breakdown
   const payBreakdown = useMemo(() => {
@@ -105,12 +120,20 @@ function SalesOverviewTab() {
     ].filter(p => p.value > 0);
   }, [cafeOrders]);
 
-  // Top cafe items
+  // Top cafe items by revenue
   const topCafeItems = useMemo(() => {
-    const map = new Map<string, number>();
-    cafeOrders.forEach(o => o.items.forEach(ci => map.set(ci.menuItem.name, (map.get(ci.menuItem.name) || 0) + ci.quantity)));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, qty]) => ({ name: name.length > 12 ? name.slice(0, 12) + '…' : name, qty }));
+    const map = new Map<string, { qty: number; revenue: number }>();
+    cafeOrders.forEach(o => o.items.forEach(ci => {
+      const ex = map.get(ci.menuItem.name);
+      const rev = ci.menuItem.price * ci.quantity;
+      if (ex) { ex.qty += ci.quantity; ex.revenue += rev; }
+      else map.set(ci.menuItem.name, { qty: ci.quantity, revenue: rev });
+    }));
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8)
+      .map(([name, v]) => ({ name: name.length > 14 ? name.slice(0, 14) + '…' : name, revenue: v.revenue, qty: v.qty }));
   }, [cafeOrders]);
+
+  const maxBranchRev = Math.max(cafeRevenue, branchSales.VRSNB.revenue, branchSales.SNB.revenue, branchSales.Hosur.revenue, 1);
 
   return (
     <div className="space-y-5">
@@ -125,75 +148,64 @@ function SalesOverviewTab() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Cafe Revenue" value={formatCurrency(cafeRevenue)} sub={`${cafeCount} orders`} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Qty" value={String(totalBakeryQty)} sub="all branches" color="bg-amber-50 text-amber-700" />
-        <KPI icon={<Building2 className="size-4" />} label="VRSNB Qty" value={String(branchSales.VRSNB.qty)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<Building2 className="size-4" />} label="SNB Qty" value={String(branchSales.SNB.qty)} color="bg-amber-50 text-amber-700" />
+        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(grandTotal)} sub="All branches" color="bg-primary/10 text-primary" />
+        <KPI icon={<Store className="size-4" />} label="Cafe Revenue" value={formatCurrency(cafeRevenue)} sub={`${cafeCount} orders`} color="bg-emerald-50 text-emerald-700" />
+        <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(totalBakeryRevenue)} sub={`${totalBakeryQty} items sold`} color="bg-amber-50 text-amber-700" />
+        <KPI icon={<Layers className="size-4" />} label="Bakery Items" value={String(totalBakeryQty)} sub="All branches" color="bg-blue-50 text-blue-700" />
       </div>
 
-      {/* Cafe Revenue Trend */}
-      {dateRange !== 'today' && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2">
-            <TrendingUp className="size-4 text-primary" />Cafe Revenue Trend
-          </h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={dailyRevenueData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Line type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Branch Compare */}
+      {/* Branch Performance — Revenue */}
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2">
+        <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
           <BarChart3 className="size-4 text-primary" />Branch Performance
         </h3>
+        <p className="text-[10px] text-muted-foreground mb-4">Revenue comparison across all branches</p>
         <div className="space-y-3">
           {[
-            { label: 'Cafe', value: cafeRevenue, formatted: formatCurrency(cafeRevenue), color: 'bg-emerald-500', max: cafeRevenue || 1 },
-            { label: 'VRSNB (qty)', value: branchSales.VRSNB.qty, formatted: `${branchSales.VRSNB.qty} items`, color: 'bg-blue-500', max: Math.max(branchSales.VRSNB.qty, branchSales.SNB.qty, branchSales.Hosur.qty, 1) },
-            { label: 'SNB (qty)', value: branchSales.SNB.qty, formatted: `${branchSales.SNB.qty} items`, color: 'bg-amber-500', max: Math.max(branchSales.VRSNB.qty, branchSales.SNB.qty, branchSales.Hosur.qty, 1) },
-            { label: 'Hosur (qty)', value: branchSales.Hosur.qty, formatted: `${branchSales.Hosur.qty} items`, color: 'bg-emerald-500', max: Math.max(branchSales.VRSNB.qty, branchSales.SNB.qty, branchSales.Hosur.qty, 1) },
+            { label: 'Cafe', value: cafeRevenue, color: 'bg-emerald-500', qty: `${cafeCount} orders` },
+            { label: 'VRSNB', value: branchSales.VRSNB.revenue, color: 'bg-blue-500', qty: `${branchSales.VRSNB.qty} items` },
+            { label: 'SNB', value: branchSales.SNB.revenue, color: 'bg-amber-500', qty: `${branchSales.SNB.qty} items` },
+            { label: 'Hosur', value: branchSales.Hosur.revenue, color: 'bg-purple-500', qty: `${branchSales.Hosur.qty} items` },
           ].map(row => (
-            <div key={row.label} className="flex items-center gap-3">
-              <span className="text-sm font-body w-24 shrink-0">{row.label}</span>
-              <div className="flex-1 bg-muted rounded-full h-3">
-                <div className={cn('h-full rounded-full transition-all', row.color)} style={{ width: `${Math.round((row.value / row.max) * 100)}%` }} />
+            <div key={row.label}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-body font-medium">{row.label}</span>
+                <div className="text-right">
+                  <span className="text-sm font-bold tabular-nums">{formatCurrency(row.value)}</span>
+                  <span className="text-[10px] text-muted-foreground ml-2">{row.qty}</span>
+                </div>
               </div>
-              <span className="text-sm font-bold tabular-nums shrink-0 w-24 text-right">{row.formatted}</span>
+              <div className="flex-1 bg-muted rounded-full h-2.5">
+                <div className={cn('h-full rounded-full transition-all', row.color)} style={{ width: `${Math.round((row.value / maxBranchRev) * 100)}%` }} />
+              </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Payment Breakdown */}
-      {payBreakdown.length > 0 && (
+      {/* Revenue Share Pie */}
+      {revShareData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4">Cafe Payment Methods</h3>
-          <div className="flex gap-4">
+          <h3 className="font-display text-base font-bold mb-4">Revenue Share</h3>
+          <div className="flex gap-4 items-center">
             <div className="flex-1">
-              <ResponsiveContainer width="100%" height={160}>
+              <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
-                  <Pie data={payBreakdown} dataKey="value" cx="50%" cy="50%" outerRadius={65} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={10}>
-                    {payBreakdown.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                  <Pie data={revShareData} dataKey="value" cx="50%" cy="50%" innerRadius={45} outerRadius={75}
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={10}>
+                    {revShareData.map((d, i) => <Cell key={i} fill={d.color} />)}
                   </Pie>
                   <Tooltip formatter={(v: number) => formatCurrency(v)} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="flex flex-col justify-center gap-2">
-              {payBreakdown.map((p, i) => (
-                <div key={p.name} className="flex items-center gap-2">
-                  <div className="size-3 rounded-full shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
+            <div className="flex flex-col justify-center gap-2.5">
+              {revShareData.map((d, i) => (
+                <div key={d.name} className="flex items-center gap-2">
+                  <div className="size-3 rounded-full shrink-0" style={{ background: d.color }} />
                   <div>
-                    <p className="text-xs font-semibold">{p.name}</p>
-                    <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(p.value)}</p>
+                    <p className="text-xs font-semibold">{d.name}</p>
+                    <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(d.value)}</p>
                   </div>
                 </div>
               ))}
@@ -202,17 +214,64 @@ function SalesOverviewTab() {
         </div>
       )}
 
-      {/* Top Cafe Items */}
+      {/* Cafe Revenue Trend */}
+      {dateRange !== 'today' && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2">
+            <TrendingUp className="size-4 text-primary" />Cafe Revenue Trend
+          </h3>
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={dailyRevenueData}>
+              <defs>
+                <linearGradient id="cafeGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
+              <Area type="monotone" dataKey="cafe" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#cafeGrad)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Payment Breakdown */}
+      {payBreakdown.length > 0 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-3">Cafe Payment Methods</h3>
+          <div className="space-y-2.5">
+            {payBreakdown.map((p, i) => {
+              const pct = cafeRevenue > 0 ? Math.round((p.value / cafeRevenue) * 100) : 0;
+              return (
+                <div key={p.name}>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-sm font-medium">{p.name}</span>
+                    <span className="text-sm font-bold tabular-nums">{formatCurrency(p.value)} <span className="text-xs text-muted-foreground font-normal">({pct}%)</span></span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full">
+                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: COLORS[i % COLORS.length] }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Top Cafe Items by Revenue */}
       {topCafeItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4">Top Cafe Items</h3>
-          <ResponsiveContainer width="100%" height={200}>
+          <h3 className="font-display text-base font-bold mb-4">Top Items by Revenue</h3>
+          <ResponsiveContainer width="100%" height={Math.max(topCafeItems.length * 32, 180)}>
             <BarChart data={topCafeItems} layout="vertical">
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-              <XAxis type="number" tick={{ fontSize: 10 }} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={80} />
-              <Tooltip />
-              <Bar dataKey="qty" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+              <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={90} />
+              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
+              <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -248,13 +307,13 @@ function AttendanceSalaryTab() {
   const branchChartData = useMemo(() => Object.entries(branchGroups).map(([branch, emps]) => ({
     branch: branch.length > 10 ? branch.slice(0, 10) + '…' : branch,
     count: emps.length,
-    totalSalary: emps.reduce((a, e) => a + e.grossSalary, 0),
+    totalSalary: emps.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0),
   })), [branchGroups]);
 
   const salaryStats = useMemo(() => {
-    const total = employees.reduce((a, e) => a + e.grossSalary, 0);
-    const advances = employees.reduce((a, e) => a + e.salaryAdvance, 0);
-    const deductions = employees.reduce((a, e) => a + e.uniformDeduction + e.otherDeduction, 0);
+    const total = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
+    const advances = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
+    const deductions = employees.reduce((a, e) => a + (Number(e.uniformDeduction) || 0) + (Number(e.otherDeduction) || 0), 0);
     const netPayable = total - advances - deductions;
     return { total, advances, deductions, netPayable };
   }, [employees]);
@@ -263,8 +322,8 @@ function AttendanceSalaryTab() {
     const map = new Map<string, { count: number; salary: number }>();
     employees.forEach(e => {
       const ex = map.get(e.department);
-      if (ex) { ex.count++; ex.salary += e.grossSalary; }
-      else map.set(e.department, { count: 1, salary: e.grossSalary });
+      if (ex) { ex.count++; ex.salary += (Number(e.grossSalary) || 0); }
+      else map.set(e.department, { count: 1, salary: (Number(e.grossSalary) || 0) });
     });
     return [...map.entries()].map(([dept, v]) => ({ dept: dept.length > 12 ? dept.slice(0, 12) + '…' : dept, ...v })).sort((a, b) => b.salary - a.salary);
   }, [employees]);
@@ -274,6 +333,12 @@ function AttendanceSalaryTab() {
       <div className="size-8 rounded-2xl bg-primary/10 animate-pulse" />
     </div>
   );
+
+  const salaryPieData = [
+    { name: 'Net Pay', value: Math.max(salaryStats.netPayable, 0) },
+    { name: 'Advances', value: salaryStats.advances },
+    { name: 'Deductions', value: salaryStats.deductions },
+  ].filter(d => d.value > 0);
 
   return (
     <div className="space-y-5">
@@ -286,41 +351,36 @@ function AttendanceSalaryTab() {
       </div>
 
       {/* Salary Breakdown Pie */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-4">Salary Breakdown</h3>
-        <div className="flex gap-4 items-center">
-          <ResponsiveContainer width="55%" height={160}>
-            <PieChart>
-              <Pie
-                data={[
-                  { name: 'Net Pay', value: Math.max(salaryStats.netPayable, 0) },
-                  { name: 'Advances', value: salaryStats.advances },
-                  { name: 'Deductions', value: salaryStats.deductions },
-                ].filter(d => d.value > 0)}
-                dataKey="value" cx="50%" cy="50%" outerRadius={65}
-              >
-                {[COLORS[0], COLORS[3], COLORS[1]].map((color, i) => <Cell key={i} fill={color} />)}
-              </Pie>
-              <Tooltip formatter={(v: number) => formatCurrency(v)} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="flex-1 space-y-2">
-            {[
-              { label: 'Net Pay', value: salaryStats.netPayable, color: COLORS[0] },
-              { label: 'Advances', value: salaryStats.advances, color: COLORS[3] },
-              { label: 'Deductions', value: salaryStats.deductions, color: COLORS[1] },
-            ].map(item => (
-              <div key={item.label} className="flex items-center gap-2">
-                <div className="size-3 rounded-full shrink-0" style={{ background: item.color }} />
-                <div>
-                  <p className="text-xs font-semibold">{item.label}</p>
-                  <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(item.value)}</p>
+      {salaryPieData.length > 0 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-4">Salary Breakdown</h3>
+          <div className="flex gap-4 items-center">
+            <ResponsiveContainer width="55%" height={160}>
+              <PieChart>
+                <Pie data={salaryPieData} dataKey="value" cx="50%" cy="50%" innerRadius={40} outerRadius={65}>
+                  {[COLORS[0], COLORS[3], COLORS[1]].map((color, i) => <Cell key={i} fill={color} />)}
+                </Pie>
+                <Tooltip formatter={(v: number) => formatCurrency(v)} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="flex-1 space-y-2">
+              {[
+                { label: 'Net Pay', value: salaryStats.netPayable, color: COLORS[0] },
+                { label: 'Advances', value: salaryStats.advances, color: COLORS[3] },
+                { label: 'Deductions', value: salaryStats.deductions, color: COLORS[1] },
+              ].map(item => (
+                <div key={item.label} className="flex items-center gap-2">
+                  <div className="size-3 rounded-full shrink-0" style={{ background: item.color }} />
+                  <div>
+                    <p className="text-xs font-semibold">{item.label}</p>
+                    <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(item.value)}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Staff by Branch */}
       {branchChartData.length > 0 && (
@@ -333,32 +393,37 @@ function AttendanceSalaryTab() {
               <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
               <XAxis dataKey="branch" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip formatter={(v: number, name: string) => [name === 'totalSalary' ? formatCurrency(v) : v, name === 'totalSalary' ? 'Salary' : 'Staff']} />
+              <Tooltip />
               <Bar dataKey="count" name="Staff Count" fill={COLORS[0]} radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       )}
 
-      {/* Salary by Branch */}
+      {/* Branch Payroll */}
       {branchChartData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-4">Branch Payroll</h3>
           <div className="space-y-3">
-            {branchChartData.map((b, i) => (
-              <div key={b.branch} className="flex items-center gap-3">
-                <span className="text-sm font-body w-20 shrink-0 truncate">{b.branch}</span>
-                <div className="flex-1 bg-muted rounded-full h-3">
-                  <div className="h-full rounded-full" style={{ width: `${Math.round((b.totalSalary / Math.max(...branchChartData.map(x => x.totalSalary), 1)) * 100)}%`, background: COLORS[i % COLORS.length] }} />
+            {branchChartData.map((b, i) => {
+              const maxSal = Math.max(...branchChartData.map(x => x.totalSalary), 1);
+              return (
+                <div key={b.branch}>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-sm font-medium truncate">{b.branch}</span>
+                    <span className="text-sm font-bold tabular-nums">{formatCurrency(b.totalSalary)}</span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full">
+                    <div className="h-full rounded-full" style={{ width: `${Math.round((b.totalSalary / maxSal) * 100)}%`, background: COLORS[i % COLORS.length] }} />
+                  </div>
                 </div>
-                <span className="text-sm font-bold tabular-nums shrink-0 text-right">{formatCurrency(b.totalSalary)}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Salary by Department */}
+      {/* Department Salary */}
       {deptData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-4">Department Salary</h3>
@@ -386,8 +451,8 @@ function AttendanceSalaryTab() {
                   <p className="text-[10px] text-muted-foreground">{e.department}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-bold tabular-nums">{formatCurrency(e.grossSalary)}</p>
-                  {e.salaryAdvance > 0 && <p className="text-[10px] text-amber-600">Adv: {formatCurrency(e.salaryAdvance)}</p>}
+                  <p className="text-sm font-bold tabular-nums">{formatCurrency(Number(e.grossSalary) || 0)}</p>
+                  {e.salaryAdvance > 0 && <p className="text-[10px] text-amber-600">Adv: {formatCurrency(Number(e.salaryAdvance) || 0)}</p>}
                 </div>
               </div>
             ))}
@@ -401,7 +466,6 @@ function AttendanceSalaryTab() {
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function OwnerDashboard() {
   const [tab, setTab] = useState<'sales' | 'attendance'>('sales');
-  const { logout } = useAuthStore();
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
@@ -411,9 +475,6 @@ export default function OwnerDashboard() {
             <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Owner Portal</p>
             <h1 className="font-display text-3xl font-bold text-foreground leading-none">Overview</h1>
           </div>
-          <button onClick={logout} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-xl border border-border hover:bg-muted transition-all">
-            <LogOut className="size-3.5" />Logout
-          </button>
         </div>
       </div>
 
@@ -433,3 +494,4 @@ export default function OwnerDashboard() {
     </div>
   );
 }
+

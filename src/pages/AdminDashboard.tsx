@@ -10,6 +10,12 @@ import {
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
 import { BRANCHES } from '@/branch/types';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
+} from 'recharts';
+
+const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function downloadCSV(rows: string[][], filename: string) {
@@ -259,73 +265,105 @@ function BakeryDashboardTab() {
     return BRANCHES.map(branch => {
       const todaySales = (sales[branch] || []).filter(s => new Date(s.soldAt).toDateString() === today);
       const totalQty = todaySales.reduce((a, s) => a + s.quantitySold, 0);
+      const totalRevenue = todaySales.reduce((a, s) => {
+        const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
+        return a + unitPrice * s.quantitySold;
+      }, 0);
       const stockCount = (stock[branch] || []).length;
       const lowStock = (stock[branch] || []).filter(s => s.quantity <= s.minThreshold).length;
-      return { branch, totalQty, stockCount, lowStock, salesCount: todaySales.length };
+      return { branch, totalQty, totalRevenue, stockCount, lowStock, salesCount: todaySales.length };
     });
   }, [sales, stock, today]);
 
+  const totalRevenue = branchStats.reduce((a, b) => a + b.totalRevenue, 0);
+  const totalQty = branchStats.reduce((a, b) => a + b.totalQty, 0);
+
   const allTodaySales = useMemo(() => {
-    const map = new Map<string, number>();
+    const map = new Map<string, { qty: number; revenue: number }>();
     BRANCHES.forEach(branch => {
       (sales[branch] || [])
         .filter(s => new Date(s.soldAt).toDateString() === today)
-        .forEach(s => { map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold); });
+        .forEach(s => {
+          const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
+          const ex = map.get(s.itemName);
+          if (ex) { ex.qty += s.quantitySold; ex.revenue += unitPrice * s.quantitySold; }
+          else map.set(s.itemName, { qty: s.quantitySold, revenue: unitPrice * s.quantitySold });
+        });
     });
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8);
   }, [sales, today]);
 
-  const BRANCH_COLORS: Record<Branch, string> = {
+  const BRANCH_PILL: Record<Branch, string> = {
     VRSNB: 'bg-blue-50 border-blue-200 text-blue-700',
     SNB: 'bg-amber-50 border-amber-200 text-amber-700',
     Hosur: 'bg-emerald-50 border-emerald-200 text-emerald-700',
   };
 
+  const barData = branchStats.map(b => ({ branch: b.branch, revenue: b.totalRevenue, qty: b.totalQty }));
+  const maxRev = Math.max(...branchStats.map(b => b.totalRevenue), 1);
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        {branchStats.map(({ branch, totalQty, lowStock }) => (
-          <div key={branch} className={cn('border rounded-xl p-3 text-center', BRANCH_COLORS[branch])}>
-            <p className="font-display text-lg font-bold tabular-nums">{totalQty}</p>
-            <p className="text-[10px] font-semibold uppercase">{branch}</p>
-            {lowStock > 0 && (
-              <p className="text-[9px] mt-0.5 font-medium text-red-600">⚠ {lowStock} low</p>
-            )}
+      {/* KPI Row */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-card border border-border rounded-xl p-4 col-span-2">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Today's Total Revenue</p>
+          <p className="font-display text-3xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+          <p className="text-xs text-muted-foreground mt-1">{totalQty} items sold across {BRANCHES.length} branches</p>
+        </div>
+        {branchStats.map(b => (
+          <div key={b.branch} className={cn('border rounded-xl p-3', BRANCH_PILL[b.branch as Branch])}>
+            <p className="text-[10px] font-bold uppercase tracking-wide mb-1">{b.branch}</p>
+            <p className="font-display text-xl font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</p>
+            <p className="text-[10px] mt-0.5 opacity-80">{b.totalQty} items · {b.salesCount} txns</p>
+            {b.lowStock > 0 && <p className="text-[9px] mt-0.5 font-medium text-red-600">⚠ {b.lowStock} low stock</p>}
           </div>
         ))}
       </div>
 
+      {/* Branch Revenue Bar Chart */}
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">Today's Branch Summary</h3>
-        <div className="space-y-2">
-          {branchStats.map(({ branch, totalQty, salesCount, stockCount, lowStock }) => (
-            <div key={branch} className="flex items-center justify-between py-1.5 border-b last:border-0">
-              <div>
-                <p className="text-sm font-semibold">{branch}</p>
-                <p className="text-xs text-muted-foreground">{salesCount} transactions · {stockCount} items in stock</p>
+        <h3 className="font-display text-base font-bold mb-1">Branch Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">Today's revenue by branch</p>
+        <div className="space-y-3">
+          {branchStats.map((b, i) => (
+            <div key={b.branch}>
+              <div className="flex justify-between mb-1">
+                <span className="text-sm font-medium">{b.branch}</span>
+                <div className="text-right">
+                  <span className="text-sm font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</span>
+                  <span className="text-[10px] text-muted-foreground ml-2">{b.totalQty} items</span>
+                </div>
               </div>
-              <div className="text-right">
-                <p className="text-sm font-bold tabular-nums">{totalQty} sold</p>
-                {lowStock > 0 && <p className="text-[10px] text-red-600">⚠ {lowStock} low stock</p>}
+              <div className="h-2.5 bg-muted rounded-full">
+                <div className="h-full rounded-full transition-all" style={{
+                  width: `${Math.round((b.totalRevenue / maxRev) * 100)}%`,
+                  background: CHART_COLORS[i],
+                }} />
               </div>
             </div>
           ))}
         </div>
       </div>
 
+      {/* Top Items */}
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">Top Items (All Branches)</h3>
+        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-3">Today · all branches</p>
         {allTodaySales.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">No sales today</p>
         ) : (
           <div className="space-y-2">
-            {allTodaySales.map(([item, qty], i) => (
+            {allTodaySales.map(([item, v], i) => (
               <div key={item} className="flex items-center gap-3">
                 <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
                   i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground'
                 )}>{i + 1}</span>
                 <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <span className="text-sm font-bold tabular-nums">{qty}</span>
+                <div className="text-right">
+                  <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
+                  <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
+                </div>
               </div>
             ))}
           </div>
@@ -334,6 +372,7 @@ function BakeryDashboardTab() {
     </div>
   );
 }
+
 
 // ─── BAKERY SALES TAB ────────────────────────────────────────────────────────
 function BakerySalesTab() {
@@ -347,9 +386,12 @@ function BakerySalesTab() {
   }, [fetchBranchData]);
 
   const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string }> = [];
+    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
     BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({ ...s, branch }));
+      (sales[branch] || []).forEach(s => result.push({
+        ...s, branch,
+        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+      }));
     });
     return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
   }, [sales]);
@@ -365,30 +407,26 @@ function BakerySalesTab() {
     });
   }, [allSales, filterBranch, filterItem, filterDate]);
 
+  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
+  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
-
     const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
       if (!data.length) return;
       const keys = Object.keys(data[0]);
       ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
     };
-
     const rows = filtered.map((s, i) => ({
-      'S.No':        i + 1,
-      'Branch':      s.branch,
-      'Item':        s.itemName,
-      'Qty Sold':    s.quantitySold,
-      'Sold At':     new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By':     s.soldBy,
-      'Payment':     (s as typeof s & { paymentMethod?: string | null }).paymentMethod || '-',
+      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
+      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
+      'Revenue': s.unitPrice * s.quantitySold,
+      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      'Sold By': s.soldBy,
+      'Payment': (s as typeof s & { paymentMethod?: string | null }).paymentMethod || '-',
     }));
-
-    const ws = rows.length > 0
-      ? XLSX.utils.json_to_sheet(rows)
-      : XLSX.utils.json_to_sheet([{ Note: 'No sales match selected filters' }]);
+    const ws = rows.length > 0 ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.json_to_sheet([{ Note: 'No sales match selected filters' }]);
     if (rows.length > 0) autoWidth(ws, rows);
-
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Bakery Sales');
     XLSX.writeFile(wb, `BakerySales_${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -402,71 +440,84 @@ function BakerySalesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Filter className="size-4 text-muted-foreground" />
-          <h3 className="font-semibold text-sm">Filters</h3>
+      {/* Summary KPIs */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
+          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <select
-            value={filterBranch}
-            onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2"
-          >
-            <option value="all">All Branches</option>
-            {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-          </select>
-          <select
-            value={filterItem}
-            onChange={e => setFilterItem(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background"
-          >
-            <option value="">All Items</option>
-            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
-          </select>
-          <input
-            type="date"
-            value={filterDate}
-            onChange={e => setFilterDate(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background"
-          />
-        </div>
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">{filtered.length} records</p>
-          <button
-            onClick={handleDownload}
-            className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"
-          >
-            <Download className="size-3" />Excel
-          </button>
+        <div className="bg-card border border-border rounded-xl p-3">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
+          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
         </div>
       </div>
 
+      {/* Filters */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Filter className="size-4 text-muted-foreground" />
+            <h3 className="font-semibold text-sm">Filters</h3>
+          </div>
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
+            <Download className="size-3" />Excel
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
+            className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
+            <option value="all">All Branches</option>
+            {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+          <select value={filterItem} onChange={e => setFilterItem(e.target.value)}
+            className="border rounded-lg px-2 py-1.5 text-sm bg-background">
+            <option value="">All Items</option>
+            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
+          </select>
+          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)}
+            className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
+        </div>
+        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
+      </div>
+
+      {/* Sales List */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales match your filters.</p>
         ) : (
           <div className="divide-y">
-            {filtered.slice(0, 50).map(s => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-medium">{s.itemName}</p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_PILL[s.branch])}>{s.branch}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    </span>
+            {filtered.slice(0, 50).map(s => {
+              const lineRevenue = s.unitPrice * s.quantitySold;
+              return (
+                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{s.itemName}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_PILL[s.branch])}>{s.branch}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right ml-2 shrink-0">
+                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRevenue)}</p>
+                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
                   </div>
                 </div>
-                <span className="text-sm font-bold tabular-nums text-blue-600">×{s.quantitySold}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+
+  useEffect(() => {
+    BRANCHES.forEach(b => fetchBranchData(b));
+  }, [fetchBranchData]);
+
 
 // ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
 function CafeReportsTab() {
@@ -521,11 +572,29 @@ function CafeReportsTab() {
     return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
   }, [served]);
 
-  const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+  const topItemsByRevenue = useMemo(() =>
+    [...topItems].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
+      .map(i => ({ name: i.name.length > 14 ? i.name.slice(0, 14) + '…' : i.name, revenue: i.revenue, qty: i.qty })),
+    [topItems]);
 
-  const handleDownload = async () => {
+  const dailyRevenue = useMemo(() => {
+    const days = Math.max(1, Math.round((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86400000) + 1);
+    if (days > 31) return [];
+    const result = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(dateFrom);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toDateString();
+      const rev = served.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
+      result.push({ date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), revenue: rev });
+    }
+    return result;
+  }, [served, dateFrom, dateTo]);
+
+  const orderTypeData = [
+    { name: 'Dine In', value: dineInCount },
+    { name: 'Takeaway', value: takeawayCount },
+  ].filter(d => d.value > 0); = async () => {
     const XLSX = await import('xlsx');
 
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
@@ -790,26 +859,92 @@ function CafeReportsTab() {
         })()}
       </div>
 
+      {/* Daily Revenue Chart */}
+      {dailyRevenue.length > 1 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-1">Daily Revenue Trend</h3>
+          <p className="text-[10px] text-muted-foreground mb-4">{rangeLabel}</p>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={dailyRevenue}>
+              <defs>
+                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
+              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
+              <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#revGrad)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Order Type Split */}
+      {orderTypeData.length > 0 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-3">Order Type Split</h3>
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              <ResponsiveContainer width="100%" height={120}>
+                <PieChart>
+                  <Pie data={orderTypeData} dataKey="value" cx="50%" cy="50%" innerRadius={30} outerRadius={50}
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={9}>
+                    <Cell fill={CHART_COLORS[0]} />
+                    <Cell fill={CHART_COLORS[2]} />
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="space-y-2">
+              {orderTypeData.map((d, i) => (
+                <div key={d.name} className="flex items-center gap-2">
+                  <div className="size-3 rounded-full" style={{ background: CHART_COLORS[i === 0 ? 0 : 2] }} />
+                  <div>
+                    <p className="text-xs font-semibold">{d.name}</p>
+                    <p className="text-xs text-muted-foreground">{d.value} orders</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top items */}
       <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">Top Selling Items</h3>
-        {topItems.length === 0 ? (
+        <h3 className="font-display text-base font-bold text-foreground mb-1">Top Items by Revenue</h3>
+        <p className="text-[10px] text-muted-foreground mb-4">Revenue · sales quantity shown alongside</p>
+        {topItemsByRevenue.length === 0 ? (
           <p className="text-sm font-body text-muted-foreground text-center py-4">No sales in this range</p>
         ) : (
-          <div className="space-y-2">
-            {topItems.map((item, i) => (
-              <div key={item.name} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                  i === 0 ? 'gold-gradient text-white' : i < 3 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-                )}>{i + 1}</span>
-                <div className="flex-1 min-w-0"><p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p></div>
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-body font-bold tabular-nums">{item.qty} sold</p>
-                  <p className="text-[10px] font-body text-muted-foreground tabular-nums">{formatCurrency(item.revenue)}</p>
+          <>
+            <ResponsiveContainer width="100%" height={Math.max(topItemsByRevenue.length * 30, 150)}>
+              <BarChart data={topItemsByRevenue} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
+                <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
+                <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
+                <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="space-y-1.5 mt-3">
+              {topItems.slice(0, 5).map((item, i) => (
+                <div key={item.name} className="flex items-center gap-3">
+                  <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
+                    i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
+                  <p className="flex-1 text-xs font-medium truncate">{item.name}</p>
+                  <div className="text-right shrink-0">
+                    <p className="text-xs font-bold text-primary tabular-nums">{formatCurrency(item.revenue)}</p>
+                    <p className="text-[10px] text-muted-foreground">{item.qty} sold</p>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -865,9 +1000,12 @@ function BakeryReportsTab() {
   }, [fetchBranchData]);
 
   const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string }> = [];
+    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
     BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({ ...s, branch }));
+      (sales[branch] || []).forEach(s => result.push({
+        ...s, branch,
+        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
+      }));
     });
     return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
   }, [sales]);
@@ -884,18 +1022,29 @@ function BakeryReportsTab() {
   }, [allSales, dateFrom, dateTo, filterBranch]);
 
   const itemReport = useMemo(() => {
-    const map = new Map<string, number>();
-    rangeSales.forEach(s => { map.set(s.itemName, (map.get(s.itemName) || 0) + s.quantitySold); });
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const map = new Map<string, { qty: number; revenue: number }>();
+    rangeSales.forEach(s => {
+      const ex = map.get(s.itemName);
+      const rev = s.unitPrice * s.quantitySold;
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
+      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
   }, [rangeSales]);
 
   const branchReport = useMemo(() => {
-    const map = new Map<Branch, number>();
-    rangeSales.forEach(s => { map.set(s.branch, (map.get(s.branch) || 0) + s.quantitySold); });
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+    const map = new Map<Branch, { qty: number; revenue: number }>();
+    rangeSales.forEach(s => {
+      const ex = map.get(s.branch);
+      const rev = s.unitPrice * s.quantitySold;
+      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
+      else map.set(s.branch, { qty: s.quantitySold, revenue: rev });
+    });
+    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
   }, [rangeSales]);
 
-  const totalQty = itemReport.reduce((a, [, q]) => a + q, 0);
+  const totalRevenue = itemReport.reduce((a, [, v]) => a + v.revenue, 0);
+  const totalQty = itemReport.reduce((a, [, v]) => a + v.qty, 0);
 
   const rangeLabel = dateFrom === dateTo
     ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -910,56 +1059,55 @@ function BakeryReportsTab() {
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-
     const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
       if (!data.length) return;
       const keys = Object.keys(data[0]);
       ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
     };
-
     const addSheet = (wb: ReturnType<typeof XLSX.utils.book_new>, data: Record<string, unknown>[], name: string, fallback: string) => {
       const rows = data.length > 0 ? data : [{ Note: fallback }];
       const ws = XLSX.utils.json_to_sheet(rows);
       if (data.length > 0) autoWidth(ws, data);
       XLSX.utils.book_append_sheet(wb, ws, name);
     };
-
     const summaryRows = [
-      { 'Metric': 'Period',         'Value': `${dateFrom} to ${dateTo}` },
-      { 'Metric': 'Branch Filter',  'Value': filterBranch },
-      { 'Metric': 'Transactions',   'Value': rangeSales.length },
+      { 'Metric': 'Period', 'Value': `${dateFrom} to ${dateTo}` },
+      { 'Metric': 'Branch Filter', 'Value': filterBranch },
+      { 'Metric': 'Transactions', 'Value': rangeSales.length },
+      { 'Metric': 'Total Revenue', 'Value': formatCurrency(totalRevenue) },
       { 'Metric': 'Total Qty Sold', 'Value': totalQty },
     ];
-
-    const itemSummaryRows = itemReport.map(([item, qty], i) => ({
-      'Rank': i + 1, 'Item': item, 'Total Qty Sold': qty,
+    const itemRows = itemReport.map(([item, v], i) => ({ 'Rank': i + 1, 'Item': item, 'Revenue': v.revenue, 'Qty Sold': v.qty }));
+    const branchRows = branchReport.map(([branch, v]) => ({
+      'Branch': branch, 'Revenue': v.revenue, 'Qty Sold': v.qty,
+      'Revenue Share %': totalRevenue > 0 ? `${Math.round((v.revenue / totalRevenue) * 100)}%` : '0%',
     }));
-
-    const branchSummaryRows = branchReport.map(([branch, qty]) => ({
-      'Branch': branch, 'Total Qty Sold': qty,
-      'Share %': totalQty > 0 ? `${Math.round((qty / totalQty) * 100)}%` : '0%',
-    }));
-
     const txRows = rangeSales.map((s, i) => ({
-      'S.No':     i + 1,
-      'Branch':   s.branch,
-      'Item':     s.itemName,
-      'Qty Sold': s.quantitySold,
-      'Sold At':  new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By':  s.soldBy,
-      'Payment':  (s as typeof s & { paymentMethod?: string | null }).paymentMethod || '-',
+      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
+      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
+      'Revenue': s.unitPrice * s.quantitySold,
+      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      'Sold By': s.soldBy,
     }));
-
     const wb = XLSX.utils.book_new();
-    addSheet(wb, summaryRows,       'Summary',      'No data');
-    addSheet(wb, itemSummaryRows,   'Item-wise',    'No sales for this range');
-    addSheet(wb, branchSummaryRows, 'Branch-wise',  'No sales for this range');
-    addSheet(wb, txRows,            'Transactions', 'No transactions');
+    addSheet(wb, summaryRows, 'Summary', 'No data');
+    addSheet(wb, itemRows, 'Item-wise', 'No sales for this range');
+    addSheet(wb, branchRows, 'Branch-wise', 'No sales for this range');
+    addSheet(wb, txRows, 'Transactions', 'No transactions');
     XLSX.writeFile(wb, `BakeryReport_${dateLabel}.xlsx`);
   };
 
   return (
     <div className="space-y-4">
+      {/* Revenue KPIs */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 col-span-2">
+          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Revenue</p>
+          <p className="font-display text-2xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
+          <p className="text-xs text-muted-foreground mt-1">{totalQty} items · {rangeSales.length} transactions · {rangeLabel}</p>
+        </div>
+      </div>
+
       {/* Filters */}
       <div className="bg-card border border-border rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -971,11 +1119,8 @@ function BakeryReportsTab() {
             <Download className="size-3" />Excel
           </button>
         </div>
-        <select
-          value={filterBranch}
-          onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-          className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background"
-        >
+        <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
+          className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background">
           <option value="all">All Branches</option>
           {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
         </select>
@@ -989,23 +1134,15 @@ function BakeryReportsTab() {
             <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
-          {' · '}{rangeSales.length} transactions · {totalQty} units
-        </p>
       </div>
 
-      {/* Item / Branch toggle + summary */}
+      {/* Item / Branch Report */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/40 flex items-center gap-2">
           {(['item', 'branch'] as const).map(r => (
-            <button
-              key={r} onClick={() => setReportType(r)}
-              className={cn(
-                'text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
-                reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-              )}
-            >
+            <button key={r} onClick={() => setReportType(r)}
+              className={cn('text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
+                reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
               {r}-wise
             </button>
           ))}
@@ -1017,21 +1154,24 @@ function BakeryReportsTab() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-xs text-muted-foreground">
+                  <tr className="text-xs text-muted-foreground border-b">
                     <th className="text-left py-1.5">Item</th>
-                    <th className="text-right py-1.5">Qty Sold</th>
+                    <th className="text-right py-1.5 text-primary font-semibold">Revenue</th>
+                    <th className="text-right py-1.5">Qty</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {itemReport.map(([item, qty]) => (
+                  {itemReport.map(([item, v]) => (
                     <tr key={item}>
-                      <td className="py-2">{item}</td>
-                      <td className="py-2 text-right font-semibold">{qty}</td>
+                      <td className="py-2 text-sm">{item}</td>
+                      <td className="py-2 text-right font-bold text-primary tabular-nums">{formatCurrency(v.revenue)}</td>
+                      <td className="py-2 text-right text-muted-foreground tabular-nums text-xs">{v.qty}</td>
                     </tr>
                   ))}
                   <tr className="font-bold border-t-2">
                     <td className="py-2">Total</td>
-                    <td className="py-2 text-right">{totalQty}</td>
+                    <td className="py-2 text-right text-primary">{formatCurrency(totalRevenue)}</td>
+                    <td className="py-2 text-right text-muted-foreground text-xs">{totalQty}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1041,13 +1181,16 @@ function BakeryReportsTab() {
               <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
             ) : (
               <div className="space-y-3 py-2">
-                {branchReport.map(([branch, qty]) => {
-                  const pct = totalQty > 0 ? Math.round((qty / totalQty) * 100) : 0;
+                {branchReport.map(([branch, v]) => {
+                  const pct = totalRevenue > 0 ? Math.round((v.revenue / totalRevenue) * 100) : 0;
                   return (
-                    <div key={branch} className="space-y-1">
-                      <div className="flex justify-between text-sm">
+                    <div key={branch} className="space-y-1.5">
+                      <div className="flex justify-between">
                         <span className={cn('px-2 py-0.5 rounded text-xs font-semibold', BRANCH_COLORS[branch as Branch])}>{branch}</span>
-                        <span className="font-bold">{qty} ({pct}%)</span>
+                        <div className="text-right">
+                          <span className="text-sm font-bold text-primary">{formatCurrency(v.revenue)}</span>
+                          <span className="text-[10px] text-muted-foreground ml-2">{v.qty} items ({pct}%)</span>
+                        </div>
                       </div>
                       <div className="h-2 bg-muted rounded-full">
                         <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
@@ -1056,7 +1199,8 @@ function BakeryReportsTab() {
                   );
                 })}
                 <div className="flex justify-between text-sm font-bold border-t pt-2 mt-1">
-                  <span>Total</span><span>{totalQty}</span>
+                  <span>Total</span>
+                  <span className="text-primary">{formatCurrency(totalRevenue)}</span>
                 </div>
               </div>
             )
@@ -1074,27 +1218,43 @@ function BakeryReportsTab() {
           <p className="text-center text-sm text-muted-foreground py-8">No transactions in this range.</p>
         ) : (
           <div className="divide-y max-h-96 overflow-y-auto">
-            {rangeSales.slice(0, 100).map(s => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-medium">{s.itemName}</p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_COLORS[s.branch])}>{s.branch}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">· {s.soldBy}</span>
+            {rangeSales.slice(0, 100).map(s => {
+              const lineRev = s.unitPrice * s.quantitySold;
+              return (
+                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                  <div>
+                    <p className="text-sm font-medium">{s.itemName}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_COLORS[s.branch])}>{s.branch}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">· {s.soldBy}</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
+                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
                   </div>
                 </div>
-                <span className="text-sm font-bold tabular-nums text-blue-600">×{s.quantitySold}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+
+  const todayISO = new Date().toISOString().split('T')[0];
+  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateTo, setDateTo] = useState(todayISO);
+
+  useEffect(() => {
+    BRANCHES.forEach(b => fetchBranchData(b));
+  }, [fetchBranchData]);
+
 
 // ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
 function BakeryView() {
