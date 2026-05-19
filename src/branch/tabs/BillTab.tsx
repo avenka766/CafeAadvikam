@@ -1723,22 +1723,31 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       {cart.length > 0 && (
         <div className="bg-card border rounded-2xl overflow-hidden shadow-lg">
 
-          {/* Bill header */}
-          <div className="flex items-center justify-between px-4 py-3 bg-zinc-900">
-            <div className="flex items-center gap-2">
-              <Receipt className="size-4 text-amber-400" />
-              <span className="font-semibold text-sm text-white">Bill</span>
-              <span className="text-[10px] font-mono text-zinc-400">{billNo.current}</span>
+          {/* Bill header — improved with revenue highlight */}
+          <div className="px-4 py-3 bg-zinc-900">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Receipt className="size-4 text-amber-400" />
+                <span className="font-semibold text-sm text-white">Bill</span>
+                <span className="text-[10px] font-mono text-zinc-400">{billNo.current}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', colors.badge)}>
+                  {cart.length} {cart.length === 1 ? 'item' : 'items'}
+                </span>
+                <button onClick={() => setShowCancel(true)}
+                  className="flex items-center gap-1 text-[11px] font-semibold text-red-400 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1 rounded-lg transition">
+                  <XCircle className="size-3" /> Cancel
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', colors.badge)}>
-                {cart.length} {cart.length === 1 ? 'item' : 'items'}
-              </span>
-              <button onClick={() => setShowCancel(true)}
-                className="flex items-center gap-1 text-[11px] font-semibold text-red-400 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1 rounded-lg transition">
-                <XCircle className="size-3" /> Cancel
-              </button>
-            </div>
+            {/* Revenue preview in header */}
+            {allPriced && (
+              <div className="flex items-center justify-between bg-white/10 rounded-xl px-3 py-2">
+                <span className="text-xs text-zinc-300">Total Revenue</span>
+                <span className="font-display text-lg font-bold text-amber-400 tabular-nums">{fmt(subtotal)}</span>
+              </div>
+            )}
           </div>
 
           {/* Line items */}
@@ -1809,16 +1818,21 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
             {/* Grand total */}
             <div className={cn('flex items-center justify-between rounded-xl px-4 py-3',
-              allPriced ? 'bg-primary/5 border border-primary/10' : 'bg-amber-50 border border-amber-100')}>
+              allPriced ? 'bg-primary text-primary-foreground' : 'bg-amber-50 border border-amber-100')}>
               <div className="flex items-center gap-2">
-                <IndianRupee className="size-3.5 text-muted-foreground" />
-                <span className="text-sm font-bold">
-                  {isSNB ? 'Net Bill Amount' : 'Total'}
-                  {discount > 0 && <span className="text-[10px] font-normal text-emerald-600 ml-1">(after discount)</span>}
-                </span>
+                <IndianRupee className={cn('size-3.5', allPriced ? 'text-primary-foreground/70' : 'text-muted-foreground')} />
+                <div>
+                  <p className={cn('text-sm font-bold', allPriced ? 'text-primary-foreground' : 'text-foreground')}>
+                    {isSNB ? 'Net Bill Amount' : 'Total Revenue'}
+                    {discount > 0 && <span className="text-[10px] font-normal opacity-70 ml-1">(after discount)</span>}
+                  </p>
+                  {discount > 0 && allPriced && (
+                    <p className="text-[10px] opacity-70 line-through tabular-nums">{fmt(subtotal)}</p>
+                  )}
+                </div>
               </div>
               {allPriced
-                ? <span className="font-display text-2xl font-bold tabular-nums">{fmt(finalTotal)}</span>
+                ? <span className="font-display text-3xl font-bold tabular-nums">{fmt(finalTotal)}</span>
                 : <span className="text-xs text-amber-600 font-medium">⚠ Enter prices above</span>}
             </div>
 
