@@ -11,6 +11,7 @@ import { BRANCHES } from './types';
 import type { Branch, PreparedItem } from './types';
 import { kgToPcs } from './itemMatcher';
 import { cn } from '@/lib/utils';
+import { useNotificationStore } from './notificationStore';
 
 interface PackedEntry {
   itemId:       string;
@@ -141,6 +142,63 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
     setDispatchError(null);
     try {
       await submitDispatch(order.id, { itemName, quantity: qty, unit: unit ?? 'kg', branch, dispatchedAt: new Date().toISOString(), dispatchedBy: currentUser.displayName });
+
+      // ── Shortfall check ──────────────────────────────────────────────────
+      // After this dispatch, recalculate totals for every item.
+      // If all items are now fully dispatched (available ≤ 0) but any item
+      // had less dispatched than what the baker prepared, notify admin.
+      const updatedDispatchLog = [
+        ...(order.dispatchLog ?? []),
+        { itemName, quantity: qty, unit: unit ?? 'kg', branch, dispatchedAt: new Date().toISOString(), dispatchedBy: currentUser.displayName, id: '_tmp' },
+      ];
+
+      const shortfalls: { itemName: string; prepared: number; dispatched: number; unit: string }[] = [];
+
+      for (const p of preparedItems) {
+        const entry       = packedEntries.find(e => e.itemId === p.itemId);
+        const isPcs       = entry?.dispatchUnit === 'pcs';
+        const effectiveQty = isPcs && entry?.confirmedPcs != null ? entry.confirmedPcs : p.quantityPrepared;
+        const totalDispatched = updatedDispatchLog
+          .filter(d => d.itemName === p.itemName)
+          .reduce((s, d) => s + d.quantity, 0);
+
+        if (totalDispatched < effectiveQty - 0.001) {         // more than 0 left undispatched
+          shortfalls.push({
+            itemName: p.itemName,
+            prepared: effectiveQty,
+            dispatched: totalDispatched,
+            unit: isPcs ? 'pcs' : 'kg',
+          });
+        }
+      }
+
+      // Only fire the notification when ALL items are now dispatched (i.e. this is the final dispatch)
+      // and there are still shortfalls — meaning packing closed out with less than what was prepared.
+      const allNowDispatched = preparedItems.every(p => {
+        const totalD = updatedDispatchLog
+          .filter(d => d.itemName === p.itemName)
+          .reduce((s, d) => s + d.quantity, 0);
+        const entry = packedEntries.find(e => e.itemId === p.itemId);
+        const isPcs = entry?.dispatchUnit === 'pcs';
+        const effective = isPcs && entry?.confirmedPcs != null ? entry.confirmedPcs : p.quantityPrepared;
+        return totalD >= effective - 0.001;
+      });
+
+      if (allNowDispatched && shortfalls.length > 0) {
+        await useNotificationStore.getState().pushPackingDiscrepancy(
+          order.id,
+          order.orderNumber ?? order.id,
+          branch,
+          shortfalls.map(s => ({
+            itemName: s.itemName,
+            dispatched: s.dispatched,
+            requested: s.prepared,   // "requested" here = what baker prepared = what packing should have sent
+            unit: s.unit,
+          })),
+        );
+      }
+      // ────────────────────────────────────────────────────────────────────
+
     } catch {
       setDispatchError('Dispatch failed — please try again.');
     } finally {

@@ -5,7 +5,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -18,6 +18,8 @@ import {
   type StockUnit, type StockItem,
 } from './storeStockStore';
 import { useSupplierStore, type Supplier } from './supplierStore';
+import InvoiceTab from './InvoiceTab';
+import { useInvoiceStore } from './invoiceStore';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -810,10 +812,14 @@ export default function StoreDashboard() {
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers'>('orders');
+  const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices'>('orders');
 
-  const pending  = orders.filter(o => o.status === 'pending');
-  const lowStock = stockItems.filter(i => i.quantity <= i.minThreshold);
+  useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
+
+  const pending    = orders.filter(o => o.status === 'pending');
+  const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
+  const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-28">
@@ -828,6 +834,7 @@ export default function StoreDashboard() {
             { id: 'orders',    label: 'Orders',    icon: Package,   badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
             { id: 'inventory', label: 'Inventory', icon: Warehouse, badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
             { id: 'suppliers', label: 'Suppliers', icon: Truck,     badge: null, badgeColor: '' },
+            { id: 'invoices',  label: 'Invoices',  icon: FileText,  badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
@@ -845,6 +852,7 @@ export default function StoreDashboard() {
         {tab === 'orders'    && <OrdersTab />}
         {tab === 'inventory' && <StoreInventoryTab />}
         {tab === 'suppliers' && <SuppliersTab />}
+        {tab === 'invoices'  && <InvoiceTab />}
       </div>
     </div>
   );
