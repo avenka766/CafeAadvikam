@@ -2,20 +2,22 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Store, Calculator, ChevronDown, ChevronUp, ArrowRight,
-  Loader2, CheckCircle2, Package, Scale, Hash,
+  Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
-  Search, X, Check, RefreshCw, Download, Flame,
+  Search, X, Check, RefreshCw, Flame,
+  Printer, Truck, Mail, MapPin, ShoppingBag,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { RECIPE_DEFINITIONS, calculateMaterials } from './recipeDefinitions';
 import { resolveRecipeKey } from './itemMatcher';
-import type { BakeryOrder, BakeryOrderItem } from './types';
+import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
 import {
   useStoreStockStore, getAllRecipeMaterials, normaliseName,
   type StockUnit, type StockItem,
 } from './storeStockStore';
+import { useSupplierStore, type Supplier } from './supplierStore';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -34,6 +36,77 @@ function mat(order: BakeryOrder) {
     }
   }
   return allMats;
+}
+
+// ─── Print helper ─────────────────────────────────────────────────────────────
+function printRecipe(order: BakeryOrder, calculatedMats: { material: string; quantity: number; unit: string }[]) {
+  const printWindow = window.open('', '_blank', 'width=400,height=600');
+  if (!printWindow) return;
+
+  const itemsHtml = order.items.map(item => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">${item.itemName}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
+        ${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}
+      </td>
+    </tr>
+  `).join('');
+
+  const matsHtml = calculatedMats.map(m => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">${m.material}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
+        ${m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} ${m.unit}
+      </td>
+    </tr>
+  `).join('');
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Order #${order.orderNumber} – Recipe Sheet</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1a1a1a; padding: 24px; }
+        h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
+        .sub { color: #666; font-size: 11px; margin-bottom: 16px; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 100px; font-size: 10px; font-weight: 700; background: #fef3c7; color: #92400e; margin-left: 6px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        thead th { text-align: left; padding: 6px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #888; border-bottom: 2px solid #e5e7eb; }
+        thead th:last-child { text-align: right; }
+        section h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 8px; }
+        .footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 10px; color: #aaa; text-align: center; }
+      </style>
+    </head>
+    <body>
+      <h1>Order #${order.orderNumber}${order.targetBranch ? `<span class="badge">${order.targetBranch}</span>` : ''}</h1>
+      <p class="sub">Printed: ${new Date().toLocaleString('en-IN')}</p>
+
+      <section>
+        <h2>Items</h2>
+        <table>
+          <thead><tr><th>Item</th><th>Qty</th></tr></thead>
+          <tbody>${itemsHtml}</tbody>
+        </table>
+      </section>
+
+      ${calculatedMats.length > 0 ? `
+      <section>
+        <h2>Raw Materials Required</h2>
+        <table>
+          <thead><tr><th>Material</th><th>Quantity</th></tr></thead>
+          <tbody>${matsHtml}</tbody>
+        </table>
+      </section>` : ''}
+
+      <div class="footer">Cafe Aadvikam · Store Recipe Sheet</div>
+    </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => { printWindow.print(); }, 300);
 }
 
 // ─── Stock Units ──────────────────────────────────────────────────────────────
@@ -187,6 +260,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
             </div>
           )}
 
+          {/* Print button — shown when mats are expanded */}
+          {hasMats && showMats && (
+            <button
+              onClick={() => printRecipe(order, calculatedMats)}
+              className="w-full h-10 rounded-xl border border-primary/30 bg-primary/5 text-primary text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98] hover:bg-primary/10 transition-all"
+            >
+              <Printer className="size-4" />
+              Print Recipe Sheet
+            </button>
+          )}
+
           {sendError && <p className="text-xs font-body text-destructive text-center">{sendError}</p>}
 
           <button onClick={handleSendToBaker} disabled={sending || sent}
@@ -240,7 +324,7 @@ function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: Sto
   );
 }
 
-// ─── Add modal ────────────────────────────────────────────────────────────────
+// ─── Add Stock modal ──────────────────────────────────────────────────────────
 function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string, unit: StockUnit, qty: number, min: number) => Promise<void> }) {
   const recipeMats = useMemo(() => getAllRecipeMaterials(), []);
   const { items: existingItems } = useStoreStockStore();
@@ -330,7 +414,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
   );
 }
 
-// ─── Edit modal ───────────────────────────────────────────────────────────────
+// ─── Edit Stock modal ─────────────────────────────────────────────────────────
 function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: () => void; onSave: (u: Partial<Pick<StockItem,'name'|'unit'|'quantity'|'minThreshold'>>) => Promise<void> }) {
   const [qty, setQty]   = useState(String(item.quantity));
   const [min, setMin]   = useState(String(item.minThreshold));
@@ -501,11 +585,232 @@ function OrdersTab() {
   );
 }
 
+// ─── Supplier Card ────────────────────────────────────────────────────────────
+function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEdit: (s: Supplier) => void; onDelete: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+      <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20"
+        onClick={() => setExpanded(v => !v)}>
+        <div className="size-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+          <Truck className="size-4 text-primary" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-body font-bold text-foreground truncate">{supplier.businessName}</p>
+          <p className="text-[11px] font-body text-muted-foreground truncate">{supplier.contactName} · {supplier.phone}</p>
+        </div>
+        {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
+          {supplier.email && (
+            <div className="flex items-center gap-2.5">
+              <Mail className="size-3.5 text-muted-foreground shrink-0" />
+              <span className="text-sm font-body text-foreground">{supplier.email}</span>
+            </div>
+          )}
+          {supplier.address && (
+            <div className="flex items-start gap-2.5">
+              <MapPin className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+              <span className="text-sm font-body text-foreground">{supplier.address}</span>
+            </div>
+          )}
+          {supplier.itemsSupplied && (
+            <div className="flex items-start gap-2.5">
+              <ShoppingBag className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+              <div className="flex flex-wrap gap-1">
+                {supplier.itemsSupplied.split(',').map(item => item.trim()).filter(Boolean).map(item => (
+                  <span key={item} className="text-[10px] font-body font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => onEdit(supplier)}
+              className="flex-1 h-9 rounded-xl border border-border text-xs font-body font-semibold text-foreground flex items-center justify-center gap-1.5 hover:bg-muted active:scale-[0.98]">
+              <Pencil className="size-3.5" /> Edit
+            </button>
+            <button onClick={() => onDelete(supplier.id)}
+              className="flex-1 h-9 rounded-xl border border-red-200 text-xs font-body font-semibold text-red-600 bg-red-50 flex items-center justify-center gap-1.5 hover:bg-red-100 active:scale-[0.98]">
+              <Trash2 className="size-3.5" /> Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Supplier Form Modal ──────────────────────────────────────────────────────
+interface SupplierFormData {
+  businessName: string;
+  contactName: string;
+  phone: string;
+  email: string;
+  address: string;
+  itemsSupplied: string;
+}
+
+function SupplierModal({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial?: Supplier;
+  onClose: () => void;
+  onSave: (data: SupplierFormData) => Promise<void>;
+}) {
+  const [form, setForm] = useState<SupplierFormData>({
+    businessName: initial?.businessName ?? '',
+    contactName: initial?.contactName ?? '',
+    phone: initial?.phone ?? '',
+    email: initial?.email ?? '',
+    address: initial?.address ?? '',
+    itemsSupplied: initial?.itemsSupplied ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError]   = useState('');
+
+  const set = (k: keyof SupplierFormData) => (v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleSave = async () => {
+    if (!form.businessName.trim()) { setError('Business name is required'); return; }
+    if (!form.phone.trim()) { setError('Phone number is required'); return; }
+    setSaving(true); setError('');
+    await onSave(form);
+    setSaving(false); onClose();
+  };
+
+  const Field = ({ label, field, placeholder, type = 'text' }: { label: string; field: keyof SupplierFormData; placeholder?: string; type?: string }) => (
+    <div>
+      <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">{label}</label>
+      <input type={type} value={form[field]} onChange={e => set(field)(e.target.value)} placeholder={placeholder}
+        className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-black/50" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-display font-bold text-lg text-foreground">{initial ? 'Edit Supplier' : 'Add Supplier'}</h3>
+          <button onClick={onClose} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted"><X className="size-4" /></button>
+        </div>
+
+        <Field label="Business Name *" field="businessName" placeholder="e.g. Sri Ganesh Flour Mills" />
+        <Field label="Contact Name *" field="contactName" placeholder="e.g. Ravi Kumar" />
+        <Field label="Phone *" field="phone" placeholder="e.g. 9876543210" type="tel" />
+        <Field label="Email" field="email" placeholder="e.g. info@supplier.com" type="email" />
+
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Address</label>
+          <textarea value={form.address} onChange={e => set('address')(e.target.value)}
+            placeholder="Full address…" rows={2}
+            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none" />
+        </div>
+
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Items Supplied</label>
+          <input value={form.itemsSupplied} onChange={e => set('itemsSupplied')(e.target.value)}
+            placeholder="e.g. Maida, Sugar, Salt (comma-separated)"
+            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          <p className="text-[10px] font-body text-muted-foreground mt-1">Separate items with commas</p>
+        </div>
+
+        {error && <p className="text-xs font-body text-destructive">{error}</p>}
+
+        <button onClick={handleSave} disabled={saving}
+          className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]">
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+          {initial ? 'Save Changes' : 'Add Supplier'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Suppliers Tab ────────────────────────────────────────────────────────────
+function SuppliersTab() {
+  const { suppliers, loaded, loading, load, addSupplier, updateSupplier, deleteSupplier } = useSupplierStore();
+  const [search, setSearch]         = useState('');
+  const [showAdd, setShowAdd]       = useState(false);
+  const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
+
+  useEffect(() => { if (!loaded) load(); }, [loaded]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return suppliers.filter(s =>
+      !q ||
+      s.businessName.toLowerCase().includes(q) ||
+      s.contactName.toLowerCase().includes(q) ||
+      s.itemsSupplied.toLowerCase().includes(q)
+    );
+  }, [suppliers, search]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <div className="flex-1 relative">
+          <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search suppliers or items…"
+            className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+        </div>
+        <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
+          <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
+        </button>
+        <button onClick={() => setShowAdd(true)}
+          className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
+          <Plus className="size-3.5" /> Add
+        </button>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl p-2.5 text-center">
+        <p className="font-display text-xl font-bold text-foreground">{suppliers.length}</p>
+        <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">Total Suppliers</p>
+      </div>
+
+      {loading && !loaded
+        ? <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        : filtered.length === 0
+        ? <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+            <Truck className="size-10 opacity-20" />
+            <p className="text-sm font-body">{suppliers.length === 0 ? 'No suppliers yet — tap Add to get started' : 'No matches'}</p>
+          </div>
+        : <div className="space-y-2">
+            {filtered.map(s => (
+              <SupplierCard key={s.id} supplier={s} onEdit={setEditSupplier} onDelete={deleteSupplier} />
+            ))}
+          </div>
+      }
+
+      {showAdd && (
+        <SupplierModal
+          onClose={() => setShowAdd(false)}
+          onSave={async (data) => { await addSupplier(data); }}
+        />
+      )}
+      {editSupplier && (
+        <SupplierModal
+          initial={editSupplier}
+          onClose={() => setEditSupplier(null)}
+          onSave={async (data) => { await updateSupplier(editSupplier.id, data); setEditSupplier(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function StoreDashboard() {
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
-  const [tab, setTab] = useState<'orders' | 'inventory'>('orders');
+  const { suppliers } = useSupplierStore();
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers'>('orders');
 
   const pending  = orders.filter(o => o.status === 'pending');
   const lowStock = stockItems.filter(i => i.quantity <= i.minThreshold);
@@ -518,14 +823,15 @@ export default function StoreDashboard() {
         <p className="text-xs font-body text-muted-foreground mt-0.5">Review orders · manage raw stock · send to baker</p>
       </div>
       <div className="px-4 mb-5">
-        <div className="flex gap-1.5 bg-muted/60 p-1.5 rounded-xl">
+        <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl">
           {([
             { id: 'orders',    label: 'Orders',    icon: Package,   badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
             { id: 'inventory', label: 'Inventory', icon: Warehouse, badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
+            { id: 'suppliers', label: 'Suppliers', icon: Truck,     badge: null, badgeColor: '' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
-                'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-body font-semibold transition-all',
+                'flex-1 flex items-center justify-center gap-1 py-2.5 rounded-lg text-[11px] font-body font-semibold transition-all',
                 tab === t.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
               )}>
               <t.icon className="size-3.5" />
@@ -538,6 +844,7 @@ export default function StoreDashboard() {
       <div className="px-4">
         {tab === 'orders'    && <OrdersTab />}
         {tab === 'inventory' && <StoreInventoryTab />}
+        {tab === 'suppliers' && <SuppliersTab />}
       </div>
     </div>
   );
