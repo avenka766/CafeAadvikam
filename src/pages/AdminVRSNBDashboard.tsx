@@ -1,5 +1,6 @@
 // src/pages/AdminVRSNBDashboard.tsx
 // Admin Dashboard 1 – VRSNB Admin: Cafe + VRSNB branch only
+import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -510,19 +511,18 @@ function CafeView() {
 
 // ── VRSNB Bakery Sub-View ────────────────────────────────────────────────────
 function VRSNBBakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
   return (
     <div className="space-y-4">
       <div className="flex gap-1 p-1 rounded-xl bg-muted">
-        {([{ id: 'dashboard', label: 'Dashboard' }, { id: 'sales', label: 'Sales' }, { id: 'reports', label: 'Reports' }] as const).map(t => (
+        {([{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'reports', label: '📋 Reports' }] as const).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} className={cn('flex-1 py-2 rounded-lg text-sm font-semibold transition-all', tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground')}>
             {t.label}
           </button>
         ))}
       </div>
       {tab === 'dashboard' && <VRSNBBakeryDashboardTab />}
-      {tab === 'sales' && <VRSNBBakerySalesTab />}
-      {tab === 'reports' && <VRSNBBakeryReportsTab />}
+      {tab === 'reports'   && <BakeryReportsMerged branch="VRSNB" />}
     </div>
   );
 }

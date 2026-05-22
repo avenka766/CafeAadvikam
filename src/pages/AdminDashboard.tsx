@@ -14,10 +14,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
 } from 'recharts';
-import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
-import AdminNotificationsTab from '@/bakery/AdminNotificationsTab';
-import { useNotificationStore } from '@/bakery/notificationStore';
-import { useInvoiceStore } from '@/bakery/invoiceStore';
+import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 
 const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -1250,58 +1247,40 @@ function BakeryReportsTab() {
 
 // ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
 function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports' | 'invoices' | 'notifications'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
 
-  const { unreadCount, loaded: notifLoaded, load: loadNotifs } = useNotificationStore();
-  const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-
-  useEffect(() => { if (!notifLoaded) loadNotifs(); }, [notifLoaded]);
-  useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
-
-  // Poll every 20s so admin badge stays current without refresh
   useEffect(() => {
-    const id = setInterval(() => { loadNotifs(); loadInvoices(); }, 20_000);
-    return () => clearInterval(id);
+    return () => {};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const unread = unreadCount();
-  const pendingInvoices = invoices.filter(i => i.status === 'pending_review').length;
-
   const tabs = [
-    { id: 'dashboard'     as const, label: 'Overview',      icon: LayoutDashboard, badge: null },
-    { id: 'sales'         as const, label: 'Sales',          icon: Store,           badge: null },
-    { id: 'reports'       as const, label: 'Reports',        icon: FileText,        badge: null },
-    { id: 'invoices'      as const, label: 'Invoices',       icon: Package,         badge: pendingInvoices > 0 ? String(pendingInvoices) : null },
-    { id: 'notifications' as const, label: 'Alerts',         icon: Bell,            badge: unread > 0 ? String(unread) : null },
+    { id: 'dashboard' as const, label: 'Overview', icon: LayoutDashboard },
+    { id: 'reports'   as const, label: 'Reports',  icon: FileText },
   ];
+
+  const unread = 0;
+  const pendingInvoices = 0;
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
+      <div className="flex gap-1 bg-muted rounded-xl p-1">
         {tabs.map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              'flex-1 shrink-0 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-medium transition relative',
+              'flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-medium transition',
               tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
             )}
           >
             <t.icon className="size-3" />
             {t.label}
-            {t.badge && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
-                {t.badge}
-              </span>
-            )}
           </button>
         ))}
       </div>
-      {tab === 'dashboard'     && <BakeryDashboardTab />}
-      {tab === 'sales'         && <BakerySalesTab />}
-      {tab === 'reports'       && <BakeryReportsTab />}
-      {tab === 'invoices'      && <AdminInvoicesTab />}
-      {tab === 'notifications' && <AdminNotificationsTab />}
+      {tab === 'dashboard' && <BakeryDashboardTab />}
+      {tab === 'reports'   && <BakeryReportsMerged branch="all" />}
     </div>
   );
 }

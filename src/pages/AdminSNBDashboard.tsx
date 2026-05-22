@@ -1,5 +1,6 @@
 // src/pages/AdminSNBDashboard.tsx
 // Admin Dashboard 2 – SNB Admin: SNB branch only
+import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
 import { useOrderStore } from '@/stores/orderStore';
@@ -286,7 +287,7 @@ function SNBBakeryReportsTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function AdminSNBDashboard() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
   const { startPolling, stopPolling } = useOrderStore();
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
@@ -302,7 +303,7 @@ export default function AdminSNBDashboard() {
         </div>
       </div>
       <div className="mx-4 my-4 flex gap-1 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        {([{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'sales', label: '🛒 Sales' }, { id: 'reports', label: '📋 Reports' }] as const).map(t => (
+        {([{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'reports', label: '📋 Reports' }] as const).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} className={cn('flex-1 py-2.5 rounded-xl text-xs font-body font-semibold transition-all duration-200', tab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
             {t.label}
           </button>
@@ -310,8 +311,7 @@ export default function AdminSNBDashboard() {
       </div>
       <div className="px-4 space-y-4">
         {tab === 'dashboard' && <SNBBakeryDashboardTab />}
-        {tab === 'sales' && <SNBBakerySalesTab />}
-        {tab === 'reports' && <SNBBakeryReportsTab />}
+        {tab === 'reports'   && <BakeryReportsMerged branch="SNB" />}
       </div>
     </div>
   );
