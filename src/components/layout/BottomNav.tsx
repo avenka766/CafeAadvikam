@@ -4,15 +4,36 @@ import {
   ClipboardList, Receipt, UtensilsCrossed, History,
   LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
   Inbox, Store, Flame, Package, ShoppingCart, Settings2, BarChart3,
+  FileText, Bell,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useNotificationStore } from '@/bakery/notificationStore';
+import { useInvoiceStore } from '@/bakery/invoiceStore';
+import { useEffect } from 'react';
 
-interface NavItem { label: string; icon: React.ReactNode; path: string; }
+interface NavItem { label: string; icon: React.ReactNode; path: string; badge?: number; }
 
 export default function BottomNav() {
   const { currentUser } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const { unreadCount, loaded: notifLoaded, load: loadNotifs } = useNotificationStore();
+  const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
+
+  const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (!notifLoaded) loadNotifs();
+    if (!invLoaded) loadInvoices();
+    const id = setInterval(() => { loadNotifs(); loadInvoices(); }, 20_000);
+    return () => clearInterval(id);
+  }, [isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
+
+  const unread = isAdmin ? unreadCount() : 0;
+  const pendingInvoices = isAdmin ? invoices.filter(i => i.status === 'pending_review').length : 0;
+
   if (!currentUser) return null;
 
   const navItems: NavItem[] = [];
@@ -38,8 +59,10 @@ export default function BottomNav() {
       { label: 'QR',         icon: <QrCode           className="size-5" />, path: '/qr-menu' },
       { label: 'Attendance', icon: <CalendarCheck     className="size-5" />, path: '/attendance-salary' },
       { label: 'Staff',      icon: <Users             className="size-5" />, path: '/staff-management' },
-      { label: 'Items',      icon: <Settings2         className="size-5" />, path: '/bakery/items'  },
+      { label: 'Items',      icon: <Settings2         className="size-5" />, path: '/bakery/items' },
       { label: 'History',    icon: <History           className="size-5" />, path: '/order-history' },
+      { label: 'Invoices',   icon: <FileText          className="size-5" />, path: '/admin/invoices', badge: pendingInvoices || undefined },
+      { label: 'Alerts',     icon: <Bell              className="size-5" />, path: '/admin/alerts',   badge: unread || undefined },
     );
   } else if (currentUser.role === 'order_receiver') {
     navItems.push({ label: 'Receive', icon: <Inbox    className="size-5" />, path: '/bakery/receive' });
@@ -120,6 +143,12 @@ export default function BottomNav() {
                   )}
                   <span className={cn('relative z-10 transition-transform duration-200', isActive && 'scale-110')}>
                     {item.icon}
+                    {/* Badge dot */}
+                    {item.badge && item.badge > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-0.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center leading-none">
+                        {item.badge > 9 ? '9+' : item.badge}
+                      </span>
+                    )}
                   </span>
                   <span className={cn(
                     'relative z-10 font-body font-semibold transition-all duration-200',
