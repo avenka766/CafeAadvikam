@@ -514,21 +514,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return null;
     }
 
-    // Fallback: add stock FIRST, mark confirmed second (safer failure mode)
-    const { data: existing } = await supabase
-      .from('branch_stock').select('quantity')
-      .eq('branch', branch).eq('item_name', inc.itemName).single();
+    // BUG #8 FIX: Fallback two-step path.
+    // Re-read the incoming record to guard against a retry where stock was already
+    // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
+    const { data: freshInc } = await supabase
+      .from('branch_incoming').select('confirmed').eq('id', incomingId).single();
+    const alreadyConfirmedInDb = freshInc?.confirmed === true;
 
-    if (existing) {
-      const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-      const { error: stockErr } = await supabase.from('branch_stock')
-        .update({ quantity: newQty, unit: inc.unit })
-        .eq('branch', branch).eq('item_name', inc.itemName);
-      if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
-    } else {
-      const { error: insErr } = await supabase.from('branch_stock')
-        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
-      if (insErr) return `Failed to create stock entry: ${insErr.message}`;
+    if (!alreadyConfirmedInDb) {
+      const { data: existing } = await supabase
+        .from('branch_stock').select('quantity')
+        .eq('branch', branch).eq('item_name', inc.itemName).single();
+
+      if (existing) {
+        const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
+        const { error: stockErr } = await supabase.from('branch_stock')
+          .update({ quantity: newQty, unit: inc.unit })
+          .eq('branch', branch).eq('item_name', inc.itemName);
+        if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
+      } else {
+        const { error: insErr } = await supabase.from('branch_stock')
+          .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
+        if (insErr) return `Failed to create stock entry: ${insErr.message}`;
+      }
     }
 
     const { error: confErr } = await supabase
@@ -583,6 +591,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const newQty       = Math.round((availableQty - deductQty) * 1000) / 1000;
 
     // B2 FIX: use atomic RPC decrement instead of stale-local-state read
+    // BUG #9 FIX: actually use the authoritative qty returned by the RPC.
+    let rpcNewQty: number | null = null;
     if (deductQty > 0 && currentStock) {
       const { data: newQtyRpc, error: rpcErr } = await supabase
         .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: deductQty });
@@ -590,9 +600,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
         // Non-fatal for SNB: log mismatch, continue with sale
       } else if (newQtyRpc !== null) {
-        // Update local newQty from authoritative DB value
-        const _newQtyActual = Math.round((newQtyRpc as number) * 1000) / 1000;
-        void _newQtyActual; // used in local state update below
+        rpcNewQty = Math.round((newQtyRpc as number) * 1000) / 1000;
       }
     }
 
@@ -663,8 +671,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const stock = { ...s.stock };
       const sales = { ...s.sales };
       if (currentStock) {
+        // BUG #9 FIX: prefer authoritative DB value from RPC over stale local calculation
+        const finalQty = rpcNewQty !== null ? rpcNewQty : newQty;
         stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: newQty } : si,
+          si.itemName === itemName ? { ...si, quantity: finalQty } : si,
         );
       }
       sales[branch] = [newSale, ...sales[branch]];
