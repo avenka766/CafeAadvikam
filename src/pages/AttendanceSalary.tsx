@@ -1177,10 +1177,47 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
       {clearError && <p className="text-xs font-body text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{clearError}</p>}
 
       {/* Records grouped by employee */}
-      {Object.keys(byEmployee).length === 0 ? (
+      {Object.keys(byEmployee).length === 0 && advanceRecords.length === 0 ? (
+        /* Table empty — show employees who have a salaryAdvance on file */
+        (() => {
+          const empWithAdvance = employees.filter(e => e.salaryAdvance > 0);
+          if (empWithAdvance.length === 0) return (
+            <div className="text-center py-10 text-muted-foreground">
+              <CreditCard className="size-8 mx-auto mb-2 opacity-30" />
+              <p className="text-sm font-body">No advance records yet</p>
+              <p className="text-xs font-body mt-1 opacity-60">Record a new advance above to get started</p>
+            </div>
+          );
+          return (
+            <div className="space-y-3">
+              <p className="text-[11px] font-body text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                ⚠️ Showing advances from employee records (legacy). Run the SQL migration to enable full advance history tracking.
+              </p>
+              {empWithAdvance.map(emp => (
+                <div key={emp.id} className="bg-card border border-border rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 flex items-center gap-2">
+                    <span className={cn('px-1.5 py-0.5 rounded text-[9px] font-body font-bold border shrink-0', BRANCH_COLORS[emp.branch])}>
+                      {BRANCH_SHORT[emp.branch]}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-body font-bold text-sm text-foreground">{emp.name}</p>
+                      <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-xs font-body font-bold text-amber-600">₹{emp.salaryAdvance.toLocaleString('en-IN')}</p>
+                      <p className="text-[9px] font-body text-muted-foreground">outstanding</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()
+      ) : Object.keys(byEmployee).length === 0 ? (
         <div className="text-center py-10 text-muted-foreground">
           <CreditCard className="size-8 mx-auto mb-2 opacity-30" />
           <p className="text-sm font-body">No advance records yet</p>
+          <p className="text-xs font-body mt-1 opacity-60">Record a new advance above to get started</p>
         </div>
       ) : (
         Object.entries(byEmployee).map(([eid, recs]) => {
