@@ -106,9 +106,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   submitDispatch: async (orderId, entry) => {
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
 
+    // BUG #3 FIX: fetch full order (not just dispatch_log) so we can check
+    // prepared_items to determine if this is truly a full dispatch.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log')
+      .select('dispatch_log, prepared_items')
       .eq('id', orderId)
       .single();
     if (fetchErr || !freshOrder) return;
@@ -118,9 +120,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       newEntry,
     ];
 
+    // Only mark 'dispatched' when every prepared item is fully covered by the log.
+    const preparedItems = (freshOrder.prepared_items as PreparedItem[]) || [];
+    const allFullyDispatched = preparedItems.length > 0 && preparedItems.every(p => {
+      const totalDispatched = updatedLog
+        .filter(d => d.itemName === p.itemName)
+        .reduce((s, d) => s + d.quantity, 0);
+      return totalDispatched >= p.quantityPrepared - 0.001;
+    });
+    const newStatus: WorkflowStatus = allFullyDispatched ? 'dispatched' : 'packed';
+
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ dispatch_log: updatedLog, status: 'dispatched' })
+      .update({ dispatch_log: updatedLog, status: newStatus })
       .eq('id', orderId);
     if (error) return;
 
@@ -150,7 +162,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (!order) return;
     const removedEntry = (order.dispatchLog || []).find(d => d.id === entryId);
     const updatedLog = (order.dispatchLog || []).filter(d => d.id !== entryId);
-    const newStatus: WorkflowStatus = updatedLog.length === 0 ? 'packed' : 'dispatched';
+    // BUG #6 FIX: don't use log.length to decide status — check actual coverage.
+    // If remaining dispatches still fully cover all prepared items → dispatched.
+    // Otherwise (or if log is empty) → back to 'packed' so packing can continue.
+    const preparedItems = order.preparedItems || [];
+    const allStillCovered = updatedLog.length > 0 && preparedItems.length > 0 && preparedItems.every(p => {
+      const totalDispatched = updatedLog
+        .filter(d => d.itemName === p.itemName)
+        .reduce((s, d) => s + d.quantity, 0);
+      return totalDispatched >= p.quantityPrepared - 0.001;
+    });
+    const newStatus: WorkflowStatus = allStillCovered ? 'dispatched' : 'packed';
 
     const { error } = await supabase
       .from('bakery_orders')

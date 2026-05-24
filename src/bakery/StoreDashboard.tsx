@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
-import { RECIPE_DEFINITIONS, calculateMaterials } from './recipeDefinitions';
+import { calculateMaterials } from './recipeDefinitions';
 import { resolveRecipeKey } from './itemMatcher';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
@@ -28,12 +28,13 @@ function mat(order: BakeryOrder) {
   for (const item of order.items) {
     const key = resolveRecipeKey(item.itemId, item.itemName);
     if (!key) continue;
-    const def = RECIPE_DEFINITIONS[key];
-    if (!def) continue;
-    const mats = calculateMaterials(def, item.quantity);
+    // BUG #1 FIX: pass the recipe KEY (string) not the definition object.
+    // calculateMaterials(itemId, quantity, unit) looks up RECIPE_DEFINITIONS[itemId] internally.
+    const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+    const mats = calculateMaterials(key, item.quantity, unit);
     for (const m of mats) {
       const existing = allMats.find(x => x.material === m.material);
-      if (existing) existing.quantity += m.quantity;
+      if (existing) existing.quantity = parseFloat((existing.quantity + m.quantity).toFixed(4));
       else allMats.push({ ...m });
     }
   }

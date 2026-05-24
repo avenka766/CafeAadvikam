@@ -31,8 +31,11 @@ export default function OrderReceiverDashboard() {
 
   const today        = new Date().toDateString();
   const todayOrders  = orders.filter(o => new Date(o.createdAt).toDateString() === today);
-  const pendingCount = orders.filter(o => o.status === 'pending').length;
-  const doneCount    = orders.filter(o => o.status === 'dispatched').length;
+  // BUG #11 FIX: show stats for the ACTIVE branch tab, not all branches combined.
+  // Previously pendingCount/doneCount were global totals — misleading in a branch-specific view.
+  const branchOrders  = orders.filter(o => o.targetBranch === activeTab);
+  const pendingCount  = branchOrders.filter(o => o.status === 'pending').length;
+  const doneCount     = branchOrders.filter(o => o.status === 'dispatched').length;
   const branchPending = (b: Branch) => orders.filter(o => o.status === 'pending' && o.targetBranch === b).length;
 
   const accent = BRANCH_ACCENT[activeTab];
@@ -58,7 +61,7 @@ export default function OrderReceiverDashboard() {
       {/* Stats */}
       <div className="px-4 grid grid-cols-3 gap-2.5 mb-5">
         {[
-          { label: "Today", value: todayOrders.length, color: 'text-foreground', bg: 'bg-card' },
+          { label: "Today", value: branchOrders.filter(o => new Date(o.createdAt).toDateString() === today).length, color: 'text-foreground', bg: 'bg-card' },
           { label: "Pending", value: pendingCount, color: pendingCount > 0 ? 'text-amber-600' : 'text-foreground', bg: pendingCount > 0 ? 'bg-amber-50' : 'bg-card' },
           { label: "Dispatched", value: doneCount, color: 'text-emerald-600', bg: 'bg-emerald-50' },
         ].map(s => (

@@ -122,10 +122,13 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
   // ── Validation ─────────────────────────────────────────────────────────────
 
-  const filledLines = lines.filter(l => l.qty !== '');
+  // BUG #10 FIX: filledLines must exclude qty=0, not just empty string.
+  // handleSubmit filters with Number(l.qty) > 0 so a qty="0" line is silently
+  // dropped from submission but was previously allowed to pass validation.
+  const filledLines = lines.filter(l => l.qty !== '' && Number(l.qty) > 0);
 
   const valid =
-    filledLines.every(l => l.itemId !== '' && l.qty !== '' && Number(l.qty) > 0) &&
+    filledLines.every(l => l.itemId !== '') &&
     customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
     (filledLines.length > 0 || customLines.length > 0);
 
@@ -156,11 +159,14 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, dispatchUnit: 'kg' as const };
         }),
 
-      ...customLines.map((l): BakeryOrderItem => ({
-        itemId:   `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        itemName: l.name.trim(),
-        quantity: Number(l.qty),
-        isCustom: true,
+      // BUG #7 FIX: give custom items a stable ID (generated once, not on every render),
+      // and always set dispatchUnit so packing knows how to handle them.
+      ...customLines.map((l, idx): BakeryOrderItem => ({
+        itemId:      `custom-${currentUser.uid}-${idx}`,
+        itemName:    l.name.trim(),
+        quantity:    Number(l.qty),
+        isCustom:    true,
+        dispatchUnit: 'kg' as const,
       })),
     ];
 

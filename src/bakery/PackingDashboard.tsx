@@ -293,9 +293,12 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                     <input type="number" min={0.01} step={0.25} value={entry.qty}
                       onChange={e => updateEntryQty(idx, e.target.value)} disabled={entry.confirmed}
                       className="w-24 h-9 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:opacity-50" />
-                    <span className="text-[10px] font-body text-muted-foreground">kg packed</span>
+                    {/* BUG #4 FIX: label depends on dispatchUnit, not hardcoded 'kg packed' */}
+                    <span className="text-[10px] font-body text-muted-foreground">
+                      {entry.dispatchUnit === 'pcs' ? 'kg packed (converts to pcs on confirm)' : 'kg packed'}
+                    </span>
                     <span className="text-[10px] font-body text-blue-600">
-                      · Baker: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'} kg
+                      · Baker: {order.preparedItems?.find(p => p.itemId === entry.itemId)?.quantityPrepared ?? '—'} {entry.dispatchUnit === 'pcs' ? 'kg' : 'kg'}
                     </span>
                     <span className="text-[10px] font-body text-muted-foreground">
                       · Requested: {(() => {
@@ -416,10 +419,20 @@ export default function PackingDashboard() {
   const dispatchedCount = packingOrders.filter(o => o.status === 'dispatched').length;
 
   const today = new Date().toDateString();
-  const branchTotals: Record<Branch, number> = { VRSNB: 0, SNB: 0, Hosur: 0 };
+  // BUG #5 FIX: track pcs and kg separately — mixing them into one number is meaningless.
+  const branchTotals: Record<Branch, { kg: number; pcs: number }> = {
+    VRSNB: { kg: 0, pcs: 0 },
+    SNB:   { kg: 0, pcs: 0 },
+    Hosur: { kg: 0, pcs: 0 },
+  };
   packingOrders.forEach(o => (o.dispatchLog || []).forEach(d => {
-    if (new Date(d.dispatchedAt).toDateString() === today)
-      branchTotals[d.branch] = (branchTotals[d.branch] || 0) + d.quantity;
+    if (new Date(d.dispatchedAt).toDateString() === today) {
+      if (d.unit === 'pcs') {
+        branchTotals[d.branch].pcs += d.quantity;
+      } else {
+        branchTotals[d.branch].kg += d.quantity;
+      }
+    }
   }));
 
   return (
@@ -447,11 +460,22 @@ export default function PackingDashboard() {
         {BRANCHES.map(b => {
           const bm = BRANCH_META[b];
           return (
-            <div key={b} className={cn('border rounded-2xl p-3 text-center', branchTotals[b] > 0 ? bm.bg : 'bg-card border-border')}>
+            {/* BUG #5 FIX: show kg and pcs separately */}
+            <div key={b} className={cn('border rounded-2xl p-3 text-center', (branchTotals[b].kg > 0 || branchTotals[b].pcs > 0) ? bm.bg : 'bg-card border-border')}>
               <p className="text-base leading-none mb-1">{bm.icon}</p>
-              <p className={cn('font-display text-xl font-bold tabular-nums', branchTotals[b] > 0 ? bm.color : 'text-muted-foreground')}>
-                {branchTotals[b] || 0}
-              </p>
+              {branchTotals[b].kg > 0 && (
+                <p className={cn('font-display text-sm font-bold tabular-nums', bm.color)}>
+                  {branchTotals[b].kg % 1 === 0 ? branchTotals[b].kg : branchTotals[b].kg.toFixed(2)} kg
+                </p>
+              )}
+              {branchTotals[b].pcs > 0 && (
+                <p className={cn('font-display text-sm font-bold tabular-nums', bm.color)}>
+                  {branchTotals[b].pcs} pcs
+                </p>
+              )}
+              {branchTotals[b].kg === 0 && branchTotals[b].pcs === 0 && (
+                <p className="font-display text-xl font-bold tabular-nums text-muted-foreground">—</p>
+              )}
               <p className="text-[9px] font-body font-semibold text-muted-foreground uppercase mt-0.5">{b} today</p>
             </div>
           );

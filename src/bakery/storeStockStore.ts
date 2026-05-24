@@ -144,10 +144,18 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     for (const d of deductions) {
       const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
       if (!match) { warnings.push(`${d.name} not in stock`); continue; }
-      // Convert units if needed (g→kg, ml→L)
+      // BUG #2 FIX: complete unit conversion between recipe units and stock units.
+      // Recipes store quantities in kg/L; stock may be tracked in g or ltr.
       let deductQty = d.qty;
-      if (match.unit === 'kg' && deductQty < 0.01 && deductQty > 0) {
-        // Probably in grams, convert
+      if (match.unit === 'g' && deductQty <= 10) {
+        // Recipe qty is in kg, stock is in g → convert kg → g
+        deductQty = deductQty * 1000;
+      } else if (match.unit === 'ltr' && deductQty <= 10) {
+        // Recipe qty is in L, stock is in ltr → same scale, no conversion needed
+        // (ltr and L are equivalent)
+      } else if (match.unit === 'kg' && deductQty > 100) {
+        // Suspiciously large kg value — likely recipe provided grams; convert g → kg
+        deductQty = deductQty / 1000;
       }
       const newQty = Math.max(0, match.quantity - deductQty);
       updates.push({ id: match.id, newQty });
