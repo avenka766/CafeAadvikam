@@ -3,7 +3,7 @@ import {
   Users, Building2, Search, ChevronDown, ChevronUp,
   IndianRupee, Calendar, TrendingDown, Plus, Trash2,
   Download, UserPlus, X, Pencil, Loader2,
-  AlertCircle, CheckCircle2, BarChart3,
+  AlertCircle, CheckCircle2, BarChart3, CreditCard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -40,6 +40,15 @@ interface DayAttendance {
 }
 
 type MonthAttendance = Record<string, DayAttendance>;
+
+interface SalaryAdvanceRecord {
+  id: string;
+  employeeId: string;
+  amount: number;
+  givenDate: string; // ISO date string e.g. "2025-05-15"
+  note?: string;
+  cleared: boolean;
+}
 
 interface DeductionDecision {
   deductAdvance: boolean;
@@ -169,6 +178,55 @@ async function updateEmployee(emp: Employee): Promise<boolean> {
 async function clearAdvance(employeeId: string): Promise<void> {
   const { error } = await supabase.from('employees').update({ salary_advance: 0 }).eq('id', employeeId);
   if (error) throw error;
+  // Also mark all uncleared advances for this employee as cleared
+  await supabase.from('salary_advances').update({ cleared: true }).eq('employee_id', employeeId).eq('cleared', false);
+}
+
+// ─── Advance Records DB helpers ───────────────────────────────────────────────
+async function fetchAdvanceRecords(): Promise<SalaryAdvanceRecord[]> {
+  const { data, error } = await supabase
+    .from('salary_advances')
+    .select('*')
+    .order('given_date', { ascending: false });
+  if (error) { console.warn('salary_advances fetch:', error.message); return []; }
+  return (data || []).map(r => ({
+    id: r.id as string,
+    employeeId: r.employee_id as string,
+    amount: Number(r.amount),
+    givenDate: r.given_date as string,
+    note: (r.note as string) || undefined,
+    cleared: r.cleared as boolean,
+  }));
+}
+
+async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>): Promise<SalaryAdvanceRecord | null> {
+  const { data, error } = await supabase
+    .from('salary_advances')
+    .insert({ employee_id: rec.employeeId, amount: rec.amount, given_date: rec.givenDate, note: rec.note || null, cleared: false })
+    .select()
+    .single();
+  if (error || !data) { console.error('Insert advance failed:', error?.message); return null; }
+  // Also update the employee's salary_advance field to reflect total outstanding
+  const { data: emp } = await supabase.from('employees').select('salary_advance').eq('id', rec.employeeId).single();
+  const current = Number((emp as { salary_advance: number } | null)?.salary_advance ?? 0);
+  await supabase.from('employees').update({ salary_advance: current + rec.amount }).eq('id', rec.employeeId);
+  return {
+    id: data.id as string,
+    employeeId: data.employee_id as string,
+    amount: Number(data.amount),
+    givenDate: data.given_date as string,
+    note: (data.note as string) || undefined,
+    cleared: data.cleared as boolean,
+  };
+}
+
+async function markAdvanceRecordCleared(advanceId: string, employeeId: string, amount: number): Promise<void> {
+  const { error } = await supabase.from('salary_advances').update({ cleared: true }).eq('id', advanceId);
+  if (error) throw error;
+  // Deduct this amount from employee's salary_advance field
+  const { data: emp } = await supabase.from('employees').select('salary_advance').eq('id', employeeId).single();
+  const current = Number((emp as { salary_advance: number } | null)?.salary_advance ?? 0);
+  await supabase.from('employees').update({ salary_advance: Math.max(0, current - amount) }).eq('id', employeeId);
 }
 
 async function deactivateEmployee(id: string): Promise<void> {
@@ -933,6 +991,239 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
   );
 }
 
+// ─── Advance Tab ──────────────────────────────────────────────────────────────
+function AdvanceTab({ employees, advanceRecords, onAdd, onClear }: {
+  employees: Employee[];
+  advanceRecords: SalaryAdvanceRecord[];
+  onAdd: (rec: SalaryAdvanceRecord) => void;
+  onClear: (advanceId: string, employeeId: string, amount: number) => void;
+}) {
+  const [empId, setEmpId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [givenDate, setGivenDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [clearingId, setClearingId] = useState<string | null>(null);
+  const [clearError, setClearError] = useState('');
+  const [filterCleared, setFilterCleared] = useState(false);
+
+  const canSubmit = empId && Number(amount) > 0 && givenDate;
+
+  const handleAdd = async () => {
+    if (!canSubmit) return;
+    setSaving(true); setSaveError('');
+    const result = await insertAdvanceRecord({ employeeId: empId, amount: Number(amount), givenDate, note });
+    setSaving(false);
+    if (result) {
+      onAdd(result);
+      setAmount(''); setNote('');
+    } else {
+      setSaveError('Failed to save advance — please try again.');
+    }
+  };
+
+  const handleClear = async (rec: SalaryAdvanceRecord) => {
+    setClearingId(rec.id); setClearError('');
+    try {
+      await markAdvanceRecordCleared(rec.id, rec.employeeId, rec.amount);
+      onClear(rec.id, rec.employeeId, rec.amount);
+    } catch {
+      setClearError('Failed to mark cleared — please try again.');
+    } finally {
+      setClearingId(null);
+    }
+  };
+
+  // Group records by employee
+  const displayRecords = advanceRecords.filter(r => filterCleared ? true : !r.cleared);
+  const byEmployee = useMemo(() => {
+    const map: Record<string, SalaryAdvanceRecord[]> = {};
+    for (const r of displayRecords) {
+      if (!map[r.employeeId]) map[r.employeeId] = [];
+      map[r.employeeId].push(r);
+    }
+    return map;
+  }, [displayRecords]);
+
+  const totalOutstanding = useMemo(() =>
+    advanceRecords.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0),
+    [advanceRecords]
+  );
+
+  const empMap = useMemo(() => {
+    const m: Record<string, Employee> = {};
+    employees.forEach(e => { m[e.id] = e; });
+    return m;
+  }, [employees]);
+
+  return (
+    <div className="px-4 space-y-4 pb-6">
+      {/* Summary KPI */}
+      <div className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
+        <div className="size-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+          <CreditCard className="size-5 text-amber-600" />
+        </div>
+        <div>
+          <p className="font-display font-bold text-xl tabular-nums text-amber-600">
+            {totalOutstanding > 0 ? `₹${totalOutstanding.toLocaleString('en-IN')}` : '—'}
+          </p>
+          <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Total Outstanding Advances</p>
+        </div>
+        <div className="ml-auto">
+          <p className="text-[10px] font-body text-muted-foreground text-right">
+            {advanceRecords.filter(r => !r.cleared).length} pending
+          </p>
+          <p className="text-[10px] font-body text-muted-foreground text-right">
+            {advanceRecords.filter(r => r.cleared).length} cleared
+          </p>
+        </div>
+      </div>
+
+      {/* Add Advance Form */}
+      <div className="bg-card border border-border rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+          <Plus className="size-4 text-primary" />
+          <h3 className="font-display font-bold text-foreground">Record New Advance</h3>
+        </div>
+        <div className="px-4 py-4 space-y-3">
+          <Field label="Employee *">
+            <select
+              className={InputCls()}
+              value={empId}
+              onChange={e => setEmpId(e.target.value)}
+            >
+              <option value="">Select employee…</option>
+              {employees.map(e => (
+                <option key={e.id} value={e.id}>
+                  {e.name} ({e.branch})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount (₹) *">
+              <input
+                type="number"
+                className={InputCls()}
+                placeholder="e.g. 2000"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+              />
+            </Field>
+            <Field label="Date Given *">
+              <input
+                type="date"
+                className={InputCls()}
+                value={givenDate}
+                onChange={e => setGivenDate(e.target.value)}
+              />
+            </Field>
+          </div>
+          <Field label="Note (optional)">
+            <input
+              className={InputCls()}
+              placeholder="e.g. Emergency advance"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+            />
+          </Field>
+          {saveError && <p className="text-xs font-body text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{saveError}</p>}
+          <button
+            disabled={!canSubmit || saving}
+            onClick={handleAdd}
+            className="w-full h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
+          >
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+            Record Advance
+          </button>
+        </div>
+      </div>
+
+      {/* Filter toggle */}
+      <div className="flex items-center justify-between">
+        <h3 className="font-display font-bold text-sm text-foreground">Advance History</h3>
+        <button
+          onClick={() => setFilterCleared(v => !v)}
+          className={cn('px-3 py-1.5 rounded-lg text-xs font-body font-semibold transition-colors border',
+            filterCleared ? 'bg-primary text-primary-foreground border-primary' : 'bg-card border-border text-muted-foreground hover:text-foreground'
+          )}
+        >
+          {filterCleared ? 'Showing All' : 'Show Cleared'}
+        </button>
+      </div>
+
+      {clearError && <p className="text-xs font-body text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{clearError}</p>}
+
+      {/* Records grouped by employee */}
+      {Object.keys(byEmployee).length === 0 ? (
+        <div className="text-center py-10 text-muted-foreground">
+          <CreditCard className="size-8 mx-auto mb-2 opacity-30" />
+          <p className="text-sm font-body">No advance records yet</p>
+        </div>
+      ) : (
+        Object.entries(byEmployee).map(([eid, recs]) => {
+          const emp = empMap[eid];
+          if (!emp) return null;
+          const empTotal = recs.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0);
+          return (
+            <div key={eid} className="bg-card border border-border rounded-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+                <span className={cn('px-1.5 py-0.5 rounded text-[9px] font-body font-bold border shrink-0', BRANCH_COLORS[emp.branch])}>
+                  {BRANCH_SHORT[emp.branch]}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="font-body font-bold text-sm text-foreground">{emp.name}</p>
+                  <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
+                </div>
+                {empTotal > 0 && (
+                  <div className="shrink-0 text-right">
+                    <p className="text-xs font-body font-bold text-amber-600">₹{empTotal.toLocaleString('en-IN')}</p>
+                    <p className="text-[9px] font-body text-muted-foreground">outstanding</p>
+                  </div>
+                )}
+              </div>
+              <div className="divide-y divide-border/40">
+                {recs.map(rec => (
+                  <div key={rec.id} className={cn('px-4 py-3 flex items-center gap-3', rec.cleared && 'opacity-50')}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-body font-bold text-sm tabular-nums">
+                          ₹{rec.amount.toLocaleString('en-IN')}
+                        </p>
+                        {rec.cleared && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-body font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">Cleared</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] font-body text-muted-foreground mt-0.5">
+                        📅 {new Date(rec.givenDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        {rec.note && <span className="ml-2 italic">· {rec.note}</span>}
+                      </p>
+                    </div>
+                    {!rec.cleared && (
+                      <button
+                        onClick={() => handleClear(rec)}
+                        disabled={clearingId === rec.id}
+                        className="shrink-0 h-8 px-3 rounded-lg bg-emerald-500 text-white text-[11px] font-body font-bold flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        {clearingId === rec.id
+                          ? <Loader2 className="size-3 animate-spin" />
+                          : <CheckCircle2 className="size-3" />
+                        }
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function AttendanceSalary() {
   const TWO_MONTHS = useMemo(() => getTwoMonths(), []);
@@ -943,27 +1234,29 @@ export default function AttendanceSalary() {
   const [att, setAtt] = useState<MonthAttendance>({});
   const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics'>('attendance');
+  const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
   const [branch, setBranch] = useState<'All' | Branch>('All');
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
-  const ddRef = useRef<HTMLDivElement>(null);
+  const [advanceRecords, setAdvanceRecords] = useState<SalaryAdvanceRecord[]>([]);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [emps, attData, decData] = await Promise.all([
+        const [emps, attData, decData, advData] = await Promise.all([
           fetchEmployees(),
           fetchAttendance(activeMonth.year, activeMonth.month),
           fetchDeductionDecisions(activeMonth.year, activeMonth.month),
+          fetchAdvanceRecords(),
         ]);
         setEmployees(emps);
         setAtt(attData);
         setDecisions(decData);
+        setAdvanceRecords(advData);
         const now = new Date();
         deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
       } catch (e) {
@@ -999,6 +1292,21 @@ export default function AttendanceSalary() {
     setEmployees(prev => prev.map(e => e.id === empId ? { ...e, salaryAdvance: 0 } : e));
     const cur = getDecision(empId);
     updateDecision(empId, { ...cur, deductAdvance: false });
+  };
+
+  const handleAdvanceRecordAdded = (rec: SalaryAdvanceRecord) => {
+    setAdvanceRecords(prev => [rec, ...prev]);
+    // Update employee's salaryAdvance in local state
+    setEmployees(prev => prev.map(e =>
+      e.id === rec.employeeId ? { ...e, salaryAdvance: e.salaryAdvance + rec.amount } : e
+    ));
+  };
+
+  const handleAdvanceRecordCleared = (advanceId: string, employeeId: string, amount: number) => {
+    setAdvanceRecords(prev => prev.map(r => r.id === advanceId ? { ...r, cleared: true } : r));
+    setEmployees(prev => prev.map(e =>
+      e.id === employeeId ? { ...e, salaryAdvance: Math.max(0, e.salaryAdvance - amount) } : e
+    ));
   };
 
   const addEmp = (emp: Employee) => { setEmployees(prev => [...prev, emp]); setShowAddModal(false); };
@@ -1115,13 +1423,14 @@ export default function AttendanceSalary() {
         ))}
       </div>
 
-      {/* Tabs — now 4 tabs */}
+      {/* Tabs */}
       <div className="flex gap-1.5 px-4 mb-3 overflow-x-auto">
         {([
           { k: 'attendance', l: '📅 Attendance' },
           { k: 'salary', l: '💰 Salary' },
           { k: 'employees', l: '👥 Employees' },
           { k: 'analytics', l: '📊 Analytics' },
+          { k: 'advance', l: '💳 Advance' },
         ] as const).map(({ k, l }) => (
           <button key={k} onClick={() => setTab(k)}
             className={cn('shrink-0 px-3 py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-95', tab === k ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
@@ -1130,8 +1439,8 @@ export default function AttendanceSalary() {
         ))}
       </div>
 
-      {/* Search + actions — hide on analytics tab */}
-      {tab !== 'analytics' && (
+      {/* Search + actions — hide on analytics and advance tabs */}
+      {tab !== 'analytics' && tab !== 'advance' && (
         <div className="px-4 mb-3 flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
@@ -1239,6 +1548,16 @@ export default function AttendanceSalary() {
           daysInMonth={activeMonth.daysInMonth}
           monthLabel={activeMonth.label}
           getDecision={getDecision}
+        />
+      )}
+
+      {/* ── ADVANCE ─────────────────────────────────── */}
+      {tab === 'advance' && (
+        <AdvanceTab
+          employees={employees}
+          advanceRecords={advanceRecords}
+          onAdd={handleAdvanceRecordAdded}
+          onClear={handleAdvanceRecordCleared}
         />
       )}
 
