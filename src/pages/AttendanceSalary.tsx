@@ -1242,6 +1242,7 @@ export default function AttendanceSalary() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const [advanceRecords, setAdvanceRecords] = useState<SalaryAdvanceRecord[]>([]);
+  const ddRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
