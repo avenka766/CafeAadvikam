@@ -460,7 +460,7 @@ export default function PackingDashboard() {
         {BRANCHES.map(b => {
           const bm = BRANCH_META[b];
           return (
-            {/* BUG #5 FIX: show kg and pcs separately */}
+            // BUG #5 FIX: show kg and pcs separately
             <div key={b} className={cn('border rounded-2xl p-3 text-center', (branchTotals[b].kg > 0 || branchTotals[b].pcs > 0) ? bm.bg : 'bg-card border-border')}>
               <p className="text-base leading-none mb-1">{bm.icon}</p>
               {branchTotals[b].kg > 0 && (
