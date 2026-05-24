@@ -66,7 +66,7 @@ const PF_RATE  = 0.12;
 const ESI_WAGE_LIMIT = 21000;
 
 function calcESI(gross: number) { return gross <= ESI_WAGE_LIMIT ? Math.round(gross * ESI_RATE) : 0; }
-function calcPF(gross: number)  { return Math.round(gross * PF_RATE); }
+function calcPF(gross: number)  { return Math.min(1800, Math.round(gross * PF_RATE)); }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -492,17 +492,28 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
 
   const handleSave = async () => {
     if (!valid) return;
-    const updated: Employee = { ...emp, name: name.trim(), branch, department: dept.trim(), grossSalary: parseInt(salary) || 0, salaryAdvance: parseInt(advance) || 0, uniformDeduction: parseInt(uniform) || 0, otherDeduction: parseInt(other) || 0, bankName: bank || undefined, accountNumber: acc || undefined, ifscCode: ifsc || undefined };
+    const updated: Employee = {
+      ...emp,
+      name: name.trim(),
+      branch,
+      department: dept.trim(),
+      grossSalary: Number(salary) || 0,
+      salaryAdvance: Number(advance) || 0,
+      uniformDeduction: Number(uniform) || 0,
+      otherDeduction: Number(other) || 0,
+      bankName: bank || undefined,
+      accountNumber: acc || undefined,
+      ifscCode: ifsc || undefined,
+    };
     setSaving(true); setSaveError('');
     const ok = await updateEmployee(updated);
     setSaving(false);
-    // EMP-FIX: show inline error instead of silently ignoring failure
     if (ok) { onSave(updated); } else { setSaveError('Failed to save — please try again.'); }
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
+      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-card flex items-center justify-between px-5 py-4 border-b border-border">
           <h3 className="font-display font-bold text-lg">Edit Employee</h3>
           <button onClick={onClose} className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
@@ -518,12 +529,12 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
             <Field label="Department *"><input className={InputCls()} placeholder="e.g. Bakery" value={dept} onChange={e => setDept(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Gross Salary (₹)"><input type="number" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
-            <Field label="Salary Advance (₹)"><input type="number" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
+            <Field label="Gross Salary (₹)"><input type="number" min="0" className={InputCls()} value={salary} onChange={e => setSalary(e.target.value)} /></Field>
+            <Field label="Salary Advance (₹)"><input type="number" min="0" className={InputCls()} value={advance} onChange={e => setAdvance(e.target.value)} /></Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Uniform Ded. (₹)"><input type="number" className={InputCls()} value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
-            <Field label="Other Ded. (₹)"><input type="number" className={InputCls()} value={other} onChange={e => setOther(e.target.value)} /></Field>
+            <Field label="Uniform Ded. (₹)"><input type="number" min="0" className={InputCls()} value={uniform} onChange={e => setUniform(e.target.value)} /></Field>
+            <Field label="Other Ded. (₹)"><input type="number" min="0" className={InputCls()} value={other} onChange={e => setOther(e.target.value)} /></Field>
           </div>
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Bank Details</p>
@@ -534,14 +545,16 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
             </div>
           </div>
         </div>
-        <div className="px-5 pb-5 flex gap-2">
+        <div className="px-5 pb-5 space-y-2">
           {saveError && (
-            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-lg -mb-1">{saveError}</p>
+            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{saveError}</p>
           )}
-          <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
-          <button disabled={!valid || saving} onClick={handleSave} className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2">
-            {saving ? <Loader2 className="size-4 animate-spin" /> : <Pencil className="size-4" />} Save Changes
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="flex-1 h-11 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors">Cancel</button>
+            <button disabled={!valid || saving} onClick={handleSave} className="flex-1 h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2">
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <Pencil className="size-4" />} Save Changes
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -725,7 +738,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
           <DeductToggle label={`ESI (0.75%${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
-          <DeductToggle label="PF (12% of gross)" amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
+          <DeductToggle label={`PF (12% of gross${emp.grossSalary * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
@@ -1295,6 +1308,11 @@ export default function AttendanceSalary() {
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
   const [branch, setBranch] = useState<'All' | Branch>('All');
   const [search, setSearch] = useState('');
+
+  const handleTabChange = (newTab: typeof tab) => {
+    setTab(newTab);
+    setSearch('');
+  };
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1350,7 +1368,10 @@ export default function AttendanceSalary() {
     decisions[empId] ?? defaultDecision(), [decisions]);
 
   const handleAdvanceCleared = (empId: string) => {
+    // Zero out employee advance in local state
     setEmployees(prev => prev.map(e => e.id === empId ? { ...e, salaryAdvance: 0 } : e));
+    // Mark all this employee's advance records as cleared in local state too
+    setAdvanceRecords(prev => prev.map(r => r.employeeId === empId ? { ...r, cleared: true } : r));
     const cur = getDecision(empId);
     updateDecision(empId, { ...cur, deductAdvance: false });
   };
@@ -1386,7 +1407,15 @@ export default function AttendanceSalary() {
       setRemovingEmpId(null);
     }
   };
-  const saveEmp = (emp: Employee) => { setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e)); setEditEmp(null); };
+  const saveEmp = (updated: Employee) => {
+    const prev = employees.find(e => e.id === updated.id);
+    setEmployees(prevList => prevList.map(e => e.id === updated.id ? updated : e));
+    // If advance was reduced to 0 via the edit modal, mark all their records as cleared
+    if (prev && prev.salaryAdvance > 0 && updated.salaryAdvance === 0) {
+      setAdvanceRecords(prevRecs => prevRecs.map(r => r.employeeId === updated.id ? { ...r, cleared: true } : r));
+    }
+    setEditEmp(null);
+  };
 
   const filtered = useMemo(() => {
     let list = employees;
@@ -1493,7 +1522,7 @@ export default function AttendanceSalary() {
           { k: 'analytics', l: '📊 Analytics' },
           { k: 'advance', l: '💳 Advance' },
         ] as const).map(({ k, l }) => (
-          <button key={k} onClick={() => setTab(k)}
+          <button key={k} onClick={() => handleTabChange(k)}
             className={cn('shrink-0 px-3 py-2.5 rounded-xl text-xs font-body font-bold transition-all active:scale-95', tab === k ? 'cafe-gradient text-primary-foreground shadow-sm' : 'bg-card border border-border text-foreground')}>
             {l}
           </button>
