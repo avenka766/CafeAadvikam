@@ -183,13 +183,16 @@ async function clearAdvance(employeeId: string): Promise<void> {
 }
 
 // ─── Advance Records DB helpers ───────────────────────────────────────────────
-async function fetchAdvanceRecords(): Promise<SalaryAdvanceRecord[]> {
+async function fetchAdvanceRecords(): Promise<{ records: SalaryAdvanceRecord[]; tableReady: boolean }> {
   const { data, error } = await supabase
     .from('salary_advances')
     .select('*')
     .order('given_date', { ascending: false });
-  if (error) { console.warn('salary_advances fetch:', error.message); return []; }
-  return (data || []).map(r => ({
+  if (error) {
+    console.warn('salary_advances fetch:', error.message);
+    return { records: [], tableReady: false };
+  }
+  const records = (data || []).map(r => ({
     id: r.id as string,
     employeeId: r.employee_id as string,
     amount: Number(r.amount),
@@ -197,6 +200,7 @@ async function fetchAdvanceRecords(): Promise<SalaryAdvanceRecord[]> {
     note: (r.note as string) || undefined,
     cleared: r.cleared as boolean,
   }));
+  return { records, tableReady: true };
 }
 
 async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>): Promise<SalaryAdvanceRecord | null> {
@@ -992,9 +996,10 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
 }
 
 // ─── Advance Tab ──────────────────────────────────────────────────────────────
-function AdvanceTab({ employees, advanceRecords, onAdd, onClear }: {
+function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
   employees: Employee[];
   advanceRecords: SalaryAdvanceRecord[];
+  tableReady: boolean;
   onAdd: (rec: SalaryAdvanceRecord) => void;
   onClear: (advanceId: string, employeeId: string, amount: number) => void;
 }) {
@@ -1046,10 +1051,15 @@ function AdvanceTab({ employees, advanceRecords, onAdd, onClear }: {
     return map;
   }, [displayRecords]);
 
-  const totalOutstanding = useMemo(() =>
-    advanceRecords.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0),
-    [advanceRecords]
-  );
+  const totalOutstanding = useMemo(() => {
+    // Sum from the advance records table (uncleared)
+    const fromRecords = advanceRecords.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0);
+    // Fallback: if no records exist yet, sum from employees' salaryAdvance field directly
+    if (advanceRecords.length === 0) {
+      return employees.reduce((s, e) => s + (e.salaryAdvance || 0), 0);
+    }
+    return fromRecords;
+  }, [advanceRecords, employees]);
 
   const empMap = useMemo(() => {
     const m: Record<string, Employee> = {};
@@ -1059,14 +1069,25 @@ function AdvanceTab({ employees, advanceRecords, onAdd, onClear }: {
 
   return (
     <div className="px-4 space-y-4 pb-6">
-      {/* Summary KPI */}
+      {/* Migration warning */}
+      {!tableReady && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex gap-3">
+          <AlertCircle className="size-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-body font-bold text-amber-800">Database table not set up</p>
+            <p className="text-xs font-body text-amber-700 mt-1">
+              Run the <strong>migration_salary_advances.sql</strong> file in your Supabase SQL editor, then refresh the page. Until then, advances can't be saved.
+            </p>
+          </div>
+        </div>
+      )}
       <div className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
         <div className="size-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
           <CreditCard className="size-5 text-amber-600" />
         </div>
         <div>
           <p className="font-display font-bold text-xl tabular-nums text-amber-600">
-            {totalOutstanding > 0 ? `₹${totalOutstanding.toLocaleString('en-IN')}` : '—'}
+            ₹{totalOutstanding.toLocaleString('en-IN')}
           </p>
           <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Total Outstanding Advances</p>
         </div>
@@ -1242,13 +1263,14 @@ export default function AttendanceSalary() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
   const [advanceRecords, setAdvanceRecords] = useState<SalaryAdvanceRecord[]>([]);
+  const [advanceTableReady, setAdvanceTableReady] = useState(true);
   const ddRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [emps, attData, decData, advData] = await Promise.all([
+        const [emps, attData, decData, advResult] = await Promise.all([
           fetchEmployees(),
           fetchAttendance(activeMonth.year, activeMonth.month),
           fetchDeductionDecisions(activeMonth.year, activeMonth.month),
@@ -1257,7 +1279,8 @@ export default function AttendanceSalary() {
         setEmployees(emps);
         setAtt(attData);
         setDecisions(decData);
-        setAdvanceRecords(advData);
+        setAdvanceRecords(advResult.records);
+        setAdvanceTableReady(advResult.tableReady);
         const now = new Date();
         deleteOldAttendance(now.getFullYear(), now.getMonth() + 1);
       } catch (e) {
@@ -1557,6 +1580,7 @@ export default function AttendanceSalary() {
         <AdvanceTab
           employees={employees}
           advanceRecords={advanceRecords}
+          tableReady={advanceTableReady}
           onAdd={handleAdvanceRecordAdded}
           onClear={handleAdvanceRecordCleared}
         />
