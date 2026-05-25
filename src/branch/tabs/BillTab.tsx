@@ -1,4 +1,5 @@
 // src/branch/tabs/BillTab.tsx
+import { supabase } from '@/lib/supabase'; // BUG #13 FIX: supabase was used in fetchNextBillNo() but never imported
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2, Loader2, Receipt,
