@@ -134,6 +134,15 @@ export const useAuthStore = create<AuthState>()(
       name: 'cafe-aadvikam-auth',
       storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null }),
+      // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
+      // but that means after a page reload the 8-hour auto-logout timer is never restarted.
+      // onRehydrateStorage fires once after sessionStorage is loaded — restart the timer here
+      // if the user session was restored (so they are still auto-logged out after 8 hours).
+      onRehydrateStorage: () => (state) => {
+        if (state?.currentUser) {
+          state._resetSessionTimer();
+        }
+      },
     },
   ),
 );
