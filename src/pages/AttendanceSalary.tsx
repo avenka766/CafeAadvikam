@@ -375,6 +375,201 @@ function exportExcel(
   XLSX.writeFile(wb, `CafeAadvikam_SalaryReport_${monthLabel.replace(' ', '_')}.xlsx`);
 }
 
+// ─── Attendance-only Excel Export ─────────────────────────────────────────────
+function exportAttendanceExcel(
+  employees: Employee[],
+  att: MonthAttendance,
+  decisions: DeductionDecisions,
+  daysInMonth: number,
+  monthLabel: string,
+  getDecision: (id: string) => DeductionDecision
+) {
+  const wb = XLSX.utils.book_new();
+
+  // ── Sheet: Attendance Register ──
+  const attHeaders = [
+    '#', 'Name', 'Branch', 'Department',
+    ...Array.from({ length: daysInMonth }, (_, i) => String(i + 1)),
+    'Present', 'Half Days', 'Week Offs', 'Total Worked', 'Food Ded. (₹)', 'Net Payable (₹)',
+  ];
+
+  const attRows = employees.map((e, i) => {
+    const d = getDecision(e.id);
+    const c = calcSalary(e, att, daysInMonth, d);
+    const days = Array.from({ length: daysInMonth }, (_, di) => {
+      const a = att[ak(e.id, di + 1)];
+      if (!a) return '';
+      if (a.present) return 'P';
+      if (a.half)    return 'H';
+      if (a.woff)    return 'W';
+      return 'A';
+    });
+    return [i + 1, e.name, e.branch, e.department, ...days, c.presentDays, c.halfDays, c.woffDays, c.worked, c.canteenTotal, c.net];
+  });
+
+  // Totals row
+  const totals = [
+    '', 'TOTAL', '', '',
+    ...Array(daysInMonth).fill(''),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).presentDays, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).halfDays, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).woffDays, 0),
+    '',
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).canteenTotal, 0),
+    employees.reduce((s, e) => s + calcSalary(e, att, daysInMonth, getDecision(e.id)).net, 0),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet([
+    [`ATTENDANCE REGISTER — ${monthLabel.toUpperCase()}`],
+    [`Cafe Aadvikam Group | Generated on ${new Date().toLocaleDateString('en-IN')} | ${employees.length} employees`],
+    ['P = Present   H = Half Day   W = Week Off   A = Absent'],
+    [],
+    attHeaders,
+    ...attRows,
+    totals,
+  ]);
+
+  ws['!cols'] = [
+    { wch: 4 }, { wch: 22 }, { wch: 16 }, { wch: 14 },
+    ...Array(daysInMonth).fill({ wch: 4 }),
+    { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 13 }, { wch: 14 },
+  ];
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: daysInMonth + 11 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: daysInMonth + 11 } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: daysInMonth + 11 } },
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Attendance Register');
+
+  // ── Sheet 2: Per-employee meal detail ──
+  const mealHeaders = ['#', 'Name', 'Branch', 'Department', 'Day', 'Breakfast', 'Lunch', 'Dinner', 'Meal Cost (₹)'];
+  const mealRows: (string | number)[][] = [];
+  let mealIdx = 1;
+  employees.forEach(e => {
+    for (let d = 1; d <= daysInMonth; d++) {
+      const a = att[ak(e.id, d)];
+      if (!a || (!a.present && !a.half)) continue;
+      if (!a.bf && !a.lunch && !a.dinner) continue;
+      const cost = [a.bf, a.lunch, a.dinner].filter(Boolean).length * 10;
+      mealRows.push([mealIdx++, e.name, e.branch, e.department, d, a.bf ? 'Yes' : '', a.lunch ? 'Yes' : '', a.dinner ? 'Yes' : '', cost]);
+    }
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet([
+    [`MEAL / CANTEEN LOG — ${monthLabel.toUpperCase()}`],
+    ['Each meal = ₹10 deducted from salary'],
+    [],
+    mealHeaders,
+    ...mealRows,
+    mealRows.length > 0
+      ? ['', 'TOTAL', '', '', '', '', '', '',
+          mealRows.reduce((s, r) => s + (r[8] as number), 0)]
+      : ['No meal records for this period'],
+  ]);
+  ws2['!cols'] = [{ wch: 4 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 6 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 12 }];
+  ws2['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Meal Log');
+
+  XLSX.writeFile(wb, `CafeAadvikam_Attendance_${monthLabel.replace(' ', '_')}.xlsx`);
+}
+
+// ─── Advance Excel Export ──────────────────────────────────────────────────────
+function exportAdvanceExcel(
+  employees: Employee[],
+  allAdvanceRecords: SalaryAdvanceRecord[],
+  monthLabel: string
+) {
+  const wb = XLSX.utils.book_new();
+  const empIds = new Set(employees.map(e => e.id));
+
+  // Filter advance records to the current employee list (dept/branch filter)
+  const records = allAdvanceRecords.filter(r => empIds.has(r.employeeId));
+
+  const empMap: Record<string, Employee> = {};
+  employees.forEach(e => { empMap[e.id] = e; });
+
+  // ── Sheet 1: All Advance Records ──
+  const headers = ['#', 'Employee', 'Branch', 'Department', 'Amount (₹)', 'Date Given', 'Note', 'Status', 'Outstanding (₹)'];
+  const rows = records.map((r, i) => {
+    const e = empMap[r.employeeId];
+    return [
+      i + 1,
+      e?.name ?? r.employeeId,
+      e?.branch ?? '',
+      e?.department ?? '',
+      r.amount,
+      new Date(r.givenDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+      r.note ?? '',
+      r.cleared ? 'Cleared' : 'Outstanding',
+      r.cleared ? 0 : r.amount,
+    ];
+  });
+
+  const totalOutstanding = records.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0);
+  const totalCleared     = records.filter(r => r.cleared).reduce((s, r) => s + r.amount, 0);
+
+  const ws1 = XLSX.utils.aoa_to_sheet([
+    [`SALARY ADVANCE REPORT — ${monthLabel.toUpperCase()}`],
+    [`Cafe Aadvikam Group | Generated on ${new Date().toLocaleDateString('en-IN')} | ${employees.length} employees`],
+    [],
+    headers,
+    ...rows,
+    [],
+    ['', 'TOTAL OUTSTANDING', '', '', totalOutstanding, '', '', '', totalOutstanding],
+    ['', 'TOTAL CLEARED',     '', '', totalCleared,     '', '', '', 0],
+  ]);
+  ws1['!cols'] = [
+    { wch: 4 }, { wch: 22 }, { wch: 14 }, { wch: 14 },
+    { wch: 13 }, { wch: 16 }, { wch: 24 }, { wch: 12 }, { wch: 15 },
+  ];
+  ws1['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws1, 'Advance Records');
+
+  // ── Sheet 2: Per-employee Advance Summary ──
+  const summaryHeaders = ['#', 'Employee', 'Branch', 'Department', 'Total Advanced (₹)', 'Total Cleared (₹)', 'Outstanding (₹)', 'No. of Records'];
+  const summaryRows = employees
+    .map((e, i) => {
+      const empRecs = records.filter(r => r.employeeId === e.id);
+      if (empRecs.length === 0 && e.salaryAdvance === 0) return null;
+      const totalAdv     = empRecs.reduce((s, r) => s + r.amount, 0) || e.salaryAdvance;
+      const totalClr     = empRecs.filter(r => r.cleared).reduce((s, r) => s + r.amount, 0);
+      const outstanding  = empRecs.length > 0
+        ? empRecs.filter(r => !r.cleared).reduce((s, r) => s + r.amount, 0)
+        : e.salaryAdvance;
+      return [i + 1, e.name, e.branch, e.department, totalAdv, totalClr, outstanding, empRecs.length];
+    })
+    .filter(Boolean) as (string | number)[][];
+
+  const ws2 = XLSX.utils.aoa_to_sheet([
+    [`ADVANCE SUMMARY BY EMPLOYEE — ${monthLabel.toUpperCase()}`],
+    [],
+    summaryHeaders,
+    ...summaryRows,
+    ['', 'TOTAL', '', '',
+      summaryRows.reduce((s, r) => s + (r[4] as number), 0),
+      summaryRows.reduce((s, r) => s + (r[5] as number), 0),
+      summaryRows.reduce((s, r) => s + (r[6] as number), 0),
+      '',
+    ],
+  ]);
+  ws2['!cols'] = [
+    { wch: 4 }, { wch: 22 }, { wch: 14 }, { wch: 14 },
+    { wch: 18 }, { wch: 16 }, { wch: 15 }, { wch: 14 },
+  ];
+  ws2['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Employee Summary');
+
+  XLSX.writeFile(wb, `CafeAadvikam_Advances_${monthLabel.replace(' ', '_')}.xlsx`);
+}
+
 // ─── Sub-components ────────────────────────────────────────────────────────────
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -1306,13 +1501,15 @@ export default function AttendanceSalary() {
   const [decisions, setDecisions] = useState<DeductionDecisions>({});
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
-  const [branch, setBranch] = useState<'All' | Branch>('All');
-  const [search, setSearch] = useState('');
+  const [branch, setBranch]   = useState<'All' | Branch>('All');
+  const [dept, setDept]       = useState<'All' | 'Store' | 'Admin office'>('All');
+  const [search, setSearch]   = useState('');
 
   const handleTabChange = (newTab: typeof tab) => {
     setTab(newTab);
     setSearch('');
   };
+  const DEPT_OPTIONS = ['All', 'Store', 'Admin office'] as const;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1420,12 +1617,17 @@ export default function AttendanceSalary() {
   const filtered = useMemo(() => {
     let list = employees;
     if (branch !== 'All') list = list.filter(e => e.branch === branch);
+    // Department filter: 'Store' and 'Admin office' are the two department groups
+    if (dept !== 'All') list = list.filter(e =>
+      e.department.trim().toLowerCase() === dept.toLowerCase()
+    );
     if (search.trim()) { const q = search.toLowerCase(); list = list.filter(e => e.name.toLowerCase().includes(q) || e.department.toLowerCase().includes(q)); }
     return list;
-  }, [employees, branch, search]);
+  }, [employees, branch, dept, search]);
 
   const summary = useMemo(() => {
-    const list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
     let gross = 0, net = 0, canteen = 0, advanceTotal = 0;
     list.forEach(e => {
       const d = getDecision(e.id);
@@ -1433,11 +1635,24 @@ export default function AttendanceSalary() {
       gross += e.grossSalary; net += c.net; canteen += c.canteenTotal; advanceTotal += e.salaryAdvance;
     });
     return { count: list.length, gross, net, canteen, advanceTotal };
-  }, [employees, branch, att, decisions, activeMonth.daysInMonth, getDecision]);
+  }, [employees, branch, dept, att, decisions, activeMonth.daysInMonth, getDecision]);
 
   const handleExcelExport = () => {
-    const list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
     exportExcel(list, att, decisions, activeMonth.daysInMonth, activeMonth.label, getDecision);
+  };
+
+  const handleAttendanceExcelExport = () => {
+    let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    if (dept !== 'All') list = list.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    exportAttendanceExcel(list, att, decisions, activeMonth.daysInMonth, activeMonth.label, getDecision);
+  };
+
+  const handleAdvanceExcelExport = () => {
+    let empList = branch === 'All' ? employees : employees.filter(e => e.branch === branch);
+    if (dept !== 'All') empList = empList.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase());
+    exportAdvanceExcel(empList, advanceRecords, activeMonth.label);
   };
 
   if (loading) {
@@ -1529,16 +1744,49 @@ export default function AttendanceSalary() {
         ))}
       </div>
 
-      {/* Search + actions — hide on analytics and advance tabs */}
-      {tab !== 'analytics' && tab !== 'advance' && (
+      {/* Department filter — shown on attendance + advance tabs alongside existing filters */}
+      {(tab === 'attendance' || tab === 'advance' || tab === 'salary' || tab === 'employees') && (
+        <div className="px-4 mb-2 flex items-center gap-2 overflow-x-auto">
+          <span className="text-[10px] font-body font-semibold text-muted-foreground uppercase shrink-0">Dept:</span>
+          {DEPT_OPTIONS.map(d => (
+            <button
+              key={d}
+              onClick={() => setDept(d)}
+              className={cn(
+                'shrink-0 px-3 py-1.5 rounded-lg text-xs font-body font-semibold border transition-all active:scale-95',
+                dept === d
+                  ? 'cafe-gradient text-primary-foreground border-transparent shadow-sm'
+                  : 'bg-card border-border text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Search + actions — hide on analytics tab */}
+      {tab !== 'analytics' && (
         <div className="px-4 mb-3 flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input type="text" placeholder="Search name or department…" value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full pl-9 pr-4 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30" />
-          </div>
+          {tab !== 'advance' && (
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+              <input type="text" placeholder="Search name or department…" value={search} onChange={e => setSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+          )}
+          {tab === 'attendance' && (
+            <button onClick={handleAttendanceExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
+              <Download className="size-4" /> Excel
+            </button>
+          )}
           {tab === 'salary' && (
             <button onClick={handleExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
+              <Download className="size-4" /> Excel
+            </button>
+          )}
+          {tab === 'advance' && (
+            <button onClick={handleAdvanceExcelExport} className="shrink-0 h-10 px-3 rounded-xl bg-emerald-600 text-white flex items-center gap-1 text-xs font-body font-semibold transition-colors hover:bg-emerald-700 active:scale-95">
               <Download className="size-4" /> Excel
             </button>
           )}
@@ -1644,7 +1892,7 @@ export default function AttendanceSalary() {
       {/* ── ADVANCE ─────────────────────────────────── */}
       {tab === 'advance' && (
         <AdvanceTab
-          employees={employees}
+          employees={dept === 'All' ? employees : employees.filter(e => e.department.trim().toLowerCase() === dept.toLowerCase())}
           advanceRecords={advanceRecords}
           tableReady={advanceTableReady}
           onAdd={handleAdvanceRecordAdded}
