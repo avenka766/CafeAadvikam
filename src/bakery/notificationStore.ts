@@ -136,14 +136,14 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushPackingDiscrepancy: async (orderId, orderNumber, branch, items) => {
-    // Build a human-readable line per item: "Bread: baker sent 10 kg, packing dispatched 9 kg (1 kg missing)"
+    // Build a human-readable line per item — covers both shortfall AND excess
     const lines = items
       .map(i => {
-        const diff = i.requested - i.dispatched;   // requested = what baker prepared
+        const diff = i.requested - i.dispatched;
         if (diff > 0) {
-          return `${i.itemName}: baker sent ${i.requested} ${i.unit}, packing dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} missing`;
+          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} short`;
         } else if (diff < 0) {
-          return `${i.itemName}: baker sent ${i.requested} ${i.unit}, packing dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
+          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
         }
         return `${i.itemName}: ${i.dispatched} ${i.unit} ✓`;
       })
@@ -155,7 +155,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
     const { error } = await supabase.from('admin_notifications').insert({
       type: 'packing_discrepancy',
-      title: `Packing Shortfall – ${titleSuffix}`,
+      title: `Packing Discrepancy – ${titleSuffix}`,
       body: `Order ${orderNumber} → ${branch}: ${lines}`,
       ref_id: orderId,
       ref_label: `Order ${orderNumber} → ${branch}`,
@@ -163,4 +163,5 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     });
     if (!error) await get().load();
   },
+
 }));

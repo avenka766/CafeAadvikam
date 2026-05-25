@@ -162,7 +162,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
           .filter(d => d.itemName === p.itemName)
           .reduce((s, d) => s + d.quantity, 0);
 
-        if (totalDispatched < effectiveQty - 0.001) {         // more than 0 left undispatched
+        if (totalDispatched < effectiveQty - 0.001 || totalDispatched > effectiveQty + 0.001) {
           shortfalls.push({
             itemName: p.itemName,
             prepared: effectiveQty,
