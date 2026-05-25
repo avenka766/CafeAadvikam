@@ -64,8 +64,12 @@ export default function BottomNav() {
       { label: 'Invoices',   icon: <FileText          className="size-5" />, path: '/admin/invoices', badge: pendingInvoices || undefined },
       { label: 'Alerts',     icon: <Bell              className="size-5" />, path: '/admin/alerts',   badge: unread || undefined },
     );
-  } else if (currentUser.role === 'order_receiver') {
-    navItems.push({ label: 'Receive', icon: <Inbox    className="size-5" />, path: '/bakery/receive' });
+  } else if (currentUser.role === 'receiver_vrsnb') {
+    navItems.push({ label: 'VRSNB', icon: <Inbox className="size-5" />, path: '/bakery/receive/vrsnb' });
+  } else if (currentUser.role === 'receiver_snb') {
+    navItems.push({ label: 'SNB',   icon: <Inbox className="size-5" />, path: '/bakery/receive/snb' });
+  } else if (currentUser.role === 'receiver_hosur') {
+    navItems.push({ label: 'Hosur', icon: <Inbox className="size-5" />, path: '/bakery/receive/hosur' });
   } else if (currentUser.role === 'store') {
     navItems.push({ label: 'Store',   icon: <Store   className="size-5" />, path: '/bakery/store' });
   } else if (currentUser.role === 'baker') {
