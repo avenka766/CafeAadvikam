@@ -596,6 +596,11 @@ function CafeReportsTab() {
     const XLSX = await import('xlsx');
 
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
+    // FIX: rangeLabel was used in Sheets 5 and 8 but never defined in CafeReportsTab.
+    // It IS defined in BakeryReportsTab (different component) — copy the same pattern here.
+    const rangeLabel = dateFrom === dateTo
+      ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+      : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
 
     const PAYMENT_LABELS_LOCAL: Record<string, string> = {
       cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
