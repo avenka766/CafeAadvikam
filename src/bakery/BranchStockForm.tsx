@@ -85,15 +85,16 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   // ── Filtered item list (category + search) ─────────────────────────────────
 
   const filteredItems = useMemo(() => {
-    let list = selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat);
+    // Step 1: apply category filter first
+    const catList = selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat);
+    // Step 2: search only within the already-filtered category list
     const q = search.trim().toLowerCase();
-    if (q) list = list.filter(i => i.name.toLowerCase().includes(q));
-    return list;
+    return q ? catList.filter(i => i.name.toLowerCase().includes(q)) : catList;
   }, [branchItems, selectedCat, search]);
 
-  // Grouped for "All" view (optgroups), flat for filtered view
+  // Grouped optgroups only when All is selected AND no search active
   const itemsByCategory = useMemo(() => {
-    if (selectedCat !== ALL || search.trim()) return null; // flat mode
+    if (selectedCat !== ALL || search.trim()) return null;
     const map: Record<string, typeof branchItems> = {};
     for (const cat of categories) {
       const catItems = branchItems.filter(i => i.category === cat);
@@ -141,13 +142,14 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
   const handleSearchChange = (val: string) => {
     setSearch(val);
-    // Reset lines whose item is no longer in filtered list
-    const nextItems = (selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat))
-      .filter(i => val.trim() === '' || i.name.toLowerCase().includes(val.trim().toLowerCase()));
+    // Only reset lines if their item is no longer visible within the current category + new search
+    const catList = selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat);
+    const q = val.trim().toLowerCase();
+    const nextItems = q ? catList.filter(i => i.name.toLowerCase().includes(q)) : catList;
     if (nextItems.length === 0) return;
     setLines(prev => prev.map(l => {
-      const stillValid = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
-      return stillValid ? l : makeLine(branch, nextItems[0]);
+      const stillVisible = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
+      return stillVisible ? l : makeLine(branch, nextItems[0]);
     }));
   };
 
