@@ -10,7 +10,9 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'order_taker':    return '/order-pad';
     case 'admin':          return '/admin-dashboard';
     case 'kitchen':        return '/kitchen';
-    case 'order_receiver': return '/bakery/receive';
+    case 'receiver_vrsnb':  return '/bakery/receive/vrsnb';
+    case 'receiver_snb':    return '/bakery/receive/snb';
+    case 'receiver_hosur':  return '/bakery/receive/hosur';
     case 'store':          return '/bakery/store';
     case 'baker':          return '/bakery/baker';
     case 'packing':        return '/bakery/packing';
