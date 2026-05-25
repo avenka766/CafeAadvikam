@@ -1,20 +1,13 @@
 // ─── BranchStockForm ──────────────────────────────────────────────────────────
 // Stock requirement entry form for a single branch.
-//
-// Item source is BRANCH-SPECIFIC:
-//   VRSNB  → VRSNB_ITEMS  (same list shown in Admin → Items → VRSNB tab)
-//   SNB    → SNB_ITEMS    (same list shown in Admin → Items → SNB tab)
-//   Hosur  → SNB_ITEMS    (Hosur shares the SNB price list)
-//
-// VRSNB pcs → kg conversion
-//   VRSNB items with uom = "Nos" are sold in pieces. Their name contains the
-//   per-unit weight, e.g. "Banana chips (200g)". When the receiver enters a pcs
-//   quantity the form converts it to kg in real time and submits the kg value so
-//   the Store can calculate raw-material requirements correctly.
-//   Items with no weight in the name are submitted as-is with a warning.
+// Changes:
+//   • Removed Note / Reference field
+//   • Added category filter pill bar (scrollable, branch-coloured)
+//   • Added search bar to filter items by name
+//   • Works for all 3 receivers: VRSNB, SNB, Hosur
 
 import { useState, useMemo } from 'react';
-import { Plus, Trash2, Send, CheckCircle2, Loader2, Hash, Sparkles, Scale, ArrowRight } from 'lucide-react';
+import { Plus, Trash2, Send, CheckCircle2, Loader2, Scale, ArrowRight, Search, X, Sparkles } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
@@ -67,6 +60,8 @@ function hasRecipeFor(itemId: string, itemName: string): boolean {
   return !!(RECIPE_DEFINITIONS[itemId] ?? findRecipeId(itemName));
 }
 
+const ALL = 'All';
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function BranchStockForm({ branch, onSubmitted }: Props) {
@@ -76,15 +71,36 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const { items: branchItems, categories } = useMemo(() => getBranchSource(branch), [branch]);
   const defaultItem = branchItems[0];
 
-  const [note, setNote]             = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess]       = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting,   setSubmitting]   = useState(false);
+  const [success,      setSuccess]      = useState(false);
+  const [submitError,  setSubmitError]  = useState<string | null>(null);
+  const [selectedCat,  setSelectedCat]  = useState<string>(ALL);
+  const [search,       setSearch]       = useState('');
 
   const [lines, setLines] = useState<LineItem[]>([
     defaultItem ? makeLine(branch, defaultItem) : { itemId: '', itemName: '', uom: 'Kgs', weightGrams: null, qty: '' },
   ]);
   const [customLines, setCustomLines] = useState<{ name: string; qty: string }[]>([]);
+
+  // ── Filtered item list (category + search) ─────────────────────────────────
+
+  const filteredItems = useMemo(() => {
+    let list = selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat);
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter(i => i.name.toLowerCase().includes(q));
+    return list;
+  }, [branchItems, selectedCat, search]);
+
+  // Grouped for "All" view (optgroups), flat for filtered view
+  const itemsByCategory = useMemo(() => {
+    if (selectedCat !== ALL || search.trim()) return null; // flat mode
+    const map: Record<string, typeof branchItems> = {};
+    for (const cat of categories) {
+      const catItems = branchItems.filter(i => i.category === cat);
+      if (catItems.length > 0) map[cat] = catItems as typeof branchItems;
+    }
+    return map;
+  }, [branchItems, categories, selectedCat, search]);
 
   // ── Line manipulation ──────────────────────────────────────────────────────
 
@@ -100,13 +116,39 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   };
 
   const addLine = () => {
-    if (!defaultItem) return;
-    setLines(prev => [...prev, makeLine(branch, defaultItem)]);
+    const first = filteredItems[0] ?? defaultItem;
+    if (!first) return;
+    setLines(prev => [...prev, makeLine(branch, first)]);
   };
 
   const removeLine = (idx: number) => {
     if (lines.length === 1) return;
     setLines(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  // When category changes, reset any line whose current item isn't in the new filtered list
+  const handleCatChange = (cat: string) => {
+    setSelectedCat(cat);
+    setSearch('');
+    const nextItems = cat === ALL ? branchItems : branchItems.filter(i => i.category === cat);
+    const firstNext = nextItems[0];
+    if (!firstNext) return;
+    setLines(prev => prev.map(l => {
+      const stillValid = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
+      return stillValid ? l : makeLine(branch, firstNext);
+    }));
+  };
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    // Reset lines whose item is no longer in filtered list
+    const nextItems = (selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat))
+      .filter(i => val.trim() === '' || i.name.toLowerCase().includes(val.trim().toLowerCase()));
+    if (nextItems.length === 0) return;
+    setLines(prev => prev.map(l => {
+      const stillValid = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
+      return stillValid ? l : makeLine(branch, nextItems[0]);
+    }));
   };
 
   // ── Custom lines ───────────────────────────────────────────────────────────
@@ -122,11 +164,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
   // ── Validation ─────────────────────────────────────────────────────────────
 
-  // BUG #10 FIX: filledLines must exclude qty=0, not just empty string.
-  // handleSubmit filters with Number(l.qty) > 0 so a qty="0" line is silently
-  // dropped from submission but was previously allowed to pass validation.
   const filledLines = lines.filter(l => l.qty !== '' && Number(l.qty) > 0);
-
   const valid =
     filledLines.every(l => l.itemId !== '') &&
     customLines.every(l => l.name.trim() !== '' && l.qty !== '' && Number(l.qty) > 0) &&
@@ -143,46 +181,34 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         .filter(l => l.itemId !== '' && Number(l.qty) > 0)
         .map((l): BakeryOrderItem => {
           const rawQty = Number(l.qty);
-
-          // VRSNB Nos item with parseable weight → convert pcs to kg
           if (l.uom === 'Nos' && l.weightGrams !== null) {
             const kgQty = pcsToKg(l.itemName, rawQty) ?? rawQty;
             return { itemId: l.itemId, itemName: l.itemName, quantity: kgQty, originalPcs: rawQty, weightGrams: l.weightGrams, dispatchUnit: 'pcs' as const };
           }
-
-          // VRSNB Nos item without weight in name → submit pcs as-is
           if (l.uom === 'Nos' && l.weightGrams === null) {
             return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, originalPcs: rawQty, dispatchUnit: 'pcs' as const };
           }
-
-          // Kgs item → direct
           return { itemId: l.itemId, itemName: l.itemName, quantity: rawQty, dispatchUnit: 'kg' as const };
         }),
-
-      // BUG #7 FIX: give custom items a stable ID (generated once, not on every render),
-      // and always set dispatchUnit so packing knows how to handle them.
       ...customLines.map((l, idx): BakeryOrderItem => ({
-        itemId:      `custom-${currentUser.uid}-${idx}`,
-        itemName:    l.name.trim(),
-        quantity:    Number(l.qty),
-        isCustom:    true,
+        itemId:       `custom-${currentUser.id}-${idx}`,
+        itemName:     l.name.trim(),
+        quantity:     Number(l.qty),
+        isCustom:     true,
         dispatchUnit: 'kg' as const,
       })),
     ];
 
-    const label = [
-      `${branch} Branch`,
-      note.trim() ? `Note: ${note.trim()}` : '',
-      `| ${currentUser.displayName}`,
-    ].filter(Boolean).join(' ');
+    const label = `${branch} Branch | ${currentUser.displayName}`;
 
     setSubmitError(null);
     try {
       await submitOrder(items, label, branch);
       setSuccess(true);
-      setNote('');
       setLines([defaultItem ? makeLine(branch, defaultItem) : lines[0]]);
       setCustomLines([]);
+      setSelectedCat(ALL);
+      setSearch('');
       setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
     } catch {
       setSubmitError('Failed to submit — please try again.');
@@ -191,18 +217,17 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     }
   };
 
-  // ── Grouped items for select optgroups ─────────────────────────────────────
+  // ── Styles ─────────────────────────────────────────────────────────────────
 
   const colors = BRANCH_COLOR[branch];
 
-  const itemsByCategory = useMemo(() => {
-    const map: Record<string, typeof branchItems> = {};
-    for (const cat of categories) {
-      const catItems = branchItems.filter(i => i.category === cat);
-      if (catItems.length > 0) map[cat] = catItems as typeof branchItems;
-    }
-    return map;
-  }, [branchItems, categories]);
+  const pillBase    = 'px-3 py-1.5 rounded-full text-[11px] font-body font-semibold border transition-all shrink-0';
+  const pillActive  = branch === 'VRSNB'
+    ? 'bg-blue-600 text-white border-blue-600'
+    : branch === 'SNB'
+    ? 'bg-amber-500 text-white border-amber-500'
+    : 'bg-emerald-600 text-white border-emerald-600';
+  const pillInactive = 'bg-background text-muted-foreground border-border';
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -218,25 +243,11 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           <p className="text-sm font-display font-bold leading-none">{branch} Branch</p>
         </div>
         <span className="ml-auto text-[10px] font-body font-semibold opacity-60">
-          {branch === 'VRSNB' ? `${VRSNB_ITEMS.length} items` : `${SNB_ITEMS.length} items`}
+          {branch === 'VRSNB' ? `${VRSNB_ITEMS.length}` : `${SNB_ITEMS.length}`} items
         </span>
       </div>
 
       <div className="px-4 space-y-4">
-
-        {/* Note / reference */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1 flex items-center gap-1">
-            <Hash className="size-3" /> Note / Reference
-            <span className="normal-case font-normal ml-0.5">(optional)</span>
-          </label>
-          <input
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            placeholder="e.g. Festival order, WhatsApp ref #123…"
-            className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
-        </div>
 
         {/* VRSNB pcs info banner */}
         {branch === 'VRSNB' && (
@@ -249,15 +260,57 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           </div>
         )}
 
-        {/* Regular items */}
+        {/* Items section */}
         <div className="border-t border-border pt-3">
-          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-2.5">
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-3">
             Items Required
             <span className="ml-1 normal-case text-primary font-normal">
-              ({branchItems.length} items · {branch === 'VRSNB' ? 'VRSNB' : 'SNB'} price list)
+              ({filteredItems.length} of {branchItems.length} items)
             </span>
           </p>
 
+          {/* ── Category filter pills ── */}
+          <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3 scrollbar-hide">
+            {[ALL, ...categories].map(cat => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => handleCatChange(cat)}
+                className={cn(pillBase, selectedCat === cat ? pillActive : pillInactive)}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Search bar ── */}
+          <div className="relative mb-3">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              value={search}
+              onChange={e => handleSearchChange(e.target.value)}
+              placeholder="Search items…"
+              className="w-full h-10 pl-9 pr-9 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+            {search && (
+              <button
+                onClick={() => handleSearchChange('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* No results state */}
+          {filteredItems.length === 0 && (
+            <div className="py-8 text-center">
+              <p className="text-sm font-body text-muted-foreground">No items match your search.</p>
+              <button onClick={() => { setSearch(''); setSelectedCat(ALL); }} className="text-xs text-primary underline mt-1">Clear filters</button>
+            </div>
+          )}
+
+          {/* Line rows */}
           <div className="space-y-2">
             {lines.map((line, idx) => {
               const convertedKg = line.uom === 'Nos' && line.weightGrams !== null && line.qty !== ''
@@ -276,15 +329,27 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                       onChange={e => updateItemSelection(idx, e.target.value)}
                       className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
                     >
-                      {Object.entries(itemsByCategory).map(([cat, catItems]) => (
-                        <optgroup key={cat} label={cat}>
-                          {catItems.map(item => (
-                            <option key={item.barcode} value={toItemId(branch, item.barcode)}>
-                              {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
+                      {filteredItems.length === 0 ? (
+                        <option disabled>No items</option>
+                      ) : itemsByCategory && !search.trim() ? (
+                        // Grouped optgroups when showing All with no search
+                        Object.entries(itemsByCategory).map(([cat, catItems]) => (
+                          <optgroup key={cat} label={cat}>
+                            {catItems.map(item => (
+                              <option key={item.barcode} value={toItemId(branch, item.barcode)}>
+                                {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))
+                      ) : (
+                        // Flat list when a category is selected or search is active
+                        filteredItems.map(item => (
+                          <option key={item.barcode} value={toItemId(branch, item.barcode)}>
+                            {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                          </option>
+                        ))
+                      )}
                     </select>
 
                     {/* Quantity */}
@@ -315,26 +380,20 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                     </button>
                   </div>
 
-                  {/* Status chips below the row */}
+                  {/* Status chips */}
                   {line.qty !== '' && (
                     <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
-
-                      {/* Conversion result for VRSNB Nos */}
                       {line.uom === 'Nos' && convertedKg !== null && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
                           <Scale className="size-2.5" />
                           {Number(line.qty)} pcs → <strong>{convertedKg} kg</strong>
                         </span>
                       )}
-
-                      {/* Warning when no weight in name */}
                       {noWeight && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
                           ⚠ No weight found — submitting as {line.qty} pcs
                         </span>
                       )}
-
-                      {/* Recipe status */}
                       {recipeFound !== null && (
                         <span className={cn(
                           'inline-flex items-center gap-1 text-[10px] font-body font-semibold px-2 py-0.5 rounded-full border',
@@ -354,7 +413,8 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
           <button
             onClick={addLine}
-            className="mt-2 h-9 w-full rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
+            disabled={filteredItems.length === 0}
+            className="mt-2 h-9 w-full rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40"
           >
             <Plus className="size-4" /> Add Item
           </button>
