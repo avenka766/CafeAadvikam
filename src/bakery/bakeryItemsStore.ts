@@ -132,9 +132,12 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
   // ── Update name / icon / category ─────────────────────────────────────────
   updateItem: async (id, updates) => {
     const payload: Record<string, string> = {};
-    if (updates.name)     payload.name     = updates.name.trim();
-    if (updates.icon)     payload.icon     = updates.icon.trim();
-    if (updates.category) payload.category = updates.category;
+    // BUG #18 FIX: use !== undefined instead of truthiness.
+    // Previously an empty string ('') was falsy so clearing a name/icon/category
+    // was silently ignored — the DB kept the old value while the UI appeared to clear it.
+    if (updates.name !== undefined)     payload.name     = updates.name.trim();
+    if (updates.icon !== undefined)     payload.icon     = updates.icon.trim();
+    if (updates.category !== undefined) payload.category = updates.category;
     if (Object.keys(payload).length === 0) return null;
 
     const { error } = await supabase.from('bakery_items').update(payload).eq('id', id);

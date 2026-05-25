@@ -24,7 +24,8 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   const [done,       setDone]       = useState(false);
   const [error,      setError]      = useState<string | null>(null);
 
-  const valid = order.items.every(i => prepQty[i.itemId] !== '' && Number(prepQty[i.itemId]) >= 0);
+  // BUG #15 FIX: was >= 0 which allowed submitting 0 qty, stalling packing permanently.
+  const valid = order.items.every(i => prepQty[i.itemId] !== '' && Number(prepQty[i.itemId]) > 0);
 
   const handleSend = async () => {
     setSubmitting(true); setError(null);

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
+import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
 
 interface BakeryState {
   orders: BakeryOrder[];
@@ -101,6 +102,28 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
           : o
       ),
     }));
+
+    // BUG #16 FIX: pushBakerShortage was defined in notificationStore but never called.
+    // Compare each prepared qty against the requested qty and notify admin of any shortfall.
+    const order = get().orders.find(o => o.id === orderId);
+    if (order) {
+      const shortages = order.items
+        .map(item => {
+          const prep = preparedItems.find(p => p.itemId === item.itemId);
+          return {
+            itemName:  item.itemName,
+            requested: item.quantity,
+            prepared:  prep?.quantityPrepared ?? 0,
+            unit:      item.dispatchUnit ?? 'kg',
+          };
+        })
+        .filter(x => x.prepared < x.requested - 0.001);
+      if (shortages.length > 0) {
+        // Fire-and-forget — notification failure must not block the baker workflow
+        void useNotificationStore.getState()
+          .pushBakerShortage(orderId, String(order.orderNumber), shortages);
+      }
+    }
   },
 
   submitDispatch: async (orderId, entry) => {

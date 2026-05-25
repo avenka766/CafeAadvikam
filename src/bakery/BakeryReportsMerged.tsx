@@ -94,6 +94,14 @@ export default function BakeryReportsMerged({ branch }: Props) {
     else fetchBranchData(branch as Branch);
   }, [fetchBranchData, branch]);
 
+  // BUG #23 FIX: reset filterBranch when branch prop changes to avoid stale filter state.
+  // If user viewed 'all' branches (with filterBranch=VRSNB set), then switched to a
+  // specific branch view, filterBranch would still be 'VRSNB' but never applied
+  // (condition requires branch==='all') — state is inconsistent.
+  useEffect(() => {
+    setFilterBranch('all');
+  }, [branch]);
+
   // Sync date inputs when quick range changes
   useEffect(() => {
     if (quickRange !== 'custom') {

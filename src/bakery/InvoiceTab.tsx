@@ -2,6 +2,7 @@
 // Store Invoice Tab – create supplier delivery invoices, sync stock, send to admin.
 
 import { useState, useEffect, useMemo } from 'react';
+import { supabase } from '@/lib/supabase'; // BUG #14 FIX: needed for synced_to_stock update after invoice created
 import {
   FileText, Plus, Trash2, Printer, Send, ChevronDown,
   ChevronUp, CheckCircle2, Clock, X, Check, Loader2,
@@ -257,18 +258,10 @@ function CreateInvoiceModal({
 
     setSaving(true); setError('');
 
-    // Sync each line item to inventory
-    for (const li of lines) {
-      const name = li.itemName.trim();
-      const unit = li.unit as StockUnit;
-      const existing = stockItems.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
-      if (existing) {
-        await updateItem(existing.id, { quantity: existing.quantity + li.quantity });
-      } else {
-        await addItem(name, unit, li.quantity, 1);
-      }
-    }
-
+    // BUG #14 FIX: Create invoice FIRST (as audit trail), THEN sync stock.
+    // Previously stock was updated before the invoice was saved — if createInvoice
+    // failed, stock quantities were permanently incremented with no invoice record.
+    // On retry the stock would be incremented again (double-count).
     const result = await createInvoice({
       supplierId,
       supplierName: selectedSupplier?.businessName ?? '',
@@ -276,11 +269,41 @@ function CreateInvoiceModal({
       lineItems: lines,
       grandTotal,
       notes,
-      syncedToStock: true,
+      syncedToStock: false, // will be set true after stock sync succeeds
     });
 
+    if (!result) {
+      setSaving(false);
+      setError('Failed to save invoice. Try again.');
+      return;
+    }
+
+    // Now safely update stock — invoice record already exists as audit trail
+    let stockSyncFailed = false;
+    for (const li of lines) {
+      const name = li.itemName.trim();
+      const unit = li.unit as StockUnit;
+      const existing = stockItems.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
+      // BUG #22 FIX: derive a sensible default threshold (10% of delivered qty, min 1)
+      // instead of hardcoding 1 for every new stock item.
+      const threshold = Math.max(1, Math.round(li.quantity * 0.1));
+      if (existing) {
+        const err = await updateItem(existing.id, { quantity: existing.quantity + li.quantity });
+        if (err) stockSyncFailed = true;
+      } else {
+        const err = await addItem(name, unit, li.quantity, threshold);
+        if (err) stockSyncFailed = true;
+      }
+    }
+
+    // Mark invoice as synced (or warn if partial failure)
+    // BUG #14 FIX: update syncedToStock flag now that stock is confirmed updated
+    if (!stockSyncFailed) {
+      await supabase.from('store_invoices').update({ synced_to_stock: true }).eq('id', result.id);
+      await useInvoiceStore.getState().load();
+    }
+
     setSaving(false);
-    if (!result) { setError('Failed to save invoice. Try again.'); return; }
 
     // Notify admin about the new pending invoice
     await pushInvoicePending(

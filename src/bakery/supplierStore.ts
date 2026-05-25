@@ -84,7 +84,22 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
   },
 
   deleteSupplier: async (id) => {
-    await supabase.from('store_suppliers').delete().eq('id', id);
+    // BUG #17 FIX: check for existing invoices before deleting.
+    // Previously a delete would either silently fail (FK constraint) or leave
+    // dangling supplier references on existing invoices.
+    const { count, error: countErr } = await supabase
+      .from('store_invoices')
+      .select('id', { count: 'exact', head: true })
+      .eq('supplier_id', id);
+    if (countErr) throw new Error('Failed to check supplier invoices. Please try again.');
+    if ((count ?? 0) > 0) {
+      throw new Error(
+        `Cannot delete — ${count} invoice${count === 1 ? '' : 's'} exist for this supplier. ` +
+        'Delete or reassign the invoices first.'
+      );
+    }
+    const { error } = await supabase.from('store_suppliers').delete().eq('id', id);
+    if (error) throw new Error(error.message);
     set(s => ({ suppliers: s.suppliers.filter(x => x.id !== id) }));
   },
 }));
