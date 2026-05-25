@@ -592,15 +592,17 @@ function CafeReportsTab() {
     { name: 'Takeaway', value: takeawayCount },
   ].filter(d => d.value > 0);
 
+  // FIX: rangeLabel must be at component scope — used in both render JSX (lines ~818, ~869)
+  // AND inside handleDownload. Previously it was only inside handleDownload (wrong scope).
+  const rangeLabel = dateFrom === dateTo
+    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
   const handleDownload = async () => {
     const XLSX = await import('xlsx');
 
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-    // FIX: rangeLabel was used in Sheets 5 and 8 but never defined in CafeReportsTab.
-    // It IS defined in BakeryReportsTab (different component) — copy the same pattern here.
-    const rangeLabel = dateFrom === dateTo
-      ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-      : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    // rangeLabel is now defined at component scope above — accessible here too
 
     const PAYMENT_LABELS_LOCAL: Record<string, string> = {
       cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
