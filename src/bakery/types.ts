@@ -1,6 +1,6 @@
 // src/bakery/types.ts  ← REPLACE EXISTING FILE
 
-export type BakeryRole = 'order_receiver' | 'store' | 'baker' | 'packing';
+export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'receiver_hosur' | 'store' | 'baker' | 'packing';
 
 export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'packed' | 'dispatched';
 
