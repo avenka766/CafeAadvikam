@@ -1502,15 +1502,31 @@ export default function AttendanceSalary() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'attendance' | 'salary' | 'employees' | 'analytics' | 'advance'>('attendance');
   const [branch, setBranch]   = useState<'All' | Branch>('All');
-  const [dept, setDept]       = useState<'All' | 'Store' | 'Admin office'>('All');
+  const [dept, setDept]       = useState<string>('All');
   const [search, setSearch]   = useState('');
 
   const handleTabChange = (newTab: typeof tab) => {
     setTab(newTab);
     setSearch('');
   };
-  const DEPT_OPTIONS = ['All', 'Store', 'Admin office'] as const;
+  // Derive department options dynamically from actual employee data so ALL
+  // departments are shown — not just hardcoded 'Store' / 'Admin office'.
+  const DEPT_OPTIONS = useMemo<string[]>(() => {
+    const unique = Array.from(
+      new Set(
+        employees
+          .map(e => e.department.trim())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    return ['All', ...unique];
+  }, [employees]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Reset dept filter if the selected dept no longer exists in the employee list
+  useEffect(() => {
+    if (dept !== 'All' && !DEPT_OPTIONS.includes(dept)) setDept('All');
+  }, [DEPT_OPTIONS, dept]);
+
   const [showBranchDD, setShowBranchDD] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editEmp, setEditEmp] = useState<Employee | null>(null);
