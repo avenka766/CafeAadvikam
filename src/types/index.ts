@@ -1,5 +1,5 @@
 // src/types/index.ts
-// ── CHANGE: Added 'branch_vrsnb' | 'branch_snb' | 'branch_hosur' to UserRole ──
+// ── CHANGE: Replaced 'order_receiver' with 3 branch-specific receiver roles ──
 export type UserRole =
   | 'order_taker'
   | 'billing'
@@ -8,7 +8,9 @@ export type UserRole =
   | 'store'
   | 'baker'
   | 'packing'
-  | 'order_receiver'
+  | 'receiver_vrsnb'   // VRSNB Order Receiver (orders VRSNB items only)
+  | 'receiver_snb'     // SNB Order Receiver   (orders SNB items only)
+  | 'receiver_hosur'   // Hosur Order Receiver (orders Hosur/SNB items only)
   | 'branch_vrsnb'
   | 'branch_snb'
   | 'branch_hosur'
