@@ -92,7 +92,9 @@ function AppRoutes() {
         <Route path="/attendance-salary" element={<ProtectedRoute allowedRoles={['admin']}><AttendanceSalary /></ProtectedRoute>} />
         <Route path="/order-history"   element={<ProtectedRoute allowedRoles={['order_taker','billing','admin','kitchen']}><OrderHistory /></ProtectedRoute>} />
 
-        <Route path="/bakery/receive"  element={<ProtectedRoute allowedRoles={['order_receiver']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/vrsnb"  element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/snb"    element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/hosur"  element={<ProtectedRoute allowedRoles={['receiver_hosur']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"    element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/baker"    element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/packing"  element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
