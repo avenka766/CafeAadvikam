@@ -782,11 +782,17 @@ function NewBillPanel() {
     return filtered;
   }, [enabledItems, selectedCategory, search]);
 
-  const menuTotal   = getCartTotal();
-  const customTotal = customItems.reduce((s, c) => s + c.price * c.qty, 0);
-  const total       = menuTotal + customTotal;
-  const cartCount   = getCartCount();
-  const allEmpty    = cartCount === 0 && customItems.length === 0;
+  const menuTotal     = getCartTotal();
+  const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
+  const itemsSubtotal = menuTotal + customTotal;
+  // Parcel charges: ₹10 per item quantity for takeaway
+  const PARCEL_CHARGE_PER_ITEM = 10;
+  const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
+                      + customItems.reduce((s, c) => s + c.qty, 0);
+  const parcelCharges = orderType === 'takeaway' ? totalItemQty * PARCEL_CHARGE_PER_ITEM : 0;
+  const total         = itemsSubtotal + parcelCharges;
+  const cartCount     = getCartCount();
+  const allEmpty      = cartCount === 0 && customItems.length === 0;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
 
   const handleAddCustomItem = () => {
@@ -832,6 +838,7 @@ function NewBillPanel() {
         customerName: customerName || undefined,
         createdBy: currentUser.username,
         orderSource: 'staff',
+        parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
       });
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -1183,6 +1190,12 @@ function NewBillPanel() {
                   <div className="flex justify-between text-xs font-body text-primary">
                     <span>Custom</span><span className="tabular-nums">{formatCurrency(customTotal)}</span>
                   </div>
+                </div>
+              )}
+              {parcelCharges > 0 && (
+                <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
+                  <span className="flex items-center gap-1">📦 Parcel ({totalItemQty} × ₹10)</span>
+                  <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
                 </div>
               )}
               <div className="flex items-center justify-between">
