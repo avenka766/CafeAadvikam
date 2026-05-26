@@ -21,7 +21,7 @@ interface OrderState {
   getCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
@@ -141,6 +141,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   submitOrder: async (params) => {
     const { cart } = get();
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
+    const parcelCharges = params.parcelCharges ?? 0;
+    const total = subtotal + parcelCharges;
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
@@ -154,9 +156,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total: subtotal,
+      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total,
       status: 'pending', createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType: 'unpaid', orderSource,
+      ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
     // Optimistic update
@@ -165,9 +168,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
       order_type: params.orderType, items: cart, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total: subtotal, status: 'pending', created_by: params.createdBy,
+      discount_value: 0, total, status: 'pending', created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
+      ...(parcelCharges > 0 ? { parcel_charges: parcelCharges } : {}),
     };
 
     const { error } = await supabase.from('orders').insert(payload);
