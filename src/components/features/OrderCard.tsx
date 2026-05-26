@@ -60,10 +60,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
   const billerName = currentUser?.displayName || currentUser?.username || '';
 
-  // Biller can ONLY collect payment — they cannot advance status
+  // Biller can collect payment at ANY status (pending/preparing/ready) — no need to wait for kitchen
   const isBiller = currentUser?.role === 'billing';
   const isReadyOrder = order.status === 'ready';
-  const canCollectPayment = showActions && isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const canCollectPayment = showActions && isBiller && order.status !== 'served' && order.status !== 'cancelled' && order.paymentType === 'unpaid';
   const canAdvanceNonBiller = showActions && !isBiller && order.status !== 'served' && order.status !== 'cancelled';
 
   const handleApplyDiscount = () => {
@@ -169,7 +169,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   };
 
   // Ready notification badge for billers
-  const showReadyBadge = isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const showReadyBadge = isBiller && canCollectPayment;
   const isKitchen = currentUser?.role === 'kitchen' || currentUser?.role === 'order_taker';
 
   return (
@@ -179,12 +179,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           ? 'ring-2 ring-emerald-400 shadow-lifted'
           : 'border border-border'
       }`}>
-        {/* Ready notification for biller */}
+        {/* Billing available badge for biller */}
         {showReadyBadge && (
           <div className="px-4 py-2.5 flex items-center gap-2"
-            style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))', borderBottom: '1px solid rgba(16,185,129,0.25)' }}>
-            <Bell className="size-4 text-emerald-600 animate-bounce" />
-            <span className="text-xs font-body font-bold text-emerald-700">Order Ready — Collect Payment</span>
+            style={{ background: isReadyOrder ? 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))' : 'linear-gradient(135deg,rgba(245,158,11,0.10),rgba(245,158,11,0.05))', borderBottom: isReadyOrder ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(245,158,11,0.25)' }}>
+            <Bell className={`size-4 ${isReadyOrder ? 'text-emerald-600 animate-bounce' : 'text-amber-500'}`} />
+            <span className={`text-xs font-body font-bold ${isReadyOrder ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {isReadyOrder ? 'Order Ready — Collect Payment' : 'Collect Payment (Kitchen still preparing)'}
+            </span>
           </div>
         )}
 
@@ -254,6 +256,12 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                 <span className="tabular-nums">-{formatCurrency(order.discount)}</span>
               </div>
             </>
+          )}
+          {order.parcelCharges && order.parcelCharges > 0 && (
+            <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 mb-1">
+              <span>📦 Parcel charges</span>
+              <span className="tabular-nums font-bold">+{formatCurrency(order.parcelCharges)}</span>
+            </div>
           )}
           <div className="flex justify-between">
             <span className="text-sm font-body font-semibold">Total</span>
@@ -368,18 +376,12 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           </div>
         )}
 
-        {/* Biller: show pending/preparing status without actions */}
+        {/* Biller: small kitchen status badge — informational only, doesn't block billing */}
         {showActions && isBiller && !isReadyOrder && order.status !== 'served' && order.status !== 'cancelled' && (
-          <div className="px-3.5 py-2.5 border-t border-border flex items-center gap-2">
-            <div className="flex-1 py-2 rounded-lg bg-muted/50 text-center text-xs font-body font-semibold text-muted-foreground">
-              {order.status === 'pending' ? '⏳ Waiting for kitchen to start' : '🍳 Kitchen is preparing'}
-            </div>
-            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-xs font-body font-bold active:scale-95 flex items-center gap-1" title="Cancel Order">
-              ✕ Cancel
-            </button>
-            <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
-              <Printer className="size-4" />
-            </button>
+          <div className="px-3.5 pt-2 flex items-center gap-2">
+            <span className="text-[11px] font-body font-semibold text-muted-foreground bg-muted/60 px-2.5 py-1 rounded-full border border-border">
+              {order.status === 'pending' ? '⏳ Kitchen: pending' : '🍳 Kitchen: preparing'}
+            </span>
           </div>
         )}
 
