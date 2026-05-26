@@ -6,6 +6,7 @@ import {
   TrendingUp, ShoppingBag, IndianRupee, Clock,
   Package, XCircle, RefreshCw, Wifi, Download,
   LayoutDashboard, Store, Filter, FileText, Bell,
+  ClipboardList, Calendar,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -15,6 +16,8 @@ import {
   PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
 } from 'recharts';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
+import StaffActivityLog from '@/bakery/StaffActivityLog';
+import DayEndReport from '@/bakery/DayEndReport';
 
 const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -1254,7 +1257,7 @@ function BakeryReportsTab() {
 
 // ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
 function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports' | 'activity' | 'dayend'>('dashboard');
 
   useEffect(() => {
     return () => {};
@@ -1262,8 +1265,10 @@ function BakeryView() {
   }, []);
 
   const tabs = [
-    { id: 'dashboard' as const, label: 'Overview', icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',  icon: FileText },
+    { id: 'dashboard' as const, label: 'Overview',  icon: LayoutDashboard },
+    { id: 'reports'   as const, label: 'Reports',   icon: FileText         },
+    { id: 'activity'  as const, label: 'Activity',  icon: ClipboardList    },
+    { id: 'dayend'    as const, label: 'Day-End',   icon: Calendar         },
   ];
 
   const unread = 0;
@@ -1271,13 +1276,13 @@ function BakeryView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1">
+      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
         {tabs.map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-medium transition',
+              'flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-medium transition shrink-0',
               tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
             )}
           >
@@ -1288,6 +1293,8 @@ function BakeryView() {
       </div>
       {tab === 'dashboard' && <BakeryDashboardTab />}
       {tab === 'reports'   && <BakeryReportsMerged branch="all" />}
+      {tab === 'activity'  && <StaffActivityLog />}
+      {tab === 'dayend'    && <DayEndReport />}
     </div>
   );
 }
