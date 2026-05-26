@@ -5,7 +5,8 @@ import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2, Loader2, Receipt,
   IndianRupee, Banknote, Smartphone, CreditCard, Search, X, Scale,
   Hash, Pencil, ArrowLeftRight, Tag, Printer, XCircle, AlertTriangle,
-  ChevronRight, Wallet, Clock, AlertCircle, Package,
+  ChevronRight, Wallet, Clock, AlertCircle, Package, Bell, Calendar,
+  User, Truck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -180,7 +181,7 @@ function printBill(args: PrintArgs) {
       <td>Bill No : <span class="bold">${billNo}</span></td>
       <td class="num">Date : ${dateStr}</td>
     </tr><tr>
-      <td></td>
+      <td>Biller : <span class="bold">${escHtml(soldBy)}</span></td>
       <td class="num">Time : ${timeStr}</td>
     </tr></table>
     <hr/>
@@ -1011,6 +1012,7 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
   // Order meta
   const [customerName, setCustomerName] = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
   const [advanceAmt, setAdvanceAmt]     = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [advanceErr, setAdvanceErr]     = useState('');
@@ -1074,12 +1076,15 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
   const allEmpty    = cart.length === 0 && customItems.length === 0;
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
+  const requireDeliveryDate = isSNB; // VRSNB + SNB must enter delivery date
+
   const handleSubmit = async () => {
     if (allEmpty || !currentUser) return;
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setAdvanceErr('Enter advance amount'); return; }
     if (amt >= total) { setAdvanceErr('Advance must be less than total'); return; }
     if (!advanceMethod) { setAdvanceErr('Select payment method'); return; }
+    if (requireDeliveryDate && !deliveryDate) { setAdvanceErr('Delivery date is required for advance orders at this branch'); return; }
     setAdvanceErr(''); setSubmitting(true);
 
     const items: BranchAdvanceItem[] = [
@@ -1096,6 +1101,7 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
       advanceMethod,
       balanceDue: total - amt,
       soldBy: currentUser.displayName || currentUser.username || 'Staff',
+      deliveryDate: deliveryDate || null,
     });
 
     setSubmitting(false);
@@ -1103,7 +1109,7 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
     setShowSuccess(true);
     setCart([]); setCustomItems([]); setCustomerName('');
-    setAdvanceAmt(''); setAdvanceMethod(null);
+    setAdvanceAmt(''); setAdvanceMethod(null); setDeliveryDate('');
     setTimeout(() => setShowSuccess(false), 1800);
   };
 
@@ -1270,6 +1276,41 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
               className="w-full px-3 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
           )}
 
+          {/* Delivery date — mandatory for VRSNB & SNB */}
+          {!allEmpty && (
+            <div>
+              <label className={cn(
+                "text-[10px] font-body font-bold uppercase tracking-widest mb-1.5 flex items-center gap-1",
+                requireDeliveryDate ? "text-red-600" : "text-amber-700"
+              )}>
+                <Calendar className="size-3" />
+                Delivery Date {requireDeliveryDate ? <span className="text-red-500">*</span> : "(optional)"}
+              </label>
+              <input
+                type="date"
+                value={deliveryDate}
+                min={new Date().toISOString().split('T')[0]}
+                onChange={e => { setDeliveryDate(e.target.value); setAdvanceErr(''); }}
+                className={cn(
+                  "w-full px-3 py-2.5 rounded-xl bg-card border text-sm font-body focus:outline-none focus:ring-2",
+                  requireDeliveryDate && !deliveryDate
+                    ? "border-red-300 focus:ring-red-400/40 bg-red-50"
+                    : "border-border focus:ring-amber-400/40"
+                )}
+              />
+              {requireDeliveryDate && !deliveryDate && (
+                <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">
+                  <AlertCircle className="size-3" />Required — when does the customer want this delivered?
+                </p>
+              )}
+              {deliveryDate && (
+                <p className="text-[10px] text-amber-700 font-semibold mt-1">
+                  Delivery: {new Date(deliveryDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Advance amount + method */}
           {!allEmpty && (
             <div className="space-y-3 pt-2 border-t border-border">
@@ -1360,8 +1401,18 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }); }, []);
 
   // ── Tab state ───────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<'bill' | 'advance'>('bill');
+  const [activeTab, setActiveTab] = useState<'bill' | 'advance' | 'alert'>('bill');
   const pendingAdvance = advanceOrders.filter(o => o.status === 'pending');
+
+  // Alert tab — deliveries due today (VRSNB & SNB only)
+  const isAlertBranch = branch === 'VRSNB' || branch === 'SNB';
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayDeliveries = useMemo(() =>
+    advanceOrders.filter(o => o.deliveryDate === todayStr && o.status === 'pending'),
+    [advanceOrders, todayStr]
+  );
+  const [alertPopupDismissed, setAlertPopupDismissed] = useState(false);
+  const showAlertPopup = isAlertBranch && !alertPopupDismissed && todayDeliveries.length > 0 && activeTab === 'alert';
 
   // Discount
   const [discountType,  setDiscountType]  = useState<DiscountType>('percent');
@@ -1636,6 +1687,19 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             </span>
           )}
         </button>
+        {isAlertBranch && (
+          <button onClick={() => setActiveTab('alert')}
+            className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+              activeTab === 'alert' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+            <Bell className={cn("size-3.5", todayDeliveries.length > 0 && "text-red-500 animate-pulse")} />Alert
+            {todayDeliveries.length > 0 && (
+              <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
+                activeTab === 'alert' ? 'bg-red-500 text-white' : 'bg-red-100 text-red-700')}>
+                {todayDeliveries.length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {/* ── Advance tab ── */}
@@ -1644,6 +1708,140 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           <BranchAdvancePanel branch={branch} advanceOrders={advanceOrders} />
         </div>
       </div>
+
+      {/* ── Alert tab ── */}
+      {isAlertBranch && activeTab === 'alert' && (
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-3 space-y-3">
+            {/* Header */}
+            <div className="flex items-center gap-2 px-1">
+              <Bell className={cn("size-5", todayDeliveries.length > 0 ? "text-red-500" : "text-muted-foreground")} />
+              <h2 className="font-display font-bold text-base text-foreground">Today's Deliveries</h2>
+              <span className="text-xs text-muted-foreground ml-auto">
+                {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })}
+              </span>
+            </div>
+
+            {todayDeliveries.length === 0 ? (
+              <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+                <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
+                  <CheckCircle2 className="size-8 opacity-30" />
+                </div>
+                <p className="text-sm font-body">No deliveries due today</p>
+                <p className="text-xs text-muted-foreground/70 font-body">All advance orders are on schedule</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-xl">
+                  <AlertTriangle className="size-4 text-red-500 shrink-0" />
+                  <p className="text-xs font-body font-semibold text-red-700">
+                    {todayDeliveries.length} order{todayDeliveries.length > 1 ? 's' : ''} must be delivered today!
+                  </p>
+                </div>
+                {todayDeliveries.map(order => (
+                  <div key={order.id} className="bg-card border-2 border-red-300 rounded-2xl overflow-hidden shadow-sm">
+                    {/* Order header */}
+                    <div className="bg-red-50 px-4 py-3 flex items-center justify-between border-b border-red-100">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 w-fit flex items-center gap-1">
+                          <Truck className="size-2.5" /> DELIVER TODAY
+                        </span>
+                        {order.customerName && (
+                          <span className="text-sm font-body font-bold text-foreground flex items-center gap-1 mt-0.5">
+                            <User className="size-3 text-muted-foreground" />{order.customerName}
+                          </span>
+                        )}
+                        <span className="text-[10px] text-muted-foreground font-body flex items-center gap-1">
+                          <Clock className="size-3" />
+                          Ordered {new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} · by {order.soldBy}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-muted-foreground">Balance</p>
+                        <p className="text-base font-display font-bold text-red-600 tabular-nums">
+                          ₹{order.balanceDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    </div>
+                    {/* Items list */}
+                    <div className="px-4 py-3 space-y-1.5">
+                      <p className="text-[10px] font-bold text-muted-foreground uppercase mb-2">Items to deliver</p>
+                      {order.items.map((item, i) => (
+                        <div key={i} className="flex items-center justify-between text-sm">
+                          <span className="font-body text-foreground flex items-center gap-1">
+                            {item.isCustom && <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">CUSTOM</span>}
+                            {item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}
+                          </span>
+                          <span className="font-body font-bold text-primary tabular-nums text-xs">
+                            ₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Payment summary */}
+                    <div className="px-4 py-2 bg-muted/20 border-t border-border flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground font-body">Total Bill</span>
+                      <span className="text-sm font-bold tabular-nums">
+                        ₹{order.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="px-4 py-2 bg-muted/20 flex items-center justify-between border-t border-border/50">
+                      <span className="text-xs text-muted-foreground font-body flex items-center gap-1">
+                        <Wallet className="size-3" /> Advance paid ({order.advanceMethod})
+                      </span>
+                      <span className="text-sm font-bold text-amber-600 tabular-nums">
+                        −₹{order.advanceAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Today's Delivery Popup ── */}
+          {showAlertPopup && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-card rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden">
+                {/* Popup header */}
+                <div className="bg-red-500 px-5 py-5 text-white text-center">
+                  <div className="size-14 rounded-2xl bg-white/20 flex items-center justify-center mx-auto mb-3">
+                    <Bell className="size-7 text-white" />
+                  </div>
+                  <h3 className="font-display text-xl font-bold">Delivery Alert!</h3>
+                  <p className="text-red-100 text-sm mt-1">
+                    {todayDeliveries.length} order{todayDeliveries.length > 1 ? 's' : ''} must be delivered today
+                  </p>
+                </div>
+                {/* Popup body */}
+                <div className="px-5 py-4 max-h-64 overflow-y-auto space-y-2">
+                  {todayDeliveries.map(order => (
+                    <div key={order.id} className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-3 py-2.5">
+                      <div>
+                        <p className="text-sm font-bold text-foreground">
+                          {order.customerName || 'Customer'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {order.items.length} item{order.items.length > 1 ? 's' : ''} · Balance: ₹{order.balanceDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                      <Truck className="size-4 text-red-500 shrink-0" />
+                    </div>
+                  ))}
+                </div>
+                {/* Dismiss */}
+                <div className="px-5 pb-5 pt-2">
+                  <button
+                    onClick={() => setAlertPopupDismissed(true)}
+                    className="w-full py-3 rounded-xl bg-red-500 text-white font-bold text-sm active:scale-95 transition">
+                    Got it — I'll deliver these today
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Bill tab: 3-column POS layout ── */}
       {activeTab === 'bill' && (
