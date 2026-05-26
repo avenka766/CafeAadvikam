@@ -59,17 +59,17 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove }: MenuIt
 
       {/* Info */}
       <div className="p-3">
-        <h3 className="text-sm font-body font-semibold text-foreground leading-tight line-clamp-2 min-h-[2.5rem]">
+        <h3 className="text-base font-body font-bold text-foreground leading-tight line-clamp-2 min-h-[2.75rem]">
           {item.name}
         </h3>
         <div className="flex items-center justify-between mt-2.5 gap-2">
-          <span className="text-sm font-body font-bold tabular-nums"
+          <span className="text-base font-body font-bold tabular-nums"
             style={{ color: 'hsl(var(--accent))' }}>
             {formatCurrency(item.price)}
           </span>
           {quantity === 0 ? (
             <button onClick={onAdd}
-              className="size-8 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
+              className="size-9 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
               style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))', boxShadow: '0 2px 8px rgba(30,100,70,0.3)' }}
               aria-label={`Add ${item.name}`}>
               <Plus className="size-4" />
@@ -77,16 +77,16 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove }: MenuIt
           ) : (
             <div className="flex items-center gap-1">
               <button onClick={onRemove}
-                className="size-8 rounded-xl bg-muted flex items-center justify-center text-foreground active:scale-75 transition-transform"
+                className="size-9 rounded-xl bg-muted flex items-center justify-center text-foreground active:scale-75 transition-transform border border-border"
                 aria-label={`Remove ${item.name}`}>
-                <Minus className="size-3.5" />
+                <Minus className="size-4" />
               </button>
-              <span className="w-6 text-center text-sm font-bold tabular-nums">{quantity}</span>
+              <span className="w-7 text-center text-lg font-bold tabular-nums">{quantity}</span>
               <button onClick={onAdd}
-                className="size-8 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
+                className="size-9 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
                 style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))' }}
                 aria-label={`Add more ${item.name}`}>
-                <Plus className="size-3.5" />
+                <Plus className="size-4" />
               </button>
             </div>
           )}
