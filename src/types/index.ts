@@ -81,6 +81,7 @@ export interface Order {
   fullyPaidAt?: string;
   balancePaymentType?: string;
   balancePaidBy?: string;
+  parcelCharges?: number;
 }
 
 export interface MenuCategory {
