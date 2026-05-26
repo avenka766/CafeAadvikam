@@ -475,16 +475,16 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
 }) {
   const unit = detectSellUnit(item.itemName);
   return (
-    <div className={cn('relative bg-card border rounded-2xl p-3 flex flex-col gap-2 transition-all duration-150',
-      inCart ? 'border-primary/40 shadow-md ring-1 ring-primary/10 bg-primary/[0.02]' : 'border-border')}>
+    <div className={cn('relative bg-card border rounded-xl p-3 flex flex-col gap-2.5 transition-all duration-150',
+      inCart ? 'border-primary/50 shadow-md ring-1 ring-primary/15 bg-primary/[0.02]' : 'border-border hover:border-border/80')}>
       {inCart && <span className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary animate-pulse" />}
       <div className="pr-4">
-        <p className="text-sm font-semibold leading-snug line-clamp-2">{item.itemName}</p>
-        <div className="flex items-center gap-2 mt-1">
+        <p className="text-base font-bold leading-snug line-clamp-2">{item.itemName}</p>
+        <div className="flex items-center gap-2 mt-1.5">
           {item.price != null
-            ? <span className="text-[11px] font-bold text-emerald-600">₹{item.price}{unit === 'kg' ? '/kg' : ''}</span>
-            : <span className="text-[10px] text-amber-500 font-medium">Set price ↓</span>}
-          <span className="ml-auto flex items-center gap-0.5 text-[10px] text-muted-foreground">
+            ? <span className="text-sm font-bold text-emerald-600">₹{item.price}{unit === 'kg' ? '/kg' : ''}</span>
+            : <span className="text-xs text-amber-500 font-semibold">Set price ↓</span>}
+          <span className="ml-auto flex items-center gap-0.5 text-xs text-muted-foreground font-medium">
             {unit === 'kg'
               ? <><Scale className="size-3" />{item.quantity >= 1 ? `${item.quantity}kg` : `${Math.round(item.quantity * 1000)}g`}</>
               : <><Hash className="size-3" />{item.quantity}</>}
@@ -495,20 +495,20 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
         <KgInput value={cartQty} onChange={onKgChange} max={item.quantity} />
       ) : unit === 'kg' ? (
         <button onClick={onAdd}
-          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
-          <Scale className="size-3" /> Weigh & Add
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
+          <Scale className="size-3.5" /> Weigh & Add
         </button>
       ) : inCart ? (
         <div className="flex items-center gap-2 justify-between">
-          <button onClick={onRemove} className="size-8 rounded-xl bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3.5" /></button>
-          <span className="text-sm font-bold tabular-nums">{cartQty}</span>
+          <button onClick={onRemove} className="size-9 rounded-lg bg-muted flex items-center justify-center active:scale-90 transition border border-border"><Minus className="size-4" /></button>
+          <span className="text-lg font-bold tabular-nums">{cartQty}</span>
           <button onClick={onAdd} disabled={cartQty >= item.quantity}
-            className="size-8 rounded-xl cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 transition"><Plus className="size-3.5" /></button>
+            className="size-9 rounded-lg cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 transition"><Plus className="size-4" /></button>
         </div>
       ) : (
         <button onClick={onAdd}
-          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
-          <Plus className="size-3" /> Add
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
+          <Plus className="size-3.5" /> Add
         </button>
       )}
     </div>
@@ -526,52 +526,47 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
   const noStock  = stockQty <= 0;
   const overStock = inCart && cartQty > stockQty && stockQty > 0;
   return (
-    <div className={cn('relative bg-card border rounded-2xl p-3 flex flex-col gap-2 transition-all duration-150',
-      inCart ? 'border-primary/40 shadow-md ring-1 ring-primary/10 bg-primary/[0.02]' : 'border-border')}>
+    <div className={cn('relative bg-card border rounded-xl p-3 flex flex-col gap-2.5 transition-all duration-150',
+      inCart ? 'border-primary/50 shadow-md ring-1 ring-primary/15 bg-primary/[0.02]' : 'border-border hover:border-border/80')}>
       {inCart && <span className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary animate-pulse" />}
       <div className="pr-4">
-        <p className="text-sm font-semibold leading-snug line-clamp-2">{item.name}</p>
-        <div className="flex items-center gap-2 mt-1 flex-wrap">
-          <span className="text-[11px] font-bold text-emerald-600">
+        <p className="text-base font-bold leading-snug line-clamp-2">{item.name}</p>
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <span className="text-sm font-bold text-emerald-600">
             ₹{item.price}{unit === 'kg' ? '/kg' : ''}
           </span>
-          {/* Stock indicator */}
           {noStock
-            ? <span className="ml-auto text-[9px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-full">No stock</span>
-            : <span className="ml-auto text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">
+            ? <span className="ml-auto text-[10px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-full">No stock</span>
+            : <span className="ml-auto text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">
                 {unit === 'kg'
                   ? stockQty >= 1 ? `${stockQty}kg` : `${Math.round(stockQty * 1000)}g`
-                  : `${stockQty} pcs`} avail
+                  : `${stockQty} pcs`}
               </span>
           }
         </div>
-        {/* Over-stock warning — shown but sale still allowed */}
         {overStock && (
-          <p className="text-[9px] text-amber-600 font-semibold mt-0.5 flex items-center gap-1">
-            ⚠ Exceeds stock — mismatch will be logged
-          </p>
+          <p className="text-[9px] text-amber-600 font-semibold mt-0.5">⚠ Exceeds stock</p>
         )}
       </div>
       {unit === 'kg' && inCart ? (
         <KgInput value={cartQty} onChange={onKgChange} max={999} />
       ) : unit === 'kg' ? (
         <button onClick={onAdd}
-          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
-          <Scale className="size-3" /> Weigh & Add
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
+          <Scale className="size-3.5" /> Weigh & Add
         </button>
       ) : inCart ? (
         <div className="flex items-center gap-2 justify-between">
-          <button onClick={onRemove} className="size-8 rounded-xl bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3.5" /></button>
-          <span className={cn('text-sm font-bold tabular-nums', overStock && 'text-amber-600')}>{cartQty}</span>
-          {/* Always allow adding — no disabled, just colour-coded */}
+          <button onClick={onRemove} className="size-9 rounded-lg bg-muted flex items-center justify-center active:scale-90 transition border border-border"><Minus className="size-4" /></button>
+          <span className={cn('text-lg font-bold tabular-nums', overStock && 'text-amber-600')}>{cartQty}</span>
           <button onClick={onAdd}
-            className={cn('size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90 transition',
-              overStock ? 'bg-amber-500' : 'cafe-gradient')}><Plus className="size-3.5" /></button>
+            className={cn('size-9 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90 transition',
+              overStock ? 'bg-amber-500' : 'cafe-gradient')}><Plus className="size-4" /></button>
         </div>
       ) : (
         <button onClick={onAdd}
-          className={cn('w-full py-1.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
-          <Plus className="size-3" /> Add
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
+          <Plus className="size-3.5" /> Add
         </button>
       )}
     </div>
@@ -1407,9 +1402,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const snbFiltered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return activeItems.filter((item) => {
-      const matchCat = activeCategory === 'All' || item.category === activeCategory;
-      const matchQ   = !q || item.name.toLowerCase().includes(q);
-      return matchCat && matchQ;
+      // When searching: search ALL items regardless of selected category
+      if (q) return item.name.toLowerCase().includes(q);
+      // When browsing: filter by category
+      return activeCategory === 'All' || item.category === activeCategory;
     });
   }, [search, activeCategory, activeItems]);
 
@@ -1619,10 +1615,11 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-3 pb-6">
+    // Full viewport height minus branch header+stats+tabbar (~241px total with top nav)
+    <div className="flex flex-col" style={{ height: 'calc(100dvh - 241px)' }}>
 
-      {/* ── Tab switcher ── */}
-      <div className="flex gap-1 p-1 rounded-xl bg-muted">
+      {/* ── Tab switcher (compact top bar) ── */}
+      <div className="flex gap-1 p-1.5 bg-muted border-b border-border shrink-0">
         <button onClick={() => setActiveTab('bill')}
           className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
             activeTab === 'bill' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
@@ -1641,320 +1638,353 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         </button>
       </div>
 
-      {/* ── Advance tab — always mounted so cart survives tab switches ── */}
-      <div className={activeTab !== 'advance' ? 'hidden' : undefined}>
-        <BranchAdvancePanel branch={branch} advanceOrders={advanceOrders} />
+      {/* ── Advance tab ── */}
+      <div className={cn('flex-1 overflow-y-auto', activeTab !== 'advance' && 'hidden')}>
+        <div className="p-3">
+          <BranchAdvancePanel branch={branch} advanceOrders={advanceOrders} />
+        </div>
       </div>
 
-      {/* ── Bill tab — always mounted so cart survives tab switches ── */}
-      {activeTab === 'bill' && (<>
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-        <input type="text" placeholder={isSNB ? `Search ${totalItemCount} items…` : 'Search items…'} value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-card border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40" />
-        {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2"><X className="size-4 text-muted-foreground" /></button>}
-      </div>
+      {/* ── Bill tab: 3-column POS layout ── */}
+      {activeTab === 'bill' && (
+        <div className="flex flex-1 min-h-0 overflow-hidden">
 
-      {/* Category filter — price-list branches only */}
-      {isSNB && (
-        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar -mx-1 px-1">
-          {(['All', ...activeCategories] as const).map((cat) => (
-            <button
-              key={cat}
-              onClick={() => setActiveCategory(cat as SnbCategory | VrsnbCategory | 'All')}
-              className={cn(
-                'shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold border transition whitespace-nowrap',
-                activeCategory === cat
-                  ? 'bg-primary text-primary-foreground border-transparent shadow-sm'
-                  : 'bg-card border-border text-muted-foreground hover:bg-muted/50',
+          {/* ═══ COL 1: Category sidebar ═══════════════════════════════════════ */}
+          {isSNB && (
+            <div className="w-[120px] sm:w-[140px] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+              {(['All', ...activeCategories] as const).map((cat) => {
+                const isActive = activeCategory === cat && !search.trim();
+                const catCount = cat === 'All'
+                  ? activeItems.length
+                  : activeItems.filter(i => i.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => { setActiveCategory(cat as SnbCategory | VrsnbCategory | 'All'); setSearch(''); }}
+                    className={cn(
+                      'w-full text-left px-2.5 py-3 border-b border-border/50 transition-all',
+                      isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground',
+                    )}
+                  >
+                    <p className={cn('text-[11px] font-bold leading-tight', isActive ? 'text-primary-foreground' : 'text-foreground')}>
+                      {cat === 'All' ? 'All Items' : cat}
+                    </p>
+                    <p className={cn('text-[10px] mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                      {catCount} items
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ═══ COL 2: Search + Item grid ════════════════════════════════════ */}
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+
+            {/* Search bar — always at top, searches ALL items */}
+            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder={`Search all ${totalItemCount} items…`}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full pl-9 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
+                />
+                {search && (
+                  <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <X className="size-4 text-muted-foreground" />
+                  </button>
+                )}
+              </div>
+              {search.trim() ? (
+                <p className="text-[11px] text-primary font-semibold mt-1.5 px-1">
+                  {displayItems.length} result{displayItems.length !== 1 ? 's' : ''} across all categories
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
+                  {isSNB
+                    ? (activeCategory === 'All' ? `${totalItemCount} items` : `${displayItems.length} of ${totalItemCount} in ${activeCategory}`)
+                    : `${totalItemCount} items in stock`}
+                </p>
               )}
-            >
-              {cat}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <p className="text-[11px] text-muted-foreground px-0.5">
-        {displayItems.length === totalItemCount
-          ? `${totalItemCount} ${isSNB ? 'items' : 'items in stock'}`
-          : `${displayItems.length} of ${totalItemCount} items`}
-      </p>
-
-      {/* Item grid */}
-      {displayItems.length === 0 ? (
-        <div className="text-center py-12 text-sm text-muted-foreground bg-muted/30 rounded-2xl border border-dashed">
-          {totalItemCount === 0 ? 'No items in stock.' : 'No items match your search.'}
-        </div>
-      ) : isSNB ? (
-        <div className="grid grid-cols-2 gap-2">
-          {(displayItems as SnbItem[]).map((item) => {
-            const ci = getCartItem(item.name);
-            const stockQtyForItem = getStockQty(item.name);
-            return (
-              <SnbItemCard
-                key={item.barcode}
-                item={item}
-                inCart={!!ci}
-                cartQty={ci?.quantity ?? 0}
-                stockQty={stockQtyForItem}
-                onAdd={() => addSnbItemToCart(item)}
-                onRemove={() => removeFromCart(item.name)}
-                onKgChange={(v) => updateKgQty(item.name, v)}
-                colors={colors}
-              />
-            );
-          })}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          {(displayItems as StockItem[]).map((item) => {
-            const ci = getCartItem(item.itemName);
-            return (
-              <ItemCard key={item.itemName} item={item} inCart={!!ci} cartQty={ci?.quantity ?? 0}
-                onAdd={() => addToCart(item)} onRemove={() => removeFromCart(item.itemName)}
-                onKgChange={(v) => updateKgQty(item.itemName, v)} colors={colors} />
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── Billing panel ── */}
-      {cart.length > 0 && (
-        <div className="bg-card border rounded-2xl overflow-hidden shadow-lg">
-
-          {/* Bill header — improved with revenue highlight */}
-          <div className="px-4 py-3 bg-zinc-900">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Receipt className="size-4 text-amber-400" />
-                <span className="font-semibold text-sm text-white">Bill</span>
-                <span className="text-[10px] font-mono text-zinc-400">{billNo.current}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', colors.badge)}>
-                  {cart.length} {cart.length === 1 ? 'item' : 'items'}
-                </span>
-                <button onClick={() => setShowCancel(true)}
-                  className="flex items-center gap-1 text-[11px] font-semibold text-red-400 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1 rounded-lg transition">
-                  <XCircle className="size-3" /> Cancel
-                </button>
-              </div>
-            </div>
-            {/* Revenue preview in header */}
-            {allPriced && (
-              <div className="flex items-center justify-between bg-white/10 rounded-xl px-3 py-2">
-                <span className="text-xs text-zinc-300">Total Revenue</span>
-                <span className="font-display text-lg font-bold text-amber-400 tabular-nums">{fmt(subtotal)}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Line items */}
-          <div className="divide-y max-h-72 overflow-y-scroll overscroll-contain" onWheel={(e) => e.stopPropagation()}>
-            {cart.map((c) => (
-              <CartLineItem key={c.itemName} item={c} stockQty={getStockQty(c.itemName)}
-                onAdd={() => {
-                  if (isSNB) {
-                    const s = SNB_ITEMS.find((i) => i.name === c.itemName);
-                    if (s) addSnbItemToCart(s);
-                  } else {
-                    const s = branchStock.find((si) => si.itemName === c.itemName);
-                    if (s) addToCart(s);
-                  }
-                }}
-                onRemove={() => removeFromCart(c.itemName)}
-                onDelete={() => deleteFromCart(c.itemName)}
-                onPriceChange={(p) => updatePrice(c.itemName, p)}
-                isSNB={isSNB}
-              />
-            ))}
-          </div>
-
-          {/* Totals + Discount + Payment */}
-          <div className="px-4 py-4 space-y-3 border-t bg-muted/10">
-
-            {/* Subtotal */}
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>Subtotal</span>
-              <span className="font-semibold tabular-nums text-foreground">{allPriced ? fmt(subtotal) : '—'}</span>
             </div>
 
-            {/* Discount */}
-            <div>
-              <button onClick={() => setShowDiscount((v) => !v)}
-                className={cn('flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition',
-                  showDiscount ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-muted border-border text-muted-foreground')}>
-                <Tag className="size-3.5" />{showDiscount ? 'Discount Applied' : 'Apply Discount'}
-              </button>
-              {showDiscount && (
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="flex rounded-xl overflow-hidden border bg-muted p-0.5 shrink-0">
-                    {(['percent','flat'] as DiscountType[]).map((t) => (
-                      <button key={t} onClick={() => { setDiscountType(t); setDiscountValue(''); }}
-                        className={cn('px-3 py-1 text-[11px] font-bold rounded-lg transition',
-                          discountType === t ? 'bg-white shadow text-foreground' : 'text-muted-foreground')}>
-                        {t === 'percent' ? '%' : '₹'}
-                      </button>
-                    ))}
-                  </div>
-                  <input type="number" inputMode="decimal" min="0"
-                    max={discountType === 'percent' ? 100 : subtotal} step={discountType === 'percent' ? 1 : 10}
-                    value={discountValue} onChange={(e) => setDiscountValue(e.target.value)}
-                    placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'}
-                    className="flex-1 h-9 px-3 rounded-xl border bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
-                  {discount > 0 && <span className="text-xs font-bold text-emerald-600 shrink-0">-{fmt(discount)}</span>}
+            {/* Item grid — scrolls independently */}
+            <div className="flex-1 overflow-y-auto p-3">
+              {displayItems.length === 0 ? (
+                <div className="text-center py-12 text-sm text-muted-foreground bg-muted/30 rounded-2xl border border-dashed">
+                  {totalItemCount === 0 ? 'No items in stock.' : 'No items match your search.'}
+                </div>
+              ) : isSNB ? (
+                <div className="grid grid-cols-2 gap-2">
+                  {(displayItems as SnbItem[]).map((item) => {
+                    const ci = getCartItem(item.name);
+                    const stockQtyForItem = getStockQty(item.name);
+                    return (
+                      <SnbItemCard
+                        key={item.barcode}
+                        item={item}
+                        inCart={!!ci}
+                        cartQty={ci?.quantity ?? 0}
+                        stockQty={stockQtyForItem}
+                        onAdd={() => addSnbItemToCart(item)}
+                        onRemove={() => removeFromCart(item.name)}
+                        onKgChange={(v) => updateKgQty(item.name, v)}
+                        colors={colors}
+                      />
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {(displayItems as StockItem[]).map((item) => {
+                    const ci = getCartItem(item.itemName);
+                    return (
+                      <ItemCard key={item.itemName} item={item} inCart={!!ci} cartQty={ci?.quantity ?? 0}
+                        onAdd={() => addToCart(item)} onRemove={() => removeFromCart(item.itemName)}
+                        onKgChange={(v) => updateKgQty(item.itemName, v)} colors={colors} />
+                    );
+                  })}
+                </div>
+              )}
+
+              {cart.length === 0 && totalItemCount > 0 && (
+                <div className="flex items-center gap-2 mt-3 px-3 py-2.5 bg-muted/30 rounded-xl text-xs text-muted-foreground border border-dashed">
+                  <ShoppingCart className="size-3.5 shrink-0" />
+                  Tap any item to add to bill
+                  <ChevronRight className="size-3.5 ml-auto shrink-0" />
                 </div>
               )}
             </div>
+          </div>
 
-            {/* Round-off row (SNB only) */}
-            {isSNB && allPriced && roundOff !== 0 && (
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>Round-Off</span>
-                <span className="font-semibold tabular-nums">{roundOff > 0 ? '+' : ''}{roundOff.toFixed(2)}</span>
-              </div>
-            )}
+          {/* ═══ COL 3: Bill panel (right, full height) ═══════════════════════ */}
+          <div className="w-[280px] sm:w-[300px] lg:w-[320px] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
 
-            {/* Grand total */}
-            <div className={cn('flex items-center justify-between rounded-xl px-4 py-3',
-              allPriced ? 'bg-primary text-primary-foreground' : 'bg-amber-50 border border-amber-100')}>
-              <div className="flex items-center gap-2">
-                <IndianRupee className={cn('size-3.5', allPriced ? 'text-primary-foreground/70' : 'text-muted-foreground')} />
-                <div>
-                  <p className={cn('text-sm font-bold', allPriced ? 'text-primary-foreground' : 'text-foreground')}>
-                    {isSNB ? 'Net Bill Amount' : 'Total Revenue'}
-                    {discount > 0 && <span className="text-[10px] font-normal opacity-70 ml-1">(after discount)</span>}
-                  </p>
-                  {discount > 0 && allPriced && (
-                    <p className="text-[10px] opacity-70 line-through tabular-nums">{fmt(subtotal)}</p>
+            {/* Bill header */}
+            <div className="px-4 py-3 bg-zinc-900 shrink-0">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Receipt className="size-4 text-amber-400" />
+                  <span className="font-semibold text-base text-white">Bill</span>
+                  <span className="text-[10px] font-mono text-zinc-400">{billNo.current}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {cart.length > 0 && (
+                    <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full', colors.badge)}>
+                      {cart.length} {cart.length === 1 ? 'item' : 'items'}
+                    </span>
+                  )}
+                  {cart.length > 0 && (
+                    <button onClick={() => setShowCancel(true)}
+                      className="flex items-center gap-1 text-[11px] font-semibold text-red-400 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1 rounded-lg transition">
+                      <XCircle className="size-3" /> Cancel
+                    </button>
                   )}
                 </div>
               </div>
-              {allPriced
-                ? <span className="font-display text-3xl font-bold tabular-nums">{fmt(finalTotal)}</span>
-                : <span className="text-xs text-amber-600 font-medium">⚠ Enter prices above</span>}
-            </div>
-
-            {/* Payment method */}
-            <div className="space-y-2">
-              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Payment</p>
-              <div className="grid grid-cols-4 gap-2">
-                {PAYMENT_OPTIONS.map((m) => (
-                  <button key={m.key} onClick={() => { setPayMode('single'); setSingle(m.key); setError(''); }}
-                    className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                      payMode === 'single' && singleMethod === m.key ? 'cafe-gradient text-primary-foreground border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
-                    {m.icon}{m.label}
-                  </button>
-                ))}
-                <button onClick={() => { setPayMode('split'); setSingle(null); setSplitMethods([null,null]); setSplitAmounts(['','']); setError(''); }}
-                  className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
-                    payMode === 'split' ? 'bg-violet-600 text-white border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
-                  <ArrowLeftRight className="size-4" />Part Pay
-                </button>
-              </div>
-
-              {payMode === 'split' && (
-                <div className="rounded-2xl border-2 border-violet-200 bg-violet-50/60 overflow-hidden">
-                  <div className="px-4 py-2 bg-violet-600">
-                    <p className="text-xs font-bold text-white uppercase tracking-wider text-center">Part Payment</p>
-                  </div>
-                  <div className="p-4 space-y-4">
-                    {([0,1] as const).map((idx) => {
-                      const other = splitMethods[idx === 0 ? 1 : 0];
-                      const label = idx === 0 ? '1st Payment' : '2nd Payment';
-                      return (
-                        <div key={idx} className="space-y-2">
-                          <p className="text-[11px] font-bold text-violet-700">{label}</p>
-                          {/* Method selector */}
-                          <div className="grid grid-cols-3 gap-2">
-                            {PAYMENT_OPTIONS.map((m) => {
-                              const chosen  = splitMethods[idx] === m.key;
-                              const blocked = other === m.key;
-                              return (
-                                <button key={m.key}
-                                  onClick={() => !blocked && selectSplitMethod(idx, m.key)}
-                                  disabled={blocked}
-                                  className={cn(
-                                    'py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1 border-2 transition active:scale-95',
-                                    chosen  ? 'bg-violet-600 text-white border-violet-600 shadow-md'
-                                    : blocked ? 'opacity-25 bg-muted border-muted cursor-not-allowed'
-                                    : 'bg-white border-border hover:border-violet-300',
-                                  )}>
-                                  {m.icon}{m.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          {/* Amount input */}
-                          <div className={cn(
-                            'flex items-center gap-3 rounded-xl border-2 px-4 py-3 bg-white transition',
-                            splitMethods[idx] ? 'border-violet-300' : 'border-border opacity-50',
-                          )}>
-                            <span className="text-lg font-bold text-muted-foreground">₹</span>
-                            <input
-                              type="number" inputMode="decimal" min="0" step="1"
-                              value={splitAmounts[idx]}
-                              onChange={(e) => handleSplitAmount(idx, e.target.value)}
-                              disabled={!splitMethods[idx]}
-                              placeholder={splitMethods[idx] ? (allPriced ? String(Math.round(finalTotal / 2)) : '0') : 'Select method first'}
-                              className="flex-1 text-xl font-bold tabular-nums bg-transparent focus:outline-none disabled:cursor-not-allowed placeholder:text-muted-foreground/40 placeholder:text-sm placeholder:font-normal"
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {/* Balance indicator */}
-                    {allPriced && (splitTotal0 > 0 || splitTotal1 > 0) && (
-                      <div className={cn(
-                        'flex items-center justify-between rounded-xl px-4 py-3 font-bold',
-                        Math.abs(splitPending) < 0.01
-                          ? 'bg-emerald-100 text-emerald-700'
-                          : 'bg-amber-100 text-amber-700',
-                      )}>
-                        <span className="text-sm">
-                          {Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to collect' : 'Over by'}
-                        </span>
-                        {Math.abs(splitPending) >= 0.01 && (
-                          <span className="text-lg tabular-nums">{fmt(Math.abs(splitPending))}</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
+              {allPriced && cart.length > 0 && (
+                <div className="flex items-center justify-between bg-white/10 rounded-xl px-3 py-2">
+                  <span className="text-xs text-zinc-300">Total</span>
+                  <span className="font-display text-xl font-bold text-amber-400 tabular-nums">{fmt(subtotal)}</span>
+                </div>
+              )}
+              {cart.length === 0 && (
+                <div className="flex items-center gap-2 bg-white/5 rounded-xl px-3 py-2">
+                  <ShoppingCart className="size-3.5 text-zinc-500" />
+                  <span className="text-xs text-zinc-500">No items added yet</span>
                 </div>
               )}
             </div>
 
-            {error && (
-              <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2.5 rounded-xl">{error}</p>
+            {/* Cart line items — scroll independently */}
+            {cart.length > 0 && (
+              <div className="flex-1 overflow-y-auto divide-y min-h-0">
+                {cart.map((c) => (
+                  <CartLineItem key={c.itemName} item={c} stockQty={getStockQty(c.itemName)}
+                    onAdd={() => {
+                      if (isSNB) {
+                        const s = SNB_ITEMS.find((i) => i.name === c.itemName);
+                        if (s) addSnbItemToCart(s);
+                      } else {
+                        const s = branchStock.find((si) => si.itemName === c.itemName);
+                        if (s) addToCart(s);
+                      }
+                    }}
+                    onRemove={() => removeFromCart(c.itemName)}
+                    onDelete={() => deleteFromCart(c.itemName)}
+                    onPriceChange={(p) => updatePrice(c.itemName, p)}
+                    isSNB={isSNB}
+                  />
+                ))}
+              </div>
             )}
 
-            {/* Action buttons */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                onClick={() => { if (!splitReady) { setError('Select payment method first.'); return; } setError(''); setShowPreview(true); }}
-                disabled={!allPriced || submitting}
-                className="py-3.5 rounded-xl border-2 border-primary text-primary font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
-                <Printer className="size-4" /> Print Bill
-              </button>
-              <button onClick={doCheckout} disabled={submitting || !splitReady}
-                className="py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md">
-                {submitting
-                  ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
-                  : <><Receipt className="size-4" /> Complete Sale</>}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            {/* Totals + payment — fixed at bottom */}
+            {cart.length > 0 && (
+              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 shrink-0 overflow-y-auto" style={{ maxHeight: '60%' }}>
 
-      {/* Empty hint */}
-      {cart.length === 0 && totalItemCount > 0 && (
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-muted/30 rounded-xl text-xs text-muted-foreground border border-dashed">
-          <ShoppingCart className="size-3.5 shrink-0" />
-          Tap any item above to add it to the cart
-          <ChevronRight className="size-3.5 ml-auto shrink-0" />
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>Subtotal</span>
+                  <span className="font-semibold tabular-nums text-foreground">{allPriced ? fmt(subtotal) : '—'}</span>
+                </div>
+
+                <div>
+                  <button onClick={() => setShowDiscount((v) => !v)}
+                    className={cn('flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl border transition',
+                      showDiscount ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-muted border-border text-muted-foreground')}>
+                    <Tag className="size-3.5" />{showDiscount ? 'Discount Applied' : 'Apply Discount'}
+                  </button>
+                  {showDiscount && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="flex rounded-xl overflow-hidden border bg-muted p-0.5 shrink-0">
+                        {(['percent','flat'] as DiscountType[]).map((t) => (
+                          <button key={t} onClick={() => { setDiscountType(t); setDiscountValue(''); }}
+                            className={cn('px-3 py-1 text-[11px] font-bold rounded-lg transition',
+                              discountType === t ? 'bg-white shadow text-foreground' : 'text-muted-foreground')}>
+                            {t === 'percent' ? '%' : '₹'}
+                          </button>
+                        ))}
+                      </div>
+                      <input type="number" inputMode="decimal" min="0"
+                        max={discountType === 'percent' ? 100 : subtotal} step={discountType === 'percent' ? 1 : 10}
+                        value={discountValue} onChange={(e) => setDiscountValue(e.target.value)}
+                        placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 50'}
+                        className="flex-1 h-9 px-3 rounded-xl border bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
+                      {discount > 0 && <span className="text-xs font-bold text-emerald-600 shrink-0">-{fmt(discount)}</span>}
+                    </div>
+                  )}
+                </div>
+
+                {isSNB && allPriced && roundOff !== 0 && (
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Round-Off</span>
+                    <span className="font-semibold tabular-nums">{roundOff > 0 ? '+' : ''}{roundOff.toFixed(2)}</span>
+                  </div>
+                )}
+
+                <div className={cn('flex items-center justify-between rounded-xl px-4 py-3',
+                  allPriced ? 'bg-primary text-primary-foreground' : 'bg-amber-50 border border-amber-100')}>
+                  <div>
+                    <p className={cn('text-sm font-bold', allPriced ? 'text-primary-foreground' : 'text-foreground')}>
+                      {isSNB ? 'Net Bill' : 'Total'}
+                      {discount > 0 && <span className="text-[10px] font-normal opacity-70 ml-1">(after discount)</span>}
+                    </p>
+                    {discount > 0 && allPriced && (
+                      <p className="text-[10px] opacity-70 line-through tabular-nums">{fmt(subtotal)}</p>
+                    )}
+                  </div>
+                  {allPriced
+                    ? <span className="font-display text-3xl font-bold tabular-nums">{fmt(finalTotal)}</span>
+                    : <span className="text-xs text-amber-600 font-medium">⚠ Enter prices</span>}
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Payment</p>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {PAYMENT_OPTIONS.map((m) => (
+                      <button key={m.key} onClick={() => { setPayMode('single'); setSingle(m.key); setError(''); }}
+                        className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                          payMode === 'single' && singleMethod === m.key ? 'cafe-gradient text-primary-foreground border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
+                        {m.icon}{m.label}
+                      </button>
+                    ))}
+                    <button onClick={() => { setPayMode('split'); setSingle(null); setSplitMethods([null,null]); setSplitAmounts(['','']); setError(''); }}
+                      className={cn('py-2.5 rounded-xl text-xs font-bold flex flex-col items-center gap-1.5 border transition active:scale-95',
+                        payMode === 'split' ? 'bg-violet-600 text-white border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50')}>
+                      <ArrowLeftRight className="size-4" />Part Pay
+                    </button>
+                  </div>
+
+                  {payMode === 'split' && (
+                    <div className="rounded-2xl border-2 border-violet-200 bg-violet-50/60 overflow-hidden">
+                      <div className="px-4 py-2 bg-violet-600">
+                        <p className="text-xs font-bold text-white uppercase tracking-wider text-center">Part Payment</p>
+                      </div>
+                      <div className="p-3 space-y-3">
+                        {([0,1] as const).map((idx) => {
+                          const other = splitMethods[idx === 0 ? 1 : 0];
+                          const label = idx === 0 ? '1st Payment' : '2nd Payment';
+                          return (
+                            <div key={idx} className="space-y-2">
+                              <p className="text-[11px] font-bold text-violet-700">{label}</p>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                {PAYMENT_OPTIONS.map((m) => {
+                                  const chosen  = splitMethods[idx] === m.key;
+                                  const blocked = other === m.key;
+                                  return (
+                                    <button key={m.key}
+                                      onClick={() => !blocked && selectSplitMethod(idx, m.key)}
+                                      disabled={blocked}
+                                      className={cn(
+                                        'py-2 rounded-xl text-xs font-bold flex flex-col items-center gap-1 border-2 transition active:scale-95',
+                                        chosen  ? 'bg-violet-600 text-white border-violet-600 shadow-md'
+                                        : blocked ? 'opacity-25 bg-muted border-muted cursor-not-allowed'
+                                        : 'bg-white border-border hover:border-violet-300',
+                                      )}>
+                                      {m.icon}{m.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div className={cn(
+                                'flex items-center gap-3 rounded-xl border-2 px-3 py-2.5 bg-white transition',
+                                splitMethods[idx] ? 'border-violet-300' : 'border-border opacity-50',
+                              )}>
+                                <span className="text-lg font-bold text-muted-foreground">₹</span>
+                                <input
+                                  type="number" inputMode="decimal" min="0" step="1"
+                                  value={splitAmounts[idx]}
+                                  onChange={(e) => handleSplitAmount(idx, e.target.value)}
+                                  disabled={!splitMethods[idx]}
+                                  placeholder={splitMethods[idx] ? (allPriced ? String(Math.round(finalTotal / 2)) : '0') : 'Select first'}
+                                  className="flex-1 text-lg font-bold tabular-nums bg-transparent focus:outline-none disabled:cursor-not-allowed placeholder:text-muted-foreground/40 placeholder:text-xs placeholder:font-normal"
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {allPriced && (splitTotal0 > 0 || splitTotal1 > 0) && (
+                          <div className={cn(
+                            'flex items-center justify-between rounded-xl px-3 py-2.5 font-bold',
+                            Math.abs(splitPending) < 0.01 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700',
+                          )}>
+                            <span className="text-sm">
+                              {Math.abs(splitPending) < 0.01 ? '✓ Balanced' : splitPending > 0 ? 'Still to collect' : 'Over by'}
+                            </span>
+                            {Math.abs(splitPending) >= 0.01 && (
+                              <span className="text-lg tabular-nums">{fmt(Math.abs(splitPending))}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {error && (
+                  <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2.5 rounded-xl">{error}</p>
+                )}
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    onClick={() => { if (!splitReady) { setError('Select payment method first.'); return; } setError(''); setShowPreview(true); }}
+                    disabled={!allPriced || submitting}
+                    className="py-3.5 rounded-xl border-2 border-primary text-primary font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
+                    <Printer className="size-4" /> Print
+                  </button>
+                  <button onClick={doCheckout} disabled={submitting || !splitReady}
+                    className="py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md">
+                    {submitting
+                      ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
+                      : <><Receipt className="size-4" /> Done</>}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1972,7 +2002,6 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           onClose={() => setShowPreview(false)}
           onConfirmPrint={handlePrintAndConfirm} />
       )}
-      </>)}
     </div>
   );
 }
