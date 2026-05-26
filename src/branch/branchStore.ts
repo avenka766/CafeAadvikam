@@ -46,6 +46,8 @@ export interface BranchAdvanceOrder {
   fullyPaidAt: string | null;
   balanceMethod: string | null;
   status: 'pending' | 'completed';
+  /** ISO date string (YYYY-MM-DD) — the date the customer wants delivery */
+  deliveryDate: string | null;
 }
 
 export interface IncomingStock {
@@ -202,6 +204,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           fullyPaidAt:    d.fully_paid_at ?? null,
           balanceMethod:  d.balance_method ?? null,
           status:         d.status as 'pending' | 'completed',
+          deliveryDate:   d.delivery_date ?? null,
         }));
 
         const tMap: Record<string, number> = {};
@@ -298,6 +301,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_by:        order.soldBy,
         created_at:     now,
         status:         'pending',
+        delivery_date:  order.deliveryDate ?? null,
       })
       .select()
       .single();
@@ -318,6 +322,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       fullyPaidAt:   null,
       balanceMethod: null,
       status:        'pending',
+      deliveryDate:  order.deliveryDate ?? null,
     };
 
     set((s) => {
