@@ -5,7 +5,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, ShoppingCart,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, ShoppingCart, BarChart2,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -23,6 +23,7 @@ import { useInvoiceStore } from './invoiceStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
 import PurchaseOrderTab from './PurchaseOrderTab';
+import StoreReportTab from './StoreReportTab';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -895,7 +896,7 @@ export default function StoreDashboard() {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'purchase'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'purchase' | 'report'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -920,6 +921,7 @@ export default function StoreDashboard() {
             { id: 'invoices',  label: 'Invoices',  icon: FileText,     badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
             { id: 'analytics', label: 'Analytics', icon: Calculator,   badge: null, badgeColor: '' },
             { id: 'custom',    label: 'Custom',    icon: ShoppingBag, badge: null, badgeColor: '' },
+            { id: 'report',    label: 'Report',    icon: BarChart2,   badge: null, badgeColor: '' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
@@ -941,6 +943,7 @@ export default function StoreDashboard() {
         {tab === 'invoices'  && <InvoiceTab />}
         {tab === 'analytics' && <StoreAnalyticsTab />}
         {tab === 'custom'    && <StoreCustomTab />}
+        {tab === 'report'    && <StoreReportTab />}
       </div>
     </div>
   );
