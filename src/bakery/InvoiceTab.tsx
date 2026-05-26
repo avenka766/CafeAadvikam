@@ -13,6 +13,7 @@ import { useSupplierStore } from './supplierStore';
 import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
 import { useStoreStockStore, type StockUnit } from './storeStockStore';
 import { useNotificationStore } from './notificationStore';
+import { searchItems, getSuppliersForItem, STORE_ITEM_MASTER } from './storeItemMaster';
 
 // ─── Print helper ─────────────────────────────────────────────────────────────
 function printInvoice(invoice: StoreInvoice) {
@@ -405,16 +406,32 @@ function CreateInvoiceModal({
             {lines.map((li, idx) => (
               <div key={idx} className="rounded-xl border border-border bg-muted/20 p-3 space-y-2">
                 <div className="flex items-center gap-2">
-                  <input
-                    value={li.itemName}
-                    onChange={e => updateLine(idx, 'itemName', e.target.value)}
-                    placeholder="Item name…"
-                    list={`suggestions-${idx}`}
-                    className="flex-1 h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  />
-                  <datalist id={`suggestions-${idx}`}>
-                    {suggestedItems.map(s => <option key={s} value={s} />)}
-                  </datalist>
+                  <div className="flex-1 relative">
+                    <input
+                      value={li.itemName}
+                      onChange={e => updateLine(idx, 'itemName', e.target.value)}
+                      placeholder="Item name…"
+                      list={`suggestions-${idx}`}
+                      className="w-full h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                    <datalist id={`suggestions-${idx}`}>
+                      {searchItems(li.itemName).map(s => <option key={s.item} value={s.item} />)}
+                      {suggestedItems.map(s => <option key={s} value={s} />)}
+                    </datalist>
+                    {li.itemName.trim().length > 2 && (() => {
+                      const itemSuppliers = getSuppliersForItem(li.itemName);
+                      return itemSuppliers.length > 0 ? (
+                        <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-background border border-primary/30 rounded-xl shadow-lg overflow-hidden">
+                          <p className="text-[9px] font-body font-bold text-primary uppercase px-2.5 pt-2 pb-1">Suppliers for this item</p>
+                          {itemSuppliers.map(s => (
+                            <div key={s} className="px-2.5 py-1.5 text-xs font-body text-foreground flex items-center gap-2 border-t border-border/40">
+                              <span className="size-1.5 rounded-full bg-primary shrink-0" />{s}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
                   {lines.length > 1 && (
                     <button onClick={() => removeLine(idx)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50">
                       <Trash2 className="size-3.5 text-red-400" />
