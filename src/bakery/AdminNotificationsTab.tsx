@@ -45,6 +45,14 @@ const TYPE_META: Record<
     iconColor: 'text-orange-600',
     badgeCls: 'bg-orange-100 text-orange-700 border-orange-200',
   },
+  low_stock: {
+    label: 'Low Stock',
+    icon: AlertTriangle,
+    cardBorder: 'border-yellow-300',
+    iconBg: 'bg-yellow-50',
+    iconColor: 'text-yellow-600',
+    badgeCls: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  },
 };
 
 // ─── Detail modal ─────────────────────────────────────────────────────────────
@@ -171,6 +179,32 @@ function NotificationDetailModal({
               </p>
             </div>
           )}
+        </div>
+      );
+    }
+
+    if (notification.type === 'low_stock' && m?.items) {
+      const items = m.items as { name: string; quantity: number; minThreshold: number; unit: string }[];
+      return (
+        <div className="space-y-2">
+          <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Items Below Threshold</p>
+          <div className="rounded-xl border border-yellow-200 overflow-hidden">
+            <div className="grid grid-cols-12 px-3 py-2 bg-yellow-50 text-[9px] font-body font-bold text-yellow-700 uppercase">
+              <span className="col-span-5">Material</span>
+              <span className="col-span-3 text-right">Current</span>
+              <span className="col-span-4 text-right">Min Level</span>
+            </div>
+            {items.map((item, i) => (
+              <div key={i} className="grid grid-cols-12 px-3 py-2.5 border-t border-yellow-100 text-xs font-body items-center">
+                <span className="col-span-5 font-semibold text-foreground truncate">{item.name}</span>
+                <span className="col-span-3 text-right font-bold text-red-600">{item.quantity.toFixed(2)} {item.unit}</span>
+                <span className="col-span-4 text-right text-muted-foreground">{item.minThreshold} {item.unit}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs font-body text-muted-foreground bg-muted/40 px-3 py-2 rounded-xl">
+            Raise a Purchase Order in the Store dashboard to replenish these materials.
+          </p>
         </div>
       );
     }
@@ -314,6 +348,7 @@ export default function AdminNotificationsTab() {
   const invoiceCount     = notifications.filter(n => n.type === 'invoice_pending').length;
   const shortageCount    = notifications.filter(n => n.type === 'baker_shortage').length;
   const discrepancyCount = notifications.filter(n => n.type === 'packing_discrepancy').length;
+  const lowStockCount    = notifications.filter(n => n.type === 'low_stock').length;
 
   return (
     <div className="space-y-4">
@@ -339,11 +374,12 @@ export default function AdminNotificationsTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         {[
-          { label: 'Invoices',     value: invoiceCount,     color: invoiceCount > 0 ? 'text-amber-600' : 'text-muted-foreground',   bg: invoiceCount > 0 ? 'bg-amber-50 border-amber-200' : '' },
-          { label: 'Shortages',    value: shortageCount,    color: shortageCount > 0 ? 'text-red-600' : 'text-muted-foreground',      bg: shortageCount > 0 ? 'bg-red-50 border-red-200' : '' },
-          { label: 'Discrepancy',  value: discrepancyCount, color: discrepancyCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: discrepancyCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
+          { label: 'Invoices',    value: invoiceCount,     color: invoiceCount > 0 ? 'text-amber-600' : 'text-muted-foreground',    bg: invoiceCount > 0 ? 'bg-amber-50 border-amber-200' : '' },
+          { label: 'Shortages',  value: shortageCount,    color: shortageCount > 0 ? 'text-red-600' : 'text-muted-foreground',      bg: shortageCount > 0 ? 'bg-red-50 border-red-200' : '' },
+          { label: 'Discrep.',   value: discrepancyCount, color: discrepancyCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: discrepancyCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
+          { label: 'Low Stock',  value: lowStockCount,    color: lowStockCount > 0 ? 'text-yellow-600' : 'text-muted-foreground',   bg: lowStockCount > 0 ? 'bg-yellow-50 border-yellow-200' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -360,6 +396,7 @@ export default function AdminNotificationsTab() {
             { id: 'invoice_pending',     label: '📄 Invoices' },
             { id: 'baker_shortage',      label: '📦 Shortage' },
             { id: 'packing_discrepancy', label: '⚖️ Discrepancy' },
+            { id: 'low_stock',           label: '⚠️ Low Stock' },
           ] as const).map(f => (
             <button
               key={f.id}

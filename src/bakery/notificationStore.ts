@@ -8,9 +8,10 @@ import { supabase } from '@/lib/supabase';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type NotificationType =
-  | 'invoice_pending'      // store submitted an invoice awaiting admin review
-  | 'baker_shortage'       // baker dispatched fewer items than the packed order needed
-  | 'packing_discrepancy'; // packing sent more or fewer items than receiver requested
+  | 'invoice_pending'
+  | 'baker_shortage'
+  | 'packing_discrepancy'
+  | 'low_stock';
 
 export interface AdminNotification {
   id: string;
@@ -38,6 +39,7 @@ interface NotificationState {
   pushInvoicePending: (invoiceId: string, invoiceNumber: string, supplierName: string, grandTotal: number) => Promise<void>;
   pushBakerShortage: (orderId: string, orderNumber: string, items: { itemName: string; prepared: number; requested: number; unit: string }[]) => Promise<void>;
   pushPackingDiscrepancy: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; dispatched: number; requested: number; unit: string }[]) => Promise<void>;
+  pushLowStock: (items: { name: string; quantity: number; minThreshold: number; unit: string }[]) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -160,6 +162,20 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id: orderId,
       ref_label: `Order ${orderNumber} → ${branch}`,
       meta: { orderId, orderNumber, branch, items },
+    });
+    if (!error) await get().load();
+  },
+
+  pushLowStock: async (items) => {
+    const lines = items
+      .map(i => `${i.name}: ${i.quantity.toFixed(2)} ${i.unit} (min ${i.minThreshold} ${i.unit})`)
+      .join('; ');
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'low_stock',
+      title:     `Low Stock Alert — ${items.length} item${items.length > 1 ? 's' : ''} below threshold`,
+      body:      lines,
+      ref_label: 'Store Stock',
+      meta:      { items },
     });
     if (!error) await get().load();
   },

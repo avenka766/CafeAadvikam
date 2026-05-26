@@ -5,7 +5,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, ShoppingCart,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -22,7 +22,7 @@ import InvoiceTab from './InvoiceTab';
 import { useInvoiceStore } from './invoiceStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
-import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier, STORE_ITEM_MASTER } from './storeItemMaster';
+import PurchaseOrderTab from './PurchaseOrderTab';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -299,7 +299,6 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 // ─── Stock Row ────────────────────────────────────────────────────────────────
 function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: StockItem) => void; onDelete: (id: string) => void }) {
   const isLow = item.quantity <= item.minThreshold;
-  const suppliers = useMemo(() => getSuppliersForItem(item.name), [item.name]);
   return (
     <div className={cn(
       'flex items-center gap-2.5 px-3.5 py-3 rounded-xl border transition-all',
@@ -313,7 +312,6 @@ function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: Sto
         <p className="text-[10px] font-body text-muted-foreground">
           Min: {item.minThreshold} {item.unit}
           {isLow && <span className="text-red-600 font-bold ml-1.5">LOW</span>}
-          {suppliers.length > 0 && <span className="text-primary font-semibold ml-1.5">· {suppliers.join(', ')}</span>}
         </p>
       </div>
       <span className={cn(
@@ -344,23 +342,13 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
   const [showSug, setShowSug] = useState(false);
-  const [selectedSuppliers, setSelectedSuppliers] = useState<string[]>([]);
 
-  // Enhanced suggestions: merge recipe materials + STORE_ITEM_MASTER
   const suggestions = useMemo(() => {
     const q = search.toLowerCase();
-    // Items from master sheet
-    const masterItems = searchItems(search).filter(m => {
-      const added = existingItems.some(e => normaliseName(e.name) === normaliseName(m.item));
-      return !added;
-    }).map(m => ({ name: m.item, unit: (m.uom.toLowerCase().startsWith('kg') ? 'kg' : m.uom.toLowerCase() === 'ltr' || m.uom.toLowerCase() === 'l' ? 'L' : m.uom.toLowerCase() === 'g' ? 'g' : 'pcs') as StockUnit, category: m.category, suppliers: m.suppliers }));
-    // Recipe materials as fallback
-    const recipeSugs = recipeMats.filter(m => {
+    return recipeMats.filter(m => {
       const added = existingItems.some(e => normaliseName(e.name) === normaliseName(m.name));
-      const inMaster = masterItems.some(x => normaliseName(x.name) === normaliseName(m.name));
-      return !added && !inMaster && (q === '' || m.name.toLowerCase().includes(q));
-    }).map(m => ({ name: m.name, unit: m.unit, category: 'Recipe', suppliers: [] }));
-    return [...masterItems, ...recipeSugs].slice(0, 50);
+      return !added && (q === '' || m.name.toLowerCase().includes(q));
+    }).slice(0, 40);
   }, [recipeMats, existingItems, search]);
 
   const handleSave = async () => {
@@ -388,14 +376,10 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
           {showSug && suggestions.length > 0 && (
             <div className="absolute top-full left-0 right-0 z-10 bg-background border border-border rounded-xl mt-1 max-h-52 overflow-y-auto shadow-lg">
               {suggestions.map(s => (
-                <button key={s.name} onClick={() => { setName(s.name); setUnit(s.unit as StockUnit); setSearch(s.name); setShowSug(false); setSelectedSuppliers((s as {suppliers?: string[]}).suppliers ?? []); }}
+                <button key={s.name} onClick={() => { setName(s.name); setUnit(s.unit); setSearch(s.name); setShowSug(false); }}
                   className="w-full text-left px-3 py-2.5 text-sm font-body hover:bg-muted flex items-center justify-between border-b border-border/50 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <span className="block text-sm font-semibold">{s.name}</span>
-                    {(s as {category?: string; suppliers?: string[]}).category && <span className="text-[10px] text-muted-foreground">{(s as {category?: string}).category}</span>}
-                    {((s as {suppliers?: string[]}).suppliers ?? []).length > 0 && <span className="text-[10px] text-primary ml-2">· {((s as {suppliers?: string[]}).suppliers ?? []).join(', ')}</span>}
-                  </div>
-                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0 ml-2">{s.unit}</span>
+                  <span>{s.name}</span>
+                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{s.unit}</span>
                 </button>
               ))}
             </div>
@@ -425,17 +409,6 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
         </div>
-        {selectedSuppliers.length > 0 && (
-          <div className="flex items-start gap-2 px-3 py-2.5 bg-primary/5 border border-primary/15 rounded-xl">
-            <Truck className="size-3.5 text-primary shrink-0 mt-0.5" />
-            <div>
-              <p className="text-[10px] font-body font-bold text-primary uppercase mb-1">Suppliers for this item</p>
-              <div className="flex flex-wrap gap-1">
-                {selectedSuppliers.map(s => <span key={s} className="text-[10px] font-body font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">{s}</span>)}
-              </div>
-            </div>
-          </div>
-        )}
         {error && <p className="text-xs font-body text-destructive">{error}</p>}
         <button onClick={handleSave} disabled={saving}
           className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]">
@@ -649,26 +622,18 @@ function SupplierCard({ supplier, onEdit, onDelete }: { supplier: Supplier; onEd
               <span className="text-sm font-body text-foreground">{supplier.address}</span>
             </div>
           )}
-          {(() => {
-            const masterItems = getItemsForSupplier(supplier.businessName);
-            const displayItems = masterItems.length > 0 ? masterItems : supplier.itemsSupplied.split(',').map(i => i.trim()).filter(Boolean);
-            return displayItems.length > 0 ? (
-              <div className="flex items-start gap-2.5">
-                <ShoppingBag className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1">{displayItems.length} items supplied</p>
-                  <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-                    {displayItems.slice(0, 20).map(item => (
-                      <span key={item} className="text-[10px] font-body font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-                        {item}
-                      </span>
-                    ))}
-                    {displayItems.length > 20 && <span className="text-[10px] font-body text-muted-foreground px-2 py-0.5">+{displayItems.length - 20} more</span>}
-                  </div>
-                </div>
+          {supplier.itemsSupplied && (
+            <div className="flex items-start gap-2.5">
+              <ShoppingBag className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+              <div className="flex flex-wrap gap-1">
+                {supplier.itemsSupplied.split(',').map(item => item.trim()).filter(Boolean).map(item => (
+                  <span key={item} className="text-[10px] font-body font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                    {item}
+                  </span>
+                ))}
               </div>
-            ) : null;
-          })()}
+            </div>
+          )}
           <div className="flex gap-2 pt-1">
             <button onClick={() => onEdit(supplier)}
               className="flex-1 h-9 rounded-xl border border-border text-xs font-body font-semibold text-foreground flex items-center justify-center gap-1.5 hover:bg-muted active:scale-[0.98]">
@@ -789,17 +754,9 @@ function SuppliersTab() {
       !q ||
       s.businessName.toLowerCase().includes(q) ||
       s.contactName.toLowerCase().includes(q) ||
-      s.itemsSupplied.toLowerCase().includes(q) ||
-      getItemsForSupplier(s.businessName).some(i => i.toLowerCase().includes(q))
+      s.itemsSupplied.toLowerCase().includes(q)
     );
   }, [suppliers, search]);
-
-  // Master supplier names from Excel (for quick-add)
-  const masterSupplierNames = useMemo(() => getAllSupplierNames(), []);
-  const unregisteredMasterSuppliers = useMemo(() =>
-    masterSupplierNames.filter(n => !suppliers.some(s => s.businessName.toLowerCase() === n.toLowerCase())).slice(0, 10),
-    [masterSupplierNames, suppliers]
-  );
 
   return (
     <div className="space-y-3">
@@ -818,29 +775,10 @@ function SuppliersTab() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <div className="bg-card border border-border rounded-xl p-2.5 text-center">
-          <p className="font-display text-xl font-bold text-foreground">{suppliers.length}</p>
-          <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">Registered</p>
-        </div>
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-2.5 text-center">
-          <p className="font-display text-xl font-bold text-primary">{masterSupplierNames.length}</p>
-          <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">Master List</p>
-        </div>
+      <div className="bg-card border border-border rounded-xl p-2.5 text-center">
+        <p className="font-display text-xl font-bold text-foreground">{suppliers.length}</p>
+        <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">Total Suppliers</p>
       </div>
-      {unregisteredMasterSuppliers.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-          <p className="text-[10px] font-body font-bold text-amber-700 uppercase mb-2">Known Suppliers (from item master) — tap to add</p>
-          <div className="flex flex-wrap gap-1.5">
-            {unregisteredMasterSuppliers.map(n => (
-              <button key={n} onClick={() => setShowAdd(true)}
-                className="text-[10px] font-body font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200">
-                + {n}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {loading && !loaded
         ? <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
@@ -879,7 +817,7 @@ export default function StoreDashboard() {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'purchase'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -897,11 +835,12 @@ export default function StoreDashboard() {
       <div className="px-4 mb-5">
         <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl overflow-x-auto">
           {([
-            { id: 'orders',    label: 'Orders',    icon: Package,   badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
-            { id: 'inventory', label: 'Inventory', icon: Warehouse, badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
-            { id: 'suppliers', label: 'Suppliers', icon: Truck,     badge: null, badgeColor: '' },
-            { id: 'invoices',  label: 'Invoices',  icon: FileText,  badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
-            { id: 'analytics', label: 'Analytics', icon: Calculator, badge: null, badgeColor: '' },
+            { id: 'orders',    label: 'Orders',    icon: Package,      badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
+            { id: 'inventory', label: 'Inventory', icon: Warehouse,    badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
+            { id: 'purchase',  label: 'PO',        icon: ShoppingCart, badge: null, badgeColor: '' },
+            { id: 'suppliers', label: 'Suppliers', icon: Truck,        badge: null, badgeColor: '' },
+            { id: 'invoices',  label: 'Invoices',  icon: FileText,     badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
+            { id: 'analytics', label: 'Analytics', icon: Calculator,   badge: null, badgeColor: '' },
             { id: 'custom',    label: 'Custom',    icon: ShoppingBag, badge: null, badgeColor: '' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
@@ -919,6 +858,7 @@ export default function StoreDashboard() {
       <div className="px-4">
         {tab === 'orders'    && <OrdersTab />}
         {tab === 'inventory' && <StoreInventoryTab />}
+        {tab === 'purchase'  && <PurchaseOrderTab />}
         {tab === 'suppliers' && <SuppliersTab />}
         {tab === 'invoices'  && <InvoiceTab />}
         {tab === 'analytics' && <StoreAnalyticsTab />}

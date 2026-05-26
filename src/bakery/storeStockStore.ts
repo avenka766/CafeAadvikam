@@ -174,6 +174,18 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         return upd ? { ...i, quantity: upd.newQty } : i;
       }),
     }));
+
+    // Fire low-stock notification for any item that dropped below its threshold
+    const currentItems = get().items;
+    const lowItems = updates
+      .map(u => currentItems.find(i => i.id === u.id))
+      .filter((i): i is StockItem => !!i && i.quantity <= i.minThreshold)
+      .map(i => ({ name: i.name, quantity: i.quantity, minThreshold: i.minThreshold, unit: i.unit }));
+    if (lowItems.length > 0) {
+      const { useNotificationStore } = await import('./notificationStore');
+      await useNotificationStore.getState().pushLowStock(lowItems);
+    }
+
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
   },
 }));

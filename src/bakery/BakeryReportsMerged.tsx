@@ -38,6 +38,121 @@ const ITEM_COLORS = [
   '#8B5CF6', '#EC4899', '#10B981', '#F59E0B',
 ];
 
+// ─── Item Frequency Chart ─────────────────────────────────────────────────────
+
+function ItemFrequencyChart({ orders, dateFrom, dateTo }: {
+  orders: ReturnType<typeof useBranchStore.getState>['sales'];
+  dateFrom: string;
+  dateTo: string;
+}) {
+  const data = useMemo(() => {
+    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+    const to   = new Date(dateTo);   to.setHours(23, 59, 59, 999);
+    const freq = new Map<string, number>();
+    for (const s of orders) {
+      const t = new Date(s.soldAt).getTime();
+      if (t < from.getTime() || t > to.getTime()) continue;
+      freq.set(s.itemName, (freq.get(s.itemName) ?? 0) + 1);
+    }
+    return Array.from(freq.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([name, count]) => ({ name: name.length > 18 ? name.slice(0, 16) + '…' : name, count }));
+  }, [orders, dateFrom, dateTo]);
+
+  if (data.length === 0) return null;
+
+  return (
+    <div className="bg-card border border-border rounded-2xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <BarChart3 className="size-4 text-muted-foreground" />
+        <p className="text-sm font-body font-bold text-foreground">Item Order Frequency</p>
+        <span className="text-[10px] font-body text-muted-foreground bg-muted px-2 py-0.5 rounded-full">Top 15</span>
+      </div>
+      <p className="text-xs font-body text-muted-foreground">How many times each item was ordered in the selected period</p>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={data} layout="vertical" margin={{ left: 8, right: 16 }}>
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
+          <XAxis type="number" tick={{ fontSize: 10, fontFamily: 'var(--font-body)' }} />
+          <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 10, fontFamily: 'var(--font-body)' }} />
+          <Tooltip
+            contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 12, fontSize: 12 }}
+            formatter={(v: number) => [`${v} orders`, 'Frequency']}
+          />
+          <Bar dataKey="count" radius={[0, 6, 6, 0]} maxBarSize={20}>
+            {data.map((_, i) => <Cell key={i} fill={ITEM_COLORS[i % ITEM_COLORS.length]} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── Order Time Heatmap ───────────────────────────────────────────────────────
+
+const HOUR_LABELS = ['12a','1a','2a','3a','4a','5a','6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p','10p','11p'];
+
+function OrderTimeHeatmap({ orders, dateFrom, dateTo }: {
+  orders: ReturnType<typeof useBranchStore.getState>['sales'];
+  dateFrom: string;
+  dateTo: string;
+}) {
+  const data = useMemo(() => {
+    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+    const to   = new Date(dateTo);   to.setHours(23, 59, 59, 999);
+    const counts = new Array(24).fill(0);
+    for (const s of orders) {
+      const t = new Date(s.soldAt);
+      if (t.getTime() < from.getTime() || t.getTime() > to.getTime()) continue;
+      counts[t.getHours()]++;
+    }
+    const max = Math.max(...counts, 1);
+    return counts.map((count, hour) => ({ hour, label: HOUR_LABELS[hour], count, intensity: count / max }));
+  }, [orders, dateFrom, dateTo]);
+
+  const total = data.reduce((s, d) => s + d.count, 0);
+  if (total === 0) return null;
+  const peakHour = data.reduce((best, d) => d.count > best.count ? d : best, data[0]);
+
+  return (
+    <div className="bg-card border border-border rounded-2xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <TrendingUp className="size-4 text-muted-foreground" />
+        <p className="text-sm font-body font-bold text-foreground">Order Activity by Hour</p>
+      </div>
+      <p className="text-xs font-body text-muted-foreground">
+        Peak hour: <strong>{peakHour.label}</strong> ({peakHour.count} orders) · Total: {total} orders
+      </p>
+      <div className="grid grid-cols-12 gap-1">
+        {data.map(d => (
+          <div key={d.hour} className="flex flex-col items-center gap-1">
+            <div
+              className="w-full rounded-md"
+              style={{
+                height: 32,
+                background: d.count === 0
+                  ? 'hsl(var(--muted))'
+                  : `rgba(45, 125, 111, ${0.15 + d.intensity * 0.85})`,
+              }}
+              title={`${d.label}: ${d.count} orders`}
+            />
+            <span className="text-[8px] font-body text-muted-foreground leading-none">{d.label}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
+        <span>Low</span>
+        <div className="flex gap-0.5 flex-1">
+          {[0.15, 0.35, 0.55, 0.75, 1].map(o => (
+            <div key={o} className="flex-1 h-2 rounded-sm" style={{ background: `rgba(45, 125, 111, ${o})` }} />
+          ))}
+        </div>
+        <span>High</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Props { branch: 'VRSNB' | 'SNB' | 'all'; }
@@ -679,6 +794,12 @@ export default function BakeryReportsMerged({ branch }: Props) {
           </div>
         )}
       </div>
+
+      {/* ── Item Frequency Chart ── */}
+      <ItemFrequencyChart orders={orders} dateFrom={dateFrom} dateTo={dateTo} />
+
+      {/* ── Order Time Heatmap ── */}
+      <OrderTimeHeatmap orders={orders} dateFrom={dateFrom} dateTo={dateTo} />
     </div>
   );
 }

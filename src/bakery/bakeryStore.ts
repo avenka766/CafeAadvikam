@@ -64,7 +64,22 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .select()
       .single();
     if (error || !data) throw new Error('Failed to submit order. Please try again.');
-    set(s => ({ orders: [rowToOrder(data as Record<string, unknown>), ...s.orders] }));
+    const order = rowToOrder(data as Record<string, unknown>);
+    set(s => ({ orders: [order, ...s.orders] }));
+    // Activity log
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId:   user.id,
+        staffName: user.displayName,
+        role:      user.role,
+        action:    'Submitted Order',
+        detail:    `Order #${order.orderNumber} for ${targetBranch} — ${items.length} item(s)`,
+        branch:    targetBranch,
+      });
+    }
   },
 
   updateExpectedOutput: async (orderId, qty) => {
@@ -123,6 +138,20 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         void useNotificationStore.getState()
           .pushBakerShortage(orderId, String(order.orderNumber), shortages);
       }
+      // Activity log
+      const { useAuthStore } = await import('@/stores/authStore');
+      const user = useAuthStore.getState().currentUser;
+      if (user) {
+        const { useActivityLogStore } = await import('./activityLogStore');
+        void useActivityLogStore.getState().log({
+          staffId:   user.id,
+          staffName: user.displayName,
+          role:      user.role,
+          action:    'Submitted Prepared Items',
+          detail:    `Order #${order.orderNumber} — ${preparedItems.length} item(s) sent to packing`,
+          branch:    order.targetBranch,
+        });
+      }
     }
   },
 
@@ -178,6 +207,22 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         o.id === orderId ? { ...o, dispatchLog: updatedLog, status: 'dispatched' } : o
       ),
     }));
+
+    // Activity log
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    const dispatchedOrder = get().orders.find(o => o.id === orderId);
+    if (user && dispatchedOrder) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId:   user.id,
+        staffName: user.displayName,
+        role:      user.role,
+        action:    'Dispatched Items',
+        detail:    `Order #${dispatchedOrder.orderNumber} → ${entry.branch}: ${entry.quantity} ${entry.unit ?? 'kg'} of ${entry.itemName}`,
+        branch:    entry.branch,
+      });
+    }
   },
 
   deleteDispatchEntry: async (orderId, entryId) => {
