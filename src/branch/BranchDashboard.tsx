@@ -78,7 +78,7 @@ export default function BranchDashboard({ branch }: Props) {
   );
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-20">
+    <div className="bg-background pt-14">
       <div className={cn('px-4 pt-4 pb-3 border-b', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
@@ -103,15 +103,16 @@ export default function BranchDashboard({ branch }: Props) {
           <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
             branchThresholds={branchThresholds} loading={loading} />
         </div>
-        <div className={tab !== 'bill'     ? 'hidden' : undefined}>
-          <BillTab branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />
-        </div>
         <div className={tab !== 'history'  ? 'hidden' : undefined}>
           <HistoryTab branchSales={branchSales} />
         </div>
         <div className={tab !== 'settings' ? 'hidden' : undefined}>
           <SettingsTab branch={branch} branchStock={branchStock} />
         </div>
+      </div>
+      {/* BillTab outside padded wrapper — needs full height, no extra padding */}
+      <div className={tab !== 'bill' ? 'hidden' : undefined}>
+        <BillTab branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />
       </div>
     </div>
   );
