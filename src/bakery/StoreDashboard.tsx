@@ -20,6 +20,8 @@ import {
 import { useSupplierStore, type Supplier } from './supplierStore';
 import InvoiceTab from './InvoiceTab';
 import { useInvoiceStore } from './invoiceStore';
+import StoreAnalyticsTab from './StoreAnalyticsTab';
+import StoreCustomTab from './StoreCustomTab';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -814,7 +816,7 @@ export default function StoreDashboard() {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -830,12 +832,14 @@ export default function StoreDashboard() {
         <p className="text-xs font-body text-muted-foreground mt-0.5">Review orders · manage raw stock · send to baker</p>
       </div>
       <div className="px-4 mb-5">
-        <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl">
+        <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl overflow-x-auto">
           {([
             { id: 'orders',    label: 'Orders',    icon: Package,   badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
             { id: 'inventory', label: 'Inventory', icon: Warehouse, badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
             { id: 'suppliers', label: 'Suppliers', icon: Truck,     badge: null, badgeColor: '' },
             { id: 'invoices',  label: 'Invoices',  icon: FileText,  badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
+            { id: 'analytics', label: 'Analytics', icon: Calculator, badge: null, badgeColor: '' },
+            { id: 'custom',    label: 'Custom',    icon: ShoppingBag, badge: null, badgeColor: '' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
@@ -854,6 +858,8 @@ export default function StoreDashboard() {
         {tab === 'inventory' && <StoreInventoryTab />}
         {tab === 'suppliers' && <SuppliersTab />}
         {tab === 'invoices'  && <InvoiceTab />}
+        {tab === 'analytics' && <StoreAnalyticsTab />}
+        {tab === 'custom'    && <StoreCustomTab />}
       </div>
     </div>
   );

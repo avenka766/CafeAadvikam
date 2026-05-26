@@ -255,6 +255,12 @@ function CreateInvoiceModal({
     if (!supplierId) { setError('Select a supplier'); return; }
     if (lines.some(l => !l.itemName.trim())) { setError('All items need a name'); return; }
     if (lines.some(l => l.quantity <= 0 || l.pricePerUnit < 0)) { setError('Check quantities and prices'); return; }
+    // Date guard: no future dates, max 1 day in the past
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+    const selectedDate = new Date(deliveryDate); selectedDate.setHours(0, 0, 0, 0);
+    if (selectedDate > today) { setError('Delivery date cannot be in the future'); return; }
+    if (selectedDate < yesterday) { setError('Delivery date can only be today or yesterday'); return; }
 
     setSaving(true); setError('');
 
@@ -355,9 +361,14 @@ function CreateInvoiceModal({
           <input
             type="date"
             value={deliveryDate}
+            min={(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}
+            max={new Date().toISOString().slice(0, 10)}
             onChange={e => setDeliveryDate(e.target.value)}
             className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
+          <p className="text-[10px] font-body text-muted-foreground mt-1 flex items-center gap-1">
+            <span className="text-amber-500">⚠</span> Only today or yesterday allowed
+          </p>
         </div>
 
         {/* Line items */}
