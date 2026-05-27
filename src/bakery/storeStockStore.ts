@@ -26,11 +26,29 @@ interface StoreStockState {
   updateQuantity: (id: string, quantity: number) => Promise<string | null>;
   updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
-  deductMaterials: (deductions: { name: string; qty: number }[]) => Promise<string | null>;
+  // H-06 FIX: unit is now required so conversions are explicit, not guessed
+  deductMaterials: (deductions: { name: string; qty: number; unit?: string }[]) => Promise<string | null>;
+}
+
+// H-06 FIX: explicit unit conversion — replaces the fragile "qty ≤ 10 = kg" heuristic.
+// Recipes pass their unit alongside qty; this function converts to the stock unit.
+function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number {
+  const from = recipeUnit.toLowerCase().trim();
+  const to   = stockUnit.toLowerCase().trim();
+  if (from === to) return qty;
+  if (from === 'g'  && to === 'kg')  return qty / 1000;
+  if (from === 'kg' && to === 'g')   return qty * 1000;
+  if (from === 'ml' && (to === 'l' || to === 'ltr')) return qty / 1000;
+  if ((from === 'l' || from === 'ltr') && to === 'ml') return qty * 1000;
+  if ((from === 'l' && to === 'ltr') || (from === 'ltr' && to === 'l')) return qty;
+  console.warn(`[storeStockStore] No conversion from "${recipeUnit}" → "${stockUnit}", using raw value`);
+  return qty;
 }
 
 // Normalise a material name to lowercase trimmed for matching
 export function normaliseName(n: string) { return n.trim().toLowerCase(); }
+
+
 
 // Extract all unique materials from recipe definitions (deduplicated, sorted)
 export function getAllRecipeMaterials(): { name: string; unit: StockUnit }[] {
@@ -64,23 +82,28 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   load: async () => {
     if (get().loading) return;
     set({ loading: true });
-    const { data, error } = await supabase
-      .from('store_raw_stock')
-      .select('*')
-      .order('name', { ascending: true });
-    if (!error && data) {
-      set({
-        items: data.map(r => ({
-          id: r.id as string,
-          name: r.name as string,
-          unit: r.unit as StockUnit,
-          quantity: Number(r.quantity),
-          minThreshold: Number(r.min_threshold),
-        })),
-        loaded: true,
-      });
+    // C-05 FIX: wrap in try/finally so loading is always reset to false even on
+    // network exceptions (previously an uncaught throw left an infinite spinner).
+    try {
+      const { data, error } = await supabase
+        .from('store_raw_stock')
+        .select('*')
+        .order('name', { ascending: true });
+      if (!error && data) {
+        set({
+          items: data.map(r => ({
+            id: r.id as string,
+            name: r.name as string,
+            unit: r.unit as StockUnit,
+            quantity: Number(r.quantity),
+            minThreshold: Number(r.min_threshold),
+          })),
+          loaded: true,
+        });
+      }
+    } finally {
+      set({ loading: false });
     }
-    set({ loading: false });
   },
 
   addItem: async (name, unit, quantity, minThreshold) => {
@@ -144,18 +167,18 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     for (const d of deductions) {
       const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
       if (!match) { warnings.push(`${d.name} not in stock`); continue; }
-      // BUG #2 FIX: complete unit conversion between recipe units and stock units.
-      // Recipes store quantities in kg/L; stock may be tracked in g or ltr.
+      // H-06 FIX: use convertToStockUnit() when recipe unit is provided.
+      // Falls back to the old numeric heuristic only for legacy callers that don't pass a unit.
       let deductQty = d.qty;
-      if (match.unit === 'g' && deductQty <= 10) {
-        // Recipe qty is in kg, stock is in g → convert kg → g
-        deductQty = deductQty * 1000;
-      } else if (match.unit === 'ltr' && deductQty <= 10) {
-        // Recipe qty is in L, stock is in ltr → same scale, no conversion needed
-        // (ltr and L are equivalent)
-      } else if (match.unit === 'kg' && deductQty > 100) {
-        // Suspiciously large kg value — likely recipe provided grams; convert g → kg
-        deductQty = deductQty / 1000;
+      if (d.unit) {
+        deductQty = convertToStockUnit(d.qty, d.unit, match.unit);
+      } else {
+        // Legacy fallback — remove once all callers supply unit
+        if (match.unit === 'g' && deductQty <= 10) {
+          deductQty = deductQty * 1000;
+        } else if (match.unit === 'kg' && deductQty > 100) {
+          deductQty = deductQty / 1000;
+        }
       }
       const newQty = Math.max(0, match.quantity - deductQty);
       updates.push({ id: match.id, newQty });

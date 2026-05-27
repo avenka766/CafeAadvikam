@@ -80,9 +80,11 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   createInvoice: async (data) => {
-    // Generate invoice number: INV-YYYYMMDD-XXXX
+    // C-07 FIX: use crypto.randomUUID() for collision-free invoice numbers.
+    // Math.random() only produced ~9,000 unique combos per day — duplicates were
+    // likely during busy shifts, breaking accounting & legal records.
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const rand = Math.floor(1000 + Math.random() * 9000);
+    const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
     const invoiceNumber = `INV-${dateStr}-${rand}`;
 
     const { data: inserted, error } = await supabase
