@@ -1834,8 +1834,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
-    // Full viewport height minus branch header+stats+tabbar (~241px total with top nav)
-    <div className="flex flex-col" style={{ height: 'calc(100dvh - 241px)' }}>
+    // U-04 FIX: use flex-1 so this fills whatever space the parent leaves — no magic pixel values
+    <div className="flex flex-col flex-1 min-h-0">
 
       {/* ── Tab switcher (compact top bar) ── */}
       <div className="flex gap-1 p-1.5 bg-muted border-b border-border shrink-0 overflow-x-auto">
