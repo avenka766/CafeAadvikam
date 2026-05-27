@@ -9,6 +9,7 @@ interface OrderState {
   loading: boolean;
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
+  _pollBackoffTimer: ReturnType<typeof setTimeout> | null; // H-04 FIX: separate from pollTimer so clearInterval/clearTimeout hit the right handle
   _pollRefCount: number;
   _pollFailCount: number; // consecutive load failures — used for backoff
 
@@ -62,6 +63,7 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     fullyPaidAt: row.fully_paid_at as string | undefined,
     balancePaymentType: row.balance_payment_type as string | undefined,
     balancePaidBy: row.balance_paid_by as string | undefined,
+    parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0, // H-05 FIX: was missing — undefined after page reload
   };
 }
 
@@ -71,6 +73,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   loading: false,
   polling: false,
   pollTimer: null,
+  _pollBackoffTimer: null, // H-04 FIX: separate timer for backoff setTimeout
   _pollRefCount: 0,
   _pollFailCount: 0,
 
@@ -121,17 +124,24 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const backoffMs = Math.min(3000 * Math.pow(2, failCount - 1), 60_000);
       console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
 
-      // If we're in a polling loop, reschedule at the backoff interval
-      const { pollTimer } = get();
+      // H-04 FIX: clear the backoff timeout too before rescheduling, using its own slot.
+      // Previously the timeout ID was casted and stored in pollTimer (an interval slot),
+      // so clearInterval(pollTimer) silently no-op'd on the timeout ID — interval leaked.
+      const { pollTimer, _pollBackoffTimer } = get();
+      if (_pollBackoffTimer) {
+        clearTimeout(_pollBackoffTimer);
+        set({ _pollBackoffTimer: null });
+      }
       if (pollTimer) {
         clearInterval(pollTimer);
+        set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
+          set({ _pollBackoffTimer: null });
           const newTimer = setInterval(() => { get().loadOrders(days); }, 3000);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
-        // Store timeout id in pollTimer slot temporarily (same cleanup path)
-        set({ pollTimer: retryTimer as unknown as ReturnType<typeof setInterval> });
+        set({ _pollBackoffTimer: retryTimer });
       }
     } finally {
       set({ loading: false });
@@ -255,7 +265,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const discount = discountType === 'percentage'
       ? Math.round(order.subtotal * (discountValue / 100))
       : discountValue;
-    const total = Math.max(0, order.subtotal - discount);
+    // H-03 FIX: preserve parcelCharges in total — previously dropped, causing underpayment on takeaway orders
+    const parcelCharges = order.parcelCharges ?? 0;
+    const total = Math.max(0, order.subtotal - discount) + parcelCharges;
     const now = new Date().toISOString();
 
     set((state) => ({
@@ -288,16 +300,17 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    // PROD-03: match on updated_at to detect concurrent modification
-    const { count, error } = await supabase.from('orders')
+    // PROD-03 / H-02 FIX: .select('id') so data is populated; check data.length instead
+    // of count (which is null without { count: 'exact' }) to detect concurrent edits.
+    const { data: lockData, error } = await supabase.from('orders')
       .update(updates)
       .eq('id', orderId)
       .eq('updated_at', order.updatedAt)
-      .select();
+      .select('id');
 
-    if (error || count === 0) {
+    if (error || !lockData || lockData.length === 0) {
       set({ orders: prev });
-      throw new Error(count === 0
+      throw new Error(!lockData || lockData.length === 0
         ? 'Order was modified by someone else. Please refresh.'
         : 'Failed to set payment type');
     }
@@ -335,24 +348,29 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     };
     if (breakdown) updates.payment_breakdown = breakdown;
 
+    // M-06 FIX: payment_type must become balancePaymentType after full payment,
+    // not remain 'advance' — otherwise reports show wrong payment method.
+    updates.payment_type = balancePaymentType;
+
     set((state) => ({
       orders: state.orders.map((o) =>
         o.id === orderId
-          ? { ...o, paymentType: 'advance', billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, status: 'served', updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
+          ? { ...o, paymentType: balancePaymentType, billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, status: 'served', updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
           : o,
       ),
     }));
 
-    // PROD-03: optimistic lock on collect balance
-    const { count, error } = await supabase.from('orders')
+    // PROD-03 / H-02 FIX: .select('id') so data is populated; check data.length instead
+    // of count (which is null without { count: 'exact' }) to detect concurrent edits.
+    const { data: lockData, error } = await supabase.from('orders')
       .update(updates)
       .eq('id', orderId)
       .eq('updated_at', order.updatedAt)
-      .select();
+      .select('id');
 
-    if (error || count === 0) {
+    if (error || !lockData || lockData.length === 0) {
       set({ orders: prev });
-      throw new Error(count === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to collect balance');
+      throw new Error(!lockData || lockData.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to collect balance');
     }
   },
 
@@ -371,9 +389,16 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const state = get();
     const newCount = Math.max(0, (state._pollRefCount || 0) - 1);
     set({ _pollRefCount: newCount });
-    if (newCount === 0 && state.pollTimer) {
-      clearInterval(state.pollTimer);
-      set({ polling: false, pollTimer: null });
+    if (newCount === 0) {
+      // H-04 FIX: clear both the interval AND any pending backoff timeout
+      if (state._pollBackoffTimer) {
+        clearTimeout(state._pollBackoffTimer);
+        set({ _pollBackoffTimer: null });
+      }
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        set({ polling: false, pollTimer: null });
+      }
     }
   },
 }));
