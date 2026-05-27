@@ -78,7 +78,7 @@ export default function BranchDashboard({ branch }: Props) {
   );
 
   return (
-    <div className="bg-background pt-14">
+    <div className="bg-background pt-14 pb-28">
       <div className={cn('px-4 pt-4 pb-3 border-b', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
