@@ -28,23 +28,27 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     if (loaded && !expired && !force) return;
 
     set({ loading: true });
-    const { data, error } = await supabase
-      .from('menu_items')
-      .select('*')
-      .order('id', { ascending: true });
+    // M-01 FIX: use try/finally so loading is always reset to false even on
+    // network exceptions (previously an uncaught throw left an infinite spinner).
+    try {
+      const { data, error } = await supabase
+        .from('menu_items')
+        .select('*')
+        .order('id', { ascending: true });
 
-    if (!error && data) {
-      const items: MenuItem[] = data.map((d) => ({
-        id: d.id,
-        name: d.name,
-        price: d.price,
-        category: d.category,
-        timing: d.timing,
-        enabled: d.enabled,
-        imageUrl: d.image_url || undefined,
-      }));
-      set({ items, loaded: true, loadedAt: Date.now(), loading: false });
-    } else {
+      if (!error && data) {
+        const items: MenuItem[] = data.map((d) => ({
+          id: d.id,
+          name: d.name,
+          price: d.price,
+          category: d.category,
+          timing: d.timing,
+          enabled: d.enabled,
+          imageUrl: d.image_url || undefined,
+        }));
+        set({ items, loaded: true, loadedAt: Date.now() });
+      }
+    } finally {
       set({ loading: false });
     }
   },
