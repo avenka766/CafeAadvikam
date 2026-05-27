@@ -131,7 +131,7 @@ export default function DigitalMenu() {
     [selectedCategory, activeCategories]);
 
   return (
-    <div className="min-h-screen bg-background pb-28">
+    <div className="min-h-[100dvh] bg-background pt-14 pb-28">
 
       {/* ── HERO — full bleed food photo with overlay ── */}
       <div className="relative w-full overflow-hidden" style={{ height: '340px' }}>

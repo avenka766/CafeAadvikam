@@ -1282,7 +1282,7 @@ function BakeryView() {
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-medium transition shrink-0',
+              'shrink-0 whitespace-nowrap flex items-center justify-center gap-1 py-1.5 px-3 rounded-lg text-[11px] font-medium transition',
               tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
             )}
           >
@@ -1311,7 +1311,7 @@ export default function AdminDashboard() {
   }, [startPolling, stopPolling]);
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="min-h-[100dvh] bg-background pt-14 pb-24">
       {/* ── Page header ── */}
       <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
         <div className="flex items-end justify-between">

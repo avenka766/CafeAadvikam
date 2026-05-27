@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { useScrollLock } from '@/hooks/useScrollLock';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell, ResponsiveContainer, RadialBarChart, RadialBar,
@@ -603,6 +604,7 @@ function DeductToggle({ label, amount, checked, onChange }: { label: string; amo
 }
 
 function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose: () => void }) {
+  useScrollLock(); // N-11: prevent background scroll bleed on iOS
   const [name, setName] = useState('');
   const [branch, setBranch] = useState<Branch>('VRSNB');
   const [dept, setDept] = useState('');
@@ -626,9 +628,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
-        <div className="sticky top-0 bg-card flex items-center justify-between px-5 py-4 border-b border-border">
-          <h3 className="font-display font-bold text-lg">Add Employee</h3>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto overscroll-contain">
           <button onClick={onClose} className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
         </div>
         <div className="px-5 py-4 space-y-3">
@@ -670,6 +670,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
 }
 
 function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Employee) => void; onClose: () => void }) {
+  useScrollLock(); // N-11: prevent background scroll bleed on iOS
   const [name, setName] = useState(emp.name);
   const [branch, setBranch] = useState<Branch>(emp.branch);
   const [dept, setDept] = useState(emp.department);
@@ -708,7 +709,7 @@ function EditEmpModal({ emp, onSave, onClose }: { emp: Employee; onSave: (e: Emp
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto overscroll-contain" onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-card flex items-center justify-between px-5 py-4 border-b border-border">
           <h3 className="font-display font-bold text-lg">Edit Employee</h3>
           <button onClick={onClose} className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
@@ -1673,7 +1674,7 @@ export default function AttendanceSalary() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-[100dvh] bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-muted-foreground">
           <Loader2 className="size-8 animate-spin text-primary" />
           <p className="text-sm font-body">Loading {activeMonth.label}…</p>
@@ -1683,7 +1684,7 @@ export default function AttendanceSalary() {
   }
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="min-h-[100dvh] bg-background pt-14 pb-24">
       {/* Header */}
       <div className="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div>

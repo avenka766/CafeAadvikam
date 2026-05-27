@@ -11,6 +11,7 @@ import { X, UtensilsCrossed, MapPin, Clock, Leaf, ChevronRight, PartyPopper, Mes
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
 import ChatBot from '@/components/features/ChatBot';
+import { useScrollLock } from '@/hooks/useScrollLock';
 
 
 // ─── Scroll Reveal Hook ───────────────────────────────────────────────────────
@@ -96,7 +97,7 @@ function CategoryDrawer({ catId, onClose }: { catId: string; onClose: () => void
   const { items } = useMenuStore();
   const cat = MENU_CATEGORIES.find(c => c.id === catId);
   const catItems = items.filter(i => i.enabled && i.category === catId);
-  useEffect(() => { document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = ''; }; }, []);
+  useScrollLock();
   if (!cat) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
@@ -129,7 +130,7 @@ function MenuPopup({ onClose }: { onClose: () => void }) {
   const enabled = useMemo(() => items.filter(i => i.enabled), [items]);
   const activeCats = useMemo(() => MENU_CATEGORIES.filter(c => enabled.some(i => i.category === c.id)), [enabled]);
   const display = useMemo(() => sel === 'all' ? activeCats : activeCats.filter(c => c.id === sel), [sel, activeCats]);
-  useEffect(() => { document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = ''; }; }, []);
+  useScrollLock();
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" />
@@ -174,7 +175,7 @@ function PartyHallViewer({ onClose }: { onClose: () => void }) {
     { src: FOOD_IMAGES.partyHall,      label: 'Cafe Aadvikam — Front View' },
     { src: FOOD_IMAGES.partyHallExtra, label: 'Party Hall — Interior' },
   ];
-  useEffect(() => { document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = ''; }; }, []);
+  useScrollLock();
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col" onClick={onClose}>
       {/* Main image */}
@@ -985,7 +986,7 @@ export default function Landing() {
   const bookPartyHall = () => window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
 
   return (
-    <div className="min-h-screen bg-background pt-14 overflow-x-hidden">
+    <div className="min-h-[100dvh] bg-background pt-14 overflow-x-hidden">
       <style>{`
 /* Scroll reveal */
 [data-reveal] { opacity: 0; transform: translateX(var(--rv-x,0)) translateY(var(--rv-y,0)) scale(var(--rv-s,1)); transition: opacity .55s cubic-bezier(.22,1,.36,1), transform .55s cubic-bezier(.22,1,.36,1); }
