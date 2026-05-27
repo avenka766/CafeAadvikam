@@ -95,18 +95,26 @@ export default function BottomNav() {
       { label: 'History',   icon: <History         className="size-5" />, path: '/admin-snb/history' },
     );
   } else if (currentUser.role === 'owner') {
+    // N-07: owner had only 1 item — add relevant secondary pages
     navItems.push(
-      { label: 'Sales',      icon: <BarChart3      className="size-5" />, path: '/owner' },
+      { label: 'Sales',    icon: <BarChart3      className="size-5" />, path: '/owner' },
+      { label: 'History',  icon: <History        className="size-5" />, path: '/order-history' },
+      { label: 'Staff',    icon: <Users          className="size-5" />, path: '/staff-management' },
     );
   }
 
-  if (navItems.length === 0) return null;
+  // N-10: don't render nav on login/public routes — avoids flash after logout
+  const publicPaths = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track'];
+  if (navItems.length === 0 || publicPaths.includes(location.pathname)) return null;
+
+  // N-03 / U-03: admin has 8 items — use scrollable nav instead of compressing flex-1
+  const useScrollableNav = navItems.length > 5;
 
   return (
     <>
-      {/* Frosted floating nav bar */}
+      {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
-        className="fixed bottom-0 left-0 right-0 z-40"
+        className="fixed bottom-0 left-0 right-0 z-50"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
         <div
@@ -119,15 +127,20 @@ export default function BottomNav() {
             boxShadow: '0 8px 32px rgba(0,0,0,0.35), 0 2px 8px rgba(0,0,0,0.2)',
           }}
         >
-          <div className="flex items-stretch">
+          {/* N-03/U-03: scrollable for >5 items so buttons keep readable width */}
+          <div className={cn('flex items-stretch', useScrollableNav && 'overflow-x-auto')}>
             {navItems.map((item) => {
-              const isActive = location.pathname === item.path;
+              // N-13: use startsWith so sub-routes (/admin-vrsnb/items) still show active state
+              const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/');
               return (
                 <button
                   key={item.path}
                   onClick={() => navigate(item.path)}
                   className={cn(
-                    'flex-1 flex flex-col items-center justify-center gap-1 py-3 px-1 relative transition-all duration-200 active:scale-90',
+                    // N-03/U-03: shrink-0 on scrollable nav keeps tap targets at full width
+                    useScrollableNav
+                      ? 'shrink-0 flex flex-col items-center justify-center gap-1 py-3 px-4 relative transition-all duration-200 active:scale-90'
+                      : 'flex-1 flex flex-col items-center justify-center gap-1 py-3 px-1 relative transition-all duration-200 active:scale-90',
                     isActive ? 'text-white' : 'text-white/40 hover:text-white/70',
                   )}
                 >
@@ -154,9 +167,9 @@ export default function BottomNav() {
                       </span>
                     )}
                   </span>
+                  {/* U-03: label always at least 10px; 8px only used as fallback for edge cases */}
                   <span className={cn(
-                    'relative z-10 font-body font-semibold transition-all duration-200',
-                    navItems.length > 5 ? 'text-[8px]' : 'text-[10px]',
+                    'relative z-10 font-body font-semibold transition-all duration-200 text-[10px]',
                     isActive && 'text-primary',
                   )}>
                     {item.label}
