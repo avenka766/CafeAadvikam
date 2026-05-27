@@ -54,6 +54,8 @@ export const useAuthStore = create<AuthState>()(
         const user = rowToUser(data[0] as Record<string, unknown>);
         set({ currentUser: user });
         get()._resetSessionTimer();
+        // M-03 FIX: start sliding-session listeners on fresh login too
+        _attachActivityListeners();
         return true;
       },
 
@@ -150,8 +152,35 @@ export const useAuthStore = create<AuthState>()(
       onRehydrateStorage: () => (state) => {
         if (state?.currentUser) {
           state._resetSessionTimer();
+          // M-03 FIX: attach sliding-session activity listeners after rehydration so that
+          // staff who are actively using the app never get kicked mid-shift.
+          _attachActivityListeners();
         }
       },
     },
   ),
 );
+
+// M-03 FIX: sliding session — reset the timeout on meaningful user interactions.
+// Throttled to at most once per minute to avoid hammering clearTimeout/setTimeout.
+let _activityListenersAttached = false;
+let _lastActivityReset = 0;
+
+function _attachActivityListeners() {
+  if (_activityListenersAttached) return;
+  _activityListenersAttached = true;
+
+  const THROTTLE_MS = 60_000; // reset at most once per minute
+  const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'visibilitychange'] as const;
+
+  const handleActivity = () => {
+    const store = useAuthStore.getState();
+    if (!store.currentUser) return; // not logged in — nothing to reset
+    const now = Date.now();
+    if (now - _lastActivityReset < THROTTLE_MS) return;
+    _lastActivityReset = now;
+    store._resetSessionTimer();
+  };
+
+  ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
+}
