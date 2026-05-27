@@ -78,11 +78,15 @@ export const useAuthStore = create<AuthState>()(
       // SEC-11: enforce min password length
       addStaff: async (user) => {
         if (user.password.trim().length < 6) return 'Password must be at least 6 characters';
+        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+        // The DB RPC add_staff_hashed() runs pgcrypto.crypt() before inserting.
         const { data, error } = await supabase
-          .from('staff_users')
-          .insert({ username: user.username, password: user.password, display_name: user.displayName, role: user.role })
-          .select('id, username, display_name, role')
-          .single();
+          .rpc('add_staff_hashed', {
+            p_username:     user.username,
+            p_password:     user.password,
+            p_display_name: user.displayName,
+            p_role:         user.role,
+          });
         if (error) return error.code === '23505' ? 'Username already taken' : error.message;
         if (!data) return 'Failed to add staff member';
         set((s) => ({ staffList: [...s.staffList, rowToUser(data as Record<string, unknown>)] }));
@@ -91,7 +95,12 @@ export const useAuthStore = create<AuthState>()(
 
       updateStaffPassword: async (userId, newPassword) => {
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
-        const { error } = await supabase.from('staff_users').update({ password: newPassword }).eq('id', userId);
+        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+        const { error } = await supabase
+          .rpc('update_staff_password_hashed', {
+            p_user_id:      userId,
+            p_new_password: newPassword,
+          });
         if (error) return 'Failed to update password';
         return null;
       },
