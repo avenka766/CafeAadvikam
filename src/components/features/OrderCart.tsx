@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import {
   X, Minus, Plus, Trash2, ShoppingBag,
   MapPin, User as UserIcon, StickyNote,
-  ChevronDown, AlertCircle,
+  ChevronDown, AlertCircle, Undo2,
 } from 'lucide-react';
 import { formatCurrency } from '@/lib/utils';
 import { TABLE_NUMBERS } from '@/constants/config';
@@ -27,6 +27,30 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // U-13 FIX: undo-toast instead of instant clear — holds snapshot of cart for 5s
+  const [undoSnapshot, setUndoSnapshot] = useState<typeof cart | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleClearAll = () => {
+    setUndoSnapshot([...cart]);
+    clearCart();
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => setUndoSnapshot(null), 5000);
+  };
+
+  const handleUndo = () => {
+    if (!undoSnapshot) return;
+    // Restore cart items via addToCart equivalent — use updateCartQuantity trick
+    undoSnapshot.forEach(item => {
+      useOrderStore.getState().addToCart(item.menuItem);
+      const diff = item.quantity - 1;
+      if (diff > 0) {
+        for (let i = 0; i < diff; i++) useOrderStore.getState().addToCart(item.menuItem);
+      }
+    });
+    setUndoSnapshot(null);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  };
 
   const total = getCartTotal();
 
@@ -81,10 +105,20 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                 <p className="text-xs text-muted-foreground font-body">{cart.length} item{cart.length !== 1 ? 's' : ''} · {formatCurrency(total)}</p>
               </div>
               <div className="flex gap-2">
-                {cart.length > 0 && <button onClick={clearCart} className="px-3 py-1.5 text-xs font-body font-semibold text-destructive bg-destructive/10 rounded-lg active:scale-95">Clear All</button>}
+                {cart.length > 0 && <button onClick={handleClearAll} className="px-3 py-1.5 text-xs font-body font-semibold text-destructive bg-destructive/10 rounded-lg active:scale-95">Clear All</button>}
                 <button onClick={onClose} className="size-9 rounded-full bg-muted flex items-center justify-center" aria-label="Close cart"><X className="size-5" /></button>
               </div>
             </div>
+
+            {/* U-13 FIX: undo toast — appears for 5s after clearing */}
+            {undoSnapshot !== null && (
+              <div className="mx-4 mt-2 flex items-center justify-between bg-foreground text-background rounded-xl px-4 py-2.5">
+                <span className="text-xs font-body font-semibold">Cleared {undoSnapshot.length} item{undoSnapshot.length !== 1 ? 's' : ''}</span>
+                <button onClick={handleUndo} className="flex items-center gap-1.5 text-xs font-body font-bold text-primary-foreground/80 underline underline-offset-2 active:opacity-70">
+                  <Undo2 className="size-3.5" /> Undo
+                </button>
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
               {cart.length === 0 ? (
