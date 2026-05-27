@@ -35,6 +35,8 @@ export interface BakeryOrder {
   sentToPackingAt?: string;
   dispatchLog?: DispatchEntry[];
   targetBranch?: Branch;
+  /** U-14 FIX: special instructions or notes attached to the bakery order */
+  notes?: string;
 }
 
 export interface PreparedItem {

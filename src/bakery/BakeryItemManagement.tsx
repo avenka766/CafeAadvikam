@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useBakeryItemsStore, BAKERY_CATEGORIES } from './bakeryItemsStore';
 import type { BakeryItem } from './bakeryItemsStore';
+import { useBakeryStore } from './bakeryStore';
 import { cn } from '@/lib/utils';
 
 // ── Lazy-import the two sibling pages so this file stays self-contained ────────
@@ -291,6 +292,7 @@ function CategorySection({ category, items, onToggle, onEdit, onDelete }: {
 
 function BakeryItemsPanel() {
   const { items, loading, loadAllItems, toggleItem, updateItem, updatePrice, deleteItem } = useBakeryItemsStore();
+  const { orders, fetchOrders } = useBakeryStore();
   const [search,       setSearch]       = useState('');
   const [showAdd,      setShowAdd]      = useState(false);
   const [editTarget,   setEditTarget]   = useState<BakeryItem | null>(null);
@@ -298,7 +300,7 @@ function BakeryItemsPanel() {
   const [showDisabled, setShowDisabled] = useState(true);
   const [deleteError,  setDeleteError]  = useState<string | null>(null);
 
-  useEffect(() => { loadAllItems(); }, [loadAllItems]);
+  useEffect(() => { loadAllItems(); fetchOrders(true); }, [loadAllItems, fetchOrders]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -323,9 +325,29 @@ function BakeryItemsPanel() {
   const totalDisabled = items.filter(i => !i.enabled).length;
   const unpricedCount = items.filter(i => i.enabled && i.price == null).length;
 
+  // M-09 FIX: block delete if the item appears in any active/pending bakery order
+  const ACTIVE_STATUSES = new Set(['pending', 'baking', 'packed']);
+  const getActiveOrdersForItem = (itemId: string) =>
+    orders.filter(o =>
+      ACTIVE_STATUSES.has(o.status) &&
+      o.items.some(i => i.itemId === itemId)
+    );
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setDeleteError(null);
+
+    // M-09 FIX: pre-delete check — refuse if item is referenced by an active order
+    const activeOrders = getActiveOrdersForItem(deleteTarget.id);
+    if (activeOrders.length > 0) {
+      setDeleteError(
+        `Cannot delete — this item is in ${activeOrders.length} active order${activeOrders.length > 1 ? 's' : ''} ` +
+        `(#${activeOrders.map(o => o.orderNumber).join(', #')}). ` +
+        `Disable the item instead to hide it from new orders.`
+      );
+      return;
+    }
+
     try {
       await deleteItem(deleteTarget.id);
       setDeleteTarget(null);

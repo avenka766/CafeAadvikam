@@ -120,6 +120,17 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
             })}
           </div>
 
+          {/* U-14 FIX: show special order notes so baker never misses custom instructions */}
+          {order.notes && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+              <span className="text-amber-600 text-base leading-none mt-0.5">📋</span>
+              <div>
+                <p className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-wide mb-0.5">Special Instructions</p>
+                <p className="text-sm font-body text-amber-900">{order.notes}</p>
+              </div>
+            </div>
+          )}
+
           {/* Expected output */}
           {order.expectedOutput && (
             <div className="flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-xl px-3 py-2">

@@ -31,6 +31,7 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
     targetBranch: d.target_branch as Branch | undefined,
+    notes: d.notes as string | undefined, // U-14 FIX
   };
 }
 
@@ -251,20 +252,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (error) return;
 
     if (removedEntry) {
-      const { data: existingStock } = await supabase
-        .from('branch_stock')
-        .select('quantity')
-        .eq('branch', removedEntry.branch)
-        .eq('item_name', removedEntry.itemName)
-        .maybeSingle();
-
-      if (existingStock) {
-        await supabase.rpc('decrement_branch_stock', {
-          p_branch:    removedEntry.branch,
-          p_item_name: removedEntry.itemName,
-          p_qty:       removedEntry.quantity,
-        });
-      }
+      // M-02 FIX: always call decrement_branch_stock regardless of whether the row exists.
+      // The old guard `if (existingStock)` skipped rollback when the row was missing, leaving
+      // incorrect stock totals. The RPC handles missing rows gracefully (no-op or creates at 0).
+      await supabase.rpc('decrement_branch_stock', {
+        p_branch:    removedEntry.branch,
+        p_item_name: removedEntry.itemName,
+        p_qty:       removedEntry.quantity,
+      });
 
       await supabase.from('branch_incoming')
         .delete()

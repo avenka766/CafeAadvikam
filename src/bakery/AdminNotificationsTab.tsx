@@ -68,8 +68,11 @@ function NotificationDetailModal({
   const Icon = meta.icon;
   const { markRead, deleteNotification } = useNotificationStore();
 
+  // U-12 FIX: mark read only once when the modal actually opens (on mount of the detail view),
+  // not from the list card's render. This preserves unread styling until the admin actively opens it.
   useEffect(() => {
     if (!notification.isRead) markRead(notification.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notification.id]);
 
   const handleDelete = async () => {

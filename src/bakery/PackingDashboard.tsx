@@ -160,15 +160,16 @@ function DispatchRow({ itemName, available, onDispatch, submitting, defaultBranc
           className="flex-1 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30">
           {BRANCHES.map(b => <option key={b} value={b}>{BRANCH_META[b].icon} {b}</option>)}
         </select>
-        <button onClick={handle} disabled={submitting || qtyNum <= 0 || available <= 0}
+        <button onClick={handle} disabled={submitting || qtyNum <= 0 || available <= 0 || overQty}
           className="h-10 px-3 rounded-xl bg-emerald-600 text-white text-xs font-body font-bold flex items-center gap-1.5 disabled:opacity-40 active:scale-95 transition-all shrink-0 shadow-sm">
           {submitting ? <Loader2 className="size-3.5 animate-spin" /> : <Truck className="size-3.5" />}
           Send
         </button>
       </div>
+      {/* U-10 FIX: red error — Send is now disabled when overQty so this is the blocker, not just a warning */}
       {overQty && (
-        <p className="text-[10px] font-body text-amber-600 flex items-center gap-1">
-          <AlertTriangle className="size-3" /> Exceeds available stock
+        <p className="text-[10px] font-body text-red-600 flex items-center gap-1 font-semibold">
+          <AlertTriangle className="size-3" /> Exceeds available stock — reduce quantity to send
         </p>
       )}
     </div>
