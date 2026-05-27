@@ -1243,24 +1243,43 @@ function NewBillPanel() {
 // ── Main BillingDashboard ─────────────────────────────────────────────────────
 export default function BillingDashboard() {
   // STORE-01 FIX: granular selector with shallow equality — avoids full re-render on cart/loading changes
-  const { orders, startPolling, stopPolling, polling, clearCart } = useOrderStore(
+  const { orders, startPolling, stopPolling, polling, clearCart, cart } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       startPolling: s.startPolling,
       stopPolling: s.stopPolling,
       polling: s.polling,
       clearCart: s.clearCart,
+      cart: s.cart,
     }))
   );
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
+  // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | null>(null);
 
-  // Clear shared cart whenever switching between New Bill and Advance tabs
+  // U-01 FIX: guard against accidental cart wipe — show confirmation when cart has items
   const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance') => {
-    if (tab !== activeTab && (tab === 'new_bill' || tab === 'advance' || activeTab === 'new_bill' || activeTab === 'advance')) {
+    const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
+    const enteringBillTab = tab === 'new_bill' || tab === 'advance';
+    const cartHasItems = cart.length > 0;
+    if (tab !== activeTab && (leavingBillTab || enteringBillTab) && cartHasItems) {
+      // Park the destination and ask for confirmation
+      setPendingTab(tab);
+      return;
+    }
+    if (tab !== activeTab && (leavingBillTab || enteringBillTab)) {
       clearCart();
     }
     setActiveTab(tab);
   };
+
+  const confirmTabSwitch = () => {
+    if (!pendingTab) return;
+    clearCart();
+    setActiveTab(pendingTab);
+    setPendingTab(null);
+  };
+
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
@@ -1299,6 +1318,35 @@ export default function BillingDashboard() {
 
   return (
     <div className="flex flex-col bg-background" style={{ height: '100dvh' }}>
+
+      {/* U-01 FIX: cart-clear confirmation dialog */}
+      {pendingTab !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
+          <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-xl border border-border">
+            <div className="size-12 rounded-2xl bg-amber-100 flex items-center justify-center mb-4">
+              <Inbox className="size-6 text-amber-600" />
+            </div>
+            <h2 className="font-display text-lg font-bold text-foreground mb-1">Clear cart?</h2>
+            <p className="text-sm font-body text-muted-foreground mb-5">
+              Switching tabs will clear your current cart ({cart.length} item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setPendingTab(null)}
+                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-body font-semibold text-foreground active:scale-95"
+              >
+                Stay here
+              </button>
+              <button
+                onClick={confirmTabSwitch}
+                className="flex-1 py-2.5 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold active:scale-95"
+              >
+                Clear & switch
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Status bar ── */}
       <div className="px-4 pt-3 pb-2 flex items-center justify-between border-b border-border">
@@ -1391,8 +1439,19 @@ export default function BillingDashboard() {
               <div className="text-center">
                 <p className="font-body font-semibold text-foreground">No orders here</p>
                 <p className="text-sm font-body text-muted-foreground mt-1">
-                  {activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
+                  {sourceFilter !== 'all'
+                    ? `No ${activeTab === 'all' ? '' : activeTab + ' '}orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
+                    : activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
                 </p>
+                {/* U-11 FIX: offer one-tap clear when a source filter is hiding results */}
+                {sourceFilter !== 'all' && (
+                  <button
+                    onClick={() => setSourceFilter('all')}
+                    className="mt-3 text-sm font-body font-semibold text-primary underline underline-offset-2 active:opacity-70"
+                  >
+                    Clear filter — show all sources
+                  </button>
+                )}
               </div>
             </div>
           ) : (

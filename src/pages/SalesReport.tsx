@@ -36,6 +36,20 @@ export default function SalesReport() {
   const [startDate, setStartDate] = useState<string>(toInputDate(new Date()));
   const [endDate, setEndDate] = useState<string>(toInputDate(new Date()));
   const [filterMode, setFilterMode] = useState<'today' | 'custom'>('today');
+  // U-05 FIX: flag when the user has set an invalid range so we can show inline error
+  const dateRangeInvalid = filterMode === 'custom' && startDate > endDate;
+
+  const handleStartDateChange = (val: string) => {
+    setStartDate(val);
+    // Auto-swap if end is now before start
+    if (val > endDate) setEndDate(val);
+  };
+
+  const handleEndDateChange = (val: string) => {
+    setEndDate(val);
+    // Auto-swap if start is now after end
+    if (val < startDate) setStartDate(val);
+  };
 
   useEffect(() => {
     startPolling();
@@ -374,13 +388,19 @@ export default function SalesReport() {
           <div className="flex gap-2 items-end">
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">From</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">To</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
           </div>
+        )}
+        {/* U-05 FIX: show inline error when date range is invalid */}
+        {dateRangeInvalid && (
+          <p className="text-xs font-body text-destructive flex items-center gap-1">
+            ⚠ Start date must be before end date — dates have been swapped automatically.
+          </p>
         )}
         <div className="flex items-center gap-1.5">
           <CalendarDays className="size-3.5 text-primary" />

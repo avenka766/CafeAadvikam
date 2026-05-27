@@ -505,7 +505,11 @@ export default function KitchenDashboard() {
               <Inbox className="size-10" style={{ color: 'rgba(255,255,255,0.2)' }} />
             </div>
             <p className="font-body font-semibold text-lg" style={{ color: 'rgba(255,255,255,0.4)' }}>
-              {activeTab === 'pending' ? 'Waiting for new orders…' : 'All clear!'}
+              {/* U-07 FIX: context-specific messages so "All clear!" only appears where it makes sense */}
+              {activeTab === 'pending'   && 'Waiting for new orders…'}
+              {activeTab === 'active'    && 'No active orders right now'}
+              {activeTab === 'preparing' && 'No orders currently cooking'}
+              {activeTab === 'ready'     && 'No orders ready to serve'}
             </p>
           </div>
         ) : (

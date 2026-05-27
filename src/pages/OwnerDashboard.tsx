@@ -287,13 +287,23 @@ function AttendanceSalaryTab() {
     grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;
   }>>([]);
   const [loading, setLoading] = useState(true);
+  // U-15 FIX: track fetch error so we show an error state instead of a silent empty table
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  useEffect(() => {
-    supabase.from('employees').select('*').then(({ data }) => {
-      if (data) setEmployees(data);
+  const loadEmployees = () => {
+    setLoading(true);
+    setFetchError(null);
+    supabase.from('employees').select('*').then(({ data, error }) => {
+      if (error) {
+        setFetchError(error.message || 'Failed to load employee data.');
+      } else if (data) {
+        setEmployees(data);
+      }
       setLoading(false);
     });
-  }, []);
+  };
+
+  useEffect(() => { loadEmployees(); }, []);
 
   const branchGroups = useMemo(() => {
     const groups: Record<string, typeof employees> = {};
@@ -331,6 +341,25 @@ function AttendanceSalaryTab() {
   if (loading) return (
     <div className="flex items-center justify-center py-20">
       <div className="size-8 rounded-2xl bg-primary/10 animate-pulse" />
+    </div>
+  );
+
+  // U-15 FIX: show explicit error state with retry so owner doesn't see an empty table and think no staff exist
+  if (fetchError) return (
+    <div className="flex flex-col items-center justify-center py-20 gap-4 px-6">
+      <div className="size-14 rounded-2xl bg-destructive/10 flex items-center justify-center">
+        <Users className="size-7 text-destructive" />
+      </div>
+      <div className="text-center">
+        <p className="font-display font-bold text-foreground">Failed to load employee data</p>
+        <p className="text-sm font-body text-muted-foreground mt-1">{fetchError}</p>
+      </div>
+      <button
+        onClick={loadEmployees}
+        className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-body font-semibold active:scale-95 transition-transform"
+      >
+        Try again
+      </button>
     </div>
   );
 

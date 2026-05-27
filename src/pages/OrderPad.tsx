@@ -61,7 +61,11 @@ export default function OrderPad() {
             )}
           </div>
         </div>
-        <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
+        {/* U-16 FIX: clear search when category changes so both filters never stack silently */}
+        <CategoryFilter
+          selectedCategory={selectedCategory}
+          onSelect={(cat) => { setSelectedCategory(cat); setSearch(''); }}
+        />
       </div>
 
       {/* ── Menu grid ── */}
