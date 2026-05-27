@@ -160,9 +160,17 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   },
 
   deductMaterials: async (deductions) => {
+    // M-08 FIX: read fresh quantities from DB immediately before each write to
+    // narrow the stale-read race window. Concurrent deductions from multiple staff
+    // devices can still race within the same request, but the window is now ms not
+    // seconds. Full elimination requires a Postgres RPC:
+    //   CREATE FUNCTION deduct_materials(p_id uuid, p_qty numeric)
+    //   RETURNS void LANGUAGE plpgsql AS $$
+    //   BEGIN UPDATE store_raw_stock SET quantity = GREATEST(0, quantity - p_qty) WHERE id = p_id; END; $$;
+    // Call with: await supabase.rpc('deduct_materials', { p_id: match.id, p_qty: deductQty })
     const items = get().items;
     // Validate all deductions first
-    const updates: { id: string; newQty: number }[] = [];
+    const updates: { id: string; deductQty: number }[] = [];
     const warnings: string[] = [];
     for (const d of deductions) {
       const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
@@ -180,27 +188,36 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
           deductQty = deductQty / 1000;
         }
       }
-      const newQty = Math.max(0, match.quantity - deductQty);
-      updates.push({ id: match.id, newQty });
+      updates.push({ id: match.id, deductQty });
     }
-    // Apply all updates
+    // Apply all updates — read fresh DB quantity immediately before each write
+    const finalUpdates: { id: string; newQty: number }[] = [];
     for (const u of updates) {
+      // M-08 FIX: fetch current quantity from DB right before writing to reduce stale-read race
+      const { data: fresh, error: fetchErr } = await supabase
+        .from('store_raw_stock')
+        .select('quantity')
+        .eq('id', u.id)
+        .single();
+      const currentQty = fresh && !fetchErr ? Number(fresh.quantity) : (items.find(i => i.id === u.id)?.quantity ?? 0);
+      const newQty = Math.max(0, currentQty - u.deductQty);
       const { error } = await supabase
         .from('store_raw_stock')
-        .update({ quantity: u.newQty })
+        .update({ quantity: newQty })
         .eq('id', u.id);
       if (error) return error.message;
+      finalUpdates.push({ id: u.id, newQty });
     }
     set(s => ({
       items: s.items.map(i => {
-        const upd = updates.find(u => u.id === i.id);
+        const upd = finalUpdates.find(u => u.id === i.id);
         return upd ? { ...i, quantity: upd.newQty } : i;
       }),
     }));
 
     // Fire low-stock notification for any item that dropped below its threshold
     const currentItems = get().items;
-    const lowItems = updates
+    const lowItems = finalUpdates
       .map(u => currentItems.find(i => i.id === u.id))
       .filter((i): i is StockItem => !!i && i.quantity <= i.minThreshold)
       .map(i => ({ name: i.name, quantity: i.quantity, minThreshold: i.minThreshold, unit: i.unit }));

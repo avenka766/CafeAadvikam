@@ -202,9 +202,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
     }
 
+    // H-01 FIX: use computed newStatus instead of hardcoding 'dispatched'.
+    // Partial dispatch correctly shows as 'packed'; only full dispatch becomes 'dispatched'.
     set(s => ({
       orders: s.orders.map(o =>
-        o.id === orderId ? { ...o, dispatchLog: updatedLog, status: 'dispatched' } : o
+        o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o
       ),
     }));
 

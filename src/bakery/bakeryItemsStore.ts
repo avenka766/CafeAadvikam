@@ -164,6 +164,29 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
 
   // ── Hard delete ───────────────────────────────────────────────────────────
   deleteItem: async (id) => {
+    // H-07 FIX: check for active orders and recipes referencing this item before deletion.
+    // Hard-deleting a referenced item silently breaks orders and recipes.
+    const { data: activeOrders } = await supabase
+      .from('bakery_orders')
+      .select('id')
+      .not('status', 'in', '("dispatched","cancelled")')
+      .contains('items', [{ itemId: id }])
+      .limit(1);
+
+    if (activeOrders && activeOrders.length > 0) {
+      throw new Error('Cannot delete: this item is used in active orders. Complete or cancel those orders first.');
+    }
+
+    const { data: recipes } = await supabase
+      .from('bakery_recipes')
+      .select('id')
+      .eq('item_id', id)
+      .limit(1);
+
+    if (recipes && recipes.length > 0) {
+      throw new Error('Cannot delete: this item has recipes attached. Remove the recipes first.');
+    }
+
     const { error } = await supabase.from('bakery_items').delete().eq('id', id);
     if (error) throw error;
     set(s => ({ items: s.items.filter(i => i.id !== id) }));

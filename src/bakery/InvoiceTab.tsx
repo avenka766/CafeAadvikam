@@ -285,8 +285,9 @@ function CreateInvoiceModal({
       return;
     }
 
-    // Now safely update stock — invoice record already exists as audit trail
-    let stockSyncFailed = false;
+    // H-08 FIX: track which items failed instead of a single boolean flag.
+    // Partial sync must NOT be treated as success — show a per-item error list.
+    const syncFailedItems: string[] = [];
     for (const li of lines) {
       const name = li.itemName.trim();
       const unit = li.unit as StockUnit;
@@ -296,18 +297,23 @@ function CreateInvoiceModal({
       const threshold = Math.max(1, Math.round(li.quantity * 0.1));
       if (existing) {
         const err = await updateItem(existing.id, { quantity: existing.quantity + li.quantity });
-        if (err) stockSyncFailed = true;
+        if (err) syncFailedItems.push(`${name} (${err})`);
       } else {
         const err = await addItem(name, unit, li.quantity, threshold);
-        if (err) stockSyncFailed = true;
+        if (err) syncFailedItems.push(`${name} (${err})`);
       }
     }
 
     // Mark invoice as synced (or warn if partial failure)
     // BUG #14 FIX: update syncedToStock flag now that stock is confirmed updated
-    if (!stockSyncFailed) {
+    if (syncFailedItems.length === 0) {
       await supabase.from('store_invoices').update({ synced_to_stock: true }).eq('id', result.id);
       await useInvoiceStore.getState().load();
+    } else {
+      // H-08 FIX: surface per-item failures so the operator knows what to retry
+      setError(`Invoice saved, but stock sync failed for: ${syncFailedItems.join(', ')}. Please retry stock update manually.`);
+      setSaving(false);
+      return;
     }
 
     setSaving(false);

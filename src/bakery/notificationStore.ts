@@ -84,13 +84,17 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markRead: async (id) => {
-    await supabase
+    // H-09 FIX: update local state only after DB write succeeds — avoids
+    // showing notifications as read when the DB write silently failed.
+    const { error } = await supabase
       .from('admin_notifications')
       .update({ is_read: true })
       .eq('id', id);
-    set(s => ({
-      notifications: s.notifications.map(n => n.id === id ? { ...n, isRead: true } : n),
-    }));
+    if (!error) {
+      set(s => ({
+        notifications: s.notifications.map(n => n.id === id ? { ...n, isRead: true } : n),
+      }));
+    }
   },
 
   markAllRead: async () => {
