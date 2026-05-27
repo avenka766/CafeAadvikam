@@ -406,17 +406,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         return `Insufficient stock for "${item.itemName}" (have ${stock.quantity}, need ${item.quantity})`;
     }
 
-    // 2. Mark advance order completed in DB (single atomic update)
-    const { error: updateErr } = await supabase
-      .from('branch_advance_orders')
-      .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
-      .eq('id', orderId);
-    if (updateErr) return `Failed to complete order: ${updateErr.message}`;
+    // M-10 FIX: deduct stock BEFORE marking order completed.
+    // Previously: mark completed → deduct stock → if deduction fails, order is
+    // completed but stock was never reduced (silent inventory corruption).
+    // Now: deduct all stock first, then mark completed atomically.
 
     // B3 FIX: each item uses the atomic RPC decrement instead of reading stale local state.
-    // If a stock deduction fails mid-loop, we attempt to roll back the order status and
-    // previously decremented items.  Full atomicity requires a Postgres stored procedure
-    // (see supabase/migrations/001_security.sql: complete_advance_order).
     const decremented: Array<{ itemName: string; qty: number }> = [];
 
     for (const item of order.items) {
@@ -431,12 +426,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           ? `Insufficient stock for "${item.itemName}" — modified by another device`
           : `Failed to deduct stock for "${item.itemName}": ${stockRpcErr!.message}`;
 
-        // Attempt rollback: revert order status
-        await supabase.from('branch_advance_orders')
-          .update({ status: 'pending', fully_paid_at: null, balance_method: null, balance_due: order.balanceDue })
-          .eq('id', orderId);
-
-        // Attempt rollback: restore decremented stock (best-effort, non-atomic)
+        // M-10 FIX: order status was never changed yet — just restore any partially decremented stock
         for (const d of decremented) {
           await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
         }
@@ -456,6 +446,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_by:        order.soldBy,
         payment_method: `advance+${balanceMethod}`,
       });
+    }
+
+    // All stock deductions succeeded — now mark the order as completed
+    const { error: updateErr } = await supabase
+      .from('branch_advance_orders')
+      .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
+      .eq('id', orderId);
+    if (updateErr) {
+      // Stock was deducted but order status update failed — surface this so operator can retry
+      await get().fetchBranchData(branch);
+      return `Stock deducted but failed to mark order complete: ${updateErr.message}. Please refresh and verify.`;
     }
 
     // B3 FIX: refresh from DB after all mutations instead of computing from stale local state
