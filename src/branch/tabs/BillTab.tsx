@@ -1788,8 +1788,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
       setShowPreview(false); setShowSuccess(true);
       clearCart(); setTimeout(() => setShowSuccess(false), 2500);
+      return true; // L-03 FIX: signal success so callers can gate printing
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Checkout failed — please try again.');
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -1798,12 +1800,14 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const handlePrintAndConfirm = async () => {
     // B6 FIX: guard against double-fire (submitting already true from direct checkout btn)
     if (submitting) return;
+    // L-03 FIX: run checkout first; only print bill/KOT if it succeeds so we
+    // never produce a receipt for a transaction that was never saved.
+    const success = await doCheckout();
+    if (!success) return;
     printBill({ branch, billNo: billNo.current, items: cart, subtotal, discount,
       discountType, discountValue, roundOff, finalTotal, cgst: cafeCgst, sgst: cafeSgst,
       payMode, singleMethod, splitMethods, splitAmounts, soldBy });
     if (isVRSNB) setTimeout(() => printKOT(billNo.current, cart), 400);
-    // B6 FIX: await so errors surface instead of being silently swallowed
-    await doCheckout();
   };
 
   // ── Success ──────────────────────────────────────────────────────────────────
