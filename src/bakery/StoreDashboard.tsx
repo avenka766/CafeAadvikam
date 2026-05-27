@@ -905,7 +905,7 @@ export default function StoreDashboard() {
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-28">
+    <div className="min-h-[100dvh] bg-background pt-14 pb-28">
       <div className="px-4 pt-5 pb-4">
         <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
         <h1 className="font-display text-2xl font-bold text-foreground">Store</h1>
@@ -925,7 +925,7 @@ export default function StoreDashboard() {
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
-                'flex-1 flex items-center justify-center gap-1 py-2.5 rounded-lg text-[11px] font-body font-semibold transition-all',
+                'shrink-0 whitespace-nowrap flex items-center justify-center gap-1 py-2.5 px-3 rounded-lg text-[11px] font-body font-semibold transition-all',
                 tab === t.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
               )}>
               <t.icon className="size-3.5" />
