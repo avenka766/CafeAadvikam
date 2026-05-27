@@ -55,24 +55,29 @@ export default function DayEndReport() {
 
   const fetchForDate = async (d: string) => {
     setLoading(true);
-    const from = `${d}T00:00:00`;
-    const to   = `${d}T23:59:59`;
-    const { data, error } = await supabase
-      .from('bakery_orders')
-      .select('order_number, target_branch, status, items, dispatch_log, created_at')
-      .gte('created_at', from)
-      .lte('created_at', to)
-      .order('created_at', { ascending: true });
-    setLoading(false);
-    if (!error && data) {
-      setOrders(data.map(r => ({
-        orderNumber:  r.order_number as number,
-        targetBranch: r.target_branch as string,
-        status:       r.status as string,
-        items:        (r.items as OrderRow['items']) ?? [],
-        dispatchLog:  (r.dispatch_log as OrderRow['dispatchLog']) ?? [],
-        createdAt:    r.created_at as string,
-      })));
+    // M-11 FIX: use try/finally so loading is always reset to false even on
+    // network exceptions (previously an uncaught throw left an infinite spinner).
+    try {
+      const from = `${d}T00:00:00`;
+      const to   = `${d}T23:59:59`;
+      const { data, error } = await supabase
+        .from('bakery_orders')
+        .select('order_number, target_branch, status, items, dispatch_log, created_at')
+        .gte('created_at', from)
+        .lte('created_at', to)
+        .order('created_at', { ascending: true });
+      if (!error && data) {
+        setOrders(data.map(r => ({
+          orderNumber:  r.order_number as number,
+          targetBranch: r.target_branch as string,
+          status:       r.status as string,
+          items:        (r.items as OrderRow['items']) ?? [],
+          dispatchLog:  (r.dispatch_log as OrderRow['dispatchLog']) ?? [],
+          createdAt:    r.created_at as string,
+        })));
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
