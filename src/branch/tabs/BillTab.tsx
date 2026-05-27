@@ -1766,12 +1766,21 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         }
       }
     } else if (isSNB) {
-      // SNB / Hosur — items from price list; deduct stock if available, log mismatch if not
+      // C-04 NOTE: items are committed one-by-one (no DB-level rollback).
+      // TODO: replace with a single atomic complete_checkout() RPC once backend is ready.
+      const snbSucceeded: string[] = [];
       for (const item of cart) {
         const { error: err } = await recordSnbSale(
           branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0, billNo.current,
         );
-        if (err) { setError(err); return; }
+        if (err) {
+          setError(
+            `Failed on "${item.itemName}": ${err}.` +
+            (snbSucceeded.length > 0 ? ` Already saved: ${snbSucceeded.join(', ')} — notify manager to reverse.` : ''),
+          );
+          return;
+        }
+        snbSucceeded.push(item.itemName);
       }
     } else {
       // VRSNB — stock-gated sale
