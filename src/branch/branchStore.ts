@@ -71,11 +71,39 @@ export interface StockMismatch {
   soldBy:    string;
 }
 
+// ── Credit Sale ───────────────────────────────────────────────────────────────
+export interface CreditSaleItem {
+  itemName: string;
+  quantity: number;
+  sellUnit: 'kg' | 'pcs';
+  price: number;
+  lineTotal: number;
+}
+
+export interface CreditSale {
+  id: string;
+  branch: Branch;
+  customerName: string;
+  customerPhone: string | null;
+  items: CreditSaleItem[];
+  subtotal: number;
+  amountPaid: number;
+  creditAmount: number;
+  soldBy: string;
+  createdAt: string;
+  dueDate: string | null;
+  settledAt: string | null;
+  status: 'pending' | 'partial' | 'settled';
+  notes: string | null;
+  billNo: string;
+}
+
 interface BranchState {
   stock:           Record<Branch, StockItem[]>;
   sales:           Record<Branch, SaleRecord[]>;
   incoming:        Record<Branch, IncomingStock[]>;
   advanceOrders:   Record<Branch, BranchAdvanceOrder[]>;
+  creditSales:     Record<Branch, CreditSale[]>;
   thresholds:      Record<Branch, Record<string, number>>;
   stockMismatches: StockMismatch[];
   loading:         boolean;
@@ -103,6 +131,10 @@ interface BranchState {
   fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
+  // ── Credit sales ──────────────────────────────────────────────────────────
+  recordCreditSale: (branch: Branch, sale: Omit<CreditSale, 'id' | 'createdAt' | 'settledAt' | 'status'>) => Promise<string | null>;
+  settleCreditSale: (branch: Branch, saleId: string, amountCollected: number) => Promise<string | null>;
+  fetchCreditSales: (branch: Branch) => Promise<void>;
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -110,6 +142,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   sales:           { VRSNB: [], SNB: [], Hosur: [] },
   incoming:        { VRSNB: [], SNB: [], Hosur: [] },
   advanceOrders:   { VRSNB: [], SNB: [], Hosur: [] },
+  creditSales:     { VRSNB: [], SNB: [], Hosur: [] },
   thresholds:      { VRSNB: {}, SNB: {}, Hosur: {} },
   stockMismatches: [],
   loading:         false,
@@ -134,6 +167,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: thresholdData },
         { data: priceData },
         { data: advanceData },
+        { data: creditData },
       ] = await Promise.all([
         supabase.from('branch_stock').select('*').eq('branch', branch),
         supabase.from('branch_sales').select('*').eq('branch', branch)
@@ -144,6 +178,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('branch_thresholds').select('*').eq('branch', branch),
         supabase.from('bakery_items').select('name, price'),
         supabase.from('branch_advance_orders').select('*')
+          .eq('branch', branch)
+          .order('created_at', { ascending: false }),
+        supabase.from('branch_credit_sales').select('*')
           .eq('branch', branch)
           .order('created_at', { ascending: false }),
       ]);
@@ -160,6 +197,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const incoming      = { ...s.incoming };
         const thresholds    = { ...s.thresholds };
         const advanceOrders = { ...s.advanceOrders };
+        const creditSales   = { ...s.creditSales };
 
         stock[branch] = (stockData || []).map((d) => ({
           itemName:     d.item_name,
@@ -211,7 +249,24 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         (thresholdData || []).forEach((d) => { tMap[d.item_name] = d.threshold; });
         thresholds[branch] = tMap;
 
-        return { stock, sales, incoming, thresholds, advanceOrders };
+        creditSales[branch] = (creditData || []).map((d) => ({
+          id:            d.id,
+          branch:        d.branch as Branch,
+          customerName:  d.customer_name,
+          customerPhone: d.customer_phone ?? null,
+          items:         (d.items || []) as CreditSaleItem[],
+          subtotal:      Number(d.subtotal),
+          amountPaid:    Number(d.amount_paid),
+          creditAmount:  Number(d.credit_amount),
+          soldBy:        d.sold_by,
+          createdAt:     d.created_at,
+          dueDate:       d.due_date ?? null,
+          settledAt:     d.settled_at ?? null,
+          status:        d.status as 'pending' | 'partial' | 'settled',
+          notes:         d.notes ?? null,
+          billNo:        d.bill_no,
+        }));
+        return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
     } catch (e) {
       console.error('fetchBranchData error:', e);
@@ -760,6 +815,119 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         });
     }
     await get().fetchBranchData(branch);
+  },
+
+  // ── Credit sales ────────────────────────────────────────────────────────────
+
+  fetchCreditSales: async (branch) => {
+    const { data, error } = await supabase
+      .from('branch_credit_sales')
+      .select('*')
+      .eq('branch', branch)
+      .order('created_at', { ascending: false });
+    if (error) { console.error('[fetchCreditSales]', error.message); return; }
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = (data || []).map((d) => ({
+        id:            d.id,
+        branch:        d.branch as Branch,
+        customerName:  d.customer_name,
+        customerPhone: d.customer_phone ?? null,
+        items:         (d.items || []) as CreditSaleItem[],
+        subtotal:      Number(d.subtotal),
+        amountPaid:    Number(d.amount_paid),
+        creditAmount:  Number(d.credit_amount),
+        soldBy:        d.sold_by,
+        createdAt:     d.created_at,
+        dueDate:       d.due_date ?? null,
+        settledAt:     d.settled_at ?? null,
+        status:        d.status as 'pending' | 'partial' | 'settled',
+        notes:         d.notes ?? null,
+        billNo:        d.bill_no,
+      }));
+      return { creditSales };
+    });
+  },
+
+  recordCreditSale: async (branch, sale) => {
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('branch_credit_sales')
+      .insert({
+        branch,
+        customer_name:  sale.customerName,
+        customer_phone: sale.customerPhone ?? null,
+        items:          sale.items,
+        subtotal:       sale.subtotal,
+        amount_paid:    sale.amountPaid,
+        credit_amount:  sale.creditAmount,
+        sold_by:        sale.soldBy,
+        created_at:     now,
+        due_date:       sale.dueDate ?? null,
+        status:         sale.amountPaid === 0 ? 'pending' : 'partial',
+        notes:          sale.notes ?? null,
+        bill_no:        sale.billNo,
+      })
+      .select()
+      .single();
+    if (error) return `Failed to record credit sale: ${error.message}`;
+
+    const newSale: CreditSale = {
+      id:            data.id,
+      branch,
+      customerName:  sale.customerName,
+      customerPhone: sale.customerPhone ?? null,
+      items:         sale.items,
+      subtotal:      sale.subtotal,
+      amountPaid:    sale.amountPaid,
+      creditAmount:  sale.creditAmount,
+      soldBy:        sale.soldBy,
+      createdAt:     now,
+      dueDate:       sale.dueDate ?? null,
+      settledAt:     null,
+      status:        sale.amountPaid === 0 ? 'pending' : 'partial',
+      notes:         sale.notes ?? null,
+      billNo:        sale.billNo,
+    };
+
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = [newSale, ...creditSales[branch]];
+      return { creditSales };
+    });
+    return null;
+  },
+
+  settleCreditSale: async (branch, saleId, amountCollected) => {
+    const sale = get().creditSales[branch].find((s) => s.id === saleId);
+    if (!sale) return 'Credit sale not found';
+
+    const newAmountPaid = sale.amountPaid + amountCollected;
+    const isSettled = newAmountPaid >= sale.subtotal;
+    const now = new Date().toISOString();
+
+    const { error } = await supabase
+      .from('branch_credit_sales')
+      .update({
+        amount_paid:  newAmountPaid,
+        credit_amount: Math.max(0, sale.subtotal - newAmountPaid),
+        status:       isSettled ? 'settled' : 'partial',
+        settled_at:   isSettled ? now : null,
+      })
+      .eq('id', saleId);
+    if (error) return `Failed to settle: ${error.message}`;
+
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = creditSales[branch].map((cs) =>
+        cs.id === saleId
+          ? { ...cs, amountPaid: newAmountPaid, creditAmount: Math.max(0, cs.subtotal - newAmountPaid),
+              status: isSettled ? 'settled' : 'partial', settledAt: isSettled ? now : null }
+          : cs
+      );
+      return { creditSales };
+    });
+    return null;
   },
 
   // DATA-02 FIX: replaced hard DELETE with soft-delete via archive RPC.
