@@ -5,8 +5,7 @@ import {
   ShoppingCart, Plus, Minus, Trash2, CheckCircle2, Loader2, Receipt,
   IndianRupee, Banknote, Smartphone, CreditCard, Search, X, Scale,
   Hash, Pencil, ArrowLeftRight, Tag, Printer, XCircle, AlertTriangle,
-  ChevronRight, Wallet, Clock, AlertCircle, Package, Bell, Calendar,
-  User, Truck,
+  ChevronRight, ChevronDown, Wallet, Clock, AlertCircle, Package, Bell, Calendar, User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '../branchStore';
@@ -23,7 +22,7 @@ import type { VrsnbItem, VrsnbCategory } from '../vrsnbItems';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type SellUnit      = 'pcs' | 'kg';
-type PaymentMethod = 'cash' | 'upi' | 'card';
+type PaymentMethod = 'cash' | 'upi' | 'card' | 'credit';
 type DiscountType  = 'percent' | 'flat';
 
 interface CartItem {
@@ -112,6 +111,7 @@ interface PrintArgs {
   payMode: 'single'|'split'; singleMethod: PaymentMethod|null;
   splitMethods: [PaymentMethod|null, PaymentMethod|null];
   splitAmounts: [string,string]; soldBy: string;
+  creditAmount?: number; amountPaid?: number; customerName?: string;
 }
 
 function printBill(args: PrintArgs) {
@@ -181,7 +181,7 @@ function printBill(args: PrintArgs) {
       <td>Bill No : <span class="bold">${billNo}</span></td>
       <td class="num">Date : ${dateStr}</td>
     </tr><tr>
-      <td>Biller : <span class="bold">${escHtml(soldBy)}</span></td>
+      <td></td>
       <td class="num">Time : ${timeStr}</td>
     </tr></table>
     <hr/>
@@ -1076,15 +1076,12 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
   const allEmpty    = cart.length === 0 && customItems.length === 0;
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-  const requireDeliveryDate = isSNB; // VRSNB + SNB must enter delivery date
-
   const handleSubmit = async () => {
     if (allEmpty || !currentUser) return;
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setAdvanceErr('Enter advance amount'); return; }
     if (amt >= total) { setAdvanceErr('Advance must be less than total'); return; }
     if (!advanceMethod) { setAdvanceErr('Select payment method'); return; }
-    if (requireDeliveryDate && !deliveryDate) { setAdvanceErr('Delivery date is required for advance orders at this branch'); return; }
     setAdvanceErr(''); setSubmitting(true);
 
     const items: BranchAdvanceItem[] = [
@@ -1101,7 +1098,6 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
       advanceMethod,
       balanceDue: total - amt,
       soldBy: currentUser.displayName || currentUser.username || 'Staff',
-      deliveryDate: deliveryDate || null,
     });
 
     setSubmitting(false);
@@ -1109,7 +1105,7 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
     setShowSuccess(true);
     setCart([]); setCustomItems([]); setCustomerName('');
-    setAdvanceAmt(''); setAdvanceMethod(null); setDeliveryDate('');
+    setAdvanceAmt(''); setAdvanceMethod(null);
     setTimeout(() => setShowSuccess(false), 1800);
   };
 
@@ -1276,41 +1272,6 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
               className="w-full px-3 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
           )}
 
-          {/* Delivery date — mandatory for VRSNB & SNB */}
-          {!allEmpty && (
-            <div>
-              <label className={cn(
-                "text-[10px] font-body font-bold uppercase tracking-widest mb-1.5 flex items-center gap-1",
-                requireDeliveryDate ? "text-red-600" : "text-amber-700"
-              )}>
-                <Calendar className="size-3" />
-                Delivery Date {requireDeliveryDate ? <span className="text-red-500">*</span> : "(optional)"}
-              </label>
-              <input
-                type="date"
-                value={deliveryDate}
-                min={new Date().toISOString().split('T')[0]}
-                onChange={e => { setDeliveryDate(e.target.value); setAdvanceErr(''); }}
-                className={cn(
-                  "w-full px-3 py-2.5 rounded-xl bg-card border text-sm font-body focus:outline-none focus:ring-2",
-                  requireDeliveryDate && !deliveryDate
-                    ? "border-red-300 focus:ring-red-400/40 bg-red-50"
-                    : "border-border focus:ring-amber-400/40"
-                )}
-              />
-              {requireDeliveryDate && !deliveryDate && (
-                <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">
-                  <AlertCircle className="size-3" />Required — when does the customer want this delivered?
-                </p>
-              )}
-              {deliveryDate && (
-                <p className="text-[10px] text-amber-700 font-semibold mt-1">
-                  Delivery: {new Date(deliveryDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}
-                </p>
-              )}
-            </div>
-          )}
-
           {/* Advance amount + method */}
           {!allEmpty && (
             <div className="space-y-3 pt-2 border-t border-border">
@@ -1384,8 +1345,159 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
 // ─── Main BillTab ─────────────────────────────────────────────────────────────
 
+// ─── BranchCreditPanel ────────────────────────────────────────────────────────
+// Credit sale management panel — shared by VRSNB, SNB (and Hosur via HosurDashboard)
+
+function BranchCreditPanel({ branch, creditSales }: {
+  branch: Branch; creditSales: import('../branchStore').CreditSale[];
+}) {
+  const { settleCreditSale } = useBranchStore();
+  const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleAmts, setSettleAmts] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const filtered = creditSales.filter(cs => filter === 'all' || cs.status === filter);
+  const totalDue = creditSales.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0);
+
+  const handleSettle = async (cs: import('../branchStore').CreditSale) => {
+    const amt = parseFloat(settleAmts[cs.id] || '0');
+    if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
+    if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
+    setSettling(cs.id); setError('');
+    const err = await settleCreditSale(branch, cs.id, amt);
+    setSettling(null);
+    if (err) setError(err);
+    else setSettleAmts(prev => { const n = {...prev}; delete n[cs.id]; return n; });
+  };
+
+  const statusColors: Record<string, string> = {
+    pending: 'bg-red-100 text-red-700 border-red-200',
+    partial: 'bg-amber-100 text-amber-700 border-amber-200',
+    settled: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  };
+
+  return (
+    <div className="p-3 space-y-3 pb-6">
+      {/* Summary banner */}
+      <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
+        <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
+        <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
+          ₹{totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {creditSales.filter(cs => cs.status !== 'settled').length} open accounts · {branch}
+        </p>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 px-3 py-2 rounded-xl text-xs text-destructive">
+          <AlertCircle className="size-3 shrink-0" />{error}
+        </div>
+      )}
+
+      {/* Filter pills */}
+      <div className="flex gap-1.5 flex-wrap">
+        {(['all','pending','partial','settled'] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+              filter === f ? 'bg-amber-500 text-white border-transparent' : 'bg-card border-border text-muted-foreground')}>
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+            {f !== 'all' && (
+              <span className="ml-1 opacity-70">({creditSales.filter(cs => cs.status === f).length})</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Credit sale cards */}
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-12 gap-2 text-muted-foreground">
+          <Wallet className="size-8 opacity-20" />
+          <p className="text-sm font-body">No {filter !== 'all' ? filter : ''} credit sales</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(cs => (
+            <div key={cs.id} className="bg-card border-2 border-border rounded-2xl overflow-hidden">
+              {/* Card header */}
+              <div className="px-4 py-3 flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '—'}</span>
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
+                      {cs.status.toUpperCase()}
+                    </span>
+                  </div>
+                  {cs.customerPhone && <p className="text-xs text-muted-foreground mt-0.5">{cs.customerPhone}</p>}
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Bill #{cs.billNo.split('-').pop()} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })} · {cs.soldBy}
+                  </p>
+                  {cs.dueDate && (
+                    <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
+                      Due: {new Date(cs.dueDate + 'T00:00:00').toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right ml-3 shrink-0">
+                  <p className="text-[10px] text-muted-foreground">Due</p>
+                  <p className="font-display font-bold text-lg text-red-600 tabular-nums">
+                    ₹{cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Expand/collapse */}
+              <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
+                <span>Total: ₹{cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits:2 })} · Paid: ₹{cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits:2 })}</span>
+                {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+
+              {expanded === cs.id && (
+                <div className="px-4 py-3 border-t border-border/50 space-y-1.5">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
+                  {cs.items.map((item, i) => (
+                    <div key={i} className="flex justify-between text-xs">
+                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
+                      <span className="font-bold tabular-nums">₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits:2 })}</span>
+                    </div>
+                  ))}
+                  {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
+                </div>
+              )}
+
+              {/* Collect payment */}
+              {cs.status !== 'settled' && (
+                <div className="px-4 py-3 border-t border-border bg-muted/10 space-y-2">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase">Collect Payment</p>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                      <input type="number" placeholder={`Max ₹${cs.creditAmount.toFixed(2)}`}
+                        value={settleAmts[cs.id] || ''}
+                        onChange={e => setSettleAmts(prev => ({...prev, [cs.id]: e.target.value}))}
+                        className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
+                    </div>
+                    <button onClick={() => handleSettle(cs)} disabled={settling === cs.id || !settleAmts[cs.id]}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition">
+                      {settling === cs.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                      {settling === cs.id ? '…' : 'Collect'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
-  const { recordSale, recordSnbSale } = useBranchStore();
+  const { recordSale, recordSnbSale, recordCreditSale } = useBranchStore();
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
   const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
@@ -1401,14 +1513,20 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }); }, []);
 
   // ── Tab state ───────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<'bill' | 'advance' | 'alert'>('bill');
+  const [activeTab, setActiveTab] = useState<'bill' | 'advance' | 'alert' | 'credit'>('bill');
   const pendingAdvance = advanceOrders.filter(o => o.status === 'pending');
+
+  // Credit tab data — all branches
+  const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
+  const branchCreditSales = (allCreditSales?.[branch] || []);
+  const pendingCredit = branchCreditSales.filter(c => c.status !== 'settled').length;
+  useEffect(() => { fetchCreditSales?.(branch); }, [branch]);
 
   // Alert tab — deliveries due today (VRSNB & SNB only)
   const isAlertBranch = branch === 'VRSNB' || branch === 'SNB';
   const todayStr = new Date().toISOString().split('T')[0];
   const todayDeliveries = useMemo(() =>
-    advanceOrders.filter(o => o.deliveryDate === todayStr && o.status === 'pending'),
+    advanceOrders.filter(o => (o as any).deliveryDate === todayStr && o.status === 'pending'),
     [advanceOrders, todayStr]
   );
   const [alertPopupDismissed, setAlertPopupDismissed] = useState(false);
@@ -1420,10 +1538,16 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const [showDiscount,  setShowDiscount]  = useState(false);
 
   // Payment
-  const [payMode, setPayMode]           = useState<'single'|'split'>('single');
+  const [payMode, setPayMode]           = useState<'single'|'split'|'credit'>('single');
   const [singleMethod, setSingle]       = useState<PaymentMethod|null>(null);
   const [splitMethods, setSplitMethods] = useState<[PaymentMethod|null,PaymentMethod|null]>([null,null]);
   const [splitAmounts, setSplitAmounts] = useState<[string,string]>(['','']);
+
+  // Credit sale
+  const [creditAmountPaid, setCreditAmountPaid] = useState('');
+  const [creditDueDate, setCreditDueDate] = useState('');
+  const [creditNotes, setCreditNotes]     = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
 
   // UI
   const [submitting,  setSubmitting]  = useState(false);
@@ -1434,7 +1558,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
   const resetPayment = useCallback(() => {
     setPayMode('single'); setSingle(null);
-    setSplitMethods([null,null]); setSplitAmounts(['','']); setError('');
+    setSplitMethods([null,null]); setSplitAmounts(['','']);
+    setCreditAmountPaid(''); setCreditDueDate(''); setCreditNotes(''); setCustomerPhone('');
+    setError('');
   }, []);
 
   const clearCart = useCallback(() => {
@@ -1559,10 +1685,12 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const splitSum     = Math.round((splitTotal0 + splitTotal1) * 100) / 100;
   const splitPending = allPriced ? Math.round((finalTotal - splitSum) * 100) / 100 : 0;
 
-  const splitReady = payMode === 'split'
-    ? splitMethods[0] != null && splitMethods[1] != null && splitMethods[0] !== splitMethods[1] &&
-      (allPriced ? Math.abs(splitSum - finalTotal) < 0.01 : splitTotal0 > 0 && splitTotal1 > 0)
-    : singleMethod != null;
+  const splitReady = payMode === 'credit'
+    ? true // credit always "ready" — amount paid can be 0 (full credit)
+    : payMode === 'split'
+      ? splitMethods[0] != null && splitMethods[1] != null && splitMethods[0] !== splitMethods[1] &&
+        (allPriced ? Math.abs(splitSum - finalTotal) < 0.01 : splitTotal0 > 0 && splitTotal1 > 0)
+      : singleMethod != null;
 
   const handleSplitAmount = (idx: 0|1, raw: string) => {
     setError('');
@@ -1605,12 +1733,39 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       } else { setError('Select a payment method.'); return; }
     }
     setError(''); setSubmitting(true);
-    const methodLabel = buildMethodLabel();
+    const methodLabel = payMode === 'credit' ? 'credit' : buildMethodLabel();
     // BILL-FIX: wrap entire checkout in try/finally so setSubmitting(false) is
     // guaranteed even if recordSale/recordSnbSale throws unexpectedly.
     try {
 
-    if (isSNB) {
+    // ── Credit sale path ──────────────────────────────────────────────────────
+    if (payMode === 'credit') {
+      const amtPaid = parseFloat(creditAmountPaid) || 0;
+      const creditItems = cart.map(c => ({
+        itemName: c.itemName, quantity: c.quantity,
+        sellUnit: (c.sellUnit ?? 'pcs') as 'kg' | 'pcs',
+        price: c.price ?? 0, lineTotal: c.lineTotal ?? 0,
+      }));
+      const creditErr = await recordCreditSale(branch, {
+        branch, customerName: '', // filled by outer customerName state (VRSNB/SNB doesn't mandate it, but good to pass)
+        customerPhone: customerPhone.trim() || null, items: creditItems,
+        subtotal: finalTotal, amountPaid: amtPaid,
+        creditAmount: Math.max(0, finalTotal - amtPaid),
+        soldBy, dueDate: creditDueDate || null, notes: creditNotes.trim() || null,
+        billNo: billNo.current,
+      });
+      if (creditErr) { setError(creditErr); return; }
+      // Still record each sale for history/stock
+      if (isSNB) {
+        for (const item of cart) {
+          await recordSnbSale(branch, item.itemName, item.quantity, soldBy, 'credit', item.price ?? 0, billNo.current);
+        }
+      } else {
+        for (const item of cart) {
+          await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current);
+        }
+      }
+    } else if (isSNB) {
       // SNB / Hosur — items from price list; deduct stock if available, log mismatch if not
       for (const item of cart) {
         const { error: err } = await recordSnbSale(
@@ -1670,14 +1825,14 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     <div className="flex flex-col" style={{ height: 'calc(100dvh - 241px)' }}>
 
       {/* ── Tab switcher (compact top bar) ── */}
-      <div className="flex gap-1 p-1.5 bg-muted border-b border-border shrink-0">
+      <div className="flex gap-1 p-1.5 bg-muted border-b border-border shrink-0 overflow-x-auto">
         <button onClick={() => setActiveTab('bill')}
-          className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
             activeTab === 'bill' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
           <Receipt className="size-3.5" />Bill
         </button>
         <button onClick={() => setActiveTab('advance')}
-          className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
             activeTab === 'advance' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
           <Wallet className="size-3.5" />Advance
           {pendingAdvance.length > 0 && (
@@ -1687,9 +1842,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             </span>
           )}
         </button>
+        {/* Alert tab — VRSNB & SNB only */}
         {isAlertBranch && (
           <button onClick={() => setActiveTab('alert')}
-            className={cn('flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+            className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
               activeTab === 'alert' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
             <Bell className={cn("size-3.5", todayDeliveries.length > 0 && "text-red-500 animate-pulse")} />Alert
             {todayDeliveries.length > 0 && (
@@ -1700,6 +1856,18 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             )}
           </button>
         )}
+        {/* Credit tab — all branches */}
+        <button onClick={() => setActiveTab('credit')}
+          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
+            activeTab === 'credit' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+          <IndianRupee className={cn("size-3.5", pendingCredit > 0 && "text-orange-500")} />Credit
+          {pendingCredit > 0 && (
+            <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
+              activeTab === 'credit' ? 'bg-orange-500 text-white' : 'bg-orange-100 text-orange-700')}>
+              {pendingCredit}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* ── Advance tab ── */}
@@ -1709,11 +1877,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         </div>
       </div>
 
-      {/* ── Alert tab ── */}
+      {/* ── Alert tab (today's deliveries) — VRSNB & SNB only ── */}
       {isAlertBranch && activeTab === 'alert' && (
         <div className="flex-1 overflow-y-auto">
           <div className="p-3 space-y-3">
-            {/* Header */}
             <div className="flex items-center gap-2 px-1">
               <Bell className={cn("size-5", todayDeliveries.length > 0 ? "text-red-500" : "text-muted-foreground")} />
               <h2 className="font-display font-bold text-base text-foreground">Today's Deliveries</h2>
@@ -1721,14 +1888,12 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                 {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })}
               </span>
             </div>
-
             {todayDeliveries.length === 0 ? (
               <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
                 <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
                   <CheckCircle2 className="size-8 opacity-30" />
                 </div>
                 <p className="text-sm font-body">No deliveries due today</p>
-                <p className="text-xs text-muted-foreground/70 font-body">All advance orders are on schedule</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1740,106 +1905,65 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                 </div>
                 {todayDeliveries.map(order => (
                   <div key={order.id} className="bg-card border-2 border-red-300 rounded-2xl overflow-hidden shadow-sm">
-                    {/* Order header */}
                     <div className="bg-red-50 px-4 py-3 flex items-center justify-between border-b border-red-100">
                       <div className="flex flex-col gap-0.5">
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 w-fit flex items-center gap-1">
-                          <Truck className="size-2.5" /> DELIVER TODAY
-                        </span>
-                        {order.customerName && (
-                          <span className="text-sm font-body font-bold text-foreground flex items-center gap-1 mt-0.5">
-                            <User className="size-3 text-muted-foreground" />{order.customerName}
-                          </span>
-                        )}
-                        <span className="text-[10px] text-muted-foreground font-body flex items-center gap-1">
-                          <Clock className="size-3" />
-                          Ordered {new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} · by {order.soldBy}
-                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 w-fit">DELIVER TODAY</span>
+                        {order.customerName && <span className="text-sm font-bold mt-0.5">{order.customerName}</span>}
+                        <span className="text-[10px] text-muted-foreground">by {order.soldBy}</span>
                       </div>
                       <div className="text-right">
                         <p className="text-xs text-muted-foreground">Balance</p>
-                        <p className="text-base font-display font-bold text-red-600 tabular-nums">
-                          ₹{order.balanceDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </p>
+                        <p className="text-base font-display font-bold text-red-600">₹{order.balanceDue.toLocaleString('en-IN', {minimumFractionDigits:2})}</p>
                       </div>
                     </div>
-                    {/* Items list */}
-                    <div className="px-4 py-3 space-y-1.5">
-                      <p className="text-[10px] font-bold text-muted-foreground uppercase mb-2">Items to deliver</p>
+                    <div className="px-4 py-3 space-y-1">
                       {order.items.map((item, i) => (
-                        <div key={i} className="flex items-center justify-between text-sm">
-                          <span className="font-body text-foreground flex items-center gap-1">
-                            {item.isCustom && <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">CUSTOM</span>}
-                            {item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}
-                          </span>
-                          <span className="font-body font-bold text-primary tabular-nums text-xs">
-                            ₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                          </span>
+                        <div key={i} className="flex justify-between text-sm">
+                          <span>{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
+                          <span className="font-bold">₹{item.lineTotal.toLocaleString('en-IN', {minimumFractionDigits:2})}</span>
                         </div>
                       ))}
-                    </div>
-                    {/* Payment summary */}
-                    <div className="px-4 py-2 bg-muted/20 border-t border-border flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground font-body">Total Bill</span>
-                      <span className="text-sm font-bold tabular-nums">
-                        ₹{order.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                    <div className="px-4 py-2 bg-muted/20 flex items-center justify-between border-t border-border/50">
-                      <span className="text-xs text-muted-foreground font-body flex items-center gap-1">
-                        <Wallet className="size-3" /> Advance paid ({order.advanceMethod})
-                      </span>
-                      <span className="text-sm font-bold text-amber-600 tabular-nums">
-                        −₹{order.advanceAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
                     </div>
                   </div>
                 ))}
               </div>
             )}
           </div>
-
-          {/* ── Today's Delivery Popup ── */}
+          {/* Popup */}
           {showAlertPopup && (
             <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-card rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden">
-                {/* Popup header */}
                 <div className="bg-red-500 px-5 py-5 text-white text-center">
-                  <div className="size-14 rounded-2xl bg-white/20 flex items-center justify-center mx-auto mb-3">
-                    <Bell className="size-7 text-white" />
-                  </div>
+                  <Bell className="size-8 mx-auto mb-2" />
                   <h3 className="font-display text-xl font-bold">Delivery Alert!</h3>
-                  <p className="text-red-100 text-sm mt-1">
-                    {todayDeliveries.length} order{todayDeliveries.length > 1 ? 's' : ''} must be delivered today
-                  </p>
+                  <p className="text-red-100 text-sm mt-1">{todayDeliveries.length} order{todayDeliveries.length > 1 ? 's' : ''} due today</p>
                 </div>
-                {/* Popup body */}
-                <div className="px-5 py-4 max-h-64 overflow-y-auto space-y-2">
+                <div className="px-5 py-4 max-h-56 overflow-y-auto space-y-2">
                   {todayDeliveries.map(order => (
-                    <div key={order.id} className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-3 py-2.5">
+                    <div key={order.id} className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-3 py-2">
                       <div>
-                        <p className="text-sm font-bold text-foreground">
-                          {order.customerName || 'Customer'}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {order.items.length} item{order.items.length > 1 ? 's' : ''} · Balance: ₹{order.balanceDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                        </p>
+                        <p className="text-sm font-bold">{order.customerName || 'Customer'}</p>
+                        <p className="text-xs text-muted-foreground">Balance: ₹{order.balanceDue.toLocaleString('en-IN', {minimumFractionDigits:2})}</p>
                       </div>
-                      <Truck className="size-4 text-red-500 shrink-0" />
                     </div>
                   ))}
                 </div>
-                {/* Dismiss */}
                 <div className="px-5 pb-5 pt-2">
-                  <button
-                    onClick={() => setAlertPopupDismissed(true)}
-                    className="w-full py-3 rounded-xl bg-red-500 text-white font-bold text-sm active:scale-95 transition">
+                  <button onClick={() => setAlertPopupDismissed(true)}
+                    className="w-full py-3 rounded-xl bg-red-500 text-white font-bold text-sm">
                     Got it — I'll deliver these today
                   </button>
                 </div>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Credit tab ── */}
+      {activeTab === 'credit' && (
+        <div className="flex-1 overflow-y-auto">
+          <BranchCreditPanel branch={branch} creditSales={branchCreditSales} />
         </div>
       )}
 
@@ -2095,6 +2219,50 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                       <ArrowLeftRight className="size-4" />Part Pay
                     </button>
                   </div>
+
+                  {/* ── Credit payment button (row below) ── */}
+                  <button onClick={() => { setPayMode('credit'); setSingle(null); setCreditAmountPaid(''); setError(''); }}
+                    className={cn('w-full py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 border transition active:scale-95',
+                      payMode === 'credit' ? 'bg-red-600 text-white border-transparent shadow-md' : 'bg-card border-border hover:bg-muted/50 text-muted-foreground')}>
+                    <Wallet className="size-4" />Credit Sale
+                  </button>
+
+                  {/* ── Credit details panel ── */}
+                  {payMode === 'credit' && (
+                    <div className="rounded-2xl border-2 border-red-200 bg-red-50/60 overflow-hidden">
+                      <div className="px-4 py-2 bg-red-600">
+                        <p className="text-xs font-bold text-white uppercase tracking-wider text-center">Credit Sale</p>
+                      </div>
+                      <div className="p-3 space-y-2.5">
+                        <div className="relative">
+                          <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                          <input type="number" placeholder="Amount paid now (0 = full credit)"
+                            value={creditAmountPaid} onChange={e => setCreditAmountPaid(e.target.value)}
+                            className="w-full pl-7 pr-2 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
+                        </div>
+                        {allPriced && (
+                          <div className={cn('flex items-center justify-between rounded-xl px-3 py-2',
+                            (finalTotal - (parseFloat(creditAmountPaid)||0)) > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700')}>
+                            <span className="text-xs font-bold">Credit Due</span>
+                            <span className="text-sm font-bold tabular-nums">
+                              ₹{Math.max(0, finalTotal - (parseFloat(creditAmountPaid)||0)).toLocaleString('en-IN', {minimumFractionDigits:2})}
+                            </span>
+                          </div>
+                        )}
+                        <input type="tel" placeholder="Customer phone (optional)"
+                          value={customerPhone} onChange={e => setCustomerPhone(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
+                        <input type="date" placeholder="Due date (optional)"
+                          value={creditDueDate} onChange={e => setCreditDueDate(e.target.value)}
+                          min={new Date().toISOString().split('T')[0]}
+                          className="w-full px-3 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
+                        <input type="text" placeholder="Notes (optional)"
+                          value={creditNotes} onChange={e => setCreditNotes(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
+                        <p className="text-[10px] text-muted-foreground">Credit report will be sent to branch admin & main admin.</p>
+                      </div>
+                    </div>
+                  )}
 
                   {payMode === 'split' && (
                     <div className="rounded-2xl border-2 border-violet-200 bg-violet-50/60 overflow-hidden">
