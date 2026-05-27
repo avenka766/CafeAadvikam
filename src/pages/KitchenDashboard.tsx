@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors to prevent excessive re-renders
 import { formatTime, cn } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
 import type { OrderStatus, Order } from '@/types';
@@ -271,7 +272,17 @@ ${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6
 }
 
 export default function KitchenDashboard() {
-  const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
+  // STORE-01 FIX: granular selector with shallow equality — only re-renders when
+  // orders/polling actually change, not on any unrelated store mutation.
+  const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore(
+    useShallow(s => ({
+      orders: s.orders,
+      updateOrderStatus: s.updateOrderStatus,
+      startPolling: s.startPolling,
+      stopPolling: s.stopPolling,
+      polling: s.polling,
+    }))
+  );
   const [activeTab, setActiveTab] = useState<OrderStatus | 'active' | 'waste'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
   // KITCHEN-FIX: track which order is in-flight; show inline error instead of alert()

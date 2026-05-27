@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useBranchStore } from '@/branch/branchStore';
 import { formatCurrency } from '@/lib/utils';
 import {
@@ -77,7 +78,10 @@ function Row({ label, value, bold, highlight }: { label: string; value: string; 
 
 // ─── CAFE DASHBOARD TAB (today only) ─────────────────────────────────────────
 function CafeDashboardTab() {
-  const { orders, polling } = useOrderStore();
+  // STORE-01 FIX: granular selector — only re-renders when orders or polling changes
+  const { orders, polling } = useOrderStore(
+    useShallow(s => ({ orders: s.orders, polling: s.polling }))
+  );
 
   const todayStr = useMemo(() => new Date().toDateString(), []);
   const todayOrders = useMemo(() => orders.filter(o => new Date(o.createdAt).toDateString() === todayStr), [orders, todayStr]);
@@ -520,7 +524,8 @@ function BakerySalesTab() {
 
 // ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
 function CafeReportsTab() {
-  const { orders } = useOrderStore();
+  // STORE-01 FIX: select only what this component needs
+  const orders = useOrderStore(s => s.orders);
 
   const todayISO = new Date().toISOString().split('T')[0];
   const [dateFrom, setDateFrom] = useState(todayISO);
@@ -1304,7 +1309,10 @@ export default function AdminDashboard() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
   // BUG-03 FIX: single polling registration at root — previously registered twice
   // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
-  const { startPolling, stopPolling } = useOrderStore();
+  // STORE-01 FIX: granular selector — stable action refs, no re-renders from unrelated state
+  const { startPolling, stopPolling } = useOrderStore(
+    useShallow(s => ({ startPolling: s.startPolling, stopPolling: s.stopPolling }))
+  );
   useEffect(() => {
     startPolling(60); // 60-day window for admin reports
     return () => stopPolling();

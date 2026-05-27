@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn, formatCurrency, formatTime } from '@/lib/utils';
@@ -35,7 +36,10 @@ type SourceFilter = 'all' | 'staff' | 'qr';
 
 // ── Advance Order Card ────────────────────────────────────────────────────────
 function AdvanceOrderCard({ order }: { order: Order }) {
-  const { collectBalance, setAdvancePayment } = useOrderStore();
+  // STORE-01 FIX: select only actions — stable refs, avoids re-renders from orders/cart changes
+  const { collectBalance, setAdvancePayment } = useOrderStore(
+    useShallow(s => ({ collectBalance: s.collectBalance, setAdvancePayment: s.setAdvancePayment }))
+  );
   const { currentUser } = useAuthStore();
   const [showCollect, setShowCollect] = useState(false);
   const [collectMethod, setCollectMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
@@ -191,7 +195,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
 
 // ── Advance Payment Modal (used inside OrderCard area for ready orders) ────────
 export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
-  const { setAdvancePayment } = useOrderStore();
+  const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
   const { currentUser } = useAuthStore();
   const [advanceAmt, setAdvanceAmt] = useState('');
   const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
@@ -282,7 +286,17 @@ interface CustomLineItem { id: string; name: string; price: number; qty: number;
 
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
-  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore();
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore(
+    useShallow(s => ({
+      cart: s.cart,
+      addToCart: s.addToCart,
+      updateCartQuantity: s.updateCartQuantity,
+      clearCart: s.clearCart,
+      getCartTotal: s.getCartTotal,
+      getCartCount: s.getCartCount,
+      submitAdvanceOrder: s.submitAdvanceOrder,
+    }))
+  );
   const { currentUser } = useAuthStore();
 
   // Menu picker state
@@ -751,7 +765,17 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
 function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
-  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore();
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore(
+    useShallow(s => ({
+      cart: s.cart,
+      addToCart: s.addToCart,
+      updateCartQuantity: s.updateCartQuantity,
+      clearCart: s.clearCart,
+      getCartTotal: s.getCartTotal,
+      getCartCount: s.getCartCount,
+      submitOrder: s.submitOrder,
+    }))
+  );
   const { currentUser } = useAuthStore();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -1218,7 +1242,16 @@ function NewBillPanel() {
 
 // ── Main BillingDashboard ─────────────────────────────────────────────────────
 export default function BillingDashboard() {
-  const { orders, startPolling, stopPolling, polling, clearCart } = useOrderStore();
+  // STORE-01 FIX: granular selector with shallow equality — avoids full re-render on cart/loading changes
+  const { orders, startPolling, stopPolling, polling, clearCart } = useOrderStore(
+    useShallow(s => ({
+      orders: s.orders,
+      startPolling: s.startPolling,
+      stopPolling: s.stopPolling,
+      polling: s.polling,
+      clearCart: s.clearCart,
+    }))
+  );
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
 
   // Clear shared cart whenever switching between New Bill and Advance tabs
