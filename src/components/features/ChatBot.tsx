@@ -322,6 +322,8 @@ export default function ChatBot() {
   const [typing, setTyping] = useState(false);
   const [showContact, setShowContact] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
+  // MOB-03: track keyboard height so the chat panel lifts above the keyboard
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -332,6 +334,19 @@ export default function ChatBot() {
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 300);
   }, [open]);
+
+  // MOB-03: listen to visualViewport resize to detect soft keyboard
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      const keyboardH = window.innerHeight - vv.height - vv.offsetTop;
+      setKeyboardOffset(Math.max(0, keyboardH));
+    };
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
+    return () => { vv.removeEventListener('resize', onResize); vv.removeEventListener('scroll', onResize); };
+  }, []);
 
   const sendMsg = (text?: string) => {
     const q = (text ?? input).trim();
@@ -363,13 +378,14 @@ export default function ChatBot() {
 
   return (
     <>
-      {/* Floating toggle button */}
+      {/* Floating toggle button — z-50 (U-18: was z-40, covered by modals) */}
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'fixed bottom-20 right-4 z-40 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
+          'fixed right-4 z-50 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
           'bg-[#8B4513] text-white hover:bg-[#6b3310] active:scale-95',
         )}
+        style={{ bottom: `calc(5rem + ${keyboardOffset}px)` }}
         aria-label="Open chat"
       >
         {open ? <X className="size-6" /> : <MessageCircle className="size-6" />}
@@ -378,15 +394,15 @@ export default function ChatBot() {
         )}
       </button>
 
-      {/* Chat window */}
+      {/* Chat window — z-50, repositions above keyboard (MOB-03) */}
       <div
         className={cn(
-          'fixed bottom-36 right-4 z-40 w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
+          'fixed right-4 z-50 w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
           'bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden',
           'transition-all duration-300 origin-bottom-right',
           open ? 'opacity-100 scale-100 pointer-events-auto' : 'opacity-0 scale-95 pointer-events-none',
         )}
-        style={{ height: '520px' }}
+        style={{ bottom: `calc(9rem + ${keyboardOffset}px)`, height: '520px' }}
       >
         {/* Header */}
         <div className="bg-[#8B4513] px-4 py-3 flex items-center gap-3 flex-shrink-0">
