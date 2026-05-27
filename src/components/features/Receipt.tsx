@@ -58,7 +58,10 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
   const orderLabel = order.orderType === 'dine_in' && order.tableNumber
     ? `Table ${order.tableNumber}` : 'Pick Up';
 
-  const { base, cgst, sgst } = calcGst(order.total);
+  // C-06 FIX: compute GST only on food total — parcel charges are not subject to food GST
+  const parcelCharges = order.parcelCharges ?? 0;
+  const foodTotal = order.total - parcelCharges;
+  const { base, cgst, sgst } = calcGst(foodTotal);
   const totalQty = order.items.reduce((s, ci) => s + ci.quantity, 0);
   const cashierName = order.billedBy || order.createdBy || 'biller';
 
@@ -183,6 +186,14 @@ table{width:100%;border-collapse:collapse}td{padding:1px 2px;vertical-align:top}
                 <td className="text-right">SGST@2.5  2.5%</td>
                 <td className="text-right tabular-nums pl-3">{fmt(sgst)}</td>
               </tr>
+              {/* C-06 FIX: show parcel charges as a separate line item */}
+              {parcelCharges > 0 && (
+                <tr>
+                  <td />
+                  <td className="text-right">Parcel Charges</td>
+                  <td className="text-right tabular-nums pl-3">{fmt(parcelCharges)}</td>
+                </tr>
+              )}
             </tbody>
           </table>
 
