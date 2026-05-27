@@ -593,7 +593,7 @@ function DeductToggle({ label, amount, checked, onChange }: { label: string; amo
         {checked ? <CheckCircle2 className="size-3.5 text-destructive shrink-0" /> : <AlertCircle className="size-3.5 text-muted-foreground/50 shrink-0" />}
         <div>
           <p className={cn('text-[11px] font-body font-semibold', checked ? 'text-destructive' : 'text-muted-foreground')}>{label}</p>
-          <p className="text-[10px] font-body text-muted-foreground">₹{amount.toLocaleString('en-IN')}</p>
+          <p className="text-[10px] font-body text-muted-foreground">{'₹'}{amount.toLocaleString('en-IN')}</p>
         </div>
       </div>
       <button onClick={() => onChange(!checked)} className={cn('relative h-5 w-9 rounded-full transition-colors shrink-0', checked ? 'bg-destructive' : 'bg-muted border border-border')}>
@@ -629,6 +629,7 @@ function AddEmpModal({ onAdd, onClose }: { onAdd: (e: Employee) => void; onClose
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="bg-card border border-border rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto overscroll-contain">
+        <div className="px-5 pt-4 flex items-center justify-end">
           <button onClick={onClose} className="size-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground"><X className="size-4" /></button>
         </div>
         <div className="px-5 py-4 space-y-3">
@@ -815,12 +816,12 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
           <p className="text-xs font-body font-semibold text-foreground truncate">{emp.name}</p>
           <p className="text-[10px] font-body text-muted-foreground">
             {emp.department}
-            {hasAdvance && <span className="ml-1 text-amber-600 font-semibold">· Adv ₹{emp.salaryAdvance.toLocaleString('en-IN')}</span>}
+            {hasAdvance && <span className="ml-1 text-amber-600 font-semibold">· Adv {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')}</span>}
           </p>
         </div>
         <div className="text-right shrink-0 mr-1">
           <p className="text-xs font-body font-bold tabular-nums">{presentDays + halfDays * 0.5 + woffDays}d</p>
-          <p className={cn('text-[10px] font-body font-semibold tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>₹{net.toLocaleString('en-IN')}</p>
+          <p className={cn('text-[10px] font-body font-semibold tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</p>
         </div>
         {expanded ? <ChevronUp className="size-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />}
       </button>
@@ -834,7 +835,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
               {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
               {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
               {hasAdvance && !decision.deductAdvance && (
-                <p className="text-[10px] font-body text-amber-600 flex items-center gap-1"><AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} will carry forward</p>
+                <p className="text-[10px] font-body text-amber-600 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} will carry forward</p>
               )}
             </div>
           )}
@@ -873,7 +874,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-yellow-400 inline-block" /> ½ Half Day</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-sky-200 inline-block" /> W = Week Off ({woffCount}/4)</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-orange-400 inline-block" /> BF / Lunch / Dinner ₹10</span>
-            <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 ₹{canteenTotal}</span>
+            <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 {'₹'}{canteenTotal}</span>
           </div>
         </div>
       )}
@@ -923,7 +924,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           {emp.accountNumber && <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">{emp.bankName} · {emp.accountNumber}</p>}
         </div>
         <div className="shrink-0 text-right">
-          <p className={cn('font-display font-bold text-xl tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>₹{net.toLocaleString('en-IN')}</p>
+          <p className={cn('font-display font-bold text-xl tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</p>
           <p className="text-[10px] font-body text-muted-foreground">Net Salary</p>
         </div>
       </div>
@@ -936,7 +937,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           <DeductToggle label={`ESI (0.75%${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
           <DeductToggle label={`PF (12% of gross${emp.grossSalary * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
-            <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance ₹{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
+            <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
         </div>
 
@@ -956,7 +957,7 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
         {decision.deductPF && pfDed > 0 && <SalRow label="PF (12%)" value={`-₹${pfDed.toLocaleString('en-IN')}`} neg />}
         <div className="col-span-2 border-t border-border pt-2 mt-0.5 flex justify-between items-center">
           <span className="text-sm font-body font-bold text-foreground">Net Payable</span>
-          <span className={cn('font-display font-bold text-lg tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>₹{net.toLocaleString('en-IN')}</span>
+          <span className={cn('font-display font-bold text-lg tabular-nums', net < 0 ? 'text-destructive' : 'text-primary')}>{'₹'}{net.toLocaleString('en-IN')}</span>
         </div>
       </div>
 
@@ -1130,12 +1131,12 @@ function AnalyticsTab({ employees, att, decisions, daysInMonth, monthLabel, getD
                     <div className="size-2.5 rounded-sm shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
                     <span className="text-[11px] font-body text-muted-foreground">{d.name}</span>
                   </div>
-                  <span className="text-[11px] font-body font-bold tabular-nums">₹{d.value.toLocaleString('en-IN')}</span>
+                  <span className="text-[11px] font-body font-bold tabular-nums">{'₹'}{d.value.toLocaleString('en-IN')}</span>
                 </div>
               ))}
               <div className="border-t border-border pt-1.5 flex justify-between">
                 <span className="text-[11px] font-body font-bold text-foreground">Total</span>
-                <span className="text-[11px] font-body font-bold text-destructive tabular-nums">₹{deductionData.reduce((s, d) => s + d.value, 0).toLocaleString('en-IN')}</span>
+                <span className="text-[11px] font-body font-bold text-destructive tabular-nums">{'₹'}{deductionData.reduce((s, d) => s + d.value, 0).toLocaleString('en-IN')}</span>
               </div>
             </div>
           </div>
@@ -1296,7 +1297,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
         </div>
         <div>
           <p className="font-display font-bold text-xl tabular-nums text-amber-600">
-            ₹{totalOutstanding.toLocaleString('en-IN')}
+            {'₹'}{totalOutstanding.toLocaleString('en-IN')}
           </p>
           <p className="text-[10px] font-body font-semibold text-muted-foreground uppercase">Total Outstanding Advances</p>
         </div>
@@ -1413,7 +1414,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
                       <p className="text-[10px] font-body text-muted-foreground">{emp.department}</p>
                     </div>
                     <div className="shrink-0 text-right">
-                      <p className="text-xs font-body font-bold text-amber-600">₹{emp.salaryAdvance.toLocaleString('en-IN')}</p>
+                      <p className="text-xs font-body font-bold text-amber-600">{'₹'}{emp.salaryAdvance.toLocaleString('en-IN')}</p>
                       <p className="text-[9px] font-body text-muted-foreground">outstanding</p>
                     </div>
                   </div>
@@ -1445,7 +1446,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
                 </div>
                 {empTotal > 0 && (
                   <div className="shrink-0 text-right">
-                    <p className="text-xs font-body font-bold text-amber-600">₹{empTotal.toLocaleString('en-IN')}</p>
+                    <p className="text-xs font-body font-bold text-amber-600">{'₹'}{empTotal.toLocaleString('en-IN')}</p>
                     <p className="text-[9px] font-body text-muted-foreground">outstanding</p>
                   </div>
                 )}
@@ -1456,7 +1457,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-body font-bold text-sm tabular-nums">
-                          ₹{rec.amount.toLocaleString('en-IN')}
+                          {'₹'}{rec.amount.toLocaleString('en-IN')}
                         </p>
                         {rec.cleared && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] font-body font-bold bg-emerald-100 text-emerald-700 border border-emerald-200">Cleared</span>
@@ -1840,12 +1841,12 @@ export default function AttendanceSalary() {
               {branch === 'All' ? 'All Branches' : branch} — {activeMonth.label} Summary
             </h3>
             <div className="space-y-1.5">
-              <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Total Gross</span><span className="font-bold tabular-nums">₹{summary.gross.toLocaleString('en-IN')}</span></div>
-              <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Food Deductions</span><span className="font-bold tabular-nums text-orange-600">-₹{summary.canteen.toLocaleString('en-IN')}</span></div>
+              <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Total Gross</span><span className="font-bold tabular-nums">{'₹'}{summary.gross.toLocaleString('en-IN')}</span></div>
+              <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Food Deductions</span><span className="font-bold tabular-nums text-orange-600">-{'₹'}{summary.canteen.toLocaleString('en-IN')}</span></div>
               {summary.advanceTotal > 0 && (
-                <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Outstanding Advances</span><span className="font-bold tabular-nums text-amber-600">₹{summary.advanceTotal.toLocaleString('en-IN')}</span></div>
+                <div className="flex justify-between text-sm font-body"><span className="text-muted-foreground">Outstanding Advances</span><span className="font-bold tabular-nums text-amber-600">{'₹'}{summary.advanceTotal.toLocaleString('en-IN')}</span></div>
               )}
-              <div className="flex justify-between text-sm font-body border-t border-border pt-1.5"><span className="font-bold text-foreground">Net Payable</span><span className="font-bold tabular-nums text-primary">₹{summary.net.toLocaleString('en-IN')}</span></div>
+              <div className="flex justify-between text-sm font-body border-t border-border pt-1.5"><span className="font-bold text-foreground">Net Payable</span><span className="font-bold tabular-nums text-primary">{'₹'}{summary.net.toLocaleString('en-IN')}</span></div>
             </div>
           </div>
           {filtered.map(e => (
@@ -1866,7 +1867,7 @@ export default function AttendanceSalary() {
                   <span className="text-[10px] font-body text-muted-foreground truncate">{e.department}</span>
                 </div>
                 <p className="font-body font-bold text-sm text-foreground">{e.name}</p>
-                {e.salaryAdvance > 0 && <p className="text-[10px] font-body text-amber-600 font-semibold mt-0.5">Advance pending: ₹{e.salaryAdvance.toLocaleString('en-IN')}</p>}
+                {e.salaryAdvance > 0 && <p className="text-[10px] font-body text-amber-600 font-semibold mt-0.5">Advance pending: {'₹'}{e.salaryAdvance.toLocaleString('en-IN')}</p>}
                 {e.accountNumber && <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">{e.bankName} · {e.accountNumber}</p>}
               </div>
               <div className="flex items-start gap-2 shrink-0">
