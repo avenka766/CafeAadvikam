@@ -5,14 +5,14 @@ import { formatTime, cn } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
 import type { OrderStatus, Order } from '@/types';
 import {
-import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
-import EmptyState from '@/components/ui/EmptyState';
   Wifi, Inbox, Clock, MapPin, User as UserIcon,
   ChefHat, Bell, CheckCircle2, QrCode, UserCheck,
   Volume2, VolumeX, Printer, Trash2, Plus, Loader2,
   AlertTriangle, X,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
+import EmptyState from '@/components/ui/EmptyState';
 
 const TABS: { key: OrderStatus | 'active' | 'waste'; label: string; accent: string; textColor: string }[] = [
   { key: 'active',    label: 'Active',   accent: '#1D9E75', textColor: '#fff' },
