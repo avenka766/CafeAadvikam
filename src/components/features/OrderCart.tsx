@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -31,6 +31,13 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   const [undoSnapshot, setUndoSnapshot] = useState<typeof cart | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Bug 4 fix — cancel pending undo timer on unmount to prevent state update on unmounted component
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
   const handleClearAll = () => {
     setUndoSnapshot([...cart]);
     clearCart();
@@ -40,7 +47,8 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
 
   const handleUndo = () => {
     if (!undoSnapshot) return;
-    // Restore cart items via addToCart equivalent — use updateCartQuantity trick
+    // Bug 1 fix — clear cart first so restored items replace rather than merge with any newly added items
+    useOrderStore.getState().clearCart();
     undoSnapshot.forEach(item => {
       useOrderStore.getState().addToCart(item.menuItem);
       const diff = item.quantity - 1;
@@ -86,7 +94,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="fixed inset-0 z-[60]">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="absolute bottom-0 left-0 right-0 bg-background rounded-t-2xl max-h-[90vh] flex flex-col animate-in slide-in-from-bottom duration-300">
         {showSuccess ? (
@@ -150,8 +158,8 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
               <>
                 <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50">
                   <div className="flex gap-2">
-                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
-                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
+                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); setShowTableSelect(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
+                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); setShowTableSelect(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
                   </div>
 
                   {orderType === 'dine_in' ? (
@@ -163,11 +171,15 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                         </button>
                         <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                         {showTableSelect && (
-                          <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto">
-                            {TABLE_NUMBERS.map((num) => (
-                              <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }} className={`py-2 rounded-md text-sm font-body font-medium ${tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted'}`}>{num}</button>
-                            ))}
-                          </div>
+                          <>
+                            {/* Bug 3 fix — invisible overlay catches clicks outside the dropdown and closes it */}
+                            <div className="fixed inset-0 z-[5]" onClick={() => setShowTableSelect(false)} />
+                            <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto">
+                              {TABLE_NUMBERS.map((num) => (
+                                <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }} className={`py-2 rounded-md text-sm font-body font-medium ${tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted'}`}>{num}</button>
+                              ))}
+                            </div>
+                          </>
                         )}
                       </div>
                       {tableError && <div className="flex items-center gap-1 mt-1.5 text-destructive"><AlertCircle className="size-3" /><span className="text-xs font-body">Table number is required for Dine In orders</span></div>}
