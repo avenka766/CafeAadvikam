@@ -27,14 +27,24 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   // U-13 FIX: undo-toast instead of instant clear — holds snapshot of cart for 5s
   const [undoSnapshot, setUndoSnapshot] = useState<typeof cart | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bug 5 fix — track success timeout so it can be cancelled if the component unmounts
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Bug 4 fix — clear stale error banner whenever the cart is opened
+  useEffect(() => {
+    if (isOpen) setSubmitError(null);
+  }, [isOpen]);
 
   // Bug 4 fix — cancel pending undo timer on unmount to prevent state update on unmounted component
   useEffect(() => {
     return () => {
       if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      // Bug 5 fix — also cancel the success redirect timer on unmount
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
     };
   }, []);
 
@@ -68,6 +78,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
 
     setTableError(false);
+    setSubmitError(null);
     setSubmitting(true);
     try {
       await submitOrder({
@@ -82,10 +93,9 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
       setNotes('');
       setCustomerName('');
       setTableNumber(null);
-      setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
+      successTimerRef.current = setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to place order. Please try again.';
-      alert(msg);
+      setSubmitError(err instanceof Error ? err.message : 'Failed to place order. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -158,8 +168,8 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
               <>
                 <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50">
                   <div className="flex gap-2">
-                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); setShowTableSelect(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
-                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); setShowTableSelect(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
+                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
+                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
                   </div>
 
                   {orderType === 'dine_in' ? (
@@ -214,6 +224,12 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                     <span className="font-body text-sm text-muted-foreground">Total</span>
                     <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                   </div>
+                  {submitError && (
+                    <div className="flex items-start gap-2 mb-3 px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/30">
+                      <AlertCircle className="size-4 text-destructive shrink-0 mt-0.5" />
+                      <p className="text-xs font-body text-destructive leading-snug">{submitError}</p>
+                    </div>
+                  )}
                   <button onClick={handleSubmit} disabled={submitting} className="w-full py-3.5 rounded-xl cafe-gradient text-primary-foreground font-body font-bold text-base active:scale-[0.98] transition-transform shadow-lg disabled:opacity-60">
                     {submitting ? 'Sending...' : 'Send to Kitchen & Billing'}
                   </button>
