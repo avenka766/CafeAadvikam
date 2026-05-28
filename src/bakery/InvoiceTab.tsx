@@ -78,7 +78,7 @@ function printInvoice(invoice: StoreInvoice) {
       </div>
     </div>
 
-    <table>
+    <div className="table-scroll-container"><div className="table-inner-scroll"><table>
       <thead>
         <tr><th>#</th><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
       </thead>
@@ -89,7 +89,7 @@ function printInvoice(invoice: StoreInvoice) {
           <td>₹${invoice.grandTotal.toFixed(2)}</td>
         </tr>
       </tfoot>
-    </table>
+    </table></div></div>
 
     ${invoice.notes ? `<div class="notes"><b>Notes:</b> ${invoice.notes}</div>` : ''}
     ${invoice.reviewNote ? `<div class="notes" style="border-color:${statusColor}44;"><b>Admin Note:</b> ${invoice.reviewNote}</div>` : ''}

@@ -1,5 +1,5 @@
 // src/bakery/BakerDashboard.tsx  (Redesigned)
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Clock } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -12,27 +12,30 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   const { submitPrepared } = useBakeryStore();
   const [expanded, setExpanded] = useState(true);
 
-  const initialised = useRef(false);
+  // FIX M-18: removed initialised guard — useEffect now reruns when order.id or
+  // order.updatedAt changes so prep quantities stay in sync with realtime updates.
   const [prepQty, setPrepQty] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (!initialised.current) {
-      setPrepQty(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
-      initialised.current = true;
-    }
-  }, [order.items]);
+    setPrepQty(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.id, (order as { updatedAt?: string }).updatedAt]);
 
   const [submitting, setSubmitting] = useState(false);
   const [done,       setDone]       = useState(false);
   const [error,      setError]      = useState<string | null>(null);
 
   // BUG #15 FIX: was >= 0 which allowed submitting 0 qty, stalling packing permanently.
-  const valid = order.items.every(i => prepQty[i.itemId] !== '' && Number(prepQty[i.itemId]) > 0);
+  // FIX M-17: use parseInt + isFinite to reject scientific notation (1e3) and Infinity.
+  const valid = order.items.every(i => {
+    const v = Number.parseInt(prepQty[i.itemId] ?? '', 10);
+    return Number.isFinite(v) && v > 0;
+  });
 
   const handleSend = async () => {
     setSubmitting(true); setError(null);
     const prepared: PreparedItem[] = order.items.map(item => ({
       itemId: item.itemId, itemName: item.itemName,
-      quantityPrepared: Number(prepQty[item.itemId] ?? item.quantity),
+      quantityPrepared: Number.parseInt(prepQty[item.itemId] ?? String(item.quantity), 10),
       preparedAt: new Date().toISOString(),
       dispatchUnit: item.dispatchUnit ?? 'kg',
     }));

@@ -702,7 +702,7 @@ export default function BakeryReportsMerged({ branch }: Props) {
         {itemReport.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-8">No sales in this range.</p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll-container"><div className="table-inner-scroll"><table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-muted-foreground border-b bg-muted/20">
                 <th className="text-left px-4 py-2.5">#</th>
@@ -741,7 +741,7 @@ export default function BakeryReportsMerged({ branch }: Props) {
                 <td className="px-4 py-2.5 text-right text-muted-foreground text-xs">{totalQty}</td>
               </tr>
             </tbody>
-          </table>
+          </table></div></div>
         )}
       </div>
 
