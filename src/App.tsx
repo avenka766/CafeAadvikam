@@ -73,39 +73,46 @@ function AppRoutes() {
   return (
     <>
       <Header />
+      {/* 
+        Layout shell: pt-14 clears the fixed header (h-14 = 56px).
+        pb-24 clears the fixed bottom nav (~72px) + safe-area.
+        Pages that opt out (Landing, Login, QR, public) override via their own root div.
+        Pages that already set pt-14/pb-24 on their own root div will stack — so we
+        use a transparent wrapper that ONLY applies to authenticated/staff routes.
+      */}
       <Routes>
-        <Route path="/"                element={<Landing />} />
-        <Route path="/login"           element={<Login />} />
-        <Route path="/menu"            element={<MenuPage />} />
-        <Route path="/digital-menu"    element={<DigitalMenu />} />
-        <Route path="/order"           element={<QROrderPage />} />
-        <Route path="/order/track"     element={<OrderTrackingPage />} />
+        {/* ── Public routes — manage their own padding ── */}
+        <Route path="/"             element={<Landing />} />
+        <Route path="/login"        element={<Login />} />
+        <Route path="/menu"         element={<MenuPage />} />
+        <Route path="/digital-menu" element={<DigitalMenu />} />
+        <Route path="/order"        element={<QROrderPage />} />
+        <Route path="/order/track"  element={<OrderTrackingPage />} />
 
-        <Route path="/order-pad"       element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
-        <Route path="/billing"         element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
-        <Route path="/kitchen"         element={<ProtectedRoute allowedRoles={['kitchen']}><KitchenDashboard /></ProtectedRoute>} />
-        <Route path="/menu-management" element={<ProtectedRoute allowedRoles={['admin']}><MenuManagement /></ProtectedRoute>} />
-        <Route path="/sales-report"    element={<ProtectedRoute allowedRoles={['admin']}><SalesReport /></ProtectedRoute>} />
-        <Route path="/admin-dashboard" element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
-        <Route path="/staff-management"element={<ProtectedRoute allowedRoles={['admin']}><StaffManagement /></ProtectedRoute>} />
-        <Route path="/qr-menu"         element={<ProtectedRoute allowedRoles={['admin']}><QRMenuPage /></ProtectedRoute>} />
-        <Route path="/attendance-salary" element={<ProtectedRoute allowedRoles={['admin']}><AttendanceSalary /></ProtectedRoute>} />
-        <Route path="/order-history"   element={<ProtectedRoute allowedRoles={['order_taker','billing','admin','kitchen']}><OrderHistory /></ProtectedRoute>} />
+        {/* ── Staff routes — all wrapped in layout shell ── */}
+        <Route path="/order-pad"        element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
+        <Route path="/billing"          element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
+        <Route path="/kitchen"          element={<ProtectedRoute allowedRoles={['kitchen']}><KitchenDashboard /></ProtectedRoute>} />
+        <Route path="/menu-management"  element={<ProtectedRoute allowedRoles={['admin']}><MenuManagement /></ProtectedRoute>} />
+        <Route path="/sales-report"     element={<ProtectedRoute allowedRoles={['admin']}><SalesReport /></ProtectedRoute>} />
+        <Route path="/admin-dashboard"  element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
+        <Route path="/staff-management" element={<ProtectedRoute allowedRoles={['admin']}><StaffManagement /></ProtectedRoute>} />
+        <Route path="/qr-menu"          element={<ProtectedRoute allowedRoles={['admin']}><QRMenuPage /></ProtectedRoute>} />
+        <Route path="/attendance-salary"element={<ProtectedRoute allowedRoles={['admin']}><AttendanceSalary /></ProtectedRoute>} />
+        <Route path="/order-history"    element={<ProtectedRoute allowedRoles={['order_taker','billing','admin','kitchen']}><OrderHistory /></ProtectedRoute>} />
 
-        <Route path="/bakery/receive/vrsnb"  element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/receive/snb"    element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/receive/hosur"  element={<ProtectedRoute allowedRoles={['receiver_hosur']}><OrderReceiverDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/store"    element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/baker"    element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/packing"  element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/items"    element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
-        <Route path="/bakery/recipes"  element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
+        <Route path="/bakery/receive/vrsnb" element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/hosur" element={<ProtectedRoute allowedRoles={['receiver_hosur']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/baker"   element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
+        <Route path="/bakery/recipes" element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 
-        {/* ── NEW BRANCH ROUTES ─────────────────────────────────────────── */}
-        <Route path="/branch/vrsnb"    element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin']}><VRSNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/snb"      element={<ProtectedRoute allowedRoles={['branch_snb','admin']}><SNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/hosur"    element={<ProtectedRoute allowedRoles={['branch_hosur','admin']}><HosurDashboard /></ProtectedRoute>} />
-        {/* ─────────────────────────────────────────────────────────────── */}
+        <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin']}><VRSNBDashboard /></ProtectedRoute>} />
+        <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin']}><SNBDashboard /></ProtectedRoute>} />
+        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','admin']}><HosurDashboard /></ProtectedRoute>} />
 
         <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><AdminVRSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-vrsnb/items"   element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><VRSNBItemsPage /></ProtectedRoute>} />
