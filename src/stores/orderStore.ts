@@ -172,7 +172,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
-    // Optimistic update
+    // Optimistic update — snapshot cart *before* clearing so we can restore it on failure.
+    // Items added *after* this point (while the DB write is in flight) are captured via
+    // get().cart inside the error handler so they are never silently discarded.
+    const cartSnapshot = cart;
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
@@ -186,9 +189,22 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      // ARCH-04: rollback optimistic update
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart }));
-      throw new Error('Failed to submit order. Please try again.');
+      // ARCH-04: rollback optimistic update.
+      // Merge cartSnapshot with any items added while the request was in flight so
+      // nothing the staff member added during the async write is silently lost.
+      const inflightCart = get().cart;
+      const mergedCart = [...cartSnapshot];
+      for (const inflightItem of inflightCart) {
+        const existing = mergedCart.find((c) => c.menuItem.id === inflightItem.menuItem.id);
+        if (existing) {
+          existing.quantity += inflightItem.quantity;
+        } else {
+          mergedCart.push(inflightItem);
+        }
+      }
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: mergedCart }));
+      console.error('[submitOrder] Supabase insert failed:', error);
+      throw new Error(`Failed to submit order: ${error.message}`);
     }
 
     return orderId;
@@ -213,6 +229,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       orderSource: 'staff', advanceAmount: params.advanceAmount, advancePaidBy: params.advancePaidBy, balanceDue,
     };
 
+    const cartSnapshot = cart;
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
@@ -226,8 +243,19 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart }));
-      throw new Error('Failed to submit advance order. Please try again.');
+      const inflightCart = get().cart;
+      const mergedCart = [...cartSnapshot];
+      for (const inflightItem of inflightCart) {
+        const existing = mergedCart.find((c) => c.menuItem.id === inflightItem.menuItem.id);
+        if (existing) {
+          existing.quantity += inflightItem.quantity;
+        } else {
+          mergedCart.push(inflightItem);
+        }
+      }
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: mergedCart }));
+      console.error('[submitAdvanceOrder] Supabase insert failed:', error);
+      throw new Error(`Failed to submit advance order: ${error.message}`);
     }
     return orderId;
   },
@@ -380,9 +408,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
-    get().loadOrders(days);
+    // Bug 3 fix — create the interval and store it atomically *before* any async work.
+    // Previously both concurrent callers could read pollTimer===null, each create an
+    // interval, and the second set() would overwrite the first, leaking timer1 forever.
     const timer = setInterval(() => { get().loadOrders(days); }, 3000);
     set({ polling: true, pollTimer: timer });
+    get().loadOrders(days);
   },
 
   stopPolling: () => {
