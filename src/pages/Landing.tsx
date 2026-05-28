@@ -33,7 +33,6 @@ function useScrollReveal<T extends HTMLElement>(options: { threshold?: number } 
 const CAFE = {
   name: 'Cafe Aadvikam', address: '109 Bagalur Main Road, Berikai 635105',
   hours: '6 AM – 10 PM Daily', type: 'Pure Vegetarian',
-  mapsUrl: 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9628595,17z',
   waWhatsapp: '919095445444', waPretext: 'Hi, I need to enquire and book the Party Hall.',
 };
 const BAKERY = {
@@ -42,7 +41,6 @@ const BAKERY = {
   phone: '+91 9095445444', website: 'https://www.snbbakery.in',
   waPhone: '919095445444',
   about: 'Mr. Venugopal\'s father started Sri Nanjundeshwara Bakery (SNB) in 1988. Over 36 years of serving unforgettable melting sweets, cookies, cakes and the most exquisite savouries.',
-  logo: 'https://www.snbbakery.in/img/SNB.png',
 };
 
 
@@ -50,14 +48,10 @@ const FOOD_IMAGES = {
   hero:    'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
   hero400: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=400&q=75&fm=webp',
   hero800: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=800&q=80&fm=webp',
-  idly: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
-  dosa: 'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=600&q=80',
+  idly:    'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
   biryani: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&q=80',
-  paneer: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600&q=80',
   tandoor: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80',
-  kids: 'https://images.unsplash.com/photo-1513442542250-854d436a73f2?w=600&q=80',
-  soup: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80',
-  south: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80',
+  kids:    'https://images.unsplash.com/photo-1513442542250-854d436a73f2?w=600&q=80',
   partyHall: '/party-hall.jpg',
   partyHallExtra: 'https://lh3.googleusercontent.com/gps-cs-s/APNQkAEbyUHrbpJmJBUVejgvzmi1WtL7Q0xfUdorUxTS_UgyVUYeo4y7OFEy_WhQi7f0wXwCCQ8xtiyiNhEUMdLJ3-sjCUVKGNbuNUV9mZLTHbOGH_ujlZc4bCMqO1RTUFbArg83Mowadj6b3FSW=w1200-h2136-k-no',
 };
@@ -96,11 +90,14 @@ function TiltCard({ children, className, onClick }: { children: React.ReactNode;
 
 // ─── Dialogs ──────────────────────────────────────────────────────────────────
 function CategoryDrawer({ catId, onClose }: { catId: string; onClose: () => void }) {
-  const { items } = useMenuStore();
   const cat = MENU_CATEGORIES.find(c => c.id === catId);
+  if (!cat) return null;
+  return <CategoryDrawerContent catId={catId} cat={cat} onClose={onClose} />;
+}
+function CategoryDrawerContent({ catId, cat, onClose }: { catId: string; cat: typeof MENU_CATEGORIES[number]; onClose: () => void }) {
+  const { items } = useMenuStore();
   const catItems = items.filter(i => i.enabled && i.category === catId);
   useScrollLock();
-  if (!cat) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
@@ -266,7 +263,7 @@ function HeroBg() {
 const EXPLORE_CATS = [
   { img: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80', label: 'South Indian' },
   { img: 'https://images.unsplash.com/photo-1642821373181-696a54913e93?w=600&q=80', label: 'Biriyani' },
-  { img: 'https://images.unsplash.com/photo-1567188040759-fb8a883dc6d8?w=600&q=80', label: 'Tandoori' },
+  { img: 'https://images.unsplash.com/photo-1599487488170-d11ec9c172f0?w=600&q=80', label: 'Tandoori' },
   { img: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600&q=80', label: 'North Indian' },
   { img: 'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80', label: 'Soups' },
 ];
@@ -383,7 +380,7 @@ function FromOurKitchenSection({ onViewAll }: { onViewAll: () => void }) {
           className="flex gap-3 px-4 overflow-x-auto scrollbar-hide pb-3"
           style={{ scrollbarWidth: 'none' }}
         >
-          {KITCHEN_ITEMS.map(({ img, name, price }, i) => (
+          {KITCHEN_ITEMS.map(({ img, name, price }) => (
             <div
               key={name}
               className="group shrink-0 relative rounded-2xl overflow-hidden shadow-md cursor-pointer"
@@ -601,7 +598,12 @@ function FeedbackSection() {
 
 // ─── Cafe Content ─────────────────────────────────────────────────────────────
 function CafeContent({ setShowMenu, setDrawerCat, setPartyFullscreen }: { setShowMenu: (v: boolean) => void; setDrawerCat: (v: string | null) => void; setPartyFullscreen: (v: boolean) => void }) {
-  const [timePeriod] = useState(getTimePeriod);
+  const [timePeriod, setTimePeriod] = useState(getTimePeriod);
+  // Refresh every minute so the serving-period badge stays accurate
+  useEffect(() => {
+    const id = setInterval(() => setTimePeriod(getTimePeriod()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   const navigate = useNavigate();
   const bookPartyHall = () => window.open(`https://wa.me/${CAFE.waWhatsapp}?text=${encodeURIComponent(CAFE.waPretext)}`, '_blank');
   const openDirections = () => {
@@ -994,7 +996,6 @@ export default function Landing() {
   const [showMenu, setShowMenu] = useState(false);
   const [drawerCat, setDrawerCat] = useState<string | null>(null);
   const [partyFullscreen, setPartyFullscreen] = useState(false);
-  const [timePeriod] = useState(getTimePeriod);
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
@@ -1048,8 +1049,7 @@ export default function Landing() {
       <VenueToggle active={activeVenue} onChange={setVenue} />
 
       {/* Page content — slides in on switch */}
-      {/* FIX M-25: cap content width on ultrawide screens */}
-      <div key={activeVenue} className="max-w-2xl mx-auto" style={{ animation: 'fadeUp 0.35s ease-out both' }}>
+      <div key={activeVenue} className="w-full" style={{ animation: 'fadeUp 0.35s ease-out both' }}>
         {activeVenue === 'cafe' ? (
           <CafeContent setShowMenu={setShowMenu} setDrawerCat={setDrawerCat} setPartyFullscreen={setPartyFullscreen} />
         ) : (
