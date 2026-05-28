@@ -257,7 +257,7 @@ function SNBBakeryReportsTab() {
         {topItems.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">No data</p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll-container"><div className="table-inner-scroll"><table className="w-full text-sm" style={{minWidth:'600px'}}>
             <thead>
               <tr className="text-xs text-muted-foreground border-b">
                 <th className="text-left py-1.5">Item</th>
@@ -279,7 +279,7 @@ function SNBBakeryReportsTab() {
                 <td className="py-2 text-right text-muted-foreground text-xs">{totalQty}</td>
               </tr>
             </tbody>
-          </table>
+          </table></div></div>
         )}
       </div>
     </div>

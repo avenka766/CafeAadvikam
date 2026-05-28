@@ -419,6 +419,7 @@ export default function KitchenDashboard() {
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="size-9 rounded-xl flex items-center justify-center transition-all active:scale-90"
+            aria-label={soundEnabled ? 'Mute alerts' : 'Enable alerts'}
             style={{ background: soundEnabled ? 'rgba(29,158,117,0.2)' : 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
           >
             {soundEnabled
@@ -446,6 +447,7 @@ export default function KitchenDashboard() {
             })}
           </div>
           <button onClick={() => setNewlyCancelledIds(new Set())}
+            aria-label="Dismiss cancelled order alert"
             className="shrink-0 text-red-400 text-lg font-bold">✕</button>
         </div>
       )}
@@ -547,6 +549,7 @@ export default function KitchenDashboard() {
                         <p className="text-[10px] font-body" style={{ color: 'rgba(255,255,255,0.35)' }}>{formatTime(order.createdAt)}</p>
                       </div>
                       <button onClick={() => printKot(order)}
+                        aria-label="Print KOT"
                         className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
                         style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)' }}>
                         <Printer className="size-4 text-white/60" />

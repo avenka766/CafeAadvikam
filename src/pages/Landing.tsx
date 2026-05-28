@@ -1033,6 +1033,8 @@ export default function Landing() {
         @keyframes float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-6px); } }
         .snb-badge { background:linear-gradient(90deg,#b8860b,#ffd700,#daa520,#ffd700,#b8860b); background-size:200% auto; animation:shimmer 2.5s linear infinite; -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-weight:900; }
         .time-badge { animation:pulseGlow 2s ease-in-out infinite; }
+        /* PERF-05: defer rendering of offscreen landing sections */
+        [data-offscreen-lazy] { content-visibility: auto; contain-intrinsic-size: 0 500px; }
         /* PERF-02: stop all infinite decorative animations for users with reduced-motion preference */
         @media (prefers-reduced-motion: reduce) {
           .snb-badge { animation: none; }
@@ -1046,7 +1048,8 @@ export default function Landing() {
       <VenueToggle active={activeVenue} onChange={setVenue} />
 
       {/* Page content — slides in on switch */}
-      <div key={activeVenue} style={{ animation: 'fadeUp 0.35s ease-out both' }}>
+      {/* FIX M-25: cap content width on ultrawide screens */}
+      <div key={activeVenue} className="max-w-2xl mx-auto" style={{ animation: 'fadeUp 0.35s ease-out both' }}>
         {activeVenue === 'cafe' ? (
           <CafeContent setShowMenu={setShowMenu} setDrawerCat={setDrawerCat} setPartyFullscreen={setPartyFullscreen} />
         ) : (

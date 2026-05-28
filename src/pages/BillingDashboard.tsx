@@ -230,7 +230,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
             <h2 className="font-display text-xl font-bold">Collect Advance</h2>
             <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')} · Total {formatCurrency(order.total)}</p>
           </div>
-          <button onClick={onClose} className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
+          <button onClick={onClose} aria-label="Close" className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
         </div>
 
         <div className="space-y-4">
@@ -475,7 +475,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
-                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+                {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
               </div>
               {search.trim() ? (
                 <p className="text-[11px] text-amber-600 font-semibold mt-1.5 px-1">
@@ -546,10 +546,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
                   <div className="flex items-center gap-1.5">
                     <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      aria-label="Decrease quantity"
                       className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3.5" /></button>
                     <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
                       className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
                     <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                aria-label="Increase quantity"
                       className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90"><Plus className="size-3.5" /></button>
                   </div>
                 </div>
@@ -936,7 +938,7 @@ function NewBillPanel() {
                 <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
-                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
+                {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
               </div>
               {search.trim() ? (
                 <p className="text-[11px] text-primary font-semibold mt-1.5 px-1">
@@ -1006,12 +1008,14 @@ function NewBillPanel() {
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
                   <div className="flex items-center gap-1.5">
                     <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
+                      aria-label="Decrease quantity"
                       className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
                       <Minus className="size-3.5" />
                     </button>
                     <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
                       className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
                     <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
+                aria-label="Increase quantity"
                       className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
                       <Plus className="size-3.5" />
                     </button>
