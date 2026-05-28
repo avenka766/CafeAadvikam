@@ -7,6 +7,7 @@ import {
 import { formatCurrency, cn } from '@/lib/utils';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import { MENU_CATEGORIES } from '@/constants/config';
+import EmptyState from '@/components/ui/EmptyState';
 
 // ─── Add Item Sheet ──────────────────────────────────────────────────────────
 function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -206,7 +207,7 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const disabledCount = items.filter(i => !i.enabled).length;
 
   return (
-    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-20')}>
+    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-24')}>
 
       {/* Stats row */}
       <div className="px-4 pt-4 pb-2 flex gap-3">
@@ -261,24 +262,16 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
       {/* Item list */}
       <div className="px-4 py-4 space-y-2">
         {filtered.length === 0 && (
-          <div className="flex flex-col items-center py-16 text-muted-foreground gap-3">
-            <p className="text-sm font-body">No items found.</p>
-            {search || selectedCategory !== 'all' ? (
-              <button
-                onClick={() => { setSearch(''); setSelectedCategory('all'); }}
-                className="text-xs text-primary font-semibold"
-              >
-                Clear filters
-              </button>
-            ) : (
-              <button
-                onClick={() => setShowAddSheet(true)}
-                className="text-xs text-primary font-semibold flex items-center gap-1"
-              >
-                <Plus className="size-3" /> Add your first item
-              </button>
-            )}
-          </div>
+          <EmptyState
+            icon="🍽️"
+            message="No items found"
+            sub={search || selectedCategory !== 'all' ? 'Try a different category or clear your search' : 'Add your first menu item to get started'}
+            cta={search || selectedCategory !== 'all' ? 'Clear filters' : 'Add item'}
+            onCta={search || selectedCategory !== 'all'
+              ? () => { setSearch(''); setSelectedCategory('all'); }
+              : () => setShowAddSheet(true)
+            }
+          />
         )}
 
         {filtered.map(item => (

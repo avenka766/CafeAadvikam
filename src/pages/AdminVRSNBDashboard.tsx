@@ -1,5 +1,6 @@
 // src/pages/AdminVRSNBDashboard.tsx
 // Admin Dashboard 1 – VRSNB Admin: Cafe + VRSNB branch only
+import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
@@ -370,7 +371,7 @@ function VRSNBBakerySalesTab() {
       </div>
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No sales found.</p>
+          <EmptyState icon="📊" message="No sales found" sub="Sales will appear here once items are billed." />
         ) : (
           <div className="divide-y">
             {filtered.slice(0, 50).map(s => {

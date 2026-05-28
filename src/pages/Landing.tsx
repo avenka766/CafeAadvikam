@@ -47,7 +47,9 @@ const BAKERY = {
 
 
 const FOOD_IMAGES = {
-  hero: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
+  hero:    'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=90',
+  hero400: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=400&q=75&fm=webp',
+  hero800: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=800&q=80&fm=webp',
   idly: 'https://images.unsplash.com/photo-1589301760014-d929f3979dbc?w=600&q=80',
   dosa: 'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=600&q=80',
   biryani: 'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&q=80',
@@ -226,12 +228,36 @@ function HeroBg() {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current; if (!el) return;
-    const fn = (e: MouseEvent) => { const x = (e.clientX / window.innerWidth - 0.5) * 12; const y = (e.clientY / window.innerHeight - 0.5) * 8; el.style.transform = `translate(${x}px, ${y}px) scale(1.08)`; };
-    window.addEventListener('mousemove', fn); return () => window.removeEventListener('mousemove', fn);
+    // PERF-01: skip parallax entirely when the OS requests reduced motion
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // PERF-01: throttle via requestAnimationFrame — one style update per frame max
+    let rafId: number | null = null;
+    const fn = (e: MouseEvent) => {
+      if (rafId !== null) return;            // already queued, skip
+      rafId = requestAnimationFrame(() => {
+        const x = (e.clientX / window.innerWidth  - 0.5) * 12;
+        const y = (e.clientY / window.innerHeight - 0.5) * 8;
+        el.style.transform = `translate(${x}px, ${y}px) scale(1.08)`;
+        rafId = null;
+      });
+    };
+    window.addEventListener('mousemove', fn);
+    return () => {
+      window.removeEventListener('mousemove', fn);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, []);
   return (
     <div className="absolute inset-0 overflow-hidden">
-      <div ref={ref} className="absolute inset-[-4%] transition-transform duration-700 ease-out"><img src={FOOD_IMAGES.hero} alt="" className="w-full h-full object-cover" /></div>
+      <div ref={ref} className="absolute inset-[-4%] transition-transform duration-700 ease-out">
+        <img
+          src={FOOD_IMAGES.hero}
+          srcSet={`${FOOD_IMAGES.hero400} 400w, ${FOOD_IMAGES.hero800} 800w, ${FOOD_IMAGES.hero} 1200w`}
+          sizes="(max-width: 640px) 400px, (max-width: 1024px) 800px, 1200px"
+          alt=""
+          className="w-full h-full object-cover"
+        />
+      </div>
     </div>
   );
 }
@@ -1007,6 +1033,13 @@ export default function Landing() {
         @keyframes float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-6px); } }
         .snb-badge { background:linear-gradient(90deg,#b8860b,#ffd700,#daa520,#ffd700,#b8860b); background-size:200% auto; animation:shimmer 2.5s linear infinite; -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-weight:900; }
         .time-badge { animation:pulseGlow 2s ease-in-out infinite; }
+        /* PERF-02: stop all infinite decorative animations for users with reduced-motion preference */
+        @media (prefers-reduced-motion: reduce) {
+          .snb-badge { animation: none; }
+          .time-badge { animation: none; box-shadow: 0 0 14px rgba(255,215,0,0.2); }
+          [data-reveal], [data-stagger] > * { opacity: 1 !important; transform: none !important; transition: none !important; }
+          [data-stagger][data-visible=true] > * { transition-delay: 0s !important; }
+        }
       `}</style>
 
       {/* Floating side venue toggle */}

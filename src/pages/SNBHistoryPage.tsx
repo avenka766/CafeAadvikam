@@ -5,6 +5,7 @@ import { useBranchStore } from '@/branch/branchStore';
 import { useOrderStore } from '@/stores/orderStore';
 import { cn } from '@/lib/utils';
 import { History, ShoppingBag } from 'lucide-react';
+import EmptyState from '@/components/ui/EmptyState';
 
 export default function SNBHistoryPage() {
   const { sales, fetchBranchData } = useBranchStore();
@@ -54,7 +55,7 @@ export default function SNBHistoryPage() {
 
       <div className="px-4">
         {snbSales.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No SNB sales found.</p>
+          <EmptyState icon="🛒" message="No SNB sales found" sub="Sales will appear here once items are billed." />
         ) : (
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="divide-y">

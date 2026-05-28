@@ -5,6 +5,8 @@ import { formatTime, cn } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
 import type { OrderStatus, Order } from '@/types';
 import {
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
+import EmptyState from '@/components/ui/EmptyState';
   Wifi, Inbox, Clock, MapPin, User as UserIcon,
   ChefHat, Bell, CheckCircle2, QrCode, UserCheck,
   Volume2, VolumeX, Printer, Trash2, Plus, Loader2,
@@ -160,19 +162,9 @@ function WasteTab() {
 
       {/* Log list */}
       {loading ? (
-        <div className="flex justify-center py-10">
-          <Loader2 className="size-5 animate-spin" style={{ color: 'rgba(255,255,255,0.3)' }} />
-        </div>
+        <LoadingSkeleton variant="list" count={3} className="mx-4" />
       ) : entries.length === 0 ? (
-        <div className="flex flex-col items-center py-16 gap-3">
-          <div className="size-16 rounded-2xl flex items-center justify-center"
-            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
-            <Trash2 className="size-8" style={{ color: 'rgba(255,255,255,0.15)' }} />
-          </div>
-          <p className="text-sm font-body font-semibold" style={{ color: 'rgba(255,255,255,0.3)' }}>
-            No wastage logged today
-          </p>
-        </div>
+        <EmptyState icon="🗑️" message="No wastage logged today" className="text-white/40" />
       ) : (
         <div className="space-y-2">
           <p className="text-[10px] font-body font-bold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.3)' }}>

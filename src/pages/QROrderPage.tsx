@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { OrderType } from '@/types';
 import { TABLE_NUMBERS } from '@/constants/config';
+import EmptyState from '@/components/ui/EmptyState';
 
 export default function QROrderPage() {
   const [searchParams] = useSearchParams();
@@ -212,11 +213,7 @@ export default function QROrderPage() {
       ) : (
         <div className="px-4 py-4">
           {filteredItems.length === 0 ? (
-            <div className="text-center py-16">
-              <p className="text-3xl mb-3">🍽️</p>
-              <p className="font-body text-muted-foreground">No items found</p>
-              <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-2 text-sm font-body text-primary font-semibold">Clear filters</button>
-            </div>
+            <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {filteredItems.map(item => {

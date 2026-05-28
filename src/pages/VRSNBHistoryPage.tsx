@@ -6,6 +6,7 @@ import { useBranchStore } from '@/branch/branchStore';
 import { cn, formatCurrency } from '@/lib/utils';
 import { History, IndianRupee, ShoppingBag } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
+import EmptyState from '@/components/ui/EmptyState';
 
 export default function VRSNBHistoryPage() {
   const { orders, startPolling, stopPolling } = useOrderStore();
@@ -89,14 +90,14 @@ export default function VRSNBHistoryPage() {
       <div className="px-4 space-y-3">
         {mode === 'cafe' && (
           cafeFiltered.length === 0 ? (
-            <p className="text-center text-sm text-muted-foreground py-8">No orders found.</p>
+            <EmptyState icon="🕐" message="No orders found" sub="Orders will appear here once placed." />
           ) : (
             cafeFiltered.map(order => <OrderCard key={order.id} order={order} />)
           )
         )}
         {mode === 'vrsnb' && (
           vrsnbSales.length === 0 ? (
-            <p className="text-center text-sm text-muted-foreground py-8">No VRSNB sales found.</p>
+            <EmptyState icon="🛒" message="No VRSNB sales found" sub="Sales will appear here once items are billed." />
           ) : (
             <div className="bg-card border border-border rounded-xl overflow-hidden">
               <div className="divide-y">

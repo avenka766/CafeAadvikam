@@ -1287,7 +1287,7 @@ export default function HosurDashboard() {
   ];
 
   return (
-    <div className="bg-background pt-14">
+    <div className="bg-background pt-14 pb-24">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b bg-emerald-50">
         <div className="flex items-center justify-between">

@@ -1,5 +1,6 @@
 // src/pages/AdminSNBDashboard.tsx
 // Admin Dashboard 2 – SNB Admin: SNB branch only
+import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
@@ -164,7 +165,7 @@ function SNBBakerySalesTab() {
       </div>
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No sales found.</p>
+          <EmptyState icon="📊" message="No sales found" sub="Sales will appear here once items are billed." />
         ) : (
           <div className="divide-y">
             {filtered.slice(0, 50).map(s => {

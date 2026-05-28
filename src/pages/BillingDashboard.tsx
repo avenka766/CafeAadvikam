@@ -17,6 +17,7 @@ import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
+import EmptyState from '@/components/ui/EmptyState';
 
 const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
   { key: 'all',        label: 'All',        dotColor: 'bg-foreground' },
@@ -488,10 +489,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-3">
               {filteredItems.length === 0 ? (
-                <div className="text-center py-12 space-y-2">
-                  <p className="font-body text-muted-foreground text-sm">No items found</p>
-                  <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="text-sm font-body font-semibold text-primary active:opacity-70">Clear filters</button>
-                </div>
+                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {filteredItems.map(item => (
@@ -952,10 +950,7 @@ function NewBillPanel() {
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-3">
               {filteredItems.length === 0 ? (
-                <div className="text-center py-12 space-y-2">
-                  <p className="font-body text-muted-foreground text-sm">No items found</p>
-                  <button onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="text-sm font-body font-semibold text-primary active:opacity-70">Clear filters</button>
-                </div>
+                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {filteredItems.map(item => (
@@ -1317,7 +1312,7 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh' }}>
+    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: 'var(--header-h, 3.5rem)', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (

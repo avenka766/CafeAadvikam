@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useScrollLock } from '@/hooks/useScrollLock';
 import {
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
+import EmptyState from '@/components/ui/EmptyState';
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell, ResponsiveContainer, RadialBarChart, RadialBar,
 } from 'recharts';
@@ -1824,7 +1826,7 @@ export default function AttendanceSalary() {
             <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Meals ₹10 each. Max 4 week offs/month.</p>
           </div>
           {filtered.length === 0
-            ? <p className="text-center py-10 font-body text-sm text-muted-foreground">No employees found</p>
+            ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
             : filtered.map(e => (
               <AttRow key={e.id} emp={e} att={att} onUpdate={updateAtt} expanded={expandedId === e.id} onToggle={() => setExpandedId(prev => prev === e.id ? null : e.id)} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} />
             ))
@@ -1852,7 +1854,7 @@ export default function AttendanceSalary() {
           {filtered.map(e => (
             <SalaryCard key={e.id} emp={e} att={att} decision={getDecision(e.id)} onDecisionChange={updateDecision} daysInMonth={activeMonth.daysInMonth} onAdvanceCleared={handleAdvanceCleared} />
           ))}
-          {filtered.length === 0 && <p className="text-center py-10 font-body text-sm text-muted-foreground">No employees found</p>}
+          {filtered.length === 0 && <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />}
         </div>
       )}
 

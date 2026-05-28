@@ -5,7 +5,10 @@ import { getRoleDefaultPath } from '@/lib/routing';
 import { Eye, EyeOff, Loader2, AlertCircle, Lock, User } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
-const HERO = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=85';
+const HERO     = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=85';
+// PERF-04: smaller variants so mobile doesn't download the full 1200px image
+const HERO_400 = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=400&q=75&fm=webp';
+const HERO_800 = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=800&q=80&fm=webp';
 
 export default function Login() {
   const { login, currentUser } = useAuthStore();
@@ -80,7 +83,13 @@ export default function Login() {
 
       {/* ── Full-screen hero background ── */}
       <div className="absolute inset-0">
-        <img src={HERO} alt="" className="w-full h-full object-cover" />
+        <img
+          src={HERO}
+          srcSet={`${HERO_400} 400w, ${HERO_800} 800w, ${HERO} 1200w`}
+          sizes="(max-width: 640px) 400px, (max-width: 1024px) 800px, 1200px"
+          alt=""
+          className="w-full h-full object-cover"
+        />
         <div className="absolute inset-0" style={{
           background: 'linear-gradient(160deg, rgba(6,20,14,0.85) 0%, rgba(20,10,4,0.78) 50%, rgba(6,20,14,0.92) 100%)'
         }} />

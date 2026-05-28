@@ -6,6 +6,7 @@ import { formatCurrency } from '@/lib/utils';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import OrderCart from '@/components/features/OrderCart';
+import EmptyState from '@/components/ui/EmptyState';
 
 export default function OrderPad() {
   const { items, loadMenu } = useMenuStore();
@@ -71,18 +72,13 @@ export default function OrderPad() {
       {/* ── Menu grid ── */}
       <div className="px-4 py-4">
         {filteredItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
-              <span className="text-3xl">🍽️</span>
-            </div>
-            <p className="font-body text-muted-foreground text-sm">No items found</p>
-            <button
-              onClick={() => { setSearch(''); setSelectedCategory('all'); }}
-              className="text-sm font-body font-semibold text-primary active:opacity-70"
-            >
-              Clear filters
-            </button>
-          </div>
+          <EmptyState
+            icon="🍽️"
+            message="No items found"
+            sub="Try a different category or clear your search"
+            cta="Clear filters"
+            onCta={() => { setSearch(''); setSelectedCategory('all'); }}
+          />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {filteredItems.map((item) => (

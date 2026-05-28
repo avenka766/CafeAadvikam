@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { cn, formatCurrency } from '@/lib/utils';
 import { History, CalendarDays, IndianRupee, ChevronDown } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
+import EmptyState from '@/components/ui/EmptyState';
 
 // U-09 FIX: number of orders per page to prevent loading thousands of rows into one scroll
 const PAGE_SIZE = 20;
@@ -138,17 +139,11 @@ export default function OrderHistory() {
       {/* ── List ── */}
       <div className="px-4 py-4 space-y-3">
         {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-4">
-            <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
-              <History className="size-10 text-muted-foreground/30" />
-            </div>
-            <div className="text-center">
-              <p className="font-body font-semibold text-foreground">No orders found</p>
-              <p className="text-sm font-body text-muted-foreground mt-1">
-                {dateSearch ? `No orders on ${dateSearch}` : 'Orders will appear here after they are placed.'}
-              </p>
-            </div>
-          </div>
+          <EmptyState
+            icon="🕐"
+            message="No orders found"
+            sub={dateSearch ? `No orders on ${dateSearch}` : 'Orders will appear here after they are placed.'}
+          />
         ) : (
           <>
             <p className="text-xs font-body text-muted-foreground">
