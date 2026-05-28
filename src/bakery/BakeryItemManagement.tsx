@@ -74,6 +74,7 @@ function ItemRow({
             item.enabled ? 'text-emerald-600 hover:bg-emerald-50' : 'text-muted-foreground hover:bg-muted',
           )}
           title={item.enabled ? 'Disable item' : 'Enable item'}
+          aria-label={item.enabled ? `Disable ${item.name}` : `Enable ${item.name}`}
         >
           {item.enabled ? <ToggleRight className="size-5" /> : <ToggleLeft className="size-5" />}
         </button>
@@ -81,6 +82,7 @@ function ItemRow({
           onClick={() => onEdit(item)}
           className="size-8 rounded-lg flex items-center justify-center text-blue-600 hover:bg-blue-50 transition-colors active:scale-95"
           title="Edit item"
+          aria-label={`Edit ${item.name}`}
         >
           <Pencil className="size-4" />
         </button>
@@ -88,6 +90,7 @@ function ItemRow({
           onClick={() => onDelete(item)}
           className="size-8 rounded-lg flex items-center justify-center text-destructive hover:bg-destructive/10 transition-colors active:scale-95"
           title="Delete item"
+          aria-label={`Delete ${item.name}`}
         >
           <Trash2 className="size-4" />
         </button>
@@ -140,7 +143,7 @@ function EditSheet({
       <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-display font-bold text-foreground">Edit Item</h3>
-          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center"><X className="size-4" /></button>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center" aria-label="Close"><X className="size-4" /></button>
         </div>
         <div className="space-y-3">
           <div>
@@ -226,7 +229,7 @@ function AddItemSheet({ onClose }: { onClose: () => void }) {
       <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-display font-bold text-foreground">Add New Item</h3>
-          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center"><X className="size-4" /></button>
+          <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center" aria-label="Close"><X className="size-4" /></button>
         </div>
         <div className="space-y-3">
           <div>

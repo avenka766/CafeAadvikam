@@ -5,6 +5,7 @@ import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import type { PreparedItem } from './types';
 import { cn } from '@/lib/utils';
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 
 // ─── Active baking card ───────────────────────────────────────────────────────
 function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
@@ -259,10 +260,7 @@ export default function BakerDashboard() {
       </div>
 
       {initialLoading ? (
-        <div className="flex flex-col items-center justify-center py-24 gap-3">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
-          <p className="text-xs font-body text-muted-foreground">Loading orders…</p>
-        </div>
+        <LoadingSkeleton variant="card" count={3} className="mx-4" />
       ) : (
         <div className="px-4 space-y-4">
           {bakingOrders.length > 0 && (

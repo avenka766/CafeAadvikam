@@ -171,6 +171,16 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushLowStock: async (items) => {
+    // L-04: deduplicate — don't fire if a low_stock alert already exists in the last 6 hours
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+    const { data: existing } = await supabase
+      .from('admin_notifications')
+      .select('id')
+      .eq('type', 'low_stock')
+      .gte('created_at', sixHoursAgo)
+      .limit(1);
+    if (existing && existing.length > 0) return; // already alerted recently, skip
+
     const lines = items
       .map(i => `${i.name}: ${i.quantity.toFixed(2)} ${i.unit} (min ${i.minThreshold} ${i.unit})`)
       .join('; ');

@@ -352,7 +352,7 @@ export default function StoreCustomTab() {
         <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 flex items-center gap-3">
           <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
           <p className="text-sm font-body text-emerald-800 flex-1">{success}</p>
-          <button onClick={() => setSuccess('')}><X className="size-3.5 text-emerald-600" /></button>
+          <button onClick={() => setSuccess('')} aria-label="Dismiss"><X className="size-3.5 text-emerald-600" /></button>
         </div>
       )}
 

@@ -11,6 +11,7 @@ import { useBakeryItemsStore } from './bakeryItemsStore';
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
 import type { RecipeDefinition } from './recipeDefinitions';
 import { cn } from '@/lib/utils';
+import EmptyState from '@/components/ui/EmptyState';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Material { material: string; qty: number; unit: string }
@@ -67,6 +68,7 @@ function MatRow({
         {['kg','g','L','ml','nos','pcs'].map(u => <option key={u} value={u}>{u}</option>)}
       </select>
       <button onClick={() => onRemove(idx)} disabled={isLast}
+        aria-label="Remove ingredient"
         className="size-8 flex items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 disabled:opacity-20 transition-colors">
         <Trash2 className="size-3.5" />
       </button>
@@ -467,7 +469,7 @@ export default function RecipeManagement() {
           {filteredItems.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
               <ChefHat className="size-10 opacity-20 mx-auto mb-2" />
-              <p className="text-sm font-body">No items found</p>
+              <EmptyState icon="📋" message="No items found" />
             </div>
           )}
         </div>

@@ -298,6 +298,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
               <button
                 onClick={() => handleSearchChange('')}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                aria-label="Clear search"
               >
                 <X className="size-3.5" />
               </button>

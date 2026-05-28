@@ -5,6 +5,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Loader2, Calendar, Download, ArrowDown, ArrowUp, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import EmptyState from '@/components/ui/EmptyState';
 
 interface OrderRow {
   orderNumber: number;
@@ -173,7 +174,7 @@ export default function DayEndReport() {
       ) : branchSummaries.length === 0 ? (
         <div className="flex flex-col items-center py-16 text-center">
           <Calendar className="size-10 text-muted-foreground/20 mb-3" />
-          <p className="text-sm font-body text-muted-foreground">No orders found for {date}.</p>
+          <EmptyState icon="📋" message={`No orders found for ${date}`} sub="Try a different date" />
         </div>
       ) : (
         branchSummaries.map(bs => (

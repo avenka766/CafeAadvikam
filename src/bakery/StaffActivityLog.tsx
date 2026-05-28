@@ -97,6 +97,7 @@ export default function StaffActivityLog() {
         <button
           onClick={() => load()}
           disabled={loading}
+          aria-label="Refresh activity log"
           className="size-9 flex items-center justify-center rounded-xl border border-border active:scale-90"
         >
           <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
