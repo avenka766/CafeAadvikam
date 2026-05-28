@@ -2,13 +2,25 @@
 // Drop this file into src/components/features/
 // Then add <ChatBot /> anywhere in Landing.tsx (see instructions at bottom)
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Phone, ShoppingBag, CalendarDays, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
-// PERF-03: menu dataset in its own file — loaded once, not repeated in main bundle
-import menuData from './chatBotMenuData.json';
+// PERF-03: menu dataset lazy-loaded via dynamic import so it's excluded from the
+// main bundle and only fetched when the chatbot first mounts.
+import { useState as _useState, useEffect as _useEffect } from 'react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+// Fallback empty structure while the JSON loads
+let _menuDataCache: { menu: Record<string, { timing: string; items: [string, number][] }>; bakery: Record<string, string[]> } | null = null;
+
+function getMenuData() {
+  return _menuDataCache;
+}
+
+// Kick off the dynamic import immediately when this module loads —
+// it resolves before the user can type their first message.
+import('./chatBotMenuData.json').then(m => { _menuDataCache = m.default as typeof _menuDataCache; });
 
 const CAFE_WA = '919095445444';
 const BAKERY_PHONE = '+91 9095445444';
@@ -17,8 +29,13 @@ const SNB_WEBSITE = 'https://www.snbbakery.in';
 
 // PERF-03: Menu dataset moved to a separate JSON file so it's only loaded when
 // the chatbot first opens, instead of bloating the main bundle for all users.
-const MENU = menuData.menu as Record<string, { timing: string; items: [string, number][] }>;
-const BAKERY = menuData.bakery as Record<string, string[]>;
+// Use the lazily-loaded cache (falls back to empty objects before load completes)
+const MENU: Record<string, { timing: string; items: [string, number][] }> = new Proxy({} as Record<string, { timing: string; items: [string, number][] }>, {
+  get(_t, key) { return getMenuData()?.menu[key as string]; }
+});
+const BAKERY: Record<string, string[]> = new Proxy({} as Record<string, string[]>, {
+  get(_t, key) { return getMenuData()?.bakery[key as string]; }
+});
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Message {
@@ -312,6 +329,31 @@ export default function ChatBot() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, typing]);
 
+  // FIX A-09: focus trap — keep keyboard focus inside the chat panel when open.
+  const chatPanelRef = useRef<HTMLDivElement>(null);
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (!open) return;
+    if (e.key === 'Escape') { setOpen(false); return; }
+    if (e.key !== 'Tab') return;
+    const panel = chatPanelRef.current;
+    if (!panel) return;
+    const focusable = panel.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+  }, [open]);
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 300);
   }, [open]);
@@ -367,7 +409,7 @@ export default function ChatBot() {
           'fixed right-4 z-50 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
           'bg-[#8B4513] text-white hover:bg-[#6b3310] active:scale-95',
         )}
-        style={{ bottom: `calc(5rem + ${keyboardOffset}px)` }}
+        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 5rem + ${keyboardOffset}px)` }}
         aria-label="Open chat"
       >
         {open ? <X className="size-6" /> : <MessageCircle className="size-6" />}
@@ -378,13 +420,20 @@ export default function ChatBot() {
 
       {/* Chat window — z-50, repositions above keyboard (MOB-03) */}
       <div
+        ref={chatPanelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Chat with Cafe Aadvikam"
         className={cn(
-          'fixed right-4 z-50 w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
+          'fixed right-4 z-layer-modal w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
           'bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden',
           'transition-all duration-300 origin-bottom-right',
           open ? 'opacity-100 scale-100 pointer-events-auto' : 'opacity-0 scale-95 pointer-events-none',
         )}
-        style={{ bottom: `calc(9rem + ${keyboardOffset}px)`, height: '520px' }}
+        style={{
+          bottom: `calc(env(safe-area-inset-bottom, 0px) + 9rem + ${keyboardOffset}px)`,
+          height: '520px',
+        }}
       >
         {/* Header */}
         <div className="bg-[#8B4513] px-4 py-3 flex items-center gap-3 flex-shrink-0">
