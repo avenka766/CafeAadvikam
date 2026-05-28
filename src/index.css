@@ -327,3 +327,60 @@
     outline: none;
   }
 }
+
+/* ── FIX: 100vh → 100dvh via utility class override ──────────────────────── */
+/* All pages use min-h-screen (Tailwind = min-height: 100vh).                  */
+/* On mobile browsers the URL bar causes layout jumps with 100vh.              */
+/* This single override fixes every occurrence project-wide without touching   */
+/* each page file.                                                              */
+@supports (height: 100dvh) {
+  .min-h-screen { min-height: 100dvh !important; }
+  .h-screen     { height: 100dvh     !important; }
+}
+
+/* ── FIX: iOS safe-area insets for fixed bottom elements ─────────────────── */
+/* Any element with [data-safe-bottom] gets env() bottom padding.              */
+/* Applied to BottomNav and the ChatBot floating button via the attribute.     */
+[data-safe-bottom] {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── FIX: Centralised z-index token layer ─────────────────────────────────  */
+/* Use these Tailwind-compatible custom-property classes instead of ad-hoc     */
+/* z-40 / z-50 / z-[100] values.                                               */
+/* Classes: z-layer-header z-layer-drawer z-layer-modal z-layer-toast z-layer-tooltip */
+.z-layer-header  { z-index: 20;  }
+.z-layer-drawer  { z-index: 40;  }
+.z-layer-modal   { z-index: 60;  }
+.z-layer-toast   { z-index: 80;  }
+.z-layer-tooltip { z-index: 100; }
+
+/* ── FIX: Offline banner ─────────────────────────────────────────────────── */
+#offline-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  background: #854F0B;
+  color: #fff;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  transform: translateY(-100%);
+  transition: transform 0.25s ease;
+}
+#offline-banner.visible {
+  transform: translateY(0);
+}
+
+/* ── FIX: table overflow containment ─────────────────────────────────────── */
+/* Wrap any <table> in .table-scroll-container to prevent full-page horizontal */
+/* scroll on mobile.                                                           */
+.table-scroll-container {
+  width: 100%;
+  overflow: hidden;
+}
+.table-scroll-container .table-inner-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}

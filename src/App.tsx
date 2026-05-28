@@ -6,6 +6,7 @@ import Header from '@/components/layout/Header';
 import BottomNav from '@/components/layout/BottomNav';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import ErrorBoundary from '@/components/layout/ErrorBoundary';
+import OfflineBanner from '@/components/layout/OfflineBanner';
 import { getRoleDefaultPath } from '@/lib/routing';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
@@ -133,6 +134,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <ErrorBoundary>
+      <OfflineBanner />
       <BrowserRouter>
         <AppRoutes />
       </BrowserRouter>
