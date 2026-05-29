@@ -36,9 +36,11 @@ export default function Header() {
   const isTracking = location.pathname === '/order/track';
   if (isQROrder || isTracking) return null;
 
-  // N-12: venue-aware brand name — also detect bakery routes by path prefix
-  const isBakeryRoute = location.pathname.startsWith('/bakery') || location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/admin-vrsnb');
-  const headerName = (activeVenue === 'bakery' || isBakeryRoute) ? 'SNB Bakery' : CAFE_CONFIG.name;
+  // N-12: venue-aware brand name — differentiate VRSNB vs SNB routes
+  const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');
+  const isSnbRoute = location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/branch/snb') || location.pathname.startsWith('/bakery');
+  const isBakeryRoute = isVrsnbRoute || isSnbRoute;
+  const headerName = isVrsnbRoute ? 'VRSNB' : (activeVenue === 'bakery' || isSnbRoute) ? 'SNB Bakery' : CAFE_CONFIG.name;
 
   /* ── Public header ── */
   if (isPublic) {
@@ -74,7 +76,7 @@ export default function Header() {
           <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/20" />
           <div className="leading-none">
             <p className="font-display text-base font-semibold text-white/95">{headerName}</p>
-            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">Staff Portal</p>
+            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">{isVrsnbRoute ? 'VRSNB Admin Portal' : 'Staff Portal'}</p>
           </div>
         </div>
 
