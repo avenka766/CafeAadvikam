@@ -220,8 +220,19 @@ function CreateInvoiceModal({
   const [lines, setLines]             = useState<InvoiceLineItem[]>([
     { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 },
   ]);
+  // Track which line indexes have had their supplier hint dismissed
+  const [dismissedHints, setDismissedHints] = useState<Set<number>>(new Set());
   const [saving, setSaving]   = useState(false);
   const [error, setError]     = useState('');
+
+  const dismissHint = (idx: number) =>
+    setDismissedHints(prev => new Set([...prev, idx]));
+
+  // Reset dismissed state when item name changes (so hint reappears for new item)
+  const handleItemNameChange = (idx: number, val: string) => {
+    updateLine(idx, 'itemName', val);
+    setDismissedHints(prev => { const next = new Set(prev); next.delete(idx); return next; });
+  };
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
 
@@ -237,12 +248,15 @@ function CreateInvoiceModal({
     });
   };
 
-  const addLine = () => setLines(prev => [
-    ...prev,
-    { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 },
-  ]);
+  const addLine = () => {
+    setLines(prev => [...prev, { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 }]);
+    setDismissedHints(new Set()); // reset so new line shows hint fresh
+  };
 
-  const removeLine = (idx: number) => setLines(prev => prev.filter((_, i) => i !== idx));
+  const removeLine = (idx: number) => {
+    setLines(prev => prev.filter((_, i) => i !== idx));
+    setDismissedHints(new Set()); // reindex hints
+  };
 
   const grandTotal = lines.reduce((s, l) => s + l.totalPrice, 0);
 
@@ -360,7 +374,11 @@ function CreateInvoiceModal({
                   <div className="flex-1 relative">
                     <input
                       value={li.itemName}
-                      onChange={e => updateLine(idx, 'itemName', e.target.value)}
+                      onChange={e => handleItemNameChange(idx, e.target.value)}
+                      onBlur={() => {
+                        // Small delay so tap-to-select fires before blur hides the dropdown
+                        setTimeout(() => dismissHint(idx), 150);
+                      }}
                       placeholder="Item name…"
                       list={`suggestions-${idx}`}
                       className="w-full h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -368,18 +386,27 @@ function CreateInvoiceModal({
                     <datalist id={`suggestions-${idx}`}>
                       {searchItems(li.itemName).map(s => <option key={s.item} value={s.item} />)}
                     </datalist>
-                    {li.itemName.trim().length > 2 && (() => {
+                    {li.itemName.trim().length > 2 && !dismissedHints.has(idx) && (() => {
                       const itemSuppliers = getSuppliersForItem(li.itemName);
                       return itemSuppliers.length > 0 ? (
                         <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-background border border-primary/30 rounded-xl shadow-lg overflow-hidden">
-                          <p className="text-[9px] font-body font-bold text-primary uppercase px-2.5 pt-2 pb-1">Known suppliers for this item</p>
+                          <div className="flex items-center justify-between px-2.5 pt-2 pb-1">
+                            <p className="text-[9px] font-body font-bold text-primary uppercase">Known suppliers for this item</p>
+                            <button
+                              type="button"
+                              onMouseDown={e => { e.preventDefault(); dismissHint(idx); }}
+                              className="text-[9px] text-muted-foreground hover:text-foreground px-1"
+                            >✕</button>
+                          </div>
                           {itemSuppliers.map(s => (
                             <button
                               key={s}
                               type="button"
-                              onClick={() => {
+                              onMouseDown={e => {
+                                e.preventDefault(); // prevent blur firing first
                                 const match = suppliers.find(sup => sup.businessName.toLowerCase() === s.toLowerCase());
                                 if (match) setSupplierId(match.id);
+                                dismissHint(idx);
                               }}
                               className="w-full px-2.5 py-1.5 text-xs font-body text-foreground flex items-center gap-2 border-t border-border/40 hover:bg-muted text-left"
                             >
