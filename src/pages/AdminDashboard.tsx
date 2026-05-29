@@ -7,7 +7,7 @@ import {
   TrendingUp, ShoppingBag, IndianRupee, Clock,
   Package, XCircle, RefreshCw, Wifi, Download,
   LayoutDashboard, Store, Filter, FileText, Bell,
-  ClipboardList, Calendar,
+  ClipboardList, Calendar, Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -20,6 +20,7 @@ import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import StaffActivityLog from '@/bakery/StaffActivityLog';
 import DayEndReport from '@/bakery/DayEndReport';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
+import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
 
 const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -230,22 +231,23 @@ function CafeDashboardTab() {
 
 // ─── CAFE VIEW (Dashboard / Sales / Reports sub-tabs) ────────────────────────
 function CafeView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports' | 'waste'>('dashboard');
 
   const tabs = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'reports'   as const, label: 'Reports',   icon: FileText },
+    { id: 'waste'     as const, label: 'Waste Log', icon: Trash2 },
   ];
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1">
+      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
         {tabs.map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition',
+              'shrink-0 whitespace-nowrap flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition',
               tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
             )}
           >
@@ -256,6 +258,7 @@ function CafeView() {
       </div>
       {tab === 'dashboard' && <CafeDashboardTab />}
       {tab === 'reports'   && <CafeReportsTab />}
+      {tab === 'waste'     && <KitchenWasteLogTab />}
     </div>
   );
 }

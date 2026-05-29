@@ -2,6 +2,7 @@
 // Admin Dashboard 1 – VRSNB Admin: Cafe + VRSNB branch only
 import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
+import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
@@ -11,6 +12,7 @@ import { cn } from '@/lib/utils';
 import {
   IndianRupee, ShoppingBag, TrendingUp, Clock,
   RefreshCw, Wifi, Download, Filter,
+  LayoutDashboard, FileText, Trash2,
 } from 'lucide-react';
 
 function KPI({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
@@ -495,22 +497,37 @@ function VRSNBBakeryReportsTab() {
 
 // ── Cafe Sub-View ─────────────────────────────────────────────────────────────
 function CafeView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports' | 'waste'>('dashboard');
+
+  const tabs = [
+    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
+    { id: 'waste'     as const, label: 'Waste Log', icon: Trash2 },
+  ];
+
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 p-1 rounded-xl bg-muted">
-        {([{ id: 'dashboard', label: 'Dashboard' }, { id: 'reports', label: 'Reports' }] as const).map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={cn('flex-1 py-2 rounded-lg text-sm font-semibold transition-all', tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground')}>
+      <div className="flex gap-1 p-1 rounded-xl bg-muted overflow-x-auto">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'shrink-0 whitespace-nowrap flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all',
+              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
+            )}
+          >
+            <t.icon className="size-3" />
             {t.label}
           </button>
         ))}
       </div>
       {tab === 'dashboard' && <CafeDashboardTab />}
-      {tab === 'reports' && <CafeReportsTab />}
+      {tab === 'reports'   && <CafeReportsTab />}
+      {tab === 'waste'     && <KitchenWasteLogTab />}
     </div>
   );
 }
-
 // ── VRSNB Bakery Sub-View ────────────────────────────────────────────────────
 function VRSNBBakeryView() {
   const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
