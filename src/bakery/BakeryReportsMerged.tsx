@@ -5,6 +5,7 @@
 
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
+import type { CreditSale } from '@/branch/branchStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
@@ -195,7 +196,7 @@ function KPICard({ label, value, sub, color }: { label: string; value: string; s
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function BakeryReportsMerged({ branch }: Props) {
-  const { sales, fetchBranchData } = useBranchStore();
+  const { sales, creditSales, fetchBranchData, fetchCreditSales } = useBranchStore();
 
   const [quickRange, setQuickRange] = useState<QuickRange>('today');
   const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0]);
@@ -205,9 +206,13 @@ export default function BakeryReportsMerged({ branch }: Props) {
 
   // Fetch branch data on mount
   useEffect(() => {
-    if (branch === 'all') BRANCHES.forEach(b => fetchBranchData(b));
-    else fetchBranchData(branch as Branch);
-  }, [fetchBranchData, branch]);
+    if (branch === 'all') {
+      BRANCHES.forEach(b => { fetchBranchData(b); fetchCreditSales(b); });
+    } else {
+      fetchBranchData(branch as Branch);
+      fetchCreditSales(branch as Branch);
+    }
+  }, [fetchBranchData, fetchCreditSales, branch]);
 
   // BUG #23 FIX: reset filterBranch when branch prop changes to avoid stale filter state.
   // If user viewed 'all' branches (with filterBranch=VRSNB set), then switched to a
@@ -244,6 +249,33 @@ export default function BakeryReportsMerged({ branch }: Props) {
     return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
   }, [sales, branch]);
 
+  // ── All credit sales for this branch scope ──────────────────────────────
+  const allCreditSales = useMemo(() => {
+    const branches: Branch[] = branch === 'all' ? BRANCHES : [branch as Branch];
+    const result: CreditSale[] = [];
+    branches.forEach(b => {
+      (creditSales[b] || []).forEach(cs => result.push({ ...cs, branch: b }));
+    });
+    return result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [creditSales, branch]);
+
+  // ── Filtered credit sales ─────────────────────────────────────────────────
+  const filteredCredit = useMemo(() => {
+    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+    const to   = new Date(dateTo);   to.setHours(23, 59, 59, 999);
+    return allCreditSales.filter(cs => {
+      const t = new Date(cs.createdAt).getTime();
+      if (t < from.getTime() || t > to.getTime()) return false;
+      if (branch === 'all' && filterBranch !== 'all' && cs.branch !== filterBranch) return false;
+      return true;
+    });
+  }, [allCreditSales, dateFrom, dateTo, filterBranch, branch]);
+
+  // Credit KPIs
+  const totalCreditBilled      = filteredCredit.reduce((a, cs) => a + cs.subtotal, 0);
+  const totalCreditCollected   = filteredCredit.reduce((a, cs) => a + cs.amountPaid, 0);
+  const totalCreditOutstanding = filteredCredit.reduce((a, cs) => a + cs.creditAmount, 0);
+
   // ── Filtered sales ────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
@@ -251,6 +283,8 @@ export default function BakeryReportsMerged({ branch }: Props) {
     return allSales.filter(s => {
       const t = new Date(s.soldAt).getTime();
       if (t < from.getTime() || t > to.getTime()) return false;
+      // Exclude credit_collection rows — they are receipts, not sales (avoid double-count)
+      if ((s.paymentMethod ?? '') === 'credit_collection') return false;
       if (filterItem && s.itemName !== filterItem) return false;
       if (branch === 'all' && filterBranch !== 'all' && s.branch !== filterBranch) return false;
       return true;
@@ -261,6 +295,21 @@ export default function BakeryReportsMerged({ branch }: Props) {
   const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
   const totalQty     = filtered.reduce((a, s) => a + s.quantitySold, 0);
   const avgPerTx     = filtered.length > 0 ? Math.round(totalRevenue / filtered.length) : 0;
+
+  // Payment method breakdown — for cash/UPI/card/credit KPI split
+  const paymentBreakdown = useMemo(() => {
+    const breakdown: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0, other: 0 };
+    filtered.forEach(s => {
+      const pm = (s.paymentMethod ?? '').toLowerCase();
+      const rev = s.unitPrice * s.quantitySold;
+      if (pm === 'cash') breakdown.cash += rev;
+      else if (pm === 'upi') breakdown.upi += rev;
+      else if (pm === 'card') breakdown.card += rev;
+      else if (pm === 'credit') breakdown.credit += rev;
+      else if (pm !== 'credit_collection') breakdown.other += rev; // exclude collections
+    });
+    return breakdown;
+  }, [filtered]);
 
   const allItems = useMemo(() =>
     [...new Set(allSales.map(s => s.itemName))].sort(),
@@ -412,6 +461,26 @@ export default function BakeryReportsMerged({ branch }: Props) {
     if (branch === 'all') addSheet(wb, branchRows,                'Branch-wise',  'No data');
     addSheet(wb, dailyRows,                                       'Daily Trend',  'No data');
     addSheet(wb, txRows,                                          'Transactions', 'No transactions');
+    // Credit Sales sheet
+    const creditRows = filteredCredit.map((cs, i) => ({
+      'S.No':            i + 1,
+      'Bill No':         cs.billNo,
+      'Customer':        cs.customerName,
+      'Phone':           cs.customerPhone ?? '',
+      ...(branch === 'all' ? { Branch: cs.branch } : {}),
+      'Items':           cs.items.map(it => `${it.itemName} ×${it.quantity}`).join(', '),
+      'Bill Amount (₹)': cs.subtotal,
+      'Paid Now (₹)':    cs.amountPaid,
+      'Credit Due (₹)':  cs.creditAmount,
+      'Status':          cs.status.charAt(0).toUpperCase() + cs.status.slice(1),
+      'Due Date':        cs.dueDate ?? '',
+      'Billed On':       new Date(cs.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      'Settled On':      cs.settledAt ? new Date(cs.settledAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '',
+      'Billed By':       cs.soldBy,
+      'Notes':           cs.notes ?? '',
+    }));
+
+    addSheet(wb, creditRows, 'Credit Sales', 'No credit sales in this range');
     XLSX.writeFile(wb, `BakeryReport_${branchLabel}_${dateLabel}.xlsx`);
   };
 
@@ -439,6 +508,40 @@ export default function BakeryReportsMerged({ branch }: Props) {
           color="bg-card border-border"
         />
       </div>
+
+      {/* ── Payment Method Breakdown ── */}
+      {totalRevenue > 0 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-3">Revenue by Payment Method</p>
+          <div className="space-y-2">
+            {[
+              { label: '💵 Cash',   key: 'cash',   color: 'bg-emerald-500' },
+              { label: '📱 UPI',    key: 'upi',    color: 'bg-blue-500' },
+              { label: '💳 Card',   key: 'card',   color: 'bg-violet-500' },
+              { label: '📋 Credit', key: 'credit', color: 'bg-amber-500' },
+            ].map(pm => {
+              const amt = paymentBreakdown[pm.key] ?? 0;
+              const pct = totalRevenue > 0 ? Math.round((amt / totalRevenue) * 100) : 0;
+              return (
+                <div key={pm.key} className="flex items-center gap-3">
+                  <span className="text-xs font-body w-20 shrink-0">{pm.label}</span>
+                  <div className="flex-1 bg-muted rounded-full h-2">
+                    <div className={`h-full rounded-full ${pm.color}`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="text-xs font-bold tabular-nums w-24 text-right">{formatCurrency(amt)}</span>
+                  <span className="text-[10px] text-muted-foreground w-8 text-right">{pct}%</span>
+                </div>
+              );
+            })}
+          </div>
+          {totalCreditOutstanding > 0 && (
+            <div className="mt-3 pt-3 border-t border-border flex items-center justify-between">
+              <span className="text-xs text-amber-700 font-semibold">⚠ Credit Outstanding</span>
+              <span className="text-sm font-bold tabular-nums text-amber-700">{formatCurrency(totalCreditOutstanding)}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Quick range pills ── */}
       <div className="flex gap-1.5 overflow-x-auto pb-0.5">
