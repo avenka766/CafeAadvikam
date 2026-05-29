@@ -124,7 +124,7 @@ function AppRoutes() {
         <Route path="/admin-snb/items"     element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBItemsPage /></ProtectedRoute>} />
         <Route path="/admin-snb/history"   element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBHistoryPage /></ProtectedRoute>} />
         <Route path="/admin/invoices"      element={<ProtectedRoute allowedRoles={['admin']}><AdminInvoicesPage /></ProtectedRoute>} />
-        <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin']}><AdminAlertsPage /></ProtectedRoute>} />
+        <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb']}><AdminAlertsPage /></ProtectedRoute>} />
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
