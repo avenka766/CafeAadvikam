@@ -18,6 +18,7 @@ import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
 import type { SnbItem, SnbCategory } from '../snbItems';
 import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '../vrsnbItems';
 import type { VrsnbItem, VrsnbCategory } from '../vrsnbItems';
+import { useItemPriceStore } from '@/stores/itemPriceStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1019,8 +1020,20 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
   const [submitting, setSubmitting]     = useState(false);
   const [showSuccess, setShowSuccess]   = useState(false);
 
-  // Item source
-  const activeItems = branch === 'VRSNB' ? VRSNB_ITEMS : SNB_ITEMS;
+  // Item source — prices read from itemPriceStore (Supabase overrides) first
+  const { getPrice: getPriceOverride, getName: getNameOverride, fetchOverrides: fetchPriceOverrides } = useItemPriceStore();
+  const priceBranch = branch === 'VRSNB' ? 'VRSNB' : 'SNB';
+
+  useEffect(() => { fetchPriceOverrides(priceBranch); }, [priceBranch]);
+
+  const rawActiveItems = branch === 'VRSNB' ? VRSNB_ITEMS : SNB_ITEMS;
+  const activeItems = useMemo(() =>
+    rawActiveItems.map(i => ({
+      ...i,
+      name:  getNameOverride(priceBranch, i.barcode, i.name),
+      price: getPriceOverride(priceBranch, i.barcode, i.price),
+    })),
+  [rawActiveItems, priceBranch, getPriceOverride, getNameOverride]);
   const activeCategories = branch === 'VRSNB' ? VRSNB_CATEGORIES : SNB_CATEGORIES;
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -1572,8 +1585,20 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
 
   // ── Item source: price list (SNB/Hosur/VRSNB) or stock (Cafe) ─────────────
+  // Prices are read from itemPriceStore (Supabase overrides) with static list as fallback.
+  const { getPrice: getSnbPrice, getName: getSnbName, fetchOverrides: fetchSnbOverrides } = useItemPriceStore();
+  const snbPriceBranch = isVRSNB ? 'VRSNB' : 'SNB';
 
-  const activeItems = isVRSNB ? VRSNB_ITEMS : SNB_ITEMS;
+  useEffect(() => { fetchSnbOverrides(snbPriceBranch); }, [snbPriceBranch]);
+
+  const rawStaticItems = isVRSNB ? VRSNB_ITEMS : SNB_ITEMS;
+  const activeItems = useMemo(() =>
+    rawStaticItems.map(i => ({
+      ...i,
+      name:  getSnbName(snbPriceBranch, i.barcode, i.name),
+      price: getSnbPrice(snbPriceBranch, i.barcode, i.price),
+    })),
+  [rawStaticItems, snbPriceBranch, getSnbPrice, getSnbName]);
   const activeCategories = isVRSNB ? VRSNB_CATEGORIES : SNB_CATEGORIES;
 
   const snbFiltered = useMemo(() => {
