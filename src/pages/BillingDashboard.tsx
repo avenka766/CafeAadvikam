@@ -3,14 +3,17 @@ import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchStore } from '@/branch/branchStore';
+import type { CreditSale } from '@/branch/branchStore';
+import type { Branch } from '@/branch/types';
 import { cn, formatCurrency, formatTime } from '@/lib/utils';
 import {
   Inbox, Wifi, Plus, Minus, Search, X,
   ShoppingBag, MapPin, User as UserIcon, StickyNote,
-  ChevronDown, AlertCircle, Trash2, Receipt,
+  ChevronDown, ChevronRight, AlertCircle, Trash2, Receipt,
   QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
-  CreditCard, Banknote, Smartphone, Wallet,
-  Edit3, UtensilsCrossed, Printer, Calendar,
+  CreditCard, Banknote, Smartphone, Wallet, Loader2,
+  Edit3, UtensilsCrossed, Printer, Calendar, Building2, Bell,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
@@ -18,6 +21,254 @@ import MenuItemCard from '@/components/features/MenuItemCard';
 import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
+
+// ── Branch Credit Panel (Biller view — all branches) ─────────────────────────
+const ALL_BRANCHES: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
+
+const BRANCH_BADGE: Record<Branch, string> = {
+  VRSNB: 'bg-blue-100 text-blue-700 border-blue-200',
+  SNB:   'bg-amber-100 text-amber-700 border-amber-200',
+  Hosur: 'bg-teal-100 text-teal-700 border-teal-200',
+};
+
+// ── Notify VRSNB Admin + Admin whenever a new credit sale is recorded ─────────
+async function notifyCreditSale(params: {
+  customerName: string;
+  amount: number;
+  billNo: string;
+  branch: Branch;
+  soldBy: string;
+}) {
+  // Best-effort fire-and-forget — biller UI must never block on this
+  try {
+    const body = {
+      targetRoles: ['admin', 'vrsnb_admin'],   // server filters by role
+      type: 'credit_sale',
+      title: `💳 Credit Sale — ${params.branch}`,
+      message: `${params.customerName || 'Customer'} · ₹${params.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} · Bill #${params.billNo.split('-').pop()} · by ${params.soldBy}`,
+      meta: { branch: params.branch, billNo: params.billNo, amount: params.amount },
+    };
+    // Replace with your actual notification endpoint
+    await fetch('/api/notifications/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Silent — notification failure must never break billing
+  }
+}
+
+function BillerCreditTab() {
+  const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
+
+  useEffect(() => {
+    ALL_BRANCHES.forEach(b => fetchCreditSales(b));
+  }, [fetchCreditSales]);
+
+  const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
+  const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleAmts, setSettleAmts] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+
+  // Flatten all branch credit sales with branch tag
+  const allSales: (CreditSale & { branch: Branch })[] = useMemo(() =>
+    ALL_BRANCHES.flatMap(b =>
+      (allCreditSales?.[b] || []).map(cs => ({ ...cs, branch: b }))
+    ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [allCreditSales]
+  );
+
+  const filtered = useMemo(() => {
+    let result = allSales;
+    if (branchFilter !== 'all') result = result.filter(cs => cs.branch === branchFilter);
+    if (filter !== 'all') result = result.filter(cs => cs.status === filter);
+    return result;
+  }, [allSales, filter, branchFilter]);
+
+  const totalDue = useMemo(() =>
+    allSales.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
+    [allSales]
+  );
+
+  const pendingCount = allSales.filter(cs => cs.status !== 'settled').length;
+
+  const handleSettle = async (cs: CreditSale & { branch: Branch }) => {
+    const amt = parseFloat(settleAmts[cs.id] || '0');
+    if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
+    if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
+    setSettling(cs.id); setError('');
+    const err = await settleCreditSale(cs.branch, cs.id, amt);
+    setSettling(null);
+    if (err) setError(err);
+    else setSettleAmts(prev => { const n = { ...prev }; delete n[cs.id]; return n; });
+  };
+
+  const statusColors: Record<string, string> = {
+    pending: 'bg-red-100 text-red-700 border-red-200',
+    partial: 'bg-amber-100 text-amber-700 border-amber-200',
+    settled: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  };
+
+  return (
+    <div className="p-3 space-y-3 pb-8">
+      {/* Summary banner */}
+      <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
+        <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
+        <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
+          ₹{totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {pendingCount} open account{pendingCount !== 1 ? 's' : ''} · All Branches
+        </p>
+        {/* Per-branch outstanding summary */}
+        <div className="flex gap-2 mt-3 flex-wrap">
+          {ALL_BRANCHES.map(b => {
+            const due = (allCreditSales?.[b] || [])
+              .filter(cs => cs.status !== 'settled')
+              .reduce((s, c) => s + c.creditAmount, 0);
+            if (due <= 0) return null;
+            return (
+              <div key={b} className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-bold', BRANCH_BADGE[b])}>
+                <Building2 className="size-3" />{b}: ₹{due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 px-3 py-2 rounded-xl text-xs text-destructive">
+          <AlertCircle className="size-3 shrink-0" />{error}
+        </div>
+      )}
+
+      {/* Branch filter */}
+      <div className="flex gap-1.5 flex-wrap">
+        <button onClick={() => setBranchFilter('all')}
+          className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+            branchFilter === 'all' ? 'bg-foreground text-background border-transparent' : 'bg-card border-border text-muted-foreground')}>
+          All Branches
+        </button>
+        {ALL_BRANCHES.map(b => (
+          <button key={b} onClick={() => setBranchFilter(b)}
+            className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+              branchFilter === b ? `${BRANCH_BADGE[b]} border-transparent` : 'bg-card border-border text-muted-foreground')}>
+            {b}
+          </button>
+        ))}
+      </div>
+
+      {/* Status filter pills */}
+      <div className="flex gap-1.5 flex-wrap">
+        {(['all', 'pending', 'partial', 'settled'] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
+              filter === f ? 'bg-amber-500 text-white border-transparent' : 'bg-card border-border text-muted-foreground')}>
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+            {f !== 'all' && (
+              <span className="ml-1 opacity-70">
+                ({allSales.filter(cs => (branchFilter === 'all' || cs.branch === branchFilter) && cs.status === f).length})
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Credit sale cards */}
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+          <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
+            <Wallet className="size-8 opacity-25" />
+          </div>
+          <p className="text-sm font-body">No {filter !== 'all' ? filter : ''} credit sales</p>
+          <p className="text-xs font-body text-muted-foreground/70">
+            Credit sales recorded via branch billing will appear here
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(cs => (
+            <div key={cs.id} className="bg-card border-2 border-border rounded-2xl overflow-hidden">
+              {/* Card header */}
+              <div className="px-4 py-3 flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '—'}</span>
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
+                      {cs.status.toUpperCase()}
+                    </span>
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', BRANCH_BADGE[cs.branch])}>
+                      {cs.branch}
+                    </span>
+                  </div>
+                  {cs.customerPhone && <p className="text-xs text-muted-foreground mt-0.5">{cs.customerPhone}</p>}
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Bill #{cs.billNo.split('-').pop()} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} · {cs.soldBy}
+                  </p>
+                  {cs.dueDate && (
+                    <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
+                      Due: {new Date(cs.dueDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right ml-3 shrink-0">
+                  <p className="text-[10px] text-muted-foreground">Due</p>
+                  <p className="font-display font-bold text-lg text-red-600 tabular-nums">
+                    ₹{cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Expand/collapse */}
+              <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
+                <span>Total: ₹{cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} · Paid: ₹{cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+
+              {expanded === cs.id && (
+                <div className="px-4 py-3 border-t border-border/50 space-y-1.5">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
+                  {cs.items.map((item, i) => (
+                    <div key={i} className="flex justify-between text-xs">
+                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
+                      <span className="font-bold tabular-nums">₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  ))}
+                  {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
+                </div>
+              )}
+
+              {/* Collect payment */}
+              {cs.status !== 'settled' && (
+                <div className="px-4 py-3 border-t border-border bg-muted/10 space-y-2">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase">Collect Payment</p>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                      <input type="number" placeholder={`Max ₹${cs.creditAmount.toFixed(2)}`}
+                        value={settleAmts[cs.id] || ''}
+                        onChange={e => { setSettleAmts(prev => ({ ...prev, [cs.id]: e.target.value })); setError(''); }}
+                        className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
+                    </div>
+                    <button onClick={() => handleSettle(cs)} disabled={settling === cs.id || !settleAmts[cs.id]}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition">
+                      {settling === cs.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+                      {settling === cs.id ? '…' : 'Collect'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
   { key: 'all',        label: 'All',        dotColor: 'bg-foreground' },
@@ -848,6 +1099,13 @@ function NewBillPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
+  // Credit sale state
+  const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
+  const [creditCustomerName, setCreditCustomerName] = useState('');
+  const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
+  const [creditDueDate, setCreditDueDate] = useState('');
+  const [creditError, setCreditError] = useState('');
+
   // Custom items
   const [customItems, setCustomItems] = useState<CustomLineItem[]>([]);
   const [customName, setCustomName]   = useState('');
@@ -902,6 +1160,76 @@ function NewBillPanel() {
     if (!currentUser) return;
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
+
+    // ── Credit sale path ──────────────────────────────────────────────────────
+    if (paymentMode === 'credit') {
+      if (!creditCustomerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      setCreditError('');
+      setSubmitting(true);
+
+      // Inject custom items as synthetic menu items first
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 50));
+
+      try {
+        const { recordCreditSale } = useBranchStore.getState();
+        const branch = (currentUser.branch as Branch) ?? 'VRSNB';
+        const billNo = `CREDIT-${branch}-${Date.now()}`;
+        const allCartItems = [...(useOrderStore.getState().cart)];
+        const creditItems = allCartItems.map(c => ({
+          itemName: c.menuItem.name,
+          quantity: c.quantity,
+          sellUnit: 'pc' as const,
+          lineTotal: c.menuItem.price * c.quantity,
+        }));
+        // Add custom items that aren't yet in cart
+        customItems.forEach(ci => {
+          creditItems.push({ itemName: ci.name, quantity: ci.qty, sellUnit: 'pc' as const, lineTotal: ci.price * ci.qty });
+        });
+
+        const err = await recordCreditSale(branch, {
+          billNo,
+          customerName: creditCustomerName.trim(),
+          customerPhone: creditCustomerPhone.trim() || undefined,
+          items: creditItems,
+          subtotal: total,
+          amountPaid: 0,
+          creditAmount: total,
+          dueDate: creditDueDate || undefined,
+          soldBy: currentUser.displayName || currentUser.username,
+          notes: notes || undefined,
+        });
+
+        if (err) { setSubmitError(err); setSubmitting(false); return; }
+
+        // Notify VRSNB Admin + Admin
+        await notifyCreditSale({
+          customerName: creditCustomerName.trim(),
+          amount: total,
+          billNo,
+          branch,
+          soldBy: currentUser.displayName || currentUser.username,
+        });
+
+        clearCart();
+        setShowSuccess(true);
+        setNotes(''); setCustomerName(''); setTableNumber(null);
+        setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+        setCreditCustomerName(''); setCreditCustomerPhone(''); setCreditDueDate('');
+        setPaymentMode('regular');
+        setTimeout(() => setShowSuccess(false), 2200);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : 'Failed to record credit sale.');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // ── Regular order path ────────────────────────────────────────────────────
     setSubmitting(true);
 
     // Inject custom items as synthetic menu items
@@ -938,12 +1266,29 @@ function NewBillPanel() {
     return (
       <div className="flex flex-col items-center justify-center py-24 px-6 text-center gap-4">
         <div className="size-20 rounded-3xl flex items-center justify-center animate-scale-in"
-          style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))', border: '2px solid rgba(16,185,129,0.25)' }}>
-          <Receipt className="size-10 text-emerald-600" />
+          style={{
+            background: paymentMode === 'credit'
+              ? 'linear-gradient(135deg,rgba(220,38,38,0.12),rgba(220,38,38,0.06))'
+              : 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))',
+            border: paymentMode === 'credit'
+              ? '2px solid rgba(220,38,38,0.25)'
+              : '2px solid rgba(16,185,129,0.25)',
+          }}>
+          {paymentMode === 'credit'
+            ? <CreditCard className="size-10 text-red-600" />
+            : <Receipt className="size-10 text-emerald-600" />
+          }
         </div>
         <div>
-          <h2 className="font-display text-2xl font-bold text-foreground">Bill Created!</h2>
-          <p className="text-muted-foreground font-body mt-1 text-sm">Order has been added to the queue.</p>
+          <h2 className="font-display text-2xl font-bold text-foreground">
+            {paymentMode === 'credit' ? 'Credit Sale Recorded!' : 'Bill Created!'}
+          </h2>
+          <p className="text-muted-foreground font-body mt-1 text-sm">
+            {paymentMode === 'credit'
+              ? 'VRSNB Admin & Admin have been notified.'
+              : 'Order has been added to the queue.'
+            }
+          </p>
         </div>
       </div>
     );
@@ -1216,6 +1561,63 @@ function NewBillPanel() {
                 📦 Takeaway
               </button>
             </div>
+
+            {/* ── Payment Mode: Regular vs Credit ── */}
+            <div className="flex gap-2">
+              <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
+                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+                  paymentMode === 'regular' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
+                style={paymentMode === 'regular' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
+                <Banknote className="size-3.5" />Regular
+              </button>
+              <button onClick={() => { setPaymentMode('credit'); setCreditError(''); }}
+                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+                  paymentMode === 'credit' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
+                <CreditCard className="size-3.5" />Credit
+              </button>
+            </div>
+
+            {/* ── Credit sale form (shown only when Credit mode is active) ── */}
+            {paymentMode === 'credit' && (
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2.5">
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <CreditCard className="size-3.5 text-red-600" />
+                  <p className="text-xs font-body font-bold text-red-700 uppercase tracking-widest">Credit Sale Details</p>
+                </div>
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name *"
+                    value={creditCustomerName}
+                    onChange={e => { setCreditCustomerName(e.target.value); setCreditError(''); }}
+                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="tel" placeholder="Phone number (optional)"
+                    value={creditCustomerPhone}
+                    onChange={e => setCreditCustomerPhone(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-red-700 uppercase tracking-widest mb-1 block flex items-center gap-1">
+                    <Calendar className="size-3" />Due Date (optional)
+                  </label>
+                  <input type="date" value={creditDueDate}
+                    min={new Date().toISOString().split('T')[0]}
+                    onChange={e => setCreditDueDate(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
+                </div>
+                <div className="flex items-center gap-2 bg-red-100/60 rounded-xl px-3 py-2">
+                  <Bell className="size-3.5 text-red-600 shrink-0" />
+                  <p className="text-[10px] font-body text-red-700">VRSNB Admin &amp; Admin will be notified automatically.</p>
+                </div>
+                {creditError && (
+                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
+                    <AlertCircle className="size-3 shrink-0" />{creditError}
+                  </p>
+                )}
+              </div>
+            )}
             {orderType === 'dine_in' ? (
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -1286,9 +1688,22 @@ function NewBillPanel() {
               </div>
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
               <button onClick={handleSubmit} disabled={submitting}
-                className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all shadow-teal disabled:opacity-60 flex items-center justify-center gap-2 text-primary-foreground"
-                style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>
-                <Receipt className="size-4" />{submitting ? 'Creating…' : '🧾 Create Bill'}
+                className={cn(
+                  'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
+                  paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
+                )}
+                style={{
+                  background: paymentMode === 'credit'
+                    ? 'linear-gradient(135deg,#dc2626,#b91c1c)'
+                    : 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))',
+                  boxShadow: paymentMode === 'credit'
+                    ? '0 4px 16px rgba(220,38,38,0.35)'
+                    : undefined,
+                }}>
+                {paymentMode === 'credit'
+                  ? <><CreditCard className="size-4" />{submitting ? 'Recording…' : '💳 Record Credit Sale'}</>
+                  : <><Receipt className="size-4" />{submitting ? 'Creating…' : '🧾 Create Bill'}</>
+                }
               </button>
             </div>
           </div>
@@ -1311,12 +1726,14 @@ export default function BillingDashboard() {
       cart: s.cart,
     }))
   );
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance'>('pending');
+  const { currentUser } = useAuthStore();
+  const isBiller = currentUser?.role === 'biller' || currentUser?.role === 'admin' || currentUser?.role === 'vrsnb_admin';
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('pending');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit' | null>(null);
 
   // U-01 FIX: guard against accidental cart wipe — show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance') => {
+  const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -1356,22 +1773,27 @@ export default function BillingDashboard() {
     [todayOrders]
   );
 
-  // Regular orders: exclude ALL advance-type orders (both pending-balance AND closed ones).
-  // Closed advance orders (balanceDue=0) are excluded because:
-  //   - The advance amount was already counted when the order was created (total=advanceAmount)
-  //   - The balance amount is counted via the separate balance order row inserted on collection day
+  // Regular orders: exclude OPEN advance orders (pending balance) only.
+  // Closed advance orders (balanceDue=0) ARE included so they appear in All/status tabs.
   const regularOrders = useMemo(() =>
-    todayOrders.filter(o => o.paymentType !== 'advance'),
+    todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)),
     [todayOrders]
   );
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
     let result = regularOrders;
     if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
   }, [regularOrders, activeTab, sourceFilter]);
+
+  // Credit count badge for the tab button (today's unsettled credit sales across all branches)
+  const { creditSales: allCreditSales } = useBranchStore();
+  const creditCount = useMemo(() =>
+    ALL_BRANCHES.flatMap(b => allCreditSales?.[b] || []).filter(cs => cs.status !== 'settled').length,
+    [allCreditSales]
+  );
 
   // Counts use regularOrders so advance (pending balance) never pollutes them
   const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
@@ -1459,6 +1881,23 @@ export default function BillingDashboard() {
             )}
           </button>
 
+          {/* Credit tab — visible to biller, admin, vrsnb_admin only */}
+          {isBiller && (
+            <button onClick={() => switchTab('credit')}
+              className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
+                activeTab === 'credit'
+                  ? 'bg-red-600 text-white shadow-md'
+                  : 'bg-red-50 border border-red-200 text-red-700')}>
+              <CreditCard className="size-3.5" />Credit
+              {creditCount > 0 && (
+                <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
+                  activeTab === 'credit' ? 'bg-white/30 text-white' : 'bg-red-200 text-red-800')}>
+                  {creditCount}
+                </span>
+              )}
+            </button>
+          )}
+
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = tab.key === 'all'
@@ -1490,6 +1929,8 @@ export default function BillingDashboard() {
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      ) : activeTab === 'credit' ? (
+        <div className="flex-1 overflow-y-auto"><BillerCreditTab /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
