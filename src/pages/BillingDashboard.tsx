@@ -432,16 +432,16 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
-        <div className="w-[130px] sm:w-[150px] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="w-[30%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
-                className="flex-1 py-1.5 rounded-md text-[10px] font-body font-bold bg-card shadow text-foreground flex items-center justify-center gap-1">
-                <UtensilsCrossed className="size-3" />Menu
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-4" />Menu
               </button>
               <button onClick={() => setItemMode('custom')}
-                className="flex-1 py-1.5 rounded-md text-[10px] font-body font-bold text-muted-foreground active:scale-95 flex items-center justify-center gap-1">
-                <Edit3 className="size-3" />Custom
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <Edit3 className="size-4" />Custom
               </button>
             </div>
           </div>
@@ -453,10 +453,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-2.5 py-2.5 border-b border-border/50 transition-all',
+                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-amber-500 text-white' : 'hover:bg-muted text-foreground')}>
-                <p className="text-[11px] font-bold leading-tight">{cat.name}</p>
-                <p className={cn('text-[10px] mt-0.5 tabular-nums', isActive ? 'text-white/70' : 'text-muted-foreground')}>
+                <p className="text-sm font-bold leading-tight">{cat.name}</p>
+                <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-white/70' : 'text-muted-foreground')}>
                   {catCount} items
                 </p>
               </button>
@@ -609,11 +609,11 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       </div>
 
       {/* ═══ COL 3: Cart + Advance form ═════════════════════════════════════════ */}
-      <div className="w-[260px] sm:w-[280px] lg:w-[300px] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
-            <h3 className="font-display font-bold text-base text-foreground">Advance Bill</h3>
+            <h3 className="font-display font-bold text-lg text-foreground">Advance Bill</h3>
             {!allEmpty && <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white">{cartCount + customItems.length}</span>}
           </div>
           {!allEmpty && (
@@ -636,8 +636,8 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               {cart.map(ci => (
                 <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
-                    <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <p className="text-base font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
+                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
@@ -652,10 +652,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-amber-400 pl-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
-                      <p className="text-sm font-body font-semibold truncate leading-tight">{ci.name}</p>
+                      <p className="text-base font-body font-semibold truncate leading-tight">{ci.name}</p>
                       <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
                     </div>
-                    <p className="text-xs text-amber-600 font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <p className="text-sm text-amber-600 font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted flex items-center justify-center active:scale-90 border border-border"><Minus className="size-3" /></button>
@@ -677,12 +677,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
               <div className="relative">
                 <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
                 <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                  className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                  className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
               <div className="pt-2 border-t border-border space-y-3">
                 <div className="space-y-1">
@@ -718,7 +718,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 </div>
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-4 gap-1.5">
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
                         className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
@@ -895,16 +895,16 @@ function NewBillPanel() {
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
-        <div className="w-[130px] sm:w-[150px] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="w-[30%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
-                className="flex-1 py-1.5 rounded-md text-[10px] font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1">
-                <UtensilsCrossed className="size-3" />Menu
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
+                <UtensilsCrossed className="size-4" />Menu
               </button>
               <button onClick={() => setItemMode('custom')}
-                className="flex-1 py-1.5 rounded-md text-[10px] font-body font-bold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1">
-                <Edit3 className="size-3" />Custom
+                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
+                <Edit3 className="size-4" />Custom
               </button>
             </div>
           </div>
@@ -916,10 +916,10 @@ function NewBillPanel() {
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-2.5 py-2.5 border-b border-border/50 transition-all',
+                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground')}>
-                <p className="text-[11px] font-bold leading-tight">{cat.name}</p>
-                <p className={cn('text-[10px] mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
+                <p className="text-sm font-bold leading-tight">{cat.name}</p>
+                <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
                   {catCount} items
                 </p>
               </button>
@@ -1076,11 +1076,11 @@ function NewBillPanel() {
       </div>
 
       {/* ═══ COL 3: Bill summary ════════════════════════════════════════════════ */}
-      <div className="w-[260px] sm:w-[280px] lg:w-[300px] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
-            <h3 className="font-display font-bold text-base text-foreground">New Bill</h3>
+            <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
             {!allEmpty && (
               <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full text-primary-foreground"
                 style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
@@ -1107,8 +1107,8 @@ function NewBillPanel() {
               {cart.map(ci => (
                 <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
-                    <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <p className="text-base font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
+                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
@@ -1123,10 +1123,10 @@ function NewBillPanel() {
                 <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-primary/40 pl-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
-                      <p className="text-sm font-body font-semibold truncate leading-tight">{ci.name}</p>
+                      <p className="text-base font-body font-semibold truncate leading-tight">{ci.name}</p>
                       <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-primary/10 text-primary shrink-0">CUSTOM</span>
                     </div>
-                    <p className="text-xs text-primary font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
@@ -1145,13 +1145,13 @@ function NewBillPanel() {
           <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
             <div className="flex gap-2">
               <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                className={cn('flex-1 py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-95',
+                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
                 🍽️ Dine In
               </button>
               <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                className={cn('flex-1 py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-95',
+                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
                 📦 Takeaway
@@ -1161,7 +1161,7 @@ function NewBillPanel() {
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <button onClick={() => setShowTableSelect(!showTableSelect)}
-                  className={cn('w-full pl-8 pr-8 py-2.5 bg-card border rounded-xl text-left text-xs font-body transition-all',
+                  className={cn('w-full pl-9 pr-9 py-3 bg-card border rounded-xl text-left text-sm font-body transition-all',
                     tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
                   {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
                 </button>
@@ -1188,18 +1188,18 @@ function NewBillPanel() {
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
             )}
             <div className="relative">
               <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
               <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                className="w-full pl-8 pr-3 py-2 bg-card border border-border rounded-xl text-xs font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
             </div>
             <div className="flex flex-wrap gap-1">
               {QUICK_NOTES.slice(0, 4).map(n => (
                 <button key={n} onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
-                  className="px-2 py-1 rounded-lg text-[10px] font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
+                  className="px-3 py-1.5 rounded-lg text-xs font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
                   + {n}
                 </button>
               ))}
@@ -1222,8 +1222,8 @@ function NewBillPanel() {
                 </div>
               )}
               <div className="flex items-center justify-between">
-                <span className="font-body text-sm font-bold text-foreground">Total</span>
-                <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+                <span className="font-body text-base font-bold text-foreground">Total</span>
+                <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
               </div>
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
               <button onClick={handleSubmit} disabled={submitting}
