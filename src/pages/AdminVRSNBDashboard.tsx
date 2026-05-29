@@ -2,6 +2,7 @@
 // Admin Dashboard 1 – VRSNB Admin: Cafe + VRSNB branch only
 import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
+import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -530,7 +531,7 @@ function VRSNBBakeryView() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function AdminVRSNBDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
+  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit'>('cafe');
   const { startPolling, stopPolling } = useOrderStore();
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
@@ -552,11 +553,21 @@ export default function AdminVRSNBDashboard() {
           ☕ Cafe
         </button>
         <button onClick={() => setMode('bakery')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          🥐 Bakery (VRSNB)
+          🥐 Bakery
+        </button>
+        <button onClick={() => setMode('credit')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+          💳 Credit
         </button>
       </div>
       <div className="px-4 space-y-4">
-        {mode === 'cafe' ? <CafeView /> : <VRSNBBakeryView />}
+        {mode === 'cafe'   && <CafeView />}
+        {mode === 'bakery' && <VRSNBBakeryView />}
+        {mode === 'credit' && (
+          <AdminCreditTab
+            branches={['VRSNB']}
+            accentColor="text-blue-700"
+          />
+        )}
       </div>
     </div>
   );

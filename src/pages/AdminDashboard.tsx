@@ -19,6 +19,7 @@ import {
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import StaffActivityLog from '@/bakery/StaffActivityLog';
 import DayEndReport from '@/bakery/DayEndReport';
+import AdminCreditTab from '@/components/admin/AdminCreditTab';
 
 const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
@@ -1306,7 +1307,7 @@ function BakeryView() {
 
 // ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
 export default function AdminDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
+  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit'>('cafe');
   // BUG-03 FIX: single polling registration at root — previously registered twice
   // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
   // STORE-01 FIX: granular selector — stable action refs, no re-renders from unrelated state
@@ -1333,7 +1334,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Cafe / Bakery toggle */}
+      {/* Cafe / Bakery / Credit toggle */}
       <div className="mx-4 my-4 flex gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
         <button
           onClick={() => setMode('cafe')}
@@ -1353,10 +1354,25 @@ export default function AdminDashboard() {
         >
           🥐 Bakery
         </button>
+        <button
+          onClick={() => setMode('credit')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
+          )}
+        >
+          💳 Credit
+        </button>
       </div>
 
       <div className="px-4 space-y-4">
-        {mode === 'cafe' ? <CafeView /> : <BakeryView />}
+        {mode === 'cafe'   && <CafeView />}
+        {mode === 'bakery' && <BakeryView />}
+        {mode === 'credit' && (
+          <AdminCreditTab
+            branches={['VRSNB', 'SNB', 'Hosur']}
+          />
+        )}
       </div>
 
       <div className="px-4 mt-6">

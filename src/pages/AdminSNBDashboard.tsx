@@ -2,6 +2,7 @@
 // Admin Dashboard 2 – SNB Admin: SNB branch only
 import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
+import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
 import { useOrderStore } from '@/stores/orderStore';
@@ -288,7 +289,7 @@ function SNBBakeryReportsTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function AdminSNBDashboard() {
-  const [tab, setTab] = useState<'dashboard' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports' | 'credit'>('dashboard');
   const { startPolling, stopPolling } = useOrderStore();
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
@@ -304,8 +305,19 @@ export default function AdminSNBDashboard() {
         </div>
       </div>
       <div className="mx-4 my-4 flex gap-1 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        {([{ id: 'dashboard', label: '📊 Dashboard' }, { id: 'reports', label: '📋 Reports' }] as const).map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={cn('flex-1 py-2.5 rounded-xl text-xs font-body font-semibold transition-all duration-200', tab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+        {([
+          { id: 'dashboard', label: '📊 Dashboard' },
+          { id: 'reports',   label: '📋 Reports'   },
+          { id: 'credit',    label: '💳 Credit'     },
+        ] as const).map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'flex-1 py-2.5 rounded-xl text-xs font-body font-semibold transition-all duration-200',
+              tab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
             {t.label}
           </button>
         ))}
@@ -313,6 +325,12 @@ export default function AdminSNBDashboard() {
       <div className="px-4 space-y-4">
         {tab === 'dashboard' && <SNBBakeryDashboardTab />}
         {tab === 'reports'   && <BakeryReportsMerged branch="SNB" />}
+        {tab === 'credit'    && (
+          <AdminCreditTab
+            branches={['SNB']}
+            accentColor="text-amber-600"
+          />
+        )}
       </div>
     </div>
   );

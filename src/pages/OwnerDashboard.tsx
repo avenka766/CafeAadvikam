@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import OwnerCreditTab from '@/components/admin/OwnerCreditTab';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line, AreaChart, Area, RadialBarChart, RadialBar,
@@ -494,7 +495,7 @@ function AttendanceSalaryTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<'sales' | 'attendance'>('sales');
+  const [tab, setTab] = useState<'sales' | 'attendance' | 'credit'>('sales');
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
@@ -508,19 +509,46 @@ export default function OwnerDashboard() {
       </div>
 
       <div className="mx-4 my-4 flex gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        <button onClick={() => setTab('sales')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', tab === 'sales' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          <span className="flex items-center justify-center gap-2"><BarChart3 className="size-4" />Sales</span>
+        <button
+          onClick={() => setTab('sales')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            tab === 'sales' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <span className="flex items-center justify-center gap-2">
+            <BarChart3 className="size-4" />Sales
+          </span>
         </button>
-        <button onClick={() => setTab('attendance')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', tab === 'attendance' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          <span className="flex items-center justify-center gap-2"><CalendarCheck className="size-4" />Attendance</span>
+        <button
+          onClick={() => setTab('attendance')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            tab === 'attendance' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <span className="flex items-center justify-center gap-2">
+            <CalendarCheck className="size-4" />Attendance
+          </span>
+        </button>
+        <button
+          onClick={() => setTab('credit')}
+          className={cn(
+            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            tab === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <span className="flex items-center justify-center gap-2">
+            💳 Credit
+          </span>
         </button>
       </div>
 
       <div className="px-4 space-y-4">
-        {tab === 'sales' && <SalesOverviewTab />}
+        {tab === 'sales'      && <SalesOverviewTab />}
         {tab === 'attendance' && <AttendanceSalaryTab />}
+        {tab === 'credit'     && <OwnerCreditTab />}
       </div>
     </div>
   );
 }
-
