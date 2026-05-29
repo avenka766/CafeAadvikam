@@ -78,9 +78,11 @@ export interface Order {
   advanceAmount?: number;
   advancePaidBy?: string;
   balanceDue?: number;
+  fullAmount?: number;       // original full bill total for advance orders
   fullyPaidAt?: string;
   balancePaymentType?: string;
   balancePaidBy?: string;
+  balanceOrderId?: string;   // id of the balance-collection order row
   parcelCharges?: number;
 }
 
