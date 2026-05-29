@@ -317,7 +317,57 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                 <div key={line.id} className="space-y-1">
                   <div className="flex gap-2 items-center">
 
-                    {/* Item selector */}\n                    {(() => {\n                      // Always include the currently-selected item as an option even\n                      // if the category / search filter hides it — this prevents the\n                      // browser from jumping to a different visual selection.\n                      const selectedInFilter = filteredItems.some(\n                        i => toItemId(branch, i.barcode) === line.itemId,\n                      );\n                      const selectedBranchItem = selectedInFilter\n                        ? null\n                        : branchItems.find(i => toItemId(branch, i.barcode) === line.itemId);\n\n                      return (\n                        <select\n                          value={line.itemId}\n                          onChange={e => updateItemSelection(idx, e.target.value)}\n                          className=\"flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30\"\n                        >\n                          {/* Pinned option for the currently-selected item when it is\n                              outside the active filter — keeps the value stable */}\n                          {selectedBranchItem && (\n                            <optgroup label=\"Current selection\">\n                              <option value={line.itemId}>\n                                {selectedBranchItem.name}\n                                {selectedBranchItem.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                              </option>\n                            </optgroup>\n                          )}\n\n                          {filteredItems.length === 0 ? (\n                            <option disabled>No items match</option>\n                          ) : itemsByCategory && !search.trim() ? (\n                            Object.entries(itemsByCategory).map(([cat, catItems]) => (\n                              <optgroup key={cat} label={cat}>\n                                {catItems.map(item => (\n                                  <option key={item.barcode} value={toItemId(branch, item.barcode)}>\n                                    {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                                  </option>\n                                ))}\n                              </optgroup>\n                            ))\n                          ) : (\n                            filteredItems.map(item => (\n                              <option key={item.barcode} value={toItemId(branch, item.barcode)}>\n                                {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                              </option>\n                            ))\n                          )}\n                        </select>\n                      );\n                    })()}
+                    {/* Item selector */}
+                    {(() => {
+                      // Always include the currently-selected item as an option even
+                      // if the category / search filter hides it — this prevents the
+                      // browser from jumping to a different visual selection.
+                      const selectedInFilter = filteredItems.some(
+                        i => toItemId(branch, i.barcode) === line.itemId,
+                      );
+                      const selectedBranchItem = selectedInFilter
+                        ? null
+                        : branchItems.find(i => toItemId(branch, i.barcode) === line.itemId);
+
+                      return (
+                        <select
+                          value={line.itemId}
+                          onChange={e => updateItemSelection(idx, e.target.value)}
+                          className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        >
+                          {/* Pinned option for the currently-selected item when it is
+                              outside the active filter — keeps the value stable */}
+                          {selectedBranchItem && (
+                            <optgroup label="Current selection">
+                              <option value={line.itemId}>
+                                {selectedBranchItem.name}
+                                {selectedBranchItem.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                              </option>
+                            </optgroup>
+                          )}
+
+                          {filteredItems.length === 0 ? (
+                            <option disabled>No items match</option>
+                          ) : itemsByCategory && !search.trim() ? (
+                            Object.entries(itemsByCategory).map(([cat, catItems]) => (
+                              <optgroup key={cat} label={cat}>
+                                {catItems.map(item => (
+                                  <option key={item.barcode} value={toItemId(branch, item.barcode)}>
+                                    {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))
+                          ) : (
+                            filteredItems.map(item => (
+                              <option key={item.barcode} value={toItemId(branch, item.barcode)}>
+                                {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      );
+                    })()}
 
                     {/* Quantity */}
                     <div className="flex flex-col items-center gap-0.5 shrink-0">
