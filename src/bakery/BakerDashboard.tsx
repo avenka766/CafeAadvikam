@@ -344,7 +344,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   // BUG #15 FIX: was >= 0 which allowed submitting 0 qty, stalling packing permanently.
   // FIX M-17: use parseInt + isFinite to reject scientific notation (1e3) and Infinity.
   const valid = order.items.every(i => {
-    const v = Number.parseInt(prepQty[i.itemId] ?? '', 10);
+    const v = Number.parseFloat(prepQty[i.itemId] ?? '');
     return Number.isFinite(v) && v > 0;
   });
 
@@ -352,9 +352,9 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
     setSubmitting(true); setError(null);
     const prepared: PreparedItem[] = order.items.map(item => ({
       itemId: item.itemId, itemName: item.itemName,
-      quantityPrepared: Number.parseInt(prepQty[item.itemId] ?? String(item.quantity), 10),
+      quantityPrepared: Number.parseFloat(prepQty[item.itemId] ?? String(item.quantity)),
       preparedAt: new Date().toISOString(),
-      dispatchUnit: item.dispatchUnit ?? 'kg',
+      dispatchUnit: item.originalPcs != null ? 'kg' : (item.dispatchUnit ?? 'kg'),
     }));
     try {
       await submitPrepared(order.id, prepared);
