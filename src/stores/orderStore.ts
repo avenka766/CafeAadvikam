@@ -23,7 +23,7 @@ interface OrderState {
 
   loadOrders: (days?: number) => Promise<void>;
   submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; }) => Promise<string>;
-  submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; }) => Promise<string>;
+  submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
@@ -66,6 +66,7 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     balancePaidBy: row.balance_paid_by as string | undefined,
     balanceOrderId: row.balance_order_id as string | undefined,
     parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0,
+    deliveryDate: row.delivery_date as string | undefined,
   };
 }
 
@@ -217,51 +218,61 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
-    const balanceDue = Math.max(0, subtotal - params.advanceAmount);
-    // ADVANCE-01: total = advanceAmount so only the paid portion appears in today's sales.
-    // The full bill amount is stored in full_amount for reference.
-    const total = params.advanceAmount;
+    const isFullPayment = params.isFullPayment ?? false;
+    const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
+    // If full payment: total = subtotal (everything paid now).
+    // If advance: total = advanceAmount (only paid portion recorded in today's sales).
+    const total = isFullPayment ? subtotal : params.advanceAmount;
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
     const orderNumber = numData as number;
 
+    const cartSnapshot = [...cart];
+    set((state) => ({ orders: [], cart: [] })); // clear cart optimistically before building order
+
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0,
-      total,           // advance paid amount — recorded in today's sales
-      fullAmount: subtotal, // full original bill
-      status: 'served', createdBy: params.createdBy, createdAt: now, updatedAt: now,
-      notes: params.notes, customerName: params.customerName, paymentType: 'advance',
-      orderSource: 'staff', advanceAmount: params.advanceAmount,
-      advancePaidBy: params.advancePaidBy, balanceDue,
+      items: cartSnapshot, subtotal, discount: 0, discountType: 'flat', discountValue: 0,
+      total,
+      fullAmount: subtotal,
+      status: 'served',
+      createdBy: params.createdBy, billedBy: params.createdBy,
+      createdAt: now, updatedAt: now,
+      notes: params.notes, customerName: params.customerName,
+      paymentType: 'advance',
+      orderSource: 'staff',
+      advanceAmount: isFullPayment ? subtotal : params.advanceAmount,
+      advancePaidBy: params.advancePaidBy,
+      balanceDue,
+      deliveryDate: params.deliveryDate,
+      ...(isFullPayment ? { fullyPaidAt: now, balancePaymentType: params.advancePaidBy, balancePaidBy: params.createdBy } : {}),
     };
 
-    const cartSnapshot = [...cart];
-    set((state) => ({ orders: [order, ...state.orders], cart: [] }));
+    set((state) => ({ orders: [order, ...state.orders] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0,
-      total,           // advance paid amount only
-      full_amount: subtotal, // full original bill stored separately
-      status: 'served', created_by: params.createdBy,
+      order_type: params.orderType, items: cartSnapshot, subtotal,
+      discount: 0, discount_type: 'flat', discount_value: 0,
+      total,
+      full_amount: subtotal,
+      status: 'served',
+      created_by: params.createdBy, billed_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
-      payment_type: 'advance', order_source: 'staff', advance_amount: params.advanceAmount,
-      advance_paid_by: params.advancePaidBy, balance_due: balanceDue, created_at: now, updated_at: now,
+      payment_type: 'advance', order_source: 'staff',
+      advance_amount: isFullPayment ? subtotal : params.advanceAmount,
+      advance_paid_by: params.advancePaidBy,
+      balance_due: balanceDue,
+      delivery_date: params.deliveryDate,
+      created_at: now, updated_at: now,
+      ...(isFullPayment ? { fully_paid_at: now, balance_payment_type: params.advancePaidBy, balance_paid_by: params.createdBy } : {}),
     };
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      const inflightCart = get().cart;
-      const mergedCart = [...cartSnapshot];
-      for (const inflightItem of inflightCart) {
-        const existing = mergedCart.find((c) => c.menuItem.id === inflightItem.menuItem.id);
-        if (existing) existing.quantity += inflightItem.quantity;
-        else mergedCart.push(inflightItem);
-      }
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: mergedCart }));
+      // Rollback optimistic update, restore cart
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: cartSnapshot }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
     }
@@ -447,7 +458,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ],
     }));
 
-    // Insert balance order row
+    // Insert balance order row first
     const { error: insertError } = await supabase.from('orders').insert(balancePayload);
     if (insertError) {
       set({ orders: prev });
@@ -462,8 +473,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       .eq('id', orderId);
 
     if (updateError) {
+      // Compensate: delete the balance order we just inserted so DB stays consistent
+      await supabase.from('orders').delete().eq('id', balanceOrderId);
       set({ orders: prev });
-      console.error('[collectBalance] close advance order failed:', updateError);
+      console.error('[collectBalance] close advance order failed — compensated:', updateError);
       throw new Error(`Failed to close advance order: ${updateError.message}`);
     }
   },
