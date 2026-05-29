@@ -14,7 +14,7 @@ import {
 } from 'recharts';
 import {
   IndianRupee, Users, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, Filter,
+  ChevronDown, ChevronUp, Filter, Loader2,
 } from 'lucide-react';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -25,6 +25,7 @@ const STATUS_COLOR: Record<CreditSale['status'], string> = {
 };
 
 const BRANCH_COLOR: Record<Branch, string> = {
+  Cafe:  '#10B981',
   VRSNB: '#5BA3C9',
   SNB:   '#C5973E',
   Hosur: '#2D7D6F',
@@ -61,11 +62,27 @@ function KpiCard({
 
 // ── Expandable credit sale card ───────────────────────────────────────────────
 function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
+  const { settleCreditSale } = useBranchStore();
   const [open, setOpen] = useState(false);
+  const [settleAmt, setSettleAmt] = useState('');
+  const [settling, setSettling] = useState(false);
+  const [settleError, setSettleError] = useState('');
+
   const isOverdue =
     sale.status !== 'settled' &&
     sale.dueDate &&
     new Date(sale.dueDate) < new Date();
+
+  const handleSettle = async () => {
+    const amt = parseFloat(settleAmt);
+    if (isNaN(amt) || amt <= 0) { setSettleError('Enter a valid amount'); return; }
+    if (amt > sale.creditAmount) { setSettleError('Amount exceeds balance due'); return; }
+    setSettling(true); setSettleError('');
+    const err = await settleCreditSale(sale.branch, sale.id, amt);
+    setSettling(false);
+    if (err) setSettleError(err);
+    else setSettleAmt('');
+  };
 
   return (
     <div
@@ -205,6 +222,42 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
             <p>Recorded by: <span className="font-semibold text-foreground">{sale.soldBy}</span></p>
             {sale.notes && <p>Notes: <span className="text-foreground">{sale.notes}</span></p>}
           </div>
+
+          {/* ── Collect Payment (settle) ── */}
+          {sale.status !== 'settled' && (
+            <div className="border-t border-border pt-3 space-y-2">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                Collect Payment
+              </p>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <input
+                    type="number"
+                    placeholder={`Max ${formatCurrency(sale.creditAmount)}`}
+                    value={settleAmt}
+                    onChange={e => { setSettleAmt(e.target.value); setSettleError(''); }}
+                    className="w-full pl-7 pr-2 py-2 rounded-xl bg-background border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                  />
+                </div>
+                <button
+                  onClick={handleSettle}
+                  disabled={settling || !settleAmt}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition"
+                >
+                  {settling
+                    ? <Loader2 className="size-3.5 animate-spin" />
+                    : <CheckCircle2 className="size-3.5" />}
+                  {settling ? '…' : 'Collect'}
+                </button>
+              </div>
+              {settleError && (
+                <p className="text-[11px] text-destructive flex items-center gap-1">
+                  <AlertCircle className="size-3 shrink-0" />{settleError}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
