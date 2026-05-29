@@ -41,7 +41,7 @@ const ITEM_COLORS = [
 // ─── Item Frequency Chart ─────────────────────────────────────────────────────
 
 function ItemFrequencyChart({ orders, dateFrom, dateTo }: {
-  orders: ReturnType<typeof useBranchStore.getState>['sales'];
+  orders: { itemName: string; soldAt: string }[];
   dateFrom: string;
   dateTo: string;
 }) {
@@ -93,7 +93,7 @@ function ItemFrequencyChart({ orders, dateFrom, dateTo }: {
 const HOUR_LABELS = ['12a','1a','2a','3a','4a','5a','6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p','10p','11p'];
 
 function OrderTimeHeatmap({ orders, dateFrom, dateTo }: {
-  orders: ReturnType<typeof useBranchStore.getState>['sales'];
+  orders: { soldAt: string }[];
   dateFrom: string;
   dateTo: string;
 }) {
@@ -796,10 +796,10 @@ export default function BakeryReportsMerged({ branch }: Props) {
       </div>
 
       {/* ── Item Frequency Chart ── */}
-      <ItemFrequencyChart orders={orders} dateFrom={dateFrom} dateTo={dateTo} />
+      <ItemFrequencyChart orders={allSales} dateFrom={dateFrom} dateTo={dateTo} />
 
       {/* ── Order Time Heatmap ── */}
-      <OrderTimeHeatmap orders={orders} dateFrom={dateFrom} dateTo={dateTo} />
+      <OrderTimeHeatmap orders={allSales} dateFrom={dateFrom} dateTo={dateTo} />
     </div>
   );
 }
