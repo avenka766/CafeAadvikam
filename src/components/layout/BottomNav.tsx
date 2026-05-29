@@ -22,16 +22,18 @@ export default function BottomNav() {
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
 
   const isAdmin = currentUser?.role === 'admin';
+  const isAdminVrsnb = currentUser?.role === 'admin_vrsnb';
+  const isAnyAdmin = isAdmin || isAdminVrsnb;
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAnyAdmin) return;
     if (!notifLoaded) loadNotifs();
-    if (!invLoaded) loadInvoices();
-    const id = setInterval(() => { loadNotifs(); loadInvoices(); }, 20_000);
+    if (isAdmin && !invLoaded) loadInvoices();
+    const id = setInterval(() => { loadNotifs(); if (isAdmin) loadInvoices(); }, 20_000);
     return () => clearInterval(id);
-  }, [isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
+  }, [isAnyAdmin, isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
 
-  const unread = isAdmin ? unreadCount() : 0;
+  const unread = isAnyAdmin ? unreadCount() : 0;
   const pendingInvoices = isAdmin ? invoices.filter(i => i.status === 'pending_review').length : 0;
 
   if (!currentUser) return null;
@@ -87,6 +89,7 @@ export default function BottomNav() {
       { label: 'Dashboard', icon: <LayoutDashboard className="size-5" />, path: '/admin-vrsnb' },
       { label: 'Items',     icon: <Settings2       className="size-5" />, path: '/admin-vrsnb/items' },
       { label: 'History',   icon: <History         className="size-5" />, path: '/admin-vrsnb/history' },
+      { label: 'Alerts',    icon: <Bell            className="size-5" />, path: '/admin/alerts', badge: unread || undefined },
     );
   } else if (currentUser.role === 'admin_snb') {
     navItems.push(
