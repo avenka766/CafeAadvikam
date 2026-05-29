@@ -60,10 +60,12 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     advanceAmount: row.advance_amount ? Number(row.advance_amount) : undefined,
     advancePaidBy: row.advance_paid_by as string | undefined,
     balanceDue: row.balance_due ? Number(row.balance_due) : undefined,
+    fullAmount: row.full_amount ? Number(row.full_amount) : undefined,
     fullyPaidAt: row.fully_paid_at as string | undefined,
     balancePaymentType: row.balance_payment_type as string | undefined,
     balancePaidBy: row.balance_paid_by as string | undefined,
-    parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0, // H-05 FIX: was missing — undefined after page reload
+    balanceOrderId: row.balance_order_id as string | undefined,
+    parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0,
   };
 }
 
@@ -184,7 +186,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       discount_value: 0, total, status: 'pending', created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
-      ...(parcelCharges > 0 ? { parcel_charges: parcelCharges } : {}),
+      // parcel_charges column not in DB — charges are baked into `total` above
     };
 
     const { error } = await supabase.from('orders').insert(payload);
@@ -216,6 +218,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderId = generateId();
     const now = new Date().toISOString();
     const balanceDue = Math.max(0, subtotal - params.advanceAmount);
+    // ADVANCE-01: total = advanceAmount so only the paid portion appears in today's sales.
+    // The full bill amount is stored in full_amount for reference.
+    const total = params.advanceAmount;
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
@@ -223,19 +228,25 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total: subtotal,
+      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0,
+      total,           // advance paid amount — recorded in today's sales
+      fullAmount: subtotal, // full original bill
       status: 'served', createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType: 'advance',
-      orderSource: 'staff', advanceAmount: params.advanceAmount, advancePaidBy: params.advancePaidBy, balanceDue,
+      orderSource: 'staff', advanceAmount: params.advanceAmount,
+      advancePaidBy: params.advancePaidBy, balanceDue,
     };
 
-    const cartSnapshot = cart;
+    const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cart, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total: subtotal, status: 'served', created_by: params.createdBy,
+      order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
+      discount_value: 0,
+      total,           // advance paid amount only
+      full_amount: subtotal, // full original bill stored separately
+      status: 'served', created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: 'advance', order_source: 'staff', advance_amount: params.advanceAmount,
       advance_paid_by: params.advancePaidBy, balance_due: balanceDue, created_at: now, updated_at: now,
@@ -247,11 +258,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const mergedCart = [...cartSnapshot];
       for (const inflightItem of inflightCart) {
         const existing = mergedCart.find((c) => c.menuItem.id === inflightItem.menuItem.id);
-        if (existing) {
-          existing.quantity += inflightItem.quantity;
-        } else {
-          mergedCart.push(inflightItem);
-        }
+        if (existing) existing.quantity += inflightItem.quantity;
+        else mergedCart.push(inflightItem);
       }
       set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: mergedCart }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
@@ -370,35 +378,93 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (!order) return;
     const prev = get().orders;
     const now = new Date().toISOString();
-    const updates: Record<string, unknown> = {
-      payment_type: 'advance', billed_by: billedBy, balance_due: 0, fully_paid_at: now,
-      balance_payment_type: balancePaymentType, balance_paid_by: billedBy, status: 'served', updated_at: now,
+    const balanceAmount = order.balanceDue ?? 0;
+
+    // ADVANCE-02: Insert a NEW order row for the balance amount so it appears
+    // in today's (collection day) sales — separate from the advance-day sales.
+    const balanceOrderId = generateId();
+    const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
+    if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
+    const balanceOrderNumber = numData as number;
+
+    const balanceOrder: Order = {
+      id: balanceOrderId,
+      orderNumber: balanceOrderNumber,
+      tableNumber: order.tableNumber,
+      orderType: order.orderType,
+      items: order.items,          // same items for reference
+      subtotal: balanceAmount,
+      discount: 0, discountType: 'flat', discountValue: 0,
+      total: balanceAmount,        // balance amount recorded in today's sales
+      status: 'served',
+      createdBy: billedBy,
+      createdAt: now, updatedAt: now,
+      notes: order.notes,
+      customerName: order.customerName,
+      paymentType: balancePaymentType,
+      orderSource: 'staff',
+      ...(breakdown ? { paymentBreakdown: breakdown } : {}),
     };
-    if (breakdown) updates.payment_breakdown = breakdown;
 
-    // M-06 FIX: payment_type must become balancePaymentType after full payment,
-    // not remain 'advance' — otherwise reports show wrong payment method.
-    updates.payment_type = balancePaymentType;
+    const balancePayload = {
+      id: balanceOrderId,
+      order_number: balanceOrderNumber,
+      table_number: order.tableNumber || null,
+      order_type: order.orderType,
+      items: order.items,
+      subtotal: balanceAmount,
+      discount: 0, discount_type: 'flat', discount_value: 0,
+      total: balanceAmount,
+      status: 'served',
+      created_by: billedBy,
+      notes: order.notes || null,
+      customer_name: order.customerName || null,
+      payment_type: balancePaymentType,
+      order_source: 'staff',
+      created_at: now, updated_at: now,
+      ...(breakdown ? { payment_breakdown: breakdown } : {}),
+    };
 
+    // Close the original advance order: balance_due = 0, fully_paid_at = now
+    const closeUpdates: Record<string, unknown> = {
+      balance_due: 0,
+      fully_paid_at: now,
+      balance_payment_type: balancePaymentType,
+      balance_paid_by: billedBy,
+      balance_order_id: balanceOrderId,
+      updated_at: now,
+    };
+
+    // Optimistic update — add balance order and close original
     set((state) => ({
-      orders: state.orders.map((o) =>
-        o.id === orderId
-          ? { ...o, paymentType: balancePaymentType, billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, status: 'served', updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
-          : o,
-      ),
+      orders: [
+        balanceOrder,
+        ...state.orders.map((o) =>
+          o.id === orderId
+            ? { ...o, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, balanceOrderId, updatedAt: now }
+            : o,
+        ),
+      ],
     }));
 
-    // PROD-03 / H-02 FIX: .select('id') so data is populated; check data.length instead
-    // of count (which is null without { count: 'exact' }) to detect concurrent edits.
-    const { data: lockData, error } = await supabase.from('orders')
-      .update(updates)
-      .eq('id', orderId)
-      .eq('updated_at', order.updatedAt)
-      .select('id');
-
-    if (error || !lockData || lockData.length === 0) {
+    // Insert balance order row
+    const { error: insertError } = await supabase.from('orders').insert(balancePayload);
+    if (insertError) {
       set({ orders: prev });
-      throw new Error(!lockData || lockData.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to collect balance');
+      console.error('[collectBalance] insert balance order failed:', insertError);
+      throw new Error(`Failed to record balance payment: ${insertError.message}`);
+    }
+
+    // Close original advance order
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update(closeUpdates)
+      .eq('id', orderId);
+
+    if (updateError) {
+      set({ orders: prev });
+      console.error('[collectBalance] close advance order failed:', updateError);
+      throw new Error(`Failed to close advance order: ${updateError.message}`);
     }
   },
 
