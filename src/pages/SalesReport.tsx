@@ -353,12 +353,18 @@ export default function SalesReport() {
       XLSX.utils.book_append_sheet(wb, ws, name);
     };
 
-    // ── Sheet 9: Advance Orders ───────────────────────────────────────────────
+    // ── Sheet 2: Advance Orders ───────────────────────────────────────────────
+    const advanceTotalPaid    = advanceOrders.reduce((s, o) => s + (o.advanceAmount ?? o.total), 0);
+    const advanceTotalBalance = advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0);
+    const advancePending      = advanceOrders.filter(o => (o.balanceDue ?? 0) > 0).length;
+    const advanceClosed       = advanceOrders.filter(o => (o.balanceDue ?? 0) === 0).length;
+
     const advanceRows = advanceOrders.map((o, i) => ({
       'S.No':                i + 1,
       'Order ID':            `#${String(o.orderNumber).padStart(3, '0')}`,
-      'Date':                new Date(o.createdAt).toLocaleDateString('en-IN'),
-      'Time':                new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      'Order Date':          new Date(o.createdAt).toLocaleDateString('en-IN'),
+      'Order Time':          new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      'Delivery Date':       o.deliveryDate ? new Date(o.deliveryDate).toLocaleDateString('en-IN') : '-',
       'Customer':            o.customerName || '-',
       'Items':               o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
       'Full Bill (₹)':       o.fullAmount ?? o.subtotal,
@@ -368,8 +374,19 @@ export default function SalesReport() {
       'Status':              (o.balanceDue ?? 0) === 0 ? 'Fully Paid' : 'Balance Pending',
       'Balance Paid Via':    o.balancePaymentType ? o.balancePaymentType.toUpperCase() : '-',
       'Fully Paid At':       o.fullyPaidAt ? new Date(o.fullyPaidAt).toLocaleString('en-IN') : '-',
-      'Biller':              o.createdBy || '-',
+      'Biller':              o.billedBy || o.createdBy || '-',
     }));
+
+    // Append advance summary to Daily Closing
+    closingRows.push(
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'ADVANCE ORDERS', 'Value': '' },
+      { 'Metric': 'Total Advance Orders', 'Value': advanceOrders.length },
+      { 'Metric': 'Pending Balance', 'Value': advancePending },
+      { 'Metric': 'Fully Paid', 'Value': advanceClosed },
+      { 'Metric': 'Total Advance Collected (₹)', 'Value': advanceTotalPaid },
+      { 'Metric': 'Total Balance Outstanding (₹)', 'Value': advanceTotalBalance },
+    );
 
     addSheet(mainRows,       'Sales Report',     'No served orders');
     addSheet(advanceRows,    'Advance Orders',   'No advance orders');

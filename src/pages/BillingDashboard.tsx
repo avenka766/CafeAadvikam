@@ -10,7 +10,7 @@ import {
   ChevronDown, AlertCircle, Trash2, Receipt,
   QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
   CreditCard, Banknote, Smartphone, Wallet,
-  Edit3, UtensilsCrossed, Printer,
+  Edit3, UtensilsCrossed, Printer, Calendar,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
@@ -49,7 +49,8 @@ function AdvanceOrderCard({ order }: { order: Order }) {
 
   const billedBy = currentUser?.displayName || currentUser?.username || '';
   const advance = order.advanceAmount || 0;
-  const balance = order.balanceDue ?? (order.total - advance);
+  const fullBill = order.fullAmount ?? order.subtotal;
+  const balance = order.balanceDue ?? Math.max(0, fullBill - advance);
 
   const handleCollect = async () => {
     if (!collectMethod) return;
@@ -88,12 +89,19 @@ function AdvanceOrderCard({ order }: { order: Order }) {
             </span>
           </div>
         </div>
-        <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
-          {expanded ? <ChevronDown className="size-4 rotate-180" /> : <ChevronDown className="size-4" />}
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          {order.deliveryDate && (
+            <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1">
+              🚚 {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+            </span>
+          )}
+          <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
+            {expanded ? <ChevronDown className="size-4 rotate-180" /> : <ChevronDown className="size-4" />}
+          </button>
+        </div>
       </div>
 
-      {/* Meta row — advance tab: customer name only, no order type */}
+      {/* Meta row — customer name */}
       {order.customerName && (
         <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
           <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
@@ -120,7 +128,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
       <div className="px-4 py-3 space-y-2 border-b border-border/50 bg-muted/20">
         <div className="flex items-center justify-between">
           <span className="text-xs font-body text-muted-foreground">Total Bill</span>
-          <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(order.total)}</span>
+          <span className="text-sm font-body font-bold tabular-nums">{formatCurrency(fullBill)}</span>
         </div>
         {order.discount > 0 && (
           <div className="flex items-center justify-between">
@@ -314,8 +322,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   // Order meta
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes]               = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
   const [advanceAmt, setAdvanceAmt]     = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
+  const [isFullPayment, setIsFullPayment] = useState(false);
   const [advanceError, setAdvanceError] = useState('');
   const [submitting, setSubmitting]     = useState(false);
   const [showSuccess, setShowSuccess]   = useState(false);
@@ -367,23 +377,19 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    const amt = parseFloat(advanceAmt);
-    if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
-    if (amt >= total) { setAdvanceError('Advance must be less than total'); return; }
+    if (!deliveryDate) { setAdvanceError('Delivery date is required'); return; }
+    if (!isFullPayment) {
+      const amt = parseFloat(advanceAmt);
+      if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
+      if (amt >= total) { setAdvanceError('Advance must be less than total. Use full payment if paying everything.'); return; }
+    }
     if (!advanceMethod) { setAdvanceError('Select payment method'); return; }
     setAdvanceError('');
     setSubmitting(true);
 
     // Inject custom items into the cart as synthetic menu items
     for (const ci of customItems) {
-      const syntheticItem = {
-        id: ci.id,
-        name: ci.name,
-        price: ci.price,
-        category: 'custom',
-        timing: 'all',
-        enabled: true,
-      };
+      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
       for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
     }
 
@@ -396,15 +402,18 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         notes: notes || undefined,
         customerName: customerName || undefined,
         createdBy: currentUser.username,
-        advanceAmount: amt,
+        advanceAmount: isFullPayment ? total : parseFloat(advanceAmt),
         advancePaidBy: advanceMethod,
+        deliveryDate,
+        isFullPayment,
       });
       setShowSuccess(true);
-      setNotes(''); setCustomerName(''); setAdvanceAmt(''); setAdvanceMethod(null);
+      setNotes(''); setCustomerName(''); setDeliveryDate('');
+      setAdvanceAmt(''); setAdvanceMethod(null); setIsFullPayment(false);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
-    } catch {
-      setAdvanceError('Failed to submit order — please try again.');
+    } catch (err) {
+      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order — please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -679,11 +688,31 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
                   className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
+
+              {/* Delivery Date — MANDATORY */}
+              <div>
+                <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                  <Calendar className="size-3" /> Delivery Date *
+                </label>
+                <input
+                  type="date"
+                  value={deliveryDate}
+                  min={new Date().toISOString().split('T')[0]}
+                  onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
+                  className={cn(
+                    'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
+                    !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
+                  )}
+                />
+                {!deliveryDate && <p className="text-[10px] font-body text-red-500 mt-1 flex items-center gap-1"><AlertCircle className="size-3" />Required — when will the order be delivered?</p>}
+              </div>
+
               <div className="relative">
                 <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
                 <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
                   className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
+
               <div className="pt-2 border-t border-border space-y-3">
                 <div className="space-y-1">
                   {menuTotal > 0 && (
@@ -701,21 +730,49 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                     <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                   </div>
                 </div>
-                <div>
-                  <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
-                  <div className="relative">
-                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
-                      placeholder="Enter advance amount"
-                      className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/50 transition-all" />
+
+                {/* Full Payment Toggle */}
+                <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-body font-bold text-emerald-800">Full Payment Now?</span>
+                    <span className="text-[10px] font-body text-emerald-600">Customer pays the entire bill upfront</span>
                   </div>
-                  {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
-                    <div className="flex justify-between mt-1.5 px-1">
-                      <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
-                      <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{formatCurrency(total - parseFloat(advanceAmt))}</span>
-                    </div>
-                  )}
+                  <button
+                    onClick={() => { setIsFullPayment(p => !p); setAdvanceError(''); }}
+                    className={cn(
+                      'relative w-11 h-6 rounded-full transition-colors shrink-0',
+                      isFullPayment ? 'bg-emerald-500' : 'bg-muted border border-border'
+                    )}
+                  >
+                    <span className={cn('absolute top-0.5 size-5 rounded-full bg-white shadow transition-transform', isFullPayment ? 'translate-x-5' : 'translate-x-0.5')} />
+                  </button>
                 </div>
+
+                {/* Advance Amount — hidden when full payment */}
+                {!isFullPayment && (
+                  <div>
+                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                      <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
+                        placeholder="Enter advance amount"
+                        className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-400/50 transition-all" />
+                    </div>
+                    {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
+                      <div className="flex justify-between mt-1.5 px-1">
+                        <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
+                        <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{formatCurrency(total - parseFloat(advanceAmt))}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {isFullPayment && (
+                  <div className="flex justify-between px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <span className="text-xs font-body text-emerald-700">Paying in full</span>
+                    <span className="text-sm font-body font-bold text-emerald-700 tabular-nums">{formatCurrency(total)}</span>
+                  </div>
+                )}
+
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
                   <div className="grid grid-cols-3 gap-1.5">
@@ -735,8 +792,9 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 )}
                 <button onClick={handleSubmit} disabled={submitting}
                   className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white"
-                  style={{ background: 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: '0 4px 16px rgba(184,134,11,0.35)' }}>
-                  <Wallet className="size-4" />{submitting ? 'Saving…' : '⏳ Record Advance Order'}
+                  style={{ background: isFullPayment ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: isFullPayment ? '0 4px 16px rgba(22,163,74,0.35)' : '0 4px 16px rgba(184,134,11,0.35)' }}>
+                  {isFullPayment ? <CheckCircle2 className="size-4" /> : <Wallet className="size-4" />}
+                  {submitting ? 'Saving…' : isFullPayment ? '✅ Record Full Payment' : '⏳ Record Advance Order'}
                 </button>
               </div>
             </div>
