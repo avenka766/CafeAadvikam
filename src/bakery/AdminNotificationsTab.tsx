@@ -6,7 +6,7 @@ import { useState, useEffect } from 'react';
 import {
   Bell, FileText, ChevronDown, ChevronUp, Check,
   Trash2, RefreshCw, Loader2, X, AlertTriangle,
-  PackageX, Scale, CheckCheck, CreditCard, IndianRupee,
+  PackageX, Scale, CheckCheck, CreditCard, IndianRupee, Tag,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -60,6 +60,14 @@ const TYPE_META: Record<
     iconBg: 'bg-red-50',
     iconColor: 'text-red-600',
     badgeCls: 'bg-red-100 text-red-700 border-red-300',
+  },
+  price_change: {
+    label: 'Price Updated',
+    icon: Tag,
+    cardBorder: 'border-blue-300',
+    iconBg: 'bg-blue-50',
+    iconColor: 'text-blue-600',
+    badgeCls: 'bg-blue-100 text-blue-700 border-blue-200',
   },
 };
 
@@ -268,6 +276,58 @@ function NotificationDetailModal({
       );
     }
 
+    if (notification.type === 'price_change' && m) {
+      return (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 space-y-2">
+            <p className="text-xs font-body font-bold text-blue-800 uppercase tracking-wide">Price Change Details</p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <div>
+                <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Branch</p>
+                <p className="text-sm font-body font-semibold text-foreground">{String(m.branch ?? '—')}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Barcode</p>
+                <p className="text-sm font-body font-semibold text-foreground">#{String(m.barcode ?? '—')}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Item Name</p>
+                <p className="text-sm font-body font-semibold text-foreground">{String(m.name ?? '—')}</p>
+              </div>
+              {m.oldName && m.oldName !== m.name && (
+                <div>
+                  <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Previous Name</p>
+                  <p className="text-sm font-body text-muted-foreground line-through">{String(m.oldName)}</p>
+                </div>
+              )}
+              {m.oldPrice !== undefined && (
+                <div>
+                  <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Old Price</p>
+                  <p className="text-sm font-body text-muted-foreground line-through tabular-nums">₹{Number(m.oldPrice).toLocaleString('en-IN')}</p>
+                </div>
+              )}
+              {m.price !== undefined && (
+                <div>
+                  <p className="text-[10px] font-body text-blue-600 uppercase font-bold">New Price</p>
+                  <p className="text-sm font-body font-bold text-blue-700 tabular-nums">₹{Number(m.price).toLocaleString('en-IN')}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-[10px] font-body text-blue-600 uppercase font-bold">Changed By</p>
+                <p className="text-sm font-body text-foreground">{String(m.updatedBy ?? '—')}</p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-blue-50 border border-blue-200 rounded-xl">
+            <Tag className="size-3.5 text-blue-600 shrink-0 mt-0.5" />
+            <p className="text-xs font-body text-blue-800">
+              New prices take effect immediately on <span className="font-bold">BillTab</span> for the {String(m.branch ?? '')} branch.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <p className="text-sm font-body text-muted-foreground px-3 py-2 bg-muted/40 rounded-xl">
         {notification.body}
@@ -409,6 +469,7 @@ export default function AdminNotificationsTab() {
   const discrepancyCount = notifications.filter(n => n.type === 'packing_discrepancy').length;
   const lowStockCount    = notifications.filter(n => n.type === 'low_stock').length;
   const creditCount      = notifications.filter(n => n.type === 'credit_sale').length;
+  const priceChangeCount = notifications.filter(n => n.type === 'price_change').length;
 
   return (
     <div className="space-y-4">
@@ -441,6 +502,7 @@ export default function AdminNotificationsTab() {
           { label: 'Discrep.',   value: discrepancyCount, color: discrepancyCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: discrepancyCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
           { label: 'Low Stock',  value: lowStockCount,    color: lowStockCount > 0 ? 'text-yellow-600' : 'text-muted-foreground',   bg: lowStockCount > 0 ? 'bg-yellow-50 border-yellow-200' : '' },
           { label: 'Credit',     value: creditCount,      color: creditCount > 0 ? 'text-red-700' : 'text-muted-foreground',        bg: creditCount > 0 ? 'bg-red-50 border-red-300' : '' },
+          { label: 'Prices',     value: priceChangeCount, color: priceChangeCount > 0 ? 'text-blue-600' : 'text-muted-foreground',  bg: priceChangeCount > 0 ? 'bg-blue-50 border-blue-200' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -459,6 +521,7 @@ export default function AdminNotificationsTab() {
             { id: 'packing_discrepancy', label: '⚖️ Discrepancy' },
             { id: 'low_stock',           label: '⚠️ Low Stock' },
             { id: 'credit_sale',         label: '💳 Credit' },
+            { id: 'price_change',        label: '🏷️ Prices' },
           ] as const).map(f => (
             <button
               key={f.id}

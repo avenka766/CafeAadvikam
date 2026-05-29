@@ -12,7 +12,8 @@ export type NotificationType =
   | 'baker_shortage'
   | 'packing_discrepancy'
   | 'low_stock'
-  | 'credit_sale';
+  | 'credit_sale'
+  | 'price_change';
 
 export interface AdminNotification {
   id: string;
