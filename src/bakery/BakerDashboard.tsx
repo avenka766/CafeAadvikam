@@ -68,7 +68,7 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
         // VRSNB items with originalPcs are always in kg
         requestedUnit: req?.originalPcs != null ? 'kg' : (req?.dispatchUnit ?? 'kg'),
         preparedQty:   p.quantityPrepared,
-        preparedUnit:  p.dispatchUnit ?? 'kg',
+        preparedUnit:  req?.originalPcs != null ? 'kg' : (p.dispatchUnit ?? 'kg'),
         sentToPackingAt: (r.sent_to_packing_at as string) ?? '',
         status:        r.status as string,
         createdBy:     (r.created_by as string) ?? '—',
@@ -517,7 +517,7 @@ function CompletedCard({ order }: { order: ReturnType<typeof useBakeryStore.getS
           {order.preparedItems.map((p, i) => (
             <div key={i} className="flex justify-between text-sm font-body">
               <span className="text-muted-foreground">{p.itemName}</span>
-              <span className="font-bold text-foreground">{p.quantityPrepared} {p.dispatchUnit ?? 'kg'}</span>
+              <span className="font-bold text-foreground">{p.quantityPrepared} {order.items.find(i => i.itemId === p.itemId)?.originalPcs != null ? 'kg' : (p.dispatchUnit ?? 'kg')}</span>
             </div>
           ))}
           {order.sentToPackingAt && (
