@@ -262,6 +262,9 @@ async function fetchInventoryOrders(from: Date, to: Date): Promise<InventoryOrde
   const { data, error } = await supabase
     .from('bakery_orders').select('*')
     .gte('created_at', from.toISOString()).lte('created_at', to.toISOString())
+    // Only include orders that were actually sent to baker (status != pending)
+    // Pending orders have NOT triggered a stock deduction yet
+    .neq('status', 'pending')
     .order('created_at', { ascending: false });
   if (error) { console.warn('StoreReport – orders:', error.message); return []; }
   const rows: InventoryOrderRow[] = [];
@@ -270,7 +273,9 @@ async function fetchInventoryOrders(from: Date, to: Date): Promise<InventoryOrde
     for (const item of (o.items as BakeryOrderItem[]) ?? []) {
       rows.push({
         orderNumber: o.order_number as number, itemName: item.itemName, itemId: item.itemId,
-        quantity: item.quantity, unit: item.dispatchUnit ?? 'kg',
+        // VRSNB items with originalPcs set have quantity already converted to kg
+        quantity: item.quantity,
+        unit: item.originalPcs != null ? 'kg' : (item.dispatchUnit ?? 'kg'),
         targetBranch: (o.target_branch as string) ?? '—', status: o.status as string,
         createdAt: o.created_at as string, createdBy: (o.created_by as string) ?? '—',
       });

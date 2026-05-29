@@ -5,7 +5,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, ShoppingCart, BarChart2,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
@@ -22,7 +22,6 @@ import InvoiceTab from './InvoiceTab';
 import { useInvoiceStore } from './invoiceStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
-import PurchaseOrderTab from './PurchaseOrderTab';
 import StoreReportTab from './StoreReportTab';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 
@@ -124,7 +123,10 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
           )}
         </div>
         <p className="text-sm font-body font-bold tabular-nums text-foreground shrink-0">
-          {item.quantity}{item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}
+          {/* If originalPcs is set, quantity has already been converted to kg — always show kg */}
+          {item.originalPcs != null
+            ? `${item.quantity} kg`
+            : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
         </p>
       </div>
 
@@ -500,14 +502,19 @@ function StoreInventoryTab() {
   const [editItem, setEditItem]     = useState<StockItem | null>(null);
   const [importing, setImporting]   = useState(false);
   const [importToast, setImportToast] = useState<{ added: number; skipped: number } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [stockView, setStockView]   = useState<'all' | 'low'>('all');
 
   useEffect(() => { if (!loaded) load(); }, [loaded]);
 
   const handleImport = async () => {
     setImporting(true);
+    setImportError(null);
     const result = await bulkImportFromRecipes();
     setImporting(false);
-    if (!result.error) {
+    if (result.error) {
+      setImportError(result.error);
+    } else {
       setImportToast({ added: result.added, skipped: result.skipped });
       setTimeout(() => setImportToast(null), 4000);
     }
@@ -516,20 +523,46 @@ function StoreInventoryTab() {
   const lowItems = items.filter(i => i.quantity <= i.minThreshold);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    return items.filter(i => !q || i.name.toLowerCase().includes(q));
-  }, [items, search]);
+    const base = stockView === 'low' ? lowItems : items;
+    return base.filter(i => !q || i.name.toLowerCase().includes(q));
+  }, [items, lowItems, search, stockView]);
 
   return (
     <div className="space-y-3">
-      {lowItems.length > 0 && (
-        <div className="flex items-start gap-2.5 px-3.5 py-3 bg-red-50 border border-red-200 rounded-xl">
-          <AlertTriangle className="size-4 text-red-500 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-xs font-body font-bold text-red-700">{lowItems.length} item{lowItems.length > 1 ? 's' : ''} running low</p>
-            <p className="text-[10px] font-body text-red-600 mt-0.5">{lowItems.map(i => i.name).join(', ')}</p>
-          </div>
-        </div>
-      )}
+      {/* Sub-tab switcher: All / Low Stock */}
+      <div className="flex gap-1.5 bg-muted/60 p-1 rounded-xl">
+        <button
+          onClick={() => setStockView('all')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all',
+            stockView === 'all' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
+          )}
+        >
+          All Stock
+          <span className="ml-1.5 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{items.length}</span>
+        </button>
+        <button
+          onClick={() => setStockView('low')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all flex items-center justify-center gap-1',
+            stockView === 'low'
+              ? 'bg-red-600 text-white shadow-sm'
+              : lowItems.length > 0
+              ? 'text-red-600 hover:bg-red-50'
+              : 'text-muted-foreground'
+          )}
+        >
+          <AlertTriangle className="size-3" />
+          Low Stock
+          {lowItems.length > 0 && (
+            <span className={cn(
+              'text-[9px] font-bold px-1.5 py-0.5 rounded-full',
+              stockView === 'low' ? 'bg-white/20 text-white' : 'bg-red-100 text-red-700'
+            )}>{lowItems.length}</span>
+          )}
+        </button>
+      </div>
+
       <div className="flex gap-2">
         <div className="flex-1 relative">
           <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -544,36 +577,46 @@ function StoreInventoryTab() {
           <Plus className="size-3.5" /> Add
         </button>
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        {[
-          { label: 'Total', value: items.length, color: 'text-foreground' },
-          { label: 'Low Stock', value: lowItems.length, color: lowItems.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: lowItems.length > 0 ? 'bg-red-50 border-red-200' : '' },
-          { label: 'OK', value: items.filter(i => i.quantity > i.minThreshold).length, color: 'text-emerald-600' },
-        ].map(s => (
-          <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
-            <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
-            <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
-          </div>
-        ))}
-      </div>
+
+      {stockView === 'all' && (
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: 'Total', value: items.length, color: 'text-foreground' },
+            { label: 'Low Stock', value: lowItems.length, color: lowItems.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: lowItems.length > 0 ? 'bg-red-50 border-red-200' : '' },
+            { label: 'OK', value: items.filter(i => i.quantity > i.minThreshold).length, color: 'text-emerald-600' },
+          ].map(s => (
+            <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
+              <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
+              <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {stockView === 'low' && lowItems.length === 0 && (
+        <div className="flex flex-col items-center py-12 gap-3 text-muted-foreground">
+          <CheckCircle2 className="size-10 text-emerald-500 opacity-60" />
+          <p className="text-sm font-body font-semibold text-emerald-700">All stock levels are OK!</p>
+        </div>
+      )}
+
+      {importError && <p className="text-xs font-body text-destructive px-1">{importError}</p>}
+      {importToast && (
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl">
+          <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+          <p className="text-xs font-body text-emerald-700">Imported {importToast.added} items, skipped {importToast.skipped} existing.</p>
+        </div>
+      )}
+
       {loading && !loaded
         ? <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
-        : filtered.length === 0
+        : filtered.length === 0 && !(stockView === 'low' && lowItems.length === 0)
         ? <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
             <Warehouse className="size-10 opacity-20" />
-            <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add or Import' : 'No matches'}</p>
+            <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add' : 'No matches'}</p>
           </div>
         : <div className="space-y-2">
-            {lowItems.length > 0 && filtered.some(i => i.quantity <= i.minThreshold) && (
-              <p className="text-[10px] font-body font-bold text-red-600 uppercase px-1">⚠ Low Stock</p>
-            )}
-            {filtered.filter(i => i.quantity <= i.minThreshold).map(i => (
-              <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
-            ))}
-            {filtered.some(i => i.quantity > i.minThreshold) && lowItems.length > 0 && (
-              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase px-1 mt-3">All Stock</p>
-            )}
-            {filtered.filter(i => i.quantity > i.minThreshold).map(i => (
+            {filtered.map(i => (
               <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
             ))}
           </div>
@@ -885,7 +928,7 @@ export default function StoreDashboard() {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'purchase' | 'report'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -894,7 +937,7 @@ export default function StoreDashboard() {
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   return (
-    <div className="min-h-[100dvh] bg-background pt-14 pb-28">
+    <div className="min-h-[100dvh] bg-background pt-14 pb-32">
       <div className="px-4 pt-5 pb-4">
         <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
         <h1 className="font-display text-2xl font-bold text-foreground">Store</h1>
@@ -905,7 +948,6 @@ export default function StoreDashboard() {
           {([
             { id: 'orders',    label: 'Orders',    icon: Package,      badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
             { id: 'inventory', label: 'Inventory', icon: Warehouse,    badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
-            { id: 'purchase',  label: 'PO',        icon: ShoppingCart, badge: null, badgeColor: '' },
             { id: 'suppliers', label: 'Suppliers', icon: Truck,        badge: null, badgeColor: '' },
             { id: 'invoices',  label: 'Invoices',  icon: FileText,     badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
             { id: 'analytics', label: 'Analytics', icon: Calculator,   badge: null, badgeColor: '' },
@@ -927,7 +969,6 @@ export default function StoreDashboard() {
       <div className="px-4">
         {tab === 'orders'    && <OrdersTab />}
         {tab === 'inventory' && <StoreInventoryTab />}
-        {tab === 'purchase'  && <PurchaseOrderTab />}
         {tab === 'suppliers' && <SuppliersTab />}
         {tab === 'invoices'  && <InvoiceTab />}
         {tab === 'analytics' && <StoreAnalyticsTab />}

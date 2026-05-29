@@ -6,14 +6,14 @@ import { supabase } from '@/lib/supabase'; // BUG #14 FIX: needed for synced_to_
 import {
   FileText, Plus, Trash2, Printer, Send, ChevronDown,
   ChevronUp, CheckCircle2, Clock, X, Check, Loader2,
-  Search, IndianRupee, Package, AlertCircle,
+  Search, IndianRupee, Package,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSupplierStore } from './supplierStore';
 import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
 import { useStoreStockStore, type StockUnit } from './storeStockStore';
 import { useNotificationStore } from './notificationStore';
-import { searchItems, getSuppliersForItem, STORE_ITEM_MASTER } from './storeItemMaster';
+import { searchItems, getSuppliersForItem } from './storeItemMaster';
 
 // ─── Print helper ─────────────────────────────────────────────────────────────
 function printInvoice(invoice: StoreInvoice) {
@@ -225,12 +225,6 @@ function CreateInvoiceModal({
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
 
-  // Suggest items from the chosen supplier's items list
-  const suggestedItems = useMemo(() => {
-    if (!selectedSupplier?.itemsSupplied) return [];
-    return selectedSupplier.itemsSupplied.split(',').map(s => s.trim()).filter(Boolean);
-  }, [selectedSupplier]);
-
   const UNITS: StockUnit[] = ['kg', 'g', 'L', 'ltr', 'pcs', 'nos', 'bunch'];
 
   const updateLine = (idx: number, key: keyof InvoiceLineItem, val: string | number) => {
@@ -333,7 +327,7 @@ function CreateInvoiceModal({
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={onClose}>
       <div
-        className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-4 max-h-[92vh] overflow-y-auto"
+        className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-28 space-y-4 max-h-[92vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
@@ -347,38 +341,7 @@ function CreateInvoiceModal({
           </button>
         </div>
 
-        {/* Supplier */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Supplier *</label>
-          <select
-            value={supplierId}
-            onChange={e => setSupplierId(e.target.value)}
-            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-          >
-            <option value="">Select supplier…</option>
-            {suppliers.map(s => (
-              <option key={s.id} value={s.id}>{s.businessName} – {s.contactName}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Delivery date */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Delivery Date *</label>
-          <input
-            type="date"
-            value={deliveryDate}
-            min={(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}
-            max={new Date().toISOString().slice(0, 10)}
-            onChange={e => setDeliveryDate(e.target.value)}
-            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
-          <p className="text-[10px] font-body text-muted-foreground mt-1 flex items-center gap-1">
-            <span className="text-amber-500">⚠</span> Only today or yesterday allowed
-          </p>
-        </div>
-
-        {/* Line items */}
+        {/* ── STEP 1: Items Delivered ── */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase">Items Delivered *</label>
@@ -389,24 +352,6 @@ function CreateInvoiceModal({
               <Plus className="size-3" /> Add Row
             </button>
           </div>
-
-          {suggestedItems.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {suggestedItems.map(item => (
-                <button
-                  key={item}
-                  onClick={() => addLine() || setLines(prev => {
-                    const next = [...prev];
-                    next[next.length - 1] = { ...next[next.length - 1], itemName: item };
-                    return next;
-                  })}
-                  className="text-[10px] font-body font-semibold px-2.5 py-1 rounded-full bg-primary/8 border border-primary/20 text-primary hover:bg-primary/15"
-                >
-                  + {item}
-                </button>
-              ))}
-            </div>
-          )}
 
           <div className="space-y-3">
             {lines.map((li, idx) => (
@@ -422,17 +367,25 @@ function CreateInvoiceModal({
                     />
                     <datalist id={`suggestions-${idx}`}>
                       {searchItems(li.itemName).map(s => <option key={s.item} value={s.item} />)}
-                      {suggestedItems.map(s => <option key={s} value={s} />)}
                     </datalist>
                     {li.itemName.trim().length > 2 && (() => {
                       const itemSuppliers = getSuppliersForItem(li.itemName);
                       return itemSuppliers.length > 0 ? (
                         <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-background border border-primary/30 rounded-xl shadow-lg overflow-hidden">
-                          <p className="text-[9px] font-body font-bold text-primary uppercase px-2.5 pt-2 pb-1">Suppliers for this item</p>
+                          <p className="text-[9px] font-body font-bold text-primary uppercase px-2.5 pt-2 pb-1">Known suppliers for this item</p>
                           {itemSuppliers.map(s => (
-                            <div key={s} className="px-2.5 py-1.5 text-xs font-body text-foreground flex items-center gap-2 border-t border-border/40">
+                            <button
+                              key={s}
+                              type="button"
+                              onClick={() => {
+                                const match = suppliers.find(sup => sup.businessName.toLowerCase() === s.toLowerCase());
+                                if (match) setSupplierId(match.id);
+                              }}
+                              className="w-full px-2.5 py-1.5 text-xs font-body text-foreground flex items-center gap-2 border-t border-border/40 hover:bg-muted text-left"
+                            >
                               <span className="size-1.5 rounded-full bg-primary shrink-0" />{s}
-                            </div>
+                              <span className="ml-auto text-[9px] text-primary font-semibold">tap to select</span>
+                            </button>
                           ))}
                         </div>
                       ) : null;
@@ -492,6 +445,43 @@ function CreateInvoiceModal({
           <span className="font-display text-xl font-bold text-primary">₹{grandTotal.toFixed(2)}</span>
         </div>
 
+        {/* ── STEP 2: Supplier ── */}
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Supplier *</label>
+          <select
+            value={supplierId}
+            onChange={e => setSupplierId(e.target.value)}
+            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            <option value="">Select supplier…</option>
+            {suppliers.map(s => (
+              <option key={s.id} value={s.id}>{s.businessName} – {s.contactName}</option>
+            ))}
+          </select>
+          {/* If a supplier is already auto-selected from item hint, confirm it */}
+          {supplierId && selectedSupplier && (
+            <p className="text-[10px] font-body text-primary mt-1 flex items-center gap-1">
+              <Check className="size-3" /> {selectedSupplier.businessName} selected
+            </p>
+          )}
+        </div>
+
+        {/* Delivery date */}
+        <div>
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Delivery Date *</label>
+          <input
+            type="date"
+            value={deliveryDate}
+            min={(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}
+            max={new Date().toISOString().slice(0, 10)}
+            onChange={e => setDeliveryDate(e.target.value)}
+            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          <p className="text-[10px] font-body text-muted-foreground mt-1 flex items-center gap-1">
+            <span className="text-amber-500">⚠</span> Only today or yesterday allowed
+          </p>
+        </div>
+
         {/* Notes */}
         <div>
           <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Notes (optional)</label>
@@ -536,7 +526,7 @@ function SuccessToast({ invoiceNumber, onClose }: { invoiceNumber: string; onClo
     return () => clearTimeout(t);
   }, []);
   return (
-    <div className="fixed bottom-24 left-4 right-4 z-50 bg-emerald-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+    <div className="fixed bottom-32 left-4 right-4 z-50 bg-emerald-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
       <CheckCircle2 className="size-5 shrink-0" />
       <div className="flex-1">
         <p className="text-sm font-body font-bold">{invoiceNumber} created!</p>
