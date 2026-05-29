@@ -6,7 +6,7 @@ import { useState, useEffect } from 'react';
 import {
   Bell, FileText, ChevronDown, ChevronUp, Check,
   Trash2, RefreshCw, Loader2, X, AlertTriangle,
-  PackageX, Scale, CheckCheck,
+  PackageX, Scale, CheckCheck, CreditCard, IndianRupee,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -52,6 +52,14 @@ const TYPE_META: Record<
     iconBg: 'bg-yellow-50',
     iconColor: 'text-yellow-600',
     badgeCls: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+  },
+  credit_sale: {
+    label: 'Credit Sale',
+    icon: CreditCard,
+    cardBorder: 'border-red-400',
+    iconBg: 'bg-red-50',
+    iconColor: 'text-red-600',
+    badgeCls: 'bg-red-100 text-red-700 border-red-300',
   },
 };
 
@@ -212,6 +220,54 @@ function NotificationDetailModal({
       );
     }
 
+    if (notification.type === 'credit_sale' && m) {
+      const amount = Number(m.amount ?? 0);
+      const dueDate = m.dueDate ? new Date(m.dueDate as string).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : null;
+      return (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 space-y-2">
+            <p className="text-xs font-body font-bold text-red-800 uppercase tracking-wide">Credit Sale Details</p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <div>
+                <p className="text-[10px] font-body text-red-600 uppercase font-bold">Customer</p>
+                <p className="text-sm font-body font-semibold text-foreground">{String(m.customerName ?? '—')}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-red-600 uppercase font-bold">Amount</p>
+                <p className="text-sm font-body font-bold text-red-700 tabular-nums">
+                  ₹{amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-red-600 uppercase font-bold">Branch</p>
+                <p className="text-sm font-body text-foreground">{String(m.branch ?? '—')}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-red-600 uppercase font-bold">Billed By</p>
+                <p className="text-sm font-body text-foreground">{String(m.soldBy ?? '—')}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-red-600 uppercase font-bold">Bill No</p>
+                <p className="text-sm font-body text-foreground font-mono">{String(m.billNo ?? '—')}</p>
+              </div>
+              {dueDate && (
+                <div>
+                  <p className="text-[10px] font-body text-red-600 uppercase font-bold">Due Date</p>
+                  <p className="text-sm font-body text-foreground">{dueDate}</p>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+            <AlertTriangle className="size-3.5 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-xs font-body text-amber-800">
+              Go to <span className="font-bold">Billing → Credit tab</span> to track and settle this credit sale.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <p className="text-sm font-body text-muted-foreground px-3 py-2 bg-muted/40 rounded-xl">
         {notification.body}
@@ -352,6 +408,7 @@ export default function AdminNotificationsTab() {
   const shortageCount    = notifications.filter(n => n.type === 'baker_shortage').length;
   const discrepancyCount = notifications.filter(n => n.type === 'packing_discrepancy').length;
   const lowStockCount    = notifications.filter(n => n.type === 'low_stock').length;
+  const creditCount      = notifications.filter(n => n.type === 'credit_sale').length;
 
   return (
     <div className="space-y-4">
@@ -377,12 +434,13 @@ export default function AdminNotificationsTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-5 gap-2">
         {[
           { label: 'Invoices',    value: invoiceCount,     color: invoiceCount > 0 ? 'text-amber-600' : 'text-muted-foreground',    bg: invoiceCount > 0 ? 'bg-amber-50 border-amber-200' : '' },
           { label: 'Shortages',  value: shortageCount,    color: shortageCount > 0 ? 'text-red-600' : 'text-muted-foreground',      bg: shortageCount > 0 ? 'bg-red-50 border-red-200' : '' },
           { label: 'Discrep.',   value: discrepancyCount, color: discrepancyCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: discrepancyCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
           { label: 'Low Stock',  value: lowStockCount,    color: lowStockCount > 0 ? 'text-yellow-600' : 'text-muted-foreground',   bg: lowStockCount > 0 ? 'bg-yellow-50 border-yellow-200' : '' },
+          { label: 'Credit',     value: creditCount,      color: creditCount > 0 ? 'text-red-700' : 'text-muted-foreground',        bg: creditCount > 0 ? 'bg-red-50 border-red-300' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -400,6 +458,7 @@ export default function AdminNotificationsTab() {
             { id: 'baker_shortage',      label: '📦 Shortage' },
             { id: 'packing_discrepancy', label: '⚖️ Discrepancy' },
             { id: 'low_stock',           label: '⚠️ Low Stock' },
+            { id: 'credit_sale',         label: '💳 Credit' },
           ] as const).map(f => (
             <button
               key={f.id}

@@ -11,7 +11,8 @@ export type NotificationType =
   | 'invoice_pending'
   | 'baker_shortage'
   | 'packing_discrepancy'
-  | 'low_stock';
+  | 'low_stock'
+  | 'credit_sale';
 
 export interface AdminNotification {
   id: string;
@@ -40,6 +41,7 @@ interface NotificationState {
   pushBakerShortage: (orderId: string, orderNumber: string, items: { itemName: string; prepared: number; requested: number; unit: string }[]) => Promise<void>;
   pushPackingDiscrepancy: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; dispatched: number; requested: number; unit: string }[]) => Promise<void>;
   pushLowStock: (items: { name: string; quantity: number; minThreshold: number; unit: string }[]) => Promise<void>;
+  pushCreditSale: (params: { customerName: string; amount: number; billNo: string; branch: string; soldBy: string; dueDate?: string }) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -190,6 +192,23 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       body:      lines,
       ref_label: 'Store Stock',
       meta:      { items },
+    });
+    if (!error) await get().load();
+  },
+
+  pushCreditSale: async ({ customerName, amount, billNo, branch, soldBy, dueDate }) => {
+    const amtFmt = amount.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+    const shortBill = billNo.split('-').pop() ?? billNo;
+    const dueLine = dueDate
+      ? ` · Due ${new Date(dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+      : '';
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'credit_sale',
+      title:     `💳 Credit Sale — ${branch}`,
+      body:      `${customerName} · ₹${amtFmt} · Bill #${shortBill} · by ${soldBy}${dueLine}`,
+      ref_id:    billNo,
+      ref_label: `Bill #${shortBill}`,
+      meta:      { customerName, amount, billNo, branch, soldBy, dueDate: dueDate ?? null },
     });
     if (!error) await get().load();
   },
