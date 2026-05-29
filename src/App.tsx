@@ -55,7 +55,9 @@ function AppRoutes() {
     if (!hydrated) {
       const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
       if (useAuthStore.persist.hasHydrated()) setHydrated(true);
-      return unsub;
+      // Safety net — if hydration never fires (empty storage), unblock after 300ms
+      const fallback = setTimeout(() => setHydrated(true), 300);
+      return () => { unsub(); clearTimeout(fallback); };
     }
   }, [hydrated]);
 
