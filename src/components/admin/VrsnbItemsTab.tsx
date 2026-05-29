@@ -4,6 +4,8 @@ import { useEffect, useState, useMemo } from 'react';
 import { AlertTriangle, AlertCircle, Search, X, Scale, Hash, ChevronDown, ChevronUp, Plus, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
+import { useItemPriceStore } from '@/stores/itemPriceStore';
+import { useAuthStore } from '@/stores/authStore';
 import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '@/branch/vrsnbItems';
 import type { VrsnbCategory } from '@/branch/vrsnbItems';
 
@@ -217,15 +219,20 @@ function EditItemModal({
 // ── Main Tab ───────────────────────────────────────────────────────────────────
 export default function VrsnbItemsTab() {
   const { stockMismatches, fetchStockMismatches } = useBranchStore();
+  const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
+  const { user } = useAuthStore();
   const [search, setSearch]                 = useState('');
   const [activeCategory, setActiveCategory] = useState<VrsnbCategory | 'All'>('All');
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]     = useState(false);
   const [customItems, setCustomItems]       = useState<CustomVrsnbItem[]>([]);
   const [editTarget, setEditTarget]         = useState<(typeof VRSNB_ITEMS[0]) | CustomVrsnbItem | null>(null);
-  const [priceOverrides, setPriceOverrides] = useState<Record<number, { name: string; price: number }>>({});
+  // priceOverrides are read from itemPriceStore (Supabase-backed) — not local state
 
-  useEffect(() => { fetchStockMismatches(); }, []);
+  useEffect(() => {
+    fetchStockMismatches();
+    fetchOverrides('VRSNB');
+  }, []);
 
   const nextBarcode = useMemo(() => {
     const allBarcodes = [...VRSNB_ITEMS.map(i => i.barcode), ...customItems.map(i => i.barcode)];
@@ -250,17 +257,26 @@ export default function VrsnbItemsTab() {
     }));
   }, [stockMismatches]);
 
+  const vrsnbOverrides = overrides['VRSNB'];
   const allItems = useMemo(() => [
     ...VRSNB_ITEMS.map(i => ({
       ...i,
-      name: priceOverrides[i.barcode]?.name ?? i.name,
-      price: priceOverrides[i.barcode]?.price ?? i.price,
+      name:  vrsnbOverrides[i.barcode]?.name  ?? i.name,
+      price: vrsnbOverrides[i.barcode]?.price ?? i.price,
     })),
     ...customItems,
-  ], [customItems, priceOverrides]);
+  ], [customItems, vrsnbOverrides]);
 
-  const handleSaveEdit = (barcode: number, updates: { name: string; price: number }) => {
-    setPriceOverrides(prev => ({ ...prev, [barcode]: updates }));
+  const handleSaveEdit = async (barcode: number, updates: { name: string; price: number }) => {
+    const existing = VRSNB_ITEMS.find(i => i.barcode === barcode);
+    const oldPrice = vrsnbOverrides[barcode]?.price ?? existing?.price ?? 0;
+    const oldName  = vrsnbOverrides[barcode]?.name  ?? existing?.name  ?? '';
+    const updatedBy = user?.name ?? user?.email ?? 'Admin';
+
+    const err = await saveOverride('VRSNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
+    if (err) {
+      console.error('[VrsnbItemsTab] saveOverride error:', err);
+    }
     setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
   };
 

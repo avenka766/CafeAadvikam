@@ -6,6 +6,8 @@ import { useEffect, useState, useMemo } from 'react';
 import { AlertTriangle, AlertCircle, Search, X, Scale, Hash, ChevronDown, ChevronUp, Plus, Pencil, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
+import { useItemPriceStore } from '@/stores/itemPriceStore';
+import { useAuthStore } from '@/stores/authStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '@/branch/snbItems';
 import type { SnbCategory } from '@/branch/snbItems';
 
@@ -219,15 +221,20 @@ function EditItemModal({
 
 export default function SnbItemsTab() {
   const { stockMismatches, fetchStockMismatches } = useBranchStore();
+  const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
+  const { user } = useAuthStore();
   const [search, setSearch]               = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]   = useState(false);
   const [customItems, setCustomItems]     = useState<CustomSnbItem[]>([]);
   const [editTarget, setEditTarget]       = useState<(typeof SNB_ITEMS[0]) | CustomSnbItem | null>(null);
-  const [priceOverrides, setPriceOverrides] = useState<Record<number, { name: string; price: number }>>({});
+  // priceOverrides are read from itemPriceStore (Supabase-backed) — not local state
 
-  useEffect(() => { fetchStockMismatches(); }, []);
+  useEffect(() => {
+    fetchStockMismatches();
+    fetchOverrides('SNB');
+  }, []);
 
   const nextBarcode = useMemo(() => {
     const allBarcodes = [...SNB_ITEMS.map(i => i.barcode), ...customItems.map(i => i.barcode)];
@@ -253,17 +260,28 @@ export default function SnbItemsTab() {
     }));
   }, [stockMismatches]);
 
+  const snbOverrides = overrides['SNB'];
   const allItems = useMemo(() => [
     ...SNB_ITEMS.map(i => ({
       ...i,
-      name: priceOverrides[i.barcode]?.name ?? i.name,
-      price: priceOverrides[i.barcode]?.price ?? i.price,
+      name:  snbOverrides[i.barcode]?.name  ?? i.name,
+      price: snbOverrides[i.barcode]?.price ?? i.price,
     })),
     ...customItems,
-  ], [customItems, priceOverrides]);
+  ], [customItems, snbOverrides]);
 
-  const handleSaveEdit = (barcode: number, updates: { name: string; price: number }) => {
-    setPriceOverrides(prev => ({ ...prev, [barcode]: updates }));
+  const handleSaveEdit = async (barcode: number, updates: { name: string; price: number }) => {
+    // Find old values so the notification can show what changed
+    const existing = SNB_ITEMS.find(i => i.barcode === barcode);
+    const oldPrice = snbOverrides[barcode]?.price ?? existing?.price ?? 0;
+    const oldName  = snbOverrides[barcode]?.name  ?? existing?.name  ?? '';
+    const updatedBy = user?.name ?? user?.email ?? 'Admin';
+
+    const err = await saveOverride('SNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
+    if (err) {
+      console.error('[SnbItemsTab] saveOverride error:', err);
+      // Still update custom items locally so UI stays consistent
+    }
     setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
   };
 
