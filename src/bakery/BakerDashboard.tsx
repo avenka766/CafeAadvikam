@@ -421,7 +421,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
                       )}
                     </div>
                     <p className="text-[10px] font-body text-muted-foreground mt-0.5">
-                      Requested: <span className="font-bold text-foreground">{item.quantity}{item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}</span>
+                      Requested: <span className="font-bold text-foreground">{item.quantity}{(item.dispatchUnit === 'pcs' && item.originalPcs == null) ? ' pcs' : ' kg'}</span>
                     </p>
                   </div>
                   <div className="flex flex-col items-center gap-1 shrink-0">
@@ -433,7 +433,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
                       className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                     />
                     <span className="text-[9px] font-body font-bold text-muted-foreground">
-                      {item.dispatchUnit === 'pcs' ? 'pcs' : 'kg'} prepared
+                      {(item.dispatchUnit === 'pcs' && item.originalPcs == null) ? 'pcs' : 'kg'} prepared
                     </span>
                   </div>
                 </div>
