@@ -175,12 +175,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // Optimistic update — snapshot cart *before* clearing so we can restore it on failure.
     // Items added *after* this point (while the DB write is in flight) are captured via
     // get().cart inside the error handler so they are never silently discarded.
-    const cartSnapshot = cart;
+    const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cart, subtotal, discount: 0, discount_type: 'flat',
+      order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
       discount_value: 0, total, status: 'pending', created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
