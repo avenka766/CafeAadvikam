@@ -12,7 +12,6 @@ import { BRANCHES } from './types';
 import type { Branch, PreparedItem } from './types';
 import { kgToPcs } from './itemMatcher';
 import { cn } from '@/lib/utils';
-import { useNotificationStore } from './notificationStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PackedEntry {
@@ -236,41 +235,8 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
     try {
       await submitDispatch(order.id, { itemName, quantity: qty, unit: unit ?? 'kg', branch, dispatchedAt: new Date().toISOString(), dispatchedBy: currentUser.displayName });
 
-      // ── Shortfall / overrun check ────────────────────────────────────────
-      const updatedDispatchLog = [
-        ...(order.dispatchLog ?? []),
-        { itemName, quantity: qty, unit: unit ?? 'kg', branch, dispatchedAt: new Date().toISOString(), dispatchedBy: currentUser.displayName, id: '_tmp' },
-      ];
-
-      const shortfalls: { itemName: string; prepared: number; dispatched: number; unit: string }[] = [];
-      for (const p of preparedItems) {
-        const entry        = packedEntries.find(e => e.itemId === p.itemId);
-        const isPcs        = entry?.dispatchUnit === 'pcs';
-        const effectiveQty = isPcs && entry?.confirmedPcs != null ? entry.confirmedPcs : p.quantityPrepared;
-        const totalDispatched = updatedDispatchLog
-          .filter(d => d.itemName === p.itemName)
-          .reduce((s, d) => s + d.quantity, 0);
-
-        if (totalDispatched < effectiveQty - 0.001 || totalDispatched > effectiveQty + 0.001) {
-          shortfalls.push({ itemName: p.itemName, prepared: effectiveQty, dispatched: totalDispatched, unit: isPcs ? 'pcs' : 'kg' });
-        }
-      }
-
-      const allNowDispatched = preparedItems.every(p => {
-        const totalD  = updatedDispatchLog.filter(d => d.itemName === p.itemName).reduce((s, d) => s + d.quantity, 0);
-        const entry   = packedEntries.find(e => e.itemId === p.itemId);
-        const isPcs   = entry?.dispatchUnit === 'pcs';
-        const effective = isPcs && entry?.confirmedPcs != null ? entry.confirmedPcs : p.quantityPrepared;
-        return totalD >= effective - 0.001;
-      });
-
-      if (allNowDispatched && shortfalls.length > 0) {
-        await useNotificationStore.getState().pushPackingDiscrepancy(
-          order.id, order.orderNumber ?? order.id, branch,
-          shortfalls.map(s => ({ itemName: s.itemName, dispatched: s.dispatched, requested: s.prepared, unit: s.unit })),
-        );
-      }
-      // ────────────────────────────────────────────────────────────────────
+      // Discrepancy detection is handled inside bakeryStore.submitDispatch
+      // using fresh DB data — no stale-state risk here.
     } catch {
       setDispatchError('Dispatch failed — please try again.');
     } finally {

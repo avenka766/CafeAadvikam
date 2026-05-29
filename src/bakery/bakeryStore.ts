@@ -159,11 +159,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   submitDispatch: async (orderId, entry) => {
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
 
-    // BUG #3 FIX: fetch full order (not just dispatch_log) so we can check
-    // prepared_items to determine if this is truly a full dispatch.
+    // Fetch fresh order from DB — includes order_number for notifications.
+    // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log, prepared_items')
+      .select('dispatch_log, prepared_items, order_number')
       .eq('id', orderId)
       .single();
     if (fetchErr || !freshOrder) return;
@@ -188,6 +188,36 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .update({ dispatch_log: updatedLog, status: newStatus })
       .eq('id', orderId);
     if (error) return;
+
+    // ── DISCREPANCY-FIX: check for discrepancies using fresh DB data ──────
+    // Previously this check lived in PackingDashboard using stale React state,
+    // causing it to miss alerts. Now it runs here with the authoritative DB log.
+    // Fire on EVERY dispatch — not just the last — so per-item discrepancies
+    // (shortage OR excess) are reported immediately when they occur.
+    const discrepancies: { itemName: string; dispatched: number; requested: number; unit: string }[] = [];
+    for (const p of preparedItems) {
+      if (p.itemName !== entry.itemName) continue; // only check the item just dispatched
+      const totalDispatched = updatedLog
+        .filter(d => d.itemName === p.itemName)
+        .reduce((s, d) => s + d.quantity, 0);
+      const isExact = Math.abs(totalDispatched - p.quantityPrepared) <= 0.001;
+      // Flag if dispatching this item is now complete (no more expected) AND there's a gap
+      const isFullyCoveredOrOver = totalDispatched >= p.quantityPrepared - 0.001;
+      if (isFullyCoveredOrOver && !isExact) {
+        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested: p.quantityPrepared, unit: entry.unit ?? 'kg' });
+      } else if (allFullyDispatched && !isExact) {
+        // Catch items that ended short when the whole order is marked dispatched
+        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested: p.quantityPrepared, unit: entry.unit ?? 'kg' });
+      }
+    }
+    if (discrepancies.length > 0) {
+      const orderNumber = (freshOrder.order_number as number | string) ?? orderId;
+      const { useNotificationStore } = await import('./notificationStore');
+      void useNotificationStore.getState().pushPackingDiscrepancy(
+        orderId, String(orderNumber), entry.branch, discrepancies,
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     const { error: incomingErr } = await supabase.from('branch_incoming').upsert({
       dispatch_id:   newEntry.id,
