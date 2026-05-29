@@ -868,8 +868,9 @@ function NewBillPanel() {
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => setShowSuccess(false), 2200);
-    } catch {
-      setSubmitError('Failed to submit order — please try again.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to submit order — please try again.';
+      setSubmitError(msg);
     } finally {
       setSubmitting(false);
     }
