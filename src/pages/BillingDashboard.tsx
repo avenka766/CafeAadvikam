@@ -38,22 +38,12 @@ async function notifyCreditSale(params: {
   billNo: string;
   branch: Branch;
   soldBy: string;
+  dueDate?: string;
 }) {
   // Best-effort fire-and-forget — biller UI must never block on this
   try {
-    const body = {
-      targetRoles: ['admin', 'vrsnb_admin'],   // server filters by role
-      type: 'credit_sale',
-      title: `💳 Credit Sale — ${params.branch}`,
-      message: `${params.customerName || 'Customer'} · ₹${params.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} · Bill #${params.billNo.split('-').pop()} · by ${params.soldBy}`,
-      meta: { branch: params.branch, billNo: params.billNo, amount: params.amount },
-    };
-    // Replace with your actual notification endpoint
-    await fetch('/api/notifications/push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const { pushCreditSale } = (await import('@/bakery/notificationStore')).useNotificationStore.getState();
+    await pushCreditSale(params);
   } catch {
     // Silent — notification failure must never break billing
   }
@@ -1212,6 +1202,7 @@ function NewBillPanel() {
           billNo,
           branch,
           soldBy: currentUser.displayName || currentUser.username,
+          dueDate: creditDueDate || undefined,
         });
 
         clearCart();
