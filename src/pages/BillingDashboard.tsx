@@ -22,10 +22,11 @@ import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 
-// ── Branch Credit Panel (Biller view — all branches) ─────────────────────────
-const ALL_BRANCHES: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
+// ── Branch Credit Panel (Biller view — scope controlled by caller) ───────────
+const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 const BRANCH_BADGE: Record<Branch, string> = {
+  Cafe:  'bg-green-100 text-green-700 border-green-200',
   VRSNB: 'bg-blue-100 text-blue-700 border-blue-200',
   SNB:   'bg-amber-100 text-amber-700 border-amber-200',
   Hosur: 'bg-teal-100 text-teal-700 border-teal-200',
@@ -49,12 +50,12 @@ async function notifyCreditSale(params: {
   }
 }
 
-function BillerCreditTab() {
+function BillerCreditTab({ branches }: { branches: Branch[] }) {
   const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
 
   useEffect(() => {
-    ALL_BRANCHES.forEach(b => fetchCreditSales(b));
-  }, [fetchCreditSales]);
+    branches.forEach(b => fetchCreditSales(b));
+  }, [branches, fetchCreditSales]);
 
   const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
@@ -65,7 +66,7 @@ function BillerCreditTab() {
 
   // Flatten all branch credit sales with branch tag
   const allSales: (CreditSale & { branch: Branch })[] = useMemo(() =>
-    ALL_BRANCHES.flatMap(b =>
+    branches.flatMap(b =>
       (allCreditSales?.[b] || []).map(cs => ({ ...cs, branch: b }))
     ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [allCreditSales]
@@ -115,7 +116,7 @@ function BillerCreditTab() {
         </p>
         {/* Per-branch outstanding summary */}
         <div className="flex gap-2 mt-3 flex-wrap">
-          {ALL_BRANCHES.map(b => {
+          {branches.map(b => {
             const due = (allCreditSales?.[b] || [])
               .filter(cs => cs.status !== 'settled')
               .reduce((s, c) => s + c.creditAmount, 0);
@@ -135,14 +136,15 @@ function BillerCreditTab() {
         </div>
       )}
 
-      {/* Branch filter */}
+      {/* Branch filter — only shown when more than one branch is in scope */}
+      {branches.length > 1 && (
       <div className="flex gap-1.5 flex-wrap">
         <button onClick={() => setBranchFilter('all')}
           className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
             branchFilter === 'all' ? 'bg-foreground text-background border-transparent' : 'bg-card border-border text-muted-foreground')}>
           All Branches
         </button>
-        {ALL_BRANCHES.map(b => (
+        {branches.map(b => (
           <button key={b} onClick={() => setBranchFilter(b)}
             className={cn('px-3 py-1.5 rounded-full text-[11px] font-bold border transition',
               branchFilter === b ? `${BRANCH_BADGE[b]} border-transparent` : 'bg-card border-border text-muted-foreground')}>
@@ -150,6 +152,7 @@ function BillerCreditTab() {
           </button>
         ))}
       </div>
+      )}
 
       {/* Status filter pills */}
       <div className="flex gap-1.5 flex-wrap">
@@ -1167,11 +1170,12 @@ function NewBillPanel() {
       try {
         const { recordCreditSale } = useBranchStore.getState();
         const branchFromRole: Record<string, Branch> = {
-          admin_vrsnb: 'VRSNB', branch_vrsnb: 'VRSNB',
-          admin_snb: 'SNB',     branch_snb: 'SNB',
+          billing:      'Cafe',
+          admin_vrsnb:  'VRSNB', branch_vrsnb: 'VRSNB',
+          admin_snb:    'SNB',   branch_snb:   'SNB',
           branch_hosur: 'Hosur',
         };
-        const branch: Branch = branchFromRole[currentUser.role] ?? 'VRSNB';
+        const branch: Branch = branchFromRole[currentUser.role] ?? 'Cafe';
         const billNo = `CREDIT-${branch}-${Date.now()}`;
         const allCartItems = [...(useOrderStore.getState().cart)];
         const creditItems = allCartItems.map(c => ({
@@ -1784,11 +1788,18 @@ export default function BillingDashboard() {
     return result;
   }, [regularOrders, activeTab, sourceFilter]);
 
-  // Credit count badge for the tab button (today's unsettled credit sales across all branches)
+  // Determine which branches this user's credit tab should show
+  const creditBranches: Branch[] = useMemo(() => {
+    if (currentUser?.role === 'admin') return ALL_BRANCHES;           // full view
+    if (currentUser?.role === 'admin_vrsnb') return ['Cafe', 'VRSNB'];  // Cafe + VRSNB branch
+    return ['Cafe'];                                                   // billing → Cafe Aadvikam only
+  }, [currentUser?.role]);
+
+  // Credit count badge for the tab button (unsettled credit sales in scope)
   const { creditSales: allCreditSales } = useBranchStore();
   const creditCount = useMemo(() =>
-    ALL_BRANCHES.flatMap(b => allCreditSales?.[b] || []).filter(cs => cs.status !== 'settled').length,
-    [allCreditSales]
+    creditBranches.flatMap(b => allCreditSales?.[b] || []).filter(cs => cs.status !== 'settled').length,
+    [allCreditSales, creditBranches]
   );
 
   // Counts use regularOrders so advance (pending balance) never pollutes them
@@ -1926,7 +1937,7 @@ export default function BillingDashboard() {
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
       ) : activeTab === 'credit' ? (
-        <div className="flex-1 overflow-y-auto"><BillerCreditTab /></div>
+        <div className="flex-1 overflow-y-auto"><BillerCreditTab branches={creditBranches} /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (

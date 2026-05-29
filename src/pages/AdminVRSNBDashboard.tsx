@@ -564,7 +564,7 @@ export default function AdminVRSNBDashboard() {
         {mode === 'bakery' && <VRSNBBakeryView />}
         {mode === 'credit' && (
           <AdminCreditTab
-            branches={['VRSNB']}
+            branches={['Cafe', 'VRSNB']}
             accentColor="text-blue-700"
           />
         )}

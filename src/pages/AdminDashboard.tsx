@@ -1370,7 +1370,7 @@ export default function AdminDashboard() {
         {mode === 'bakery' && <BakeryView />}
         {mode === 'credit' && (
           <AdminCreditTab
-            branches={['VRSNB', 'SNB', 'Hosur']}
+            branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']}
           />
         )}
       </div>
