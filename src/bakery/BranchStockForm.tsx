@@ -6,7 +6,7 @@
 //   • Added search bar to filter items by name
 //   • Works for all 3 receivers: VRSNB, SNB, Hosur
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Plus, Trash2, Send, CheckCircle2, Loader2, Scale, ArrowRight, Search, X, Sparkles } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface LineItem {
+  id:          string;
   itemId:      string;
   itemName:    string;
   uom:         'Nos' | 'Kgs';
@@ -48,6 +49,7 @@ function toItemId(branch: Branch, barcode: number): string {
 
 function makeLine(branch: Branch, item: { barcode: number; name: string; uom: 'Nos' | 'Kgs' }): LineItem {
   return {
+    id:          `${Date.now()}-${Math.random()}`,
     itemId:      toItemId(branch, item.barcode),
     itemName:    item.name,
     uom:         item.uom,
@@ -80,9 +82,12 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const [lines, setLines] = useState<LineItem[]>([
     defaultItem ? makeLine(branch, defaultItem) : { itemId: '', itemName: '', uom: 'Kgs', weightGrams: null, qty: '' },
   ]);
-  const [customLines, setCustomLines] = useState<{ name: string; qty: string }[]>([]);
+  const [customLines, setCustomLines] = useState<{ id: string; name: string; qty: string }[]>([]);
 
-  // ── Filtered item list (category + search) ─────────────────────────────────
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cancel any pending success timer when the component unmounts
+  useEffect(() => () => { if (successTimerRef.current) clearTimeout(successTimerRef.current); }, []);
 
   const filteredItems = useMemo(() => {
     // Step 1: apply category filter first
@@ -127,35 +132,21 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     setLines(prev => prev.filter((_, i) => i !== idx));
   };
 
-  // When category changes, reset any line whose current item isn't in the new filtered list
+  // When category changes, just update the filter — never touch existing lines.
+  // The filter only affects the dropdown options for browsing / new additions.
   const handleCatChange = (cat: string) => {
     setSelectedCat(cat);
     setSearch('');
-    const nextItems = cat === ALL ? branchItems : branchItems.filter(i => i.category === cat);
-    const firstNext = nextItems[0];
-    if (!firstNext) return;
-    setLines(prev => prev.map(l => {
-      const stillValid = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
-      return stillValid ? l : makeLine(branch, firstNext);
-    }));
   };
 
   const handleSearchChange = (val: string) => {
     setSearch(val);
-    // Only reset lines if their item is no longer visible within the current category + new search
-    const catList = selectedCat === ALL ? branchItems : branchItems.filter(i => i.category === selectedCat);
-    const q = val.trim().toLowerCase();
-    const nextItems = q ? catList.filter(i => i.name.toLowerCase().includes(q)) : catList;
-    if (nextItems.length === 0) return;
-    setLines(prev => prev.map(l => {
-      const stillVisible = nextItems.some(i => toItemId(branch, i.barcode) === l.itemId);
-      return stillVisible ? l : makeLine(branch, nextItems[0]);
-    }));
+    // Filter is for browsing only — existing line selections are preserved.
   };
 
   // ── Custom lines ───────────────────────────────────────────────────────────
 
-  const addCustomLine    = () => setCustomLines(prev => [...prev, { name: '', qty: '' }]);
+  const addCustomLine    = () => setCustomLines(prev => [...prev, { id: `${Date.now()}-${Math.random()}`, name: '', qty: '' }]);
   const removeCustomLine = (idx: number) => setCustomLines(prev => prev.filter((_, i) => i !== idx));
   const updateCustomName = (idx: number, val: string) =>
     setCustomLines(prev => prev.map((l, i) => i === idx ? { ...l, name: val } : l));
@@ -211,7 +202,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
       setCustomLines([]);
       setSelectedCat(ALL);
       setSearch('');
-      setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
+      successTimerRef.current = setTimeout(() => { setSuccess(false); onSubmitted(); }, 2000);
     } catch {
       setSubmitError('Failed to submit — please try again.');
     } finally {
@@ -323,37 +314,10 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
               const recipeFound = line.qty !== '' ? hasRecipeFor(line.itemId, line.itemName) : null;
 
               return (
-                <div key={idx} className="space-y-1">
+                <div key={line.id} className="space-y-1">
                   <div className="flex gap-2 items-center">
 
-                    {/* Item selector */}
-                    <select
-                      value={line.itemId}
-                      onChange={e => updateItemSelection(idx, e.target.value)}
-                      className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    >
-                      {filteredItems.length === 0 ? (
-                        <option disabled>No items</option>
-                      ) : itemsByCategory && !search.trim() ? (
-                        // Grouped optgroups when showing All with no search
-                        Object.entries(itemsByCategory).map(([cat, catItems]) => (
-                          <optgroup key={cat} label={cat}>
-                            {catItems.map(item => (
-                              <option key={item.barcode} value={toItemId(branch, item.barcode)}>
-                                {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))
-                      ) : (
-                        // Flat list when a category is selected or search is active
-                        filteredItems.map(item => (
-                          <option key={item.barcode} value={toItemId(branch, item.barcode)}>
-                            {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}
-                          </option>
-                        ))
-                      )}
-                    </select>
+                    {/* Item selector */}\n                    {(() => {\n                      // Always include the currently-selected item as an option even\n                      // if the category / search filter hides it — this prevents the\n                      // browser from jumping to a different visual selection.\n                      const selectedInFilter = filteredItems.some(\n                        i => toItemId(branch, i.barcode) === line.itemId,\n                      );\n                      const selectedBranchItem = selectedInFilter\n                        ? null\n                        : branchItems.find(i => toItemId(branch, i.barcode) === line.itemId);\n\n                      return (\n                        <select\n                          value={line.itemId}\n                          onChange={e => updateItemSelection(idx, e.target.value)}\n                          className=\"flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30\"\n                        >\n                          {/* Pinned option for the currently-selected item when it is\n                              outside the active filter — keeps the value stable */}\n                          {selectedBranchItem && (\n                            <optgroup label=\"Current selection\">\n                              <option value={line.itemId}>\n                                {selectedBranchItem.name}\n                                {selectedBranchItem.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                              </option>\n                            </optgroup>\n                          )}\n\n                          {filteredItems.length === 0 ? (\n                            <option disabled>No items match</option>\n                          ) : itemsByCategory && !search.trim() ? (\n                            Object.entries(itemsByCategory).map(([cat, catItems]) => (\n                              <optgroup key={cat} label={cat}>\n                                {catItems.map(item => (\n                                  <option key={item.barcode} value={toItemId(branch, item.barcode)}>\n                                    {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                                  </option>\n                                ))}\n                              </optgroup>\n                            ))\n                          ) : (\n                            filteredItems.map(item => (\n                              <option key={item.barcode} value={toItemId(branch, item.barcode)}>\n                                {item.name}{item.uom === 'Nos' ? ' (pcs)' : ' /kg'}\n                              </option>\n                            ))\n                          )}\n                        </select>\n                      );\n                    })()}
 
                     {/* Quantity */}
                     <div className="flex flex-col items-center gap-0.5 shrink-0">
@@ -365,7 +329,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                         placeholder="Qty"
                         className={cn(
                           'w-16 h-10 px-2 rounded-xl border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30',
-                          line.qty === '' ? 'border-amber-400' : 'border-border'
+                          line.qty === '' || Number(line.qty) === 0 ? 'border-amber-400' : 'border-border'
                         )}
                       />
                       <span className="text-[9px] font-body font-bold text-muted-foreground leading-none">
@@ -441,7 +405,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
           <div className="space-y-2">
             {customLines.map((line, idx) => (
-              <div key={idx} className="flex gap-2 items-center">
+              <div key={line.id} className="flex gap-2 items-center">
                 <input
                   value={line.name}
                   onChange={e => updateCustomName(idx, e.target.value)}
