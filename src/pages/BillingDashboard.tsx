@@ -1166,7 +1166,12 @@ function NewBillPanel() {
 
       try {
         const { recordCreditSale } = useBranchStore.getState();
-        const branch = (currentUser.branch as Branch) ?? 'VRSNB';
+        const branchFromRole: Record<string, Branch> = {
+          admin_vrsnb: 'VRSNB', branch_vrsnb: 'VRSNB',
+          admin_snb: 'SNB',     branch_snb: 'SNB',
+          branch_hosur: 'Hosur',
+        };
+        const branch: Branch = branchFromRole[currentUser.role] ?? 'VRSNB';
         const billNo = `CREDIT-${branch}-${Date.now()}`;
         const allCartItems = [...(useOrderStore.getState().cart)];
         const creditItems = allCartItems.map(c => ({
@@ -1718,7 +1723,7 @@ export default function BillingDashboard() {
     }))
   );
   const { currentUser } = useAuthStore();
-  const isBiller = currentUser?.role === 'biller' || currentUser?.role === 'admin' || currentUser?.role === 'vrsnb_admin';
+  const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('pending');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
   const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit' | null>(null);
