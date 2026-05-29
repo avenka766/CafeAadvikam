@@ -428,7 +428,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
 
   return (
-    <div className="flex" style={{ height: 'calc(100dvh - 160px)' }}>
+    <div className="flex flex-1 min-h-0 overflow-hidden">
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
@@ -487,14 +487,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-3 py-3">
+            <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
                   ))}
                 </div>
               )}
@@ -671,7 +671,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
 
         {/* Advance form + pending — fixed bottom */}
-        <div className="border-t border-border shrink-0 overflow-y-auto" style={{ maxHeight: '65%' }}>
+        <div className="border-t border-border shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
               <div className="relative">
@@ -891,7 +891,7 @@ function NewBillPanel() {
   }
 
   return (
-    <div className="flex" style={{ height: 'calc(100dvh - 160px)' }}>
+    <div className="flex flex-1 min-h-0 overflow-hidden">
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
@@ -950,14 +950,14 @@ function NewBillPanel() {
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-3 py-3">
+            <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
                   ))}
                 </div>
               )}
@@ -1142,7 +1142,7 @@ function NewBillPanel() {
         </div>
 
         {!allEmpty && (
-          <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto" style={{ maxHeight: '65%' }}>
+          <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
             <div className="flex gap-2">
               <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
                 className={cn('flex-1 py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-95',
@@ -1167,7 +1167,7 @@ function NewBillPanel() {
                 </button>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 {showTableSelect && (
-                  <div className="absolute bottom-full left-0 right-0 mb-1 bg-card border border-border rounded-2xl shadow-lifted z-10 p-2.5 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto">
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-2xl shadow-lifted z-50 p-2.5 grid grid-cols-5 gap-1 max-h-48 overflow-y-auto">
                     {TABLE_NUMBERS.map(num => (
                       <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
                         className={cn('py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-90',
@@ -1316,7 +1316,7 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: 'var(--header-h, 3.5rem)', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
+    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: 'var(--header-h, 3.5rem)', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (
@@ -1425,9 +1425,9 @@ export default function BillingDashboard() {
 
       {/* ── Content ── */}
       {activeTab === 'new_bill' ? (
-        <NewBillPanel />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
-        <AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
