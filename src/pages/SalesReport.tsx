@@ -67,8 +67,16 @@ export default function SalesReport() {
     });
   }, [orders, filterMode, startDate, endDate]);
 
-  const dayOrders = useMemo(() => filteredOrders.filter((o) => o.status === 'served'), [filteredOrders]);
+  const dayOrders = useMemo(() =>
+    filteredOrders.filter((o) => o.status === 'served' && o.paymentType !== 'advance'),
+    [filteredOrders]
+  );
   const cancelledOrders = useMemo(() => filteredOrders.filter((o) => o.status === 'cancelled'), [filteredOrders]);
+  // Advance orders in the period — used for the Advance sheet in Excel
+  const advanceOrders = useMemo(() =>
+    filteredOrders.filter((o) => o.paymentType === 'advance'),
+    [filteredOrders]
+  );
 
   const totalRevenue = dayOrders.reduce((s, o) => s + o.total, 0);
   const orderCount = dayOrders.length;
@@ -345,7 +353,26 @@ export default function SalesReport() {
       XLSX.utils.book_append_sheet(wb, ws, name);
     };
 
+    // ── Sheet 9: Advance Orders ───────────────────────────────────────────────
+    const advanceRows = advanceOrders.map((o, i) => ({
+      'S.No':                i + 1,
+      'Order ID':            `#${String(o.orderNumber).padStart(3, '0')}`,
+      'Date':                new Date(o.createdAt).toLocaleDateString('en-IN'),
+      'Time':                new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      'Customer':            o.customerName || '-',
+      'Items':               o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
+      'Full Bill (₹)':       o.fullAmount ?? o.subtotal,
+      'Advance Paid (₹)':    o.advanceAmount ?? o.total,
+      'Balance Due (₹)':     o.balanceDue ?? 0,
+      'Advance Via':         o.advancePaidBy ? o.advancePaidBy.toUpperCase() : '-',
+      'Status':              (o.balanceDue ?? 0) === 0 ? 'Fully Paid' : 'Balance Pending',
+      'Balance Paid Via':    o.balancePaymentType ? o.balancePaymentType.toUpperCase() : '-',
+      'Fully Paid At':       o.fullyPaidAt ? new Date(o.fullyPaidAt).toLocaleString('en-IN') : '-',
+      'Biller':              o.createdBy || '-',
+    }));
+
     addSheet(mainRows,       'Sales Report',     'No served orders');
+    addSheet(advanceRows,    'Advance Orders',   'No advance orders');
     addSheet(cancelRows,     'Cancelled Orders', 'No cancellations');
     addSheet(cgstRows,       'CGST 2.5%',        'No data');
     addSheet(sgstRows,       'SGST 2.5%',        'No data');

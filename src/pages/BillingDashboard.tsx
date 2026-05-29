@@ -1298,9 +1298,12 @@ export default function BillingDashboard() {
     [todayOrders]
   );
 
-  // Regular orders: everything EXCEPT pending-balance advance orders
+  // Regular orders: exclude ALL advance-type orders (both pending-balance AND closed ones).
+  // Closed advance orders (balanceDue=0) are excluded because:
+  //   - The advance amount was already counted when the order was created (total=advanceAmount)
+  //   - The balance amount is counted via the separate balance order row inserted on collection day
   const regularOrders = useMemo(() =>
-    todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)),
+    todayOrders.filter(o => o.paymentType !== 'advance'),
     [todayOrders]
   );
 
