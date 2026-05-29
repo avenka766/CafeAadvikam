@@ -1,8 +1,9 @@
 // src/branch/types.ts  ← NEW FILE
-export type Branch = 'VRSNB' | 'SNB' | 'Hosur';
-export const BRANCHES: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
+export type Branch = 'Cafe' | 'VRSNB' | 'SNB' | 'Hosur';
+export const BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 export const BRANCH_LABELS: Record<Branch, string> = {
+  Cafe:  'Cafe Aadvikam',
   VRSNB: 'VR SNB',
   SNB:   'SNB',
   Hosur: 'Hosur',
@@ -11,6 +12,12 @@ export const BRANCH_LABELS: Record<Branch, string> = {
 export const BRANCH_COLORS: Record<Branch, {
   text: string; bg: string; badge: string; bar: string;
 }> = {
+  Cafe: {
+    text:  'text-green-700',
+    bg:    'bg-green-50',
+    badge: 'bg-green-100 text-green-700',
+    bar:   'bg-green-500',
+  },
   VRSNB: {
     text:  'text-blue-700',
     bg:    'bg-blue-50',

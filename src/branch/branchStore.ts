@@ -138,12 +138,12 @@ interface BranchState {
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
-  stock:           { VRSNB: [], SNB: [], Hosur: [] },
-  sales:           { VRSNB: [], SNB: [], Hosur: [] },
-  incoming:        { VRSNB: [], SNB: [], Hosur: [] },
-  advanceOrders:   { VRSNB: [], SNB: [], Hosur: [] },
-  creditSales:     { VRSNB: [], SNB: [], Hosur: [] },
-  thresholds:      { VRSNB: {}, SNB: {}, Hosur: {} },
+  stock:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  sales:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  incoming:        { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  advanceOrders:   { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  creditSales:     { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  thresholds:      { Cafe: {}, VRSNB: {}, SNB: {}, Hosur: {} },
   stockMismatches: [],
   loading:         false,
   lastCleanedAt:   null,
@@ -917,6 +917,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       })
       .eq('id', saleId);
     if (error) return `Failed to settle: ${error.message}`;
+
+    // Record the collected amount in branch_sales so it appears in daily sales/revenue reports.
+    // Use payment_method='credit_collection' to distinguish from regular sales.
+    // One row per item (proportional split) — or a single summary row using the first item name.
+    await supabase.from('branch_sales').insert({
+      branch,
+      item_name:      `Credit Collection – ${sale.customerName} (Bill #${sale.billNo.split('-').pop()})`,
+      quantity_sold:  1,
+      sold_at:        now,
+      sold_by:        sale.soldBy,
+      payment_method: 'credit_collection',
+      unit_price:     amountCollected,
+      bill_no:        sale.billNo,
+    });
 
     set((s) => {
       const creditSales = { ...s.creditSales };
