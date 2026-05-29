@@ -28,39 +28,27 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-function mat(order: BakeryOrder) {
-  const allMats: { material: string; quantity: number; unit: string }[] = [];
-  for (const item of order.items) {
-    const key = resolveRecipeKey(item.itemId, item.itemName);
-    if (!key) continue;
-    // BUG #1 FIX: pass the recipe KEY (string) not the definition object.
-    // calculateMaterials(itemId, quantity, unit) looks up RECIPE_DEFINITIONS[itemId] internally.
-    const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-    const mats = calculateMaterials(key, item.quantity, unit);
-    for (const m of mats) {
-      const existing = allMats.find(x => x.material === m.material);
-      if (existing) existing.quantity = parseFloat((existing.quantity + m.quantity).toFixed(4));
-      else allMats.push({ ...m });
-    }
-  }
-  return allMats;
+function matForItem(item: BakeryOrder['items'][number]) {
+  const key = resolveRecipeKey(item.itemId, item.itemName);
+  if (!key) return [];
+  const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+  return calculateMaterials(key, item.quantity, unit);
 }
 
-// ─── Print helper ─────────────────────────────────────────────────────────────
-function printRecipe(order: BakeryOrder, calculatedMats: { material: string; quantity: number; unit: string }[]) {
+// ─── Print helper (per-item) ──────────────────────────────────────────────────
+function printItemRecipe(
+  order: BakeryOrder,
+  item: BakeryOrder['items'][number],
+  mats: { material: string; quantity: number; unit: string }[],
+) {
   const printWindow = window.open('', '_blank', 'width=400,height=600');
   if (!printWindow) return;
 
-  const itemsHtml = order.items.map(item => `
-    <tr>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;">${item.itemName}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
-        ${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}
-      </td>
-    </tr>
-  `).join('');
+  const qtyLabel = item.dispatchUnit === 'pcs'
+    ? `${item.originalPcs ?? item.quantity} pcs${item.originalPcs != null ? ` → ${item.quantity} kg` : ''}`
+    : `${item.quantity} kg`;
 
-  const matsHtml = calculatedMats.map(m => `
+  const matsHtml = mats.map(m => `
     <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;">${m.material}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
@@ -73,13 +61,14 @@ function printRecipe(order: BakeryOrder, calculatedMats: { material: string; qua
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Order #${order.orderNumber} – Recipe Sheet</title>
+      <title>Order #${order.orderNumber} – ${item.itemName}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1a1a1a; padding: 24px; }
         h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
-        .sub { color: #666; font-size: 11px; margin-bottom: 16px; }
+        .sub { color: #666; font-size: 11px; margin-bottom: 4px; }
         .badge { display: inline-block; padding: 2px 8px; border-radius: 100px; font-size: 10px; font-weight: 700; background: #fef3c7; color: #92400e; margin-left: 6px; }
+        .qty { font-size: 15px; font-weight: 700; color: #111; margin-bottom: 16px; }
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         thead th { text-align: left; padding: 6px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #888; border-bottom: 2px solid #e5e7eb; }
         thead th:last-child { text-align: right; }
@@ -88,25 +77,18 @@ function printRecipe(order: BakeryOrder, calculatedMats: { material: string; qua
       </style>
     </head>
     <body>
-      <h1>Order #${order.orderNumber}${order.targetBranch ? `<span class="badge">${order.targetBranch}</span>` : ''}</h1>
-      <p class="sub">Printed: ${new Date().toLocaleString('en-IN')}</p>
+      <h1>${item.itemName}${order.targetBranch ? `<span class="badge">${order.targetBranch}</span>` : ''}</h1>
+      <p class="sub">Order #${order.orderNumber} · Printed: ${new Date().toLocaleString('en-IN')}</p>
+      <p class="qty">Quantity: ${qtyLabel}</p>
 
-      <section>
-        <h2>Items</h2>
-        <table>
-          <thead><tr><th>Item</th><th>Qty</th></tr></thead>
-          <tbody>${itemsHtml}</tbody>
-        </table>
-      </section>
-
-      ${calculatedMats.length > 0 ? `
+      ${mats.length > 0 ? `
       <section>
         <h2>Raw Materials Required</h2>
         <table>
           <thead><tr><th>Material</th><th>Quantity</th></tr></thead>
           <tbody>${matsHtml}</tbody>
         </table>
-      </section>` : ''}
+      </section>` : '<p style="color:#888;font-size:12px;">No recipe found for this item.</p>'}
 
       <div class="footer">Cafe Aadvikam · Store Recipe Sheet</div>
     </body>
@@ -120,41 +102,111 @@ function printRecipe(order: BakeryOrder, calculatedMats: { material: string; qua
 // ─── Stock Units ──────────────────────────────────────────────────────────────
 const UNITS: StockUnit[] = ['kg', 'L', 'g', 'pcs', 'nos', 'bunch', 'ltr'];
 
+// ─── Item Row (per-item raw materials + print) ────────────────────────────────
+function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items'][number] }) {
+  const [showMats, setShowMats] = useState(false);
+  const mats = useMemo(() => matForItem(item), [item]);
+  const hasMats = mats.length > 0;
+
+  return (
+    <div className="rounded-xl border border-border bg-muted/30 overflow-hidden">
+      {/* Item header */}
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <span className="text-base leading-none shrink-0">
+          {BAKERY_ITEMS.find(b => b.id === item.itemId)?.icon ?? '🍬'}
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-body font-semibold text-foreground">{item.itemName}</p>
+          {item.originalPcs != null && (
+            <p className="text-[10px] font-body text-blue-600">
+              {item.originalPcs} pcs → {item.quantity} kg
+            </p>
+          )}
+        </div>
+        <p className="text-sm font-body font-bold tabular-nums text-foreground shrink-0">
+          {item.quantity}{item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}
+        </p>
+      </div>
+
+      {/* Raw materials toggle */}
+      {hasMats && (
+        <div className="border-t border-border/40">
+          <button
+            onClick={() => setShowMats(v => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 bg-primary/5 text-xs font-body font-semibold text-primary active:scale-[0.99]"
+          >
+            <div className="flex items-center gap-1.5">
+              <Calculator className="size-3.5" />
+              Raw materials ({mats.length} ingredients)
+            </div>
+            {showMats ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </button>
+
+          {showMats && (
+            <>
+              <div className="divide-y divide-border/50">
+                {mats.map((m, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-2 bg-background">
+                    <span className="text-sm font-body text-foreground">{m.material}</span>
+                    <span className="text-sm font-body font-bold tabular-nums text-foreground">
+                      {m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} {m.unit}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="px-3 py-2 border-t border-border/40">
+                <button
+                  onClick={() => printItemRecipe(order, item, mats)}
+                  className="w-full h-9 rounded-xl border border-primary/30 bg-primary/5 text-primary text-xs font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98] hover:bg-primary/10 transition-all"
+                >
+                  <Printer className="size-3.5" />
+                  Print Recipe Sheet
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { updateExpectedOutput, sendToBaker } = useBakeryStore();
+  const { sendToBaker } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
 
-  const [expanded,      setExpanded]      = useState(true);
-  const [expectedOut,   setExpectedOut]   = useState('');
-  const [sending,       setSending]       = useState(false);
-  const [sent,          setSent]          = useState(order.status !== 'pending');
-  const [sendError,     setSendError]     = useState<string | null>(null);
-  const [showMats,      setShowMats]      = useState(false);
+  const [expanded,  setExpanded]  = useState(true);
+  const [sending,   setSending]   = useState(false);
+  const [sent,      setSent]      = useState(order.status !== 'pending');
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const initialised = useRef(false);
   useEffect(() => {
     if (!initialised.current) {
-      setExpectedOut(order.expectedOutput ?? '');
       setSent(order.status !== 'pending');
       initialised.current = true;
     }
   }, []);
 
-  const calculatedMats = useMemo(() => mat(order), [order]);
-  const hasMats        = calculatedMats.length > 0;
-
-  const handleExpectedChange = async (val: string) => {
-    setExpectedOut(val);
-    if (val !== '' && !isNaN(Number(val)))
-      await updateExpectedOutput(order.id, Number(val));
-  };
+  // Collect all materials across items for stock deduction on send
+  const allMats = useMemo(() => {
+    const combined: { material: string; quantity: number; unit: string }[] = [];
+    for (const item of order.items) {
+      for (const m of matForItem(item)) {
+        const existing = combined.find(x => x.material === m.material);
+        if (existing) existing.quantity = parseFloat((existing.quantity + m.quantity).toFixed(4));
+        else combined.push({ ...m });
+      }
+    }
+    return combined;
+  }, [order]);
 
   const handleSendToBaker = async () => {
     setSending(true); setSendError(null);
     try {
-      if (calculatedMats.length > 0) {
-        const warn = await deductMaterials(calculatedMats.map(m => ({ name: m.material, qty: m.quantity })));
+      if (allMats.length > 0) {
+        const warn = await deductMaterials(allMats.map(m => ({ name: m.material, qty: m.quantity })));
         if (warn) console.warn('Stock deduction note:', warn);
       }
       await sendToBaker(order.id);
@@ -210,80 +262,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
       </button>
 
       {expanded && (
-        <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-3">
-          {/* Items */}
-          <div className="space-y-2">
-            {order.items.map((item, i) => (
-              <div key={i} className="flex items-center justify-between bg-muted/40 rounded-xl px-3 py-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-base leading-none">{BAKERY_ITEMS.find(b => b.id === item.itemId)?.icon ?? '🍬'}</span>
-                  <div>
-                    <p className="text-sm font-body font-semibold text-foreground">{item.itemName}</p>
-                    {item.originalPcs != null && (
-                      <p className="text-[10px] font-body text-blue-600">
-                        {item.originalPcs} pcs → {item.quantity} kg
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm font-body font-bold tabular-nums text-foreground">
-                    {item.quantity}{item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
+          {/* Per-item rows */}
+          {order.items.map((item, i) => (
+            <ItemRow key={i} order={order} item={item} />
+          ))}
 
-          {/* Expected output */}
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase shrink-0">Expected output</label>
-            <input type="number" min={0} value={expectedOut}
-              onChange={e => handleExpectedChange(e.target.value)}
-              placeholder="units"
-              className="flex-1 h-9 px-3 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30" />
-          </div>
-
-          {/* Raw materials toggle */}
-          {hasMats && (
-            <button onClick={() => setShowMats(v => !v)}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-primary/5 border border-primary/15 text-xs font-body font-semibold text-primary active:scale-[0.99]">
-              <div className="flex items-center gap-1.5">
-                <Calculator className="size-3.5" />
-                Raw materials ({calculatedMats.length} ingredients)
-              </div>
-              {showMats ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-            </button>
-          )}
-          {hasMats && showMats && (
-            <div className="rounded-xl border border-border bg-muted/30 divide-y divide-border/50">
-              {calculatedMats.map((m, i) => (
-                <div key={i} className="flex items-center justify-between px-3 py-2">
-                  <span className="text-sm font-body text-foreground">{m.material}</span>
-                  <span className="text-sm font-body font-bold tabular-nums text-foreground">
-                    {m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} {m.unit}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Print button — shown when mats are expanded */}
-          {hasMats && showMats && (
-            <button
-              onClick={() => printRecipe(order, calculatedMats)}
-              className="w-full h-10 rounded-xl border border-primary/30 bg-primary/5 text-primary text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98] hover:bg-primary/10 transition-all"
-            >
-              <Printer className="size-4" />
-              Print Recipe Sheet
-            </button>
-          )}
-
-          {sendError && <p className="text-xs font-body text-destructive text-center">{sendError}</p>}
+          {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
 
           <button onClick={handleSendToBaker} disabled={sending || sent}
             className={cn(
-              'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50',
+              'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
               sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
             )}>
             {sending
