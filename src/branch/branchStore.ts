@@ -21,6 +21,8 @@ export interface SaleRecord {
   soldBy: string;
   branch: Branch;
   paymentMethod: string | null;
+  unitPrice: number; // ₹ per unit — 0 for stock-based (non-priced) sales
+  billNo: string | null;
 }
 
 export interface BranchAdvanceItem {
@@ -216,6 +218,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           soldBy:        d.sold_by,
           branch:        d.branch as Branch,
           paymentMethod: d.payment_method ?? null,
+          unitPrice:     d.unit_price != null ? Number(d.unit_price) : 0,
+          billNo:        d.bill_no ?? null,
         }));
 
         incoming[branch] = (incomingData || []).map((d) => ({
@@ -321,7 +325,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       soldAt:        saleData.sold_at,
       soldBy:        saleData.sold_by,
       branch,
-      paymentMethod: saleData.payment_method ?? null, // FIX #9
+      paymentMethod: saleData.payment_method ?? null,
+      unitPrice:     saleData.unit_price != null ? Number(saleData.unit_price) : 0,
+      billNo:        saleData.bill_no ?? null,
     };
 
     set((s) => {
@@ -724,6 +730,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       soldBy:        saleData.sold_by,
       branch,
       paymentMethod: saleData.payment_method ?? null,
+      unitPrice:     saleData.unit_price != null ? Number(saleData.unit_price) : unitPrice,
+      billNo:        saleData.bill_no ?? null,
     };
 
     // B2 local state fix: use the RPC-returned quantity for local state
@@ -891,6 +899,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       billNo:        sale.billNo,
     };
 
+    // Also write each item as a branch_sales row so revenue reports include credit sales.
+    // payment_method='credit' marks these as credit-billed (goods delivered, payment pending).
+    // They must NOT be excluded from revenue — the earning happened at point of sale.
+    const salesRows = sale.items.map(item => ({
+      branch,
+      item_name:      item.itemName,
+      quantity_sold:  item.quantity,
+      sold_at:        now,
+      sold_by:        sale.soldBy,
+      payment_method: 'credit',
+      unit_price:     item.price,
+      bill_no:        sale.billNo,
+    }));
+    if (salesRows.length > 0) {
+      await supabase.from('branch_sales').insert(salesRows);
+    }
+
     set((s) => {
       const creditSales = { ...s.creditSales };
       creditSales[branch] = [newSale, ...creditSales[branch]];
@@ -918,19 +943,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .eq('id', saleId);
     if (error) return `Failed to settle: ${error.message}`;
 
-    // Record the collected amount in branch_sales so it appears in daily sales/revenue reports.
-    // Use payment_method='credit_collection' to distinguish from regular sales.
-    // One row per item (proportional split) — or a single summary row using the first item name.
-    await supabase.from('branch_sales').insert({
-      branch,
-      item_name:      `Credit Collection – ${sale.customerName} (Bill #${sale.billNo.split('-').pop()})`,
-      quantity_sold:  1,
-      sold_at:        now,
-      sold_by:        sale.soldBy,
-      payment_method: 'credit_collection',
-      unit_price:     amountCollected,
-      bill_no:        sale.billNo,
-    });
+    // NOTE: We do NOT insert into branch_sales on settlement.
+    // Revenue was already recorded when the credit sale was billed (in recordCreditSale).
+    // Inserting here again would double-count the revenue.
+    // The credit_sales table tracks collection separately (amountPaid, creditAmount, status).
 
     set((s) => {
       const creditSales = { ...s.creditSales };
