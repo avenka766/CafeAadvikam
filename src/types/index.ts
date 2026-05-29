@@ -84,6 +84,7 @@ export interface Order {
   balancePaidBy?: string;
   balanceOrderId?: string;   // id of the balance-collection order row
   parcelCharges?: number;
+  deliveryDate?: string;     // ISO date string — mandatory for advance orders
 }
 
 export interface MenuCategory {
