@@ -1775,8 +1775,14 @@ export default function BillingDashboard() {
 
   // Regular orders: exclude OPEN advance orders (pending balance) only.
   // Closed advance orders (balanceDue=0) ARE included so they appear in All/status tabs.
+  // QR-FIX: QR orders that are still pending/preparing belong to the kitchen, NOT the biller.
+  // Billing only needs to see QR orders once the kitchen marks them ready (or they're served/cancelled).
   const regularOrders = useMemo(() =>
-    todayOrders.filter(o => !(o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)),
+    todayOrders.filter(o => {
+      if (o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0) return false; // open advance
+      if (o.orderSource === 'qr' && (o.status === 'pending' || o.status === 'preparing')) return false; // kitchen queue
+      return true;
+    }),
     [todayOrders]
   );
 

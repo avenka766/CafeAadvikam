@@ -30,7 +30,7 @@ export default function QROrderPage() {
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [orderNumber, setOrderNumber] = useState<number | null>(null);
   const [trackingId, setTrackingId] = useState<string | null>(null);
-  const [orderType, setOrderType] = useState<OrderType>(tableNum ? 'dine_in' : 'dine_in');
+  const [orderType, setOrderType] = useState<OrderType>(tableNum ? 'dine_in' : 'takeaway');
   const [tableNumber, setTableNumber] = useState<number | null>(tableNum);
   const [showTableSelect, setShowTableSelect] = useState(false);
 
