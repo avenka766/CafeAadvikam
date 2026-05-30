@@ -664,16 +664,22 @@ async function fetchDeductions(from: Date, to: Date): Promise<DeductionRow[]> {
 }
 
 function DeductionPreviewRow({ r, index }: { r: DeductionRow; index: number }) {
-  const isZeroAfter = r.stockAfter <= 0;
+  const isNegative = r.stockAfter < 0;
+  const isZeroAfter = r.stockAfter === 0;
   return (
     <div className={cn('px-4 py-3 flex items-start gap-3 border-b border-border last:border-0', index % 2 === 0 ? 'bg-card' : 'bg-muted/20')}>
-      <div className={cn('size-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5', isZeroAfter ? 'bg-red-50' : 'bg-amber-50')}>
-        <MinusCircle className={cn('size-3.5', isZeroAfter ? 'text-red-500' : 'text-amber-600')} />
+      <div className={cn('size-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5', isNegative ? 'bg-red-100' : isZeroAfter ? 'bg-red-50' : 'bg-amber-50')}>
+        <MinusCircle className={cn('size-3.5', isNegative ? 'text-red-600' : isZeroAfter ? 'text-red-500' : 'text-amber-600')} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="text-xs font-body font-bold text-foreground truncate">{r.materialName}</p>
-          {isZeroAfter && (
+          {isNegative && (
+            <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+              NEGATIVE
+            </span>
+          )}
+          {isZeroAfter && !isNegative && (
             <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
               EMPTY
             </span>
@@ -683,7 +689,7 @@ function DeductionPreviewRow({ r, index }: { r: DeductionRow; index: number }) {
           −{r.quantityDeducted % 1 === 0 ? r.quantityDeducted : r.quantityDeducted.toFixed(3)}{' '}
           <span className="font-normal text-muted-foreground">{r.unit}</span>
           <span className="text-muted-foreground font-normal ml-2 text-[10px]">
-            ({r.stockBefore.toFixed(2)} → {r.stockAfter.toFixed(2)} {r.unit})
+            ({r.stockBefore.toFixed(2)} → <span className={isNegative ? 'text-red-600 font-bold' : ''}>{r.stockAfter.toFixed(2)}</span> {r.unit})
           </span>
         </p>
         <p className="text-[10px] font-body text-muted-foreground mt-0.5">

@@ -5,8 +5,9 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle,
 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { calculateMaterials } from './recipeDefinitions';
@@ -376,27 +377,29 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
 // ─── Stock Row ────────────────────────────────────────────────────────────────
 function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: StockItem) => void; onDelete: (id: string) => void }) {
-  const isLow = item.quantity <= item.minThreshold;
+  const isNegative = item.quantity < 0;
+  const isLow = !isNegative && item.quantity <= item.minThreshold;
   const suppliers = useMemo(() => getSuppliersForItem(item.name), [item.name]);
   return (
     <div className={cn(
       'flex items-center gap-2.5 px-3.5 py-3 rounded-xl border transition-all',
-      isLow ? 'bg-red-50 border-red-200' : 'bg-card border-border'
+      isNegative ? 'bg-red-100 border-red-400' : isLow ? 'bg-red-50 border-red-200' : 'bg-card border-border'
     )}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          {isLow && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
+          {(isNegative || isLow) && <AlertTriangle className={cn('size-3 shrink-0', isNegative ? 'text-red-700' : 'text-red-500')} />}
           <span className="text-sm font-body font-semibold text-foreground truncate">{item.name}</span>
         </div>
         <p className="text-[10px] font-body text-muted-foreground">
           Min: {item.minThreshold} {item.unit}
+          {isNegative && <span className="text-red-700 font-bold ml-1.5">NEGATIVE — RESTOCK NEEDED</span>}
           {isLow && <span className="text-red-600 font-bold ml-1.5">LOW</span>}
           {suppliers.length > 0 && <span className="text-primary font-semibold ml-1.5">· {suppliers.join(', ')}</span>}
         </p>
       </div>
       <span className={cn(
         'text-sm font-body font-bold tabular-nums px-2.5 py-1 rounded-lg',
-        isLow ? 'text-red-700 bg-red-100' : 'text-primary bg-primary/10'
+        isNegative ? 'text-red-800 bg-red-200' : isLow ? 'text-red-700 bg-red-100' : 'text-primary bg-primary/10'
       )}>
         {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(2)} {item.unit}
       </span>
@@ -579,6 +582,123 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
   );
 }
 
+// ─── Inline Deductions view (used inside Inventory tab) ──────────────────────
+interface InvDeductionRow {
+  id: string; orderNumber: string; materialName: string;
+  quantityDeducted: number; unit: string;
+  stockBefore: number; stockAfter: number;
+  deductedBy: string; deductedAt: string;
+}
+
+function InlineDeductionsView() {
+  const [rows, setRows]       = useState<InvDeductionRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch]   = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    const today = new Date();
+    const from = new Date(today); from.setHours(0,0,0,0);
+    const to   = new Date(today); to.setHours(23,59,59,999);
+    const { data, error } = await supabase
+      .from('store_material_deductions')
+      .select('*')
+      .gte('deducted_at', from.toISOString())
+      .lte('deducted_at', to.toISOString())
+      .order('deducted_at', { ascending: false });
+    if (!error && data) {
+      setRows(data.map((r: Record<string, unknown>) => ({
+        id:               r.id as string,
+        orderNumber:      r.order_number as string,
+        materialName:     r.material_name as string,
+        quantityDeducted: Number(r.quantity_deducted),
+        unit:             r.unit as string,
+        stockBefore:      Number(r.stock_before),
+        stockAfter:       Number(r.stock_after),
+        deductedBy:       (r.deducted_by as string) ?? '—',
+        deductedAt:       r.deducted_at as string,
+      })));
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? rows.filter(r => r.materialName.toLowerCase().includes(q) || r.orderNumber.includes(q)) : rows;
+  }, [rows, search]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2 items-center">
+        <div className="flex-1 relative">
+          <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Filter by material or order #…"
+            className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
+        </div>
+        <button onClick={load} disabled={loading}
+          className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
+          <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
+        </button>
+      </div>
+
+      <p className="text-[10px] font-body text-muted-foreground px-1">
+        Showing today's deductions. For full history go to Reports → Deductions.
+      </p>
+
+      {loading && <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>}
+
+      {!loading && filtered.length === 0 && (
+        <div className="flex flex-col items-center py-12 gap-3 text-muted-foreground">
+          <MinusCircle className="size-10 opacity-20" />
+          <p className="text-sm font-body">No deductions recorded today.</p>
+          <p className="text-[11px] font-body text-center">Deductions appear here when you tap "Send to Baker".</p>
+        </div>
+      )}
+
+      {!loading && filtered.length > 0 && (
+        <div className="bg-card border border-border rounded-2xl overflow-hidden">
+          {filtered.map((r, i) => {
+            const isNeg = r.stockAfter < 0;
+            return (
+              <div key={r.id} className={cn(
+                'px-4 py-3 flex items-start gap-3 border-b border-border last:border-0',
+                i % 2 === 0 ? 'bg-card' : 'bg-muted/20'
+              )}>
+                <div className={cn('size-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5', isNeg ? 'bg-red-100' : 'bg-amber-50')}>
+                  <MinusCircle className={cn('size-3.5', isNeg ? 'text-red-600' : 'text-amber-600')} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-xs font-body font-bold text-foreground truncate">{r.materialName}</p>
+                    {isNeg && (
+                      <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                        NEGATIVE
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] font-body font-semibold text-foreground mt-0.5">
+                    −{r.quantityDeducted % 1 === 0 ? r.quantityDeducted : r.quantityDeducted.toFixed(3)}{' '}
+                    <span className="font-normal text-muted-foreground">{r.unit}</span>
+                    <span className="text-muted-foreground font-normal ml-2 text-[10px]">
+                      ({r.stockBefore.toFixed(2)} → <span className={isNeg ? 'text-red-600 font-bold' : ''}>{r.stockAfter.toFixed(2)}</span> {r.unit})
+                    </span>
+                  </p>
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+                    Order #{r.orderNumber} · {r.deductedBy} · {new Date(r.deductedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function StoreInventoryTab() {
   const { items, loaded, loading, load, addItem, updateItem, deleteItem, bulkImportFromRecipes } = useStoreStockStore();
@@ -588,7 +708,7 @@ function StoreInventoryTab() {
   const [importing, setImporting]   = useState(false);
   const [importToast, setImportToast] = useState<{ added: number; skipped: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [stockView, setStockView]   = useState<'all' | 'low'>('all');
+  const [stockView, setStockView]   = useState<'all' | 'low' | 'deductions'>('all');
 
   useEffect(() => { if (!loaded) load(); }, [loaded]);
 
@@ -605,17 +725,18 @@ function StoreInventoryTab() {
     }
   };
 
-  const lowItems = items.filter(i => i.quantity <= i.minThreshold);
+  const negativeItems = items.filter(i => i.quantity < 0);
+  const lowItems = items.filter(i => i.quantity >= 0 && i.quantity <= i.minThreshold);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    const base = stockView === 'low' ? lowItems : items;
+    const base = stockView === 'low' ? lowItems : stockView === 'deductions' ? [] : items;
     return base.filter(i => !q || i.name.toLowerCase().includes(q));
   }, [items, lowItems, search, stockView]);
 
   return (
     <div className="space-y-3">
-      {/* Sub-tab switcher: All / Low Stock */}
-      <div className="flex gap-1.5 bg-muted/60 p-1 rounded-xl">
+      {/* Sub-tab switcher: All / Low Stock / Deductions */}
+      <div className="flex gap-1 bg-muted/60 p-1 rounded-xl">
         <button
           onClick={() => setStockView('all')}
           className={cn(
@@ -624,7 +745,7 @@ function StoreInventoryTab() {
           )}
         >
           All Stock
-          <span className="ml-1.5 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{items.length}</span>
+          <span className="ml-1 text-[9px] font-bold bg-muted px-1.5 py-0.5 rounded-full">{items.length}</span>
         </button>
         <button
           onClick={() => setStockView('low')}
@@ -632,80 +753,102 @@ function StoreInventoryTab() {
             'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all flex items-center justify-center gap-1',
             stockView === 'low'
               ? 'bg-red-600 text-white shadow-sm'
-              : lowItems.length > 0
+              : (lowItems.length > 0 || negativeItems.length > 0)
               ? 'text-red-600 hover:bg-red-50'
               : 'text-muted-foreground'
           )}
         >
           <AlertTriangle className="size-3" />
-          Low Stock
-          {lowItems.length > 0 && (
+          Low/Neg
+          {(lowItems.length + negativeItems.length) > 0 && (
             <span className={cn(
               'text-[9px] font-bold px-1.5 py-0.5 rounded-full',
               stockView === 'low' ? 'bg-white/20 text-white' : 'bg-red-100 text-red-700'
-            )}>{lowItems.length}</span>
+            )}>{lowItems.length + negativeItems.length}</span>
           )}
         </button>
-      </div>
-
-      <div className="flex gap-2">
-        <div className="flex-1 relative">
-          <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search ingredients…"
-            className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
-        </div>
-        <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
-          <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
-        </button>
-        <button onClick={() => setShowAdd(true)}
-          className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
-          <Plus className="size-3.5" /> Add
+        <button
+          onClick={() => setStockView('deductions')}
+          className={cn(
+            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all flex items-center justify-center gap-1',
+            stockView === 'deductions' ? 'bg-amber-500 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'
+          )}
+        >
+          <MinusCircle className="size-3" />
+          Deductions
         </button>
       </div>
 
-      {stockView === 'all' && (
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { label: 'Total', value: items.length, color: 'text-foreground' },
-            { label: 'Low Stock', value: lowItems.length, color: lowItems.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: lowItems.length > 0 ? 'bg-red-50 border-red-200' : '' },
-            { label: 'OK', value: items.filter(i => i.quantity > i.minThreshold).length, color: 'text-emerald-600' },
-          ].map(s => (
-            <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
-              <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
-              <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
+      {/* Deductions view */}
+      {stockView === 'deductions' && <InlineDeductionsView />}
+
+      {/* Stock list views */}
+      {stockView !== 'deductions' && (
+        <>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search ingredients…"
+                className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
-          ))}
-        </div>
-      )}
-
-      {stockView === 'low' && lowItems.length === 0 && (
-        <div className="flex flex-col items-center py-12 gap-3 text-muted-foreground">
-          <CheckCircle2 className="size-10 text-emerald-500 opacity-60" />
-          <p className="text-sm font-body font-semibold text-emerald-700">All stock levels are OK!</p>
-        </div>
-      )}
-
-      {importError && <p className="text-xs font-body text-destructive px-1">{importError}</p>}
-      {importToast && (
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl">
-          <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
-          <p className="text-xs font-body text-emerald-700">Imported {importToast.added} items, skipped {importToast.skipped} existing.</p>
-        </div>
-      )}
-
-      {loading && !loaded
-        ? <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
-        : filtered.length === 0 && !(stockView === 'low' && lowItems.length === 0)
-        ? <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
-            <Warehouse className="size-10 opacity-20" />
-            <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add' : 'No matches'}</p>
+            <button onClick={() => load()} disabled={loading} className="size-10 flex items-center justify-center rounded-xl border border-border hover:bg-muted active:scale-90">
+              <RefreshCw className={cn('size-3.5 text-muted-foreground', loading && 'animate-spin')} />
+            </button>
+            <button onClick={() => setShowAdd(true)}
+              className="h-10 px-3 rounded-xl cafe-gradient text-primary-foreground text-xs font-body font-bold flex items-center gap-1.5 active:scale-95">
+              <Plus className="size-3.5" /> Add
+            </button>
           </div>
-        : <div className="space-y-2">
-            {filtered.map(i => (
-              <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
-            ))}
-          </div>
-      }
+
+          {stockView === 'all' && (
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: 'Total', value: items.length, color: 'text-foreground' },
+                { label: 'Negative', value: negativeItems.length, color: negativeItems.length > 0 ? 'text-red-700' : 'text-muted-foreground', bg: negativeItems.length > 0 ? 'bg-red-100 border-red-300' : '' },
+                { label: 'Low Stock', value: lowItems.length, color: lowItems.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: lowItems.length > 0 ? 'bg-red-50 border-red-200' : '' },
+              ].map(s => (
+                <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
+                  <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
+                  <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stockView === 'low' && (lowItems.length + negativeItems.length) === 0 && (
+            <div className="flex flex-col items-center py-12 gap-3 text-muted-foreground">
+              <CheckCircle2 className="size-10 text-emerald-500 opacity-60" />
+              <p className="text-sm font-body font-semibold text-emerald-700">All stock levels are OK!</p>
+            </div>
+          )}
+
+          {importError && <p className="text-xs font-body text-destructive px-1">{importError}</p>}
+          {importToast && (
+            <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl">
+              <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+              <p className="text-xs font-body text-emerald-700">Imported {importToast.added} items, skipped {importToast.skipped} existing.</p>
+            </div>
+          )}
+
+          {loading && !loaded
+            ? <div className="flex justify-center py-10"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+            : (() => {
+                const displayList = stockView === 'low' ? [...negativeItems, ...lowItems] : filtered;
+                return displayList.length === 0 && !(stockView === 'low' && (lowItems.length + negativeItems.length) === 0)
+                  ? <div className="flex flex-col items-center py-16 gap-3 text-muted-foreground">
+                      <Warehouse className="size-10 opacity-20" />
+                      <p className="text-sm font-body">{items.length === 0 ? 'No ingredients yet — tap Add' : 'No matches'}</p>
+                    </div>
+                  : <div className="space-y-2">
+                      {displayList.map(i => (
+                        <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
+                      ))}
+                    </div>;
+              })()
+          }
+        </>
+      )}
+
       {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m) => { await addItem(n, u, q, m); }} />}
       {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={async (u) => { await updateItem(editItem.id, u); setEditItem(null); }} />}
     </div>

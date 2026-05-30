@@ -215,8 +215,10 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     //   BEGIN UPDATE store_raw_stock SET quantity = GREATEST(0, quantity - p_qty) WHERE id = p_id; END; $$;
     // Call with: await supabase.rpc('deduct_materials', { p_id: match.id, p_qty: deductQty })
     const items = get().items;
-    // Validate all deductions first
-    const updates: { id: string; deductQty: number }[] = [];
+
+    // Build update list — capture name & unit from the stock item NOW, before set() mutates state.
+    // This prevents the stale get().items bug in the audit-log section below.
+    const updates: { id: string; name: string; unit: string; deductQty: number }[] = [];
     const warnings: string[] = [];
     for (const d of deductions) {
       const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
@@ -234,8 +236,11 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
           deductQty = deductQty / 1000;
         }
       }
-      updates.push({ id: match.id, deductQty });
+      // Capture name and unit at this point — BEFORE set() runs — so the audit log
+      // doesn't have to call get().items again after state has already been updated.
+      updates.push({ id: match.id, name: match.name, unit: match.unit, deductQty });
     }
+
     // Apply all updates — read fresh DB quantity immediately before each write
     const finalUpdates: { id: string; stockBefore: number; newQty: number }[] = [];
     for (const u of updates) {
@@ -246,16 +251,17 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         .eq('id', u.id)
         .single();
       const currentQty = fresh && !fetchErr ? Number(fresh.quantity) : (items.find(i => i.id === u.id)?.quantity ?? 0);
-      // FIX: removed Math.max(0, ...) so stock correctly goes negative when supply is insufficient
+      // Stock goes negative when supply is insufficient — this is intentional.
+      // e.g. sugar at 0, baker needs 2kg → stock becomes -2 kg (shows the deficit).
       const newQty = currentQty - u.deductQty;
       const { error } = await supabase
         .from('store_raw_stock')
         .update({ quantity: newQty })
         .eq('id', u.id);
       if (error) return error.message;
-      // FIX: capture stockBefore (currentQty) so the audit log uses the real pre-deduction value
       finalUpdates.push({ id: u.id, stockBefore: currentQty, newQty });
     }
+
     set(s => ({
       items: s.items.map(i => {
         const upd = finalUpdates.find(u => u.id === i.id);
@@ -264,22 +270,21 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     }));
 
     // ── DEDUCT-LOG: write one audit row per material to store_material_deductions ─
+    // FIXED: use `updates` (name/unit captured before set()) instead of calling get().items
+    // again after the state has already been mutated.
     if (ctx) {
       const now = new Date().toISOString();
       const logRows = updates.map(u => {
-        const stockItem = get().items.find(i => i.id === u.id);
         const finalU = finalUpdates.find(f => f.id === u.id);
         return {
           order_id:          ctx.orderId,
           order_number:      String(ctx.orderNumber),
-          material_name:     stockItem?.name ?? u.id,
+          material_name:     u.name,
           quantity_deducted: u.deductQty,
-          unit:              stockItem?.unit ?? 'kg',
-          // FIX: use captured stockBefore instead of reverse-calculating from newQty
+          unit:              u.unit,
           stock_before:      finalU?.stockBefore ?? 0,
           stock_after:       finalU?.newQty ?? 0,
           deducted_by:       ctx.deductedBy,
-          // FIX: explicitly set deducted_at so date-range queries in StoreReportTab always work
           deducted_at:       now,
         };
       });
