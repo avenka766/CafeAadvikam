@@ -102,6 +102,42 @@ async function fetchNextBillNo(): Promise<string> {
   return String(data);
 }
 
+// ─── Print KOT (Kitchen Order Ticket) — VRSNB only ───────────────────────────
+// Called after printBill for VRSNB to send a copy to the kitchen/packing area.
+function printKOT(billNo: string, items: CartItem[]) {
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+  const rows = items.map((item) => `
+    <tr>
+      <td style="padding:4px 2px;font-size:13px;font-weight:bold">${escHtml(item.itemName)}</td>
+      <td style="padding:4px 2px;font-size:13px;font-weight:bold;text-align:right">
+        ${item.sellUnit === 'kg'
+          ? (item.quantity < 1 ? `${Math.round(item.quantity * 1000)}g` : `${item.quantity}kg`)
+          : `×${item.quantity}`}
+      </td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html><html><head><title>KOT – ${billNo}</title>
+  <style>
+    @page { margin: 6mm; size: 80mm auto; }
+    body { font-family: 'Arial', sans-serif; font-size: 12px; color: #000; max-width: 300px; margin: 0 auto; padding: 6px; }
+    .center { text-align: center; }
+    hr { border: none; border-top: 2px dashed #000; margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; }
+  </style></head><body>
+  <div class="center" style="font-size:16px;font-weight:900;letter-spacing:2px">KOT</div>
+  <div class="center" style="font-size:11px">Bill #${escHtml(billNo.split('-').pop())} · ${timeStr}</div>
+  <hr/>
+  <table><tbody>${rows}</tbody></table>
+  <hr/>
+  <div class="center" style="font-size:10px">— Kitchen Copy —</div>
+  <script>window.onload=()=>window.print();</script>
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=380,height=400');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
 // ─── Print Bill ───────────────────────────────────────────────────────────────
 
 interface PrintArgs {
@@ -954,8 +990,8 @@ function BranchAdvanceCard({ order, branch }: { order: BranchAdvanceOrder; branc
         </div>
       </div>
 
-      {/* Collect action */}
-      {!showCollect ? (
+      {/* Collect action — only shown when there is an outstanding balance */}
+      {balance > 0 && (!showCollect ? (
         <div className="px-4 py-3">
           <button onClick={() => setShowCollect(true)}
             className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-white"
@@ -987,7 +1023,7 @@ function BranchAdvanceCard({ order, branch }: { order: BranchAdvanceOrder; branc
             </button>
           </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -1093,8 +1129,9 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
     if (allEmpty || !currentUser) return;
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setAdvanceErr('Enter advance amount'); return; }
-    if (amt >= total) { setAdvanceErr('Advance must be less than total'); return; }
+    if (amt > total) { setAdvanceErr('Advance cannot exceed total'); return; }
     if (!advanceMethod) { setAdvanceErr('Select payment method'); return; }
+    if (!deliveryDate) { setAdvanceErr('Select a delivery date'); return; }
     setAdvanceErr(''); setSubmitting(true);
 
     const items: BranchAdvanceItem[] = [
@@ -1109,7 +1146,8 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
       subtotal: total,
       advanceAmount: amt,
       advanceMethod,
-      balanceDue: total - amt,
+      balanceDue: Math.max(0, total - amt),
+      deliveryDate: deliveryDate || null,
       soldBy: currentUser.displayName || currentUser.username || 'Staff',
     });
 
@@ -1118,7 +1156,7 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
     setShowSuccess(true);
     setCart([]); setCustomItems([]); setCustomerName('');
-    setAdvanceAmt(''); setAdvanceMethod(null);
+    setDeliveryDate(''); setAdvanceAmt(''); setAdvanceMethod(null);
     setTimeout(() => setShowSuccess(false), 1800);
   };
 
@@ -1285,22 +1323,54 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
               className="w-full px-3 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
           )}
 
-          {/* Advance amount + method */}
+          {/* Delivery date + Advance amount + method */}
           {!allEmpty && (
             <div className="space-y-3 pt-2 border-t border-border">
+
+              {/* BUGFIX: delivery_date is required by branch_advance_orders schema */}
+              <div>
+                <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                  <Calendar className="size-3" /> Delivery Date *
+                </label>
+                <input type="date" value={deliveryDate} onChange={e => { setDeliveryDate(e.target.value); setAdvanceErr(''); }}
+                  min={new Date().toISOString().split('T')[0]}
+                  className={cn('w-full px-3 py-2.5 rounded-xl bg-card border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/50',
+                    !deliveryDate ? 'border-amber-400' : 'border-border')} />
+              </div>
+
               <div>
                 <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
+                {/* BUGFIX: "Collect full amount" quick-fill button */}
+                <div className="flex gap-2 mb-1.5">
+                  <button onClick={() => { setAdvanceAmt(String(total)); setAdvanceErr(''); }}
+                    className={cn('px-3 py-1 rounded-lg text-[11px] font-bold border transition active:scale-95',
+                      parseFloat(advanceAmt) === total
+                        ? 'bg-emerald-500 text-white border-transparent'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100')}>
+                    Full Amount ({fmt(total)})
+                  </button>
+                </div>
                 <div className="relative">
                   <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                   <input type="number" placeholder="Enter advance amount" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceErr(''); }}
                     className="w-full pl-8 pr-3 py-2.5 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/50" />
                 </div>
-                {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && parseFloat(advanceAmt) < total && (
-                  <div className="flex justify-between mt-1.5 px-1">
-                    <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
-                    <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{fmt(total - parseFloat(advanceAmt))}</span>
-                  </div>
-                )}
+                {advanceAmt && !isNaN(parseFloat(advanceAmt)) && parseFloat(advanceAmt) > 0 && (() => {
+                  const paid = parseFloat(advanceAmt);
+                  const balance = total - paid;
+                  if (Math.abs(balance) < 0.01) return (
+                    <div className="flex justify-between mt-1.5 px-1">
+                      <span className="text-[11px] font-body text-emerald-600 font-semibold">✓ Full amount — no balance due</span>
+                    </div>
+                  );
+                  if (balance > 0) return (
+                    <div className="flex justify-between mt-1.5 px-1">
+                      <span className="text-[11px] font-body text-muted-foreground">Balance due</span>
+                      <span className="text-[11px] font-body font-bold text-red-600 tabular-nums">{fmt(balance)}</span>
+                    </div>
+                  );
+                  return null;
+                })()}
               </div>
               <div>
                 <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
@@ -1539,7 +1609,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const isAlertBranch = branch === 'VRSNB' || branch === 'SNB';
   const todayStr = new Date().toISOString().split('T')[0];
   const todayDeliveries = useMemo(() =>
-    advanceOrders.filter(o => (o as any).deliveryDate === todayStr && o.status === 'pending'),
+    advanceOrders.filter(o => o.deliveryDate === todayStr && o.status === 'pending'),
     [advanceOrders, todayStr]
   );
   const [alertPopupDismissed, setAlertPopupDismissed] = useState(false);
@@ -1834,14 +1904,26 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const handlePrintAndConfirm = async () => {
     // B6 FIX: guard against double-fire (submitting already true from direct checkout btn)
     if (submitting) return;
-    // L-03 FIX: run checkout first; only print bill/KOT if it succeeds so we
-    // never produce a receipt for a transaction that was never saved.
+    // PRINT-FIX: snapshot all bill data BEFORE doCheckout() since clearCart() will
+    // reset cart, discount, payment state — printBill must use the pre-checkout values.
+    const printSnapshot = {
+      items: [...cart], subtotal, discount, discountType, discountValue,
+      roundOff, finalTotal, payMode, singleMethod,
+      splitMethods: [...splitMethods] as [PaymentMethod|null, PaymentMethod|null],
+      splitAmounts: [...splitAmounts] as [string, string],
+      billNoSnapshot: billNo.current,
+    };
+    // L-03 FIX: run checkout first; only print bill/KOT if it succeeds
     const success = await doCheckout();
     if (!success) return;
-    printBill({ branch, billNo: billNo.current, items: cart, subtotal, discount,
-      discountType, discountValue, roundOff, finalTotal, cgst: cafeCgst, sgst: cafeSgst,
-      payMode, singleMethod, splitMethods, splitAmounts, soldBy });
-    if (isVRSNB) setTimeout(() => printKOT(billNo.current, cart), 400);
+    printBill({ branch, billNo: printSnapshot.billNoSnapshot, items: printSnapshot.items,
+      subtotal: printSnapshot.subtotal, discount: printSnapshot.discount,
+      discountType: printSnapshot.discountType, discountValue: printSnapshot.discountValue,
+      roundOff: printSnapshot.roundOff, finalTotal: printSnapshot.finalTotal,
+      cgst: cafeCgst, sgst: cafeSgst,
+      payMode: printSnapshot.payMode, singleMethod: printSnapshot.singleMethod,
+      splitMethods: printSnapshot.splitMethods, splitAmounts: printSnapshot.splitAmounts, soldBy });
+    if (isVRSNB) setTimeout(() => printKOT(printSnapshot.billNoSnapshot, printSnapshot.items), 400);
   };
 
   // ── Success ──────────────────────────────────────────────────────────────────
@@ -2009,9 +2091,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       {activeTab === 'bill' && (
         <div className="flex flex-1 min-h-0 overflow-hidden">
 
-          {/* ═══ COL 1: Category sidebar ═══════════════════════════════════════ */}
+          {/* ═══ COL 1: Category sidebar — 25% of screen ══════════════════════ */}
           {isSNB && (
-            <div className="w-[120px] sm:w-[140px] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+            <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
               {(['All', ...activeCategories] as const).map((cat) => {
                 const isActive = activeCategory === cat && !search.trim();
                 const catCount = cat === 'All'
@@ -2038,7 +2120,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             </div>
           )}
 
-          {/* ═══ COL 2: Search + Item grid ════════════════════════════════════ */}
+          {/* ═══ COL 2: Search + Item grid — 45% (flex-1 fills remaining after COL1+COL3) */}
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
 
             {/* Search bar — always at top, searches ALL items */}
@@ -2120,8 +2202,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             </div>
           </div>
 
-          {/* ═══ COL 3: Bill panel (right, full height) ═══════════════════════ */}
-          <div className="w-[280px] sm:w-[300px] lg:w-[320px] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+          {/* ═══ COL 3: Bill panel — 35% of screen ═══════════════════════════ */}
+          <div className="w-[35%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
 
             {/* Bill header */}
             <div className="px-4 py-3 bg-zinc-900 shrink-0">
@@ -2182,9 +2264,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
               </div>
             )}
 
-            {/* Totals + payment — fixed at bottom */}
+            {/* Totals + payment — fixed at bottom, own scroll if tall */}
             {cart.length > 0 && (
-              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 shrink-0 overflow-y-auto" style={{ maxHeight: '60%' }}>
+              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 shrink-0 overflow-y-auto max-h-[55vh]">
 
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Subtotal</span>
