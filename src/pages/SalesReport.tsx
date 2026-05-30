@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 import type { PaymentType } from '@/types';
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
-  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance',
+  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance', credit: 'Credit',
 };
 const PIE_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#999'];
 const SOURCE_COLORS = ['#3B82F6', '#8B5CF6'];
@@ -149,11 +149,12 @@ export default function SalesReport() {
   }, [dayOrders]);
 
   const paymentBreakdown = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
+    let cash = 0, upi = 0, card = 0, credit = 0;
     dayOrders.forEach((o) => {
       if (o.paymentType === 'cash') cash += o.total;
       else if (o.paymentType === 'upi') upi += o.total;
       else if (o.paymentType === 'card') card += o.total;
+      else if (o.paymentType === 'credit') credit += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
       }
@@ -162,6 +163,7 @@ export default function SalesReport() {
     if (cash > 0) result.push({ name: 'Cash', value: cash });
     if (upi > 0) result.push({ name: 'UPI', value: upi });
     if (card > 0) result.push({ name: 'Card', value: card });
+    if (credit > 0) result.push({ name: 'Credit', value: credit });
     return result;
   }, [dayOrders]);
 
@@ -280,20 +282,22 @@ export default function SalesReport() {
     ];
 
     // ── Sheet 6: Payment Breakdown ────────────────────────────────────────────
-    let totalCash = 0, totalUpi = 0, totalCard = 0;
+    let totalCash = 0, totalUpi = 0, totalCard = 0, totalCredit = 0;
     dayOrders.forEach(o => {
       if (o.paymentType === 'cash') totalCash += o.total;
       else if (o.paymentType === 'upi') totalUpi += o.total;
       else if (o.paymentType === 'card') totalCard += o.total;
+      else if (o.paymentType === 'credit') totalCredit += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
       }
     });
     const paymentRows = [
-      { 'Payment Method': 'Cash',  'Orders': dayOrders.filter(o => o.paymentType === 'cash' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
-      { 'Payment Method': 'UPI',   'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
-      { 'Payment Method': 'Card',  'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
-      { 'Payment Method': 'TOTAL', 'Orders': orderCount, 'Amount (₹)': totalRevenue },
+      { 'Payment Method': 'Cash',   'Orders': dayOrders.filter(o => o.paymentType === 'cash' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
+      { 'Payment Method': 'UPI',    'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
+      { 'Payment Method': 'Card',   'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
+      { 'Payment Method': 'Credit', 'Orders': dayOrders.filter(o => o.paymentType === 'credit').length, 'Amount (₹)': totalCredit },
+      { 'Payment Method': 'TOTAL',  'Orders': orderCount, 'Amount (₹)': totalRevenue },
     ];
 
     // ── Sheet 7: Top Items ────────────────────────────────────────────────────
