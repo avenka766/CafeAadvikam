@@ -113,7 +113,7 @@ interface BranchState {
   lastSyncedAt:    number | null;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
-  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string) => Promise<string | null>;
+  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number) => Promise<string | null>;
   recordSnbSale: (
     branch: Branch,
     itemName: string,
@@ -286,11 +286,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // B1 FIX: atomic stock decrement via stored procedure (see supabase/migrations/001_security.sql)
   // `decrement_branch_stock` does: UPDATE SET quantity = quantity - p_qty WHERE quantity >= p_qty
   // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
-  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo) => {
+  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice) => {
     // Pre-flight UX check (authoritative guard is in the DB)
     const localStock = get().stock[branch].find((s) => s.itemName === itemName);
     if (!localStock) return 'Item not found in stock';
     if (localStock.quantity < qty) return 'Insufficient stock';
+
+    // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
+    const resolvedPrice = unitPrice ?? localStock.price ?? 0;
 
     const { data: newQtyData, error: rpcErr } = await supabase
       .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: qty });
@@ -310,6 +313,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_at:        new Date().toISOString(),
         sold_by:        soldBy,
         payment_method: paymentMethod,
+        unit_price:     resolvedPrice,
         bill_no:        billNo ?? null,
       })
       .select().single();
