@@ -22,38 +22,48 @@ const ROLE_GROUPS = [
     label: '🏬 Branch Sales',
     roles: ['branch_vrsnb', 'branch_snb', 'branch_hosur'] as UserRole[],
   },
+  {
+    label: '🛡️ Branch Admins & Owner',
+    roles: ['admin_vrsnb', 'admin_snb', 'owner'] as UserRole[],
+  },
 ];
 
 const ROLE_LABELS: Record<UserRole, string> = {
-  order_taker:   'Order Taker',
-  billing:       'Billing',
-  admin:         'Administrator',
-  kitchen:       'Kitchen / Chef',
+  order_taker:     'Order Taker',
+  billing:         'Billing',
+  admin:           'Administrator',
+  kitchen:         'Kitchen / Chef',
   receiver_vrsnb:  'VRSNB Receiver',
   receiver_snb:    'SNB Receiver',
   receiver_hosur:  'Hosur Receiver',
-  store:         'Store',
-  baker:         'Baker',
-  packing:       'Packing',
-  branch_vrsnb:  'VR SNB Branch',
-  branch_snb:    'SNB Branch',
-  branch_hosur:  'Hosur Branch',
+  store:           'Store',
+  baker:           'Baker',
+  packing:         'Packing',
+  branch_vrsnb:    'VR SNB Branch',
+  branch_snb:      'SNB Branch',
+  branch_hosur:    'Hosur Branch',
+  admin_vrsnb:     'VRSNB Admin',
+  admin_snb:       'SNB Admin',
+  owner:           'Owner',
 };
 
 const ROLE_COLORS: Record<UserRole, string> = {
-  order_taker:   'bg-blue-100 text-blue-800',
-  billing:       'bg-emerald-100 text-emerald-800',
-  admin:         'bg-amber-100 text-amber-800',
-  kitchen:       'bg-orange-100 text-orange-800',
+  order_taker:     'bg-blue-100 text-blue-800',
+  billing:         'bg-emerald-100 text-emerald-800',
+  admin:           'bg-amber-100 text-amber-800',
+  kitchen:         'bg-orange-100 text-orange-800',
   receiver_vrsnb:  'bg-blue-100 text-blue-800',
   receiver_snb:    'bg-amber-100 text-amber-800',
   receiver_hosur:  'bg-emerald-100 text-emerald-800',
-  store:         'bg-cyan-100 text-cyan-800',
-  baker:         'bg-rose-100 text-rose-800',
-  packing:       'bg-indigo-100 text-indigo-800',
-  branch_vrsnb:  'bg-blue-100 text-blue-800',
-  branch_snb:    'bg-amber-100 text-amber-700',
-  branch_hosur:  'bg-emerald-100 text-emerald-800',
+  store:           'bg-cyan-100 text-cyan-800',
+  baker:           'bg-rose-100 text-rose-800',
+  packing:         'bg-indigo-100 text-indigo-800',
+  branch_vrsnb:    'bg-blue-100 text-blue-800',
+  branch_snb:      'bg-amber-100 text-amber-700',
+  branch_hosur:    'bg-emerald-100 text-emerald-800',
+  admin_vrsnb:     'bg-violet-100 text-violet-800',
+  admin_snb:       'bg-yellow-100 text-yellow-800',
+  owner:           'bg-rose-100 text-rose-800',
 };
 
 // ─── Role Picker component ────────────────────────────────────────────────────
@@ -278,8 +288,11 @@ export default function StaffManagement() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="size-11 rounded-2xl flex items-center justify-center shrink-0"
-                      style={{ background: user.role === 'admin' ? 'rgba(245,158,11,0.12)' : 'hsl(var(--muted))', border: user.role === 'admin' ? '1px solid rgba(245,158,11,0.25)' : '1px solid hsl(var(--border))' }}>
-                      {user.role === 'admin'
+                      style={{
+                        background: ['admin','admin_vrsnb','admin_snb','owner'].includes(user.role) ? 'rgba(245,158,11,0.12)' : 'hsl(var(--muted))',
+                        border:     ['admin','admin_vrsnb','admin_snb','owner'].includes(user.role) ? '1px solid rgba(245,158,11,0.25)' : '1px solid hsl(var(--border))',
+                      }}>
+                      {['admin','admin_vrsnb','admin_snb','owner'].includes(user.role)
                         ? <ShieldCheck className="size-5 text-amber-600" />
                         : <User className="size-5 text-muted-foreground" />}
                     </div>
