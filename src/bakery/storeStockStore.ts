@@ -237,7 +237,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       updates.push({ id: match.id, deductQty });
     }
     // Apply all updates — read fresh DB quantity immediately before each write
-    const finalUpdates: { id: string; newQty: number }[] = [];
+    const finalUpdates: { id: string; stockBefore: number; newQty: number }[] = [];
     for (const u of updates) {
       // M-08 FIX: fetch current quantity from DB right before writing to reduce stale-read race
       const { data: fresh, error: fetchErr } = await supabase
@@ -246,13 +246,15 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         .eq('id', u.id)
         .single();
       const currentQty = fresh && !fetchErr ? Number(fresh.quantity) : (items.find(i => i.id === u.id)?.quantity ?? 0);
-      const newQty = Math.max(0, currentQty - u.deductQty);
+      // FIX: removed Math.max(0, ...) so stock correctly goes negative when supply is insufficient
+      const newQty = currentQty - u.deductQty;
       const { error } = await supabase
         .from('store_raw_stock')
         .update({ quantity: newQty })
         .eq('id', u.id);
       if (error) return error.message;
-      finalUpdates.push({ id: u.id, newQty });
+      // FIX: capture stockBefore (currentQty) so the audit log uses the real pre-deduction value
+      finalUpdates.push({ id: u.id, stockBefore: currentQty, newQty });
     }
     set(s => ({
       items: s.items.map(i => {
@@ -263,6 +265,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
 
     // ── DEDUCT-LOG: write one audit row per material to store_material_deductions ─
     if (ctx) {
+      const now = new Date().toISOString();
       const logRows = updates.map(u => {
         const stockItem = get().items.find(i => i.id === u.id);
         const finalU = finalUpdates.find(f => f.id === u.id);
@@ -272,9 +275,12 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
           material_name:     stockItem?.name ?? u.id,
           quantity_deducted: u.deductQty,
           unit:              stockItem?.unit ?? 'kg',
-          stock_before:      finalU ? finalU.newQty + u.deductQty : 0,
+          // FIX: use captured stockBefore instead of reverse-calculating from newQty
+          stock_before:      finalU?.stockBefore ?? 0,
           stock_after:       finalU?.newQty ?? 0,
           deducted_by:       ctx.deductedBy,
+          // FIX: explicitly set deducted_at so date-range queries in StoreReportTab always work
+          deducted_at:       now,
         };
       });
       if (logRows.length > 0) {

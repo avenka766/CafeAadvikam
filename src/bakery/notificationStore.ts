@@ -147,6 +147,17 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushPackingDiscrepancy: async (orderId, orderNumber, branch, items) => {
+    // Dedup — don't fire a discrepancy alert for the same order twice.
+    // Both the per-item (a) and allFullyDispatched (b) conditions in submitDispatch
+    // can fire on the same submit call, causing two DB inserts for one event.
+    const { data: existing } = await supabase
+      .from('admin_notifications')
+      .select('id')
+      .eq('type', 'packing_discrepancy')
+      .eq('ref_id', orderId)
+      .limit(1);
+    if (existing && existing.length > 0) return;
+
     // Build a human-readable line per item — covers both shortfall AND excess
     const lines = items
       .map(i => {

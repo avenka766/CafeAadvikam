@@ -169,11 +169,11 @@ function NotificationDetailModal({
               <span className="font-bold">Branch:</span> {String(m.branch ?? '—')} · <span className="font-bold">Order:</span> {String(m.orderNumber ?? '—')}
             </p>
           </div>
-          <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Baker Sent vs Packing Dispatched</p>
+          <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Receiver Ordered vs Packing Dispatched</p>
           <div className="rounded-xl border border-orange-200 overflow-hidden">
             <div className="grid grid-cols-12 px-3 py-2 bg-orange-50 text-[9px] font-body font-bold text-orange-700 uppercase">
               <span className="col-span-4">Item</span>
-              <span className="col-span-3 text-right">Baker Sent</span>
+              <span className="col-span-3 text-right">Receiver Ordered</span>
               <span className="col-span-3 text-right">Dispatched</span>
               <span className="col-span-2 text-right">Gap</span>
             </div>
