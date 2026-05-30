@@ -1772,7 +1772,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         price: c.price ?? 0, lineTotal: c.lineTotal ?? 0,
       }));
       const creditErr = await recordCreditSale(branch, {
-        branch, customerName: '', // filled by outer customerName state (VRSNB/SNB doesn't mandate it, but good to pass)
+        branch, customerName: customerName.trim() || 'Customer',
         customerPhone: customerPhone.trim() || null, items: creditItems,
         subtotal: finalTotal, amountPaid: amtPaid,
         creditAmount: Math.max(0, finalTotal - amtPaid),
@@ -1787,7 +1787,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         }
       } else {
         for (const item of cart) {
-          await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current);
+          await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current, item.price ?? 0);
         }
       }
     } else if (isSNB) {
@@ -1811,7 +1811,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       // VRSNB — stock-gated sale
       const succeeded: string[] = [];
       for (const item of cart) {
-        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current);
+        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current, item.price ?? 0);
         if (err) {
           setError(`Failed on "${item.itemName}": ${err}.${succeeded.length > 0 ? ` (Saved: ${succeeded.join(', ')})` : ''}`);
           return;
