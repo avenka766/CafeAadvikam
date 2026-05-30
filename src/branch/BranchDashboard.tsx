@@ -53,7 +53,11 @@ export default function BranchDashboard({ branch }: Props) {
     }
 
     const id = setInterval(() => fetchBranchData(branch), 30_000);
-    return () => clearInterval(id);
+    // INCOMING-FIX: also re-run syncIncomingFromDispatches periodically so new dispatches
+    // from Packing appear in the branch Incoming list without a manual page reload.
+    // The store's per-branch 5-min guard prevents this from being expensive.
+    const syncId = setInterval(() => syncIncomingFromDispatches(branch), 5 * 60 * 1000);
+    return () => { clearInterval(id); clearInterval(syncId); };
   }, [branch]);
 
   const availableStock = branchStock.filter((s) => s.quantity > 0);
@@ -72,8 +76,11 @@ export default function BranchDashboard({ branch }: Props) {
     [branchSales, todayString],
   );
 
+  // STAT-FIX: show number of sales transactions today, not raw quantity sum.
+  // Summing quantities is meaningless when sales mix pcs and kg items
+  // (e.g. 5 pcs + 0.5 kg = 5.5 is an incoherent number).
   const totalTodayQty = useMemo(
-    () => todaySalesLog.reduce((a, s) => a + s.quantitySold, 0),
+    () => todaySalesLog.length,
     [todaySalesLog],
   );
 
@@ -89,8 +96,8 @@ export default function BranchDashboard({ branch }: Props) {
       </div>
 
       <div className="px-4 py-3 grid grid-cols-2 gap-2">
-        <StatCard label="In Stock"   value={availableStock.length} color={colors.text} />
-        <StatCard label="Sold Today" value={totalTodayQty}         color="text-blue-700" />
+        <StatCard label="In Stock"    value={availableStock.length} color={colors.text} />
+        <StatCard label="Sales Today" value={totalTodayQty}         color="text-blue-700" />
       </div>
 
       <div className="mx-4 mb-3">
