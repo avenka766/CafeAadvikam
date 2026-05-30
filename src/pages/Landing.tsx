@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from 'react';
-import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AnimatePresence, motion, useScroll, useTransform } from 'framer-motion';
 import {
   ArrowRight,
   CalendarCheck,
@@ -8,24 +9,37 @@ import {
   Clock,
   Coffee,
   Croissant,
-  Flame,
   Leaf,
   MapPin,
   Menu as MenuIcon,
+  MessageCircle,
   Phone,
   Sparkles,
+  UtensilsCrossed,
   Users,
   X,
 } from 'lucide-react';
+import { useAuthStore } from '@/stores/authStore';
+import { useMenuStore } from '@/stores/menuStore';
+import { getRoleDefaultPath } from '@/lib/routing';
+import { MENU_CATEGORIES } from '@/constants/config';
+import { cn, formatCurrency } from '@/lib/utils';
+import { useScrollLock } from '@/hooks/useScrollLock';
 import heroMeal from '@/assets/hero-bg.jpg';
 import cafeLogo from '@/assets/cafe-logo.png';
+import snbLogo from '@/assets/snb-logo.png';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
   hours: '7 AM – 10 PM Daily',
   phone: '+91 90954 45444',
   whatsapp: '919095445444',
-  mapsQuery: '109 Bagalur Main Road Berikai 635105 Cafe Aadvikam',
+  mapsQuery: 'Cafe Aadvikam 109 Bagalur Main Road Berikai 635105',
+};
+
+const BAKERY = {
+  phone: '+91 90954 45444',
+  whatsapp: '919095445444',
 };
 
 const IMG = {
@@ -49,23 +63,12 @@ const navItems = [
   ['Location', '#visit'],
 ] as const;
 
-const leafHotspots = [
-  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.' },
-  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.' },
-  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.' },
-  { title: 'Fresh Chutneys', copy: 'Coconut and house chutneys ground fresh every day.' },
-  { title: 'Filter Coffee', copy: 'Traditional cafe finish with warm aroma and foam.' },
-];
-
-const menuHighlights = [
-  ['Ghee Roast Dosa', 'Crispy perfection with aromatic ghee'],
-  ['Aadvikam Special Thali', 'A complete vegetarian feast'],
-  ['Filter Coffee', 'Traditional brew in steel tumblers'],
-  ['Rava Kesari', 'Saffron-infused semolina dessert'],
-  ['Paneer Butter Masala', 'Creamy cottage cheese in rich gravy'],
-  ['Fresh Lime Soda', 'Sweet, salty, and refreshing'],
-  ['Fresh Bakery', 'Breads, buns, pastries, cakes, and sweets'],
-  ['South Indian Breakfast', 'Idli, dosa, sambar, chutney, and coffee'],
+const leafItems = [
+  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.', icon: '○', x: '21%', y: '38%' },
+  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.', icon: '◉', x: '42%', y: '52%' },
+  { title: 'Coconut Chutney', copy: 'Ground fresh every morning before the first breakfast order.', icon: '●', x: '61%', y: '36%' },
+  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.', icon: '◒', x: '47%', y: '69%' },
+  { title: 'Rava Kesari', copy: 'Saffron-sweet comfort to finish the meal.', icon: '◐', x: '75%', y: '55%' },
 ];
 
 const signatureItems = [
@@ -85,70 +88,101 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function MenuModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function MenuPopup({ onClose }: { onClose: () => void }) {
+  const { items } = useMenuStore();
+  const [sel, setSel] = useState('all');
+  const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
+  const activeCats = useMemo(() => MENU_CATEGORIES.filter((c) => enabled.some((i) => i.category === c.id)), [enabled]);
+  const display = useMemo(() => (sel === 'all' ? activeCats : activeCats.filter((c) => c.id === sel)), [sel, activeCats]);
+  useScrollLock();
+
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-stone-950/80 px-4 py-8 text-white backdrop-blur-md"
-        >
-          <motion.div
-            initial={{ scale: 0.95, y: 30, opacity: 0 }}
-            animate={{ scale: 1, y: 0, opacity: 1 }}
-            exit={{ scale: 0.95, y: 30, opacity: 0 }}
-            className="relative max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-[2rem] border border-white/15 bg-[#120e08] shadow-2xl"
+    <div className="fixed inset-0 z-[95] flex items-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative flex h-[90vh] w-full flex-col rounded-t-3xl bg-background shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-5 pb-3 pt-5">
+          <div>
+            <h2 className="font-display text-xl font-bold text-foreground">Full Menu</h2>
+            <p className="text-xs font-body text-muted-foreground">Pure vegetarian · {enabled.length} items</p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close menu"
+            className="flex size-10 items-center justify-center rounded-full bg-muted transition-transform active:scale-90"
           >
+            <X className="size-5 text-muted-foreground" />
+          </button>
+        </div>
+        <div className="shrink-0 border-b border-border">
+          <div className="flex gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none]">
             <button
-              onClick={onClose}
-              aria-label="Close menu"
-              className="absolute right-4 top-4 z-20 grid h-11 w-11 place-items-center rounded-full bg-white text-stone-950 shadow-xl transition hover:scale-105"
+              onClick={() => setSel('all')}
+              className={cn(
+                'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
+                sel === 'all' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
+              )}
             >
-              <X className="h-5 w-5" />
+              All Items
             </button>
-            <div className="grid max-h-[88vh] overflow-y-auto lg:grid-cols-[0.8fr_1.2fr]">
-              <div className="relative min-h-[320px] overflow-hidden">
-                <img src={heroMeal} alt="Cafe Aadvikam menu" className="absolute inset-0 h-full w-full object-cover" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-black/10" />
-                <div className="absolute bottom-6 left-6 right-6">
-                  <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Menu highlights</p>
-                  <h2 className="mt-3 font-display text-4xl font-black md:text-5xl">Pure vegetarian favourites</h2>
+            {activeCats.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setSel(c.id)}
+                className={cn(
+                  'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
+                  sel === c.id ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
+                )}
+              >
+                {c.icon} {c.name}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
+          {display.map((cat) => {
+            const ci = enabled.filter((i) => i.category === cat.id);
+            if (!ci.length) return null;
+            return (
+              <div key={cat.id}>
+                <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
+                  <span className="text-xl">{cat.icon}</span>
+                  <div>
+                    <h3 className="font-display text-lg font-bold text-foreground">{cat.name}</h3>
+                    <p className="text-[10px] font-body text-muted-foreground">{cat.timing}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="p-6 md:p-9">
-                <p className="mb-6 text-white/65">A quick view of Cafe Aadvikam favourites. This popup intentionally has no waiter/call-waiter button.</p>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {menuHighlights.map(([name, desc]) => (
-                    <div key={name} className="rounded-2xl border border-white/10 bg-white/[0.06] p-4">
-                      <h3 className="font-black text-amber-100">{name}</h3>
-                      <p className="mt-1 text-sm leading-6 text-white/65">{desc}</p>
+                {ci.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      {item.imageUrl ? (
+                        <img src={item.imageUrl} alt="" className="size-12 shrink-0 rounded-xl border border-border object-cover" />
+                      ) : (
+                        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-muted text-lg">{cat.icon}</div>
+                      )}
+                      <span className="text-sm font-body text-foreground">{item.name}</span>
                     </div>
-                  ))}
-                </div>
-                <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-                  <a
-                    href={`https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to know today\'s menu.')}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-6 py-3 font-black text-stone-950"
-                  >
-                    Ask on WhatsApp <ArrowRight className="h-4 w-4" />
-                  </a>
-                  <button onClick={onClose} className="rounded-full border border-white/20 px-6 py-3 font-black text-white">Close</button>
-                </div>
+                    <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
+                      <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
+                      <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-emerald-700">VEG</span>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+            );
+          })}
+          <div className="h-6" />
+        </div>
+      </div>
+    </div>
   );
 }
 
 function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
   return (
     <>
       <header className="fixed left-0 right-0 top-0 z-50 px-3 pt-3 md:px-8 md:pt-5">
@@ -163,33 +197,88 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 
           <nav className="hidden items-center gap-5 text-sm font-semibold text-white/75 lg:flex">
             {navItems.map(([label, href]) => (
-              <button key={label} onClick={() => scrollToId(href)} className="transition hover:text-amber-200">{label}</button>
+              <button key={label} onClick={() => scrollToId(href)} className="transition hover:text-amber-200">
+                {label}
+              </button>
             ))}
           </nav>
 
           <div className="hidden items-center gap-2 md:flex">
-            <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">View Menu</button>
-            <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105"><CalendarCheck className="h-4 w-4" /> Book Party Hall</button>
+            <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
+              View Menu
+            </button>
+            <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105">
+              <CalendarCheck className="h-4 w-4" /> Book Party Hall
+            </button>
+            <button onClick={() => navigate('/login')} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white backdrop-blur transition hover:bg-white/20">
+              Login
+            </button>
           </div>
 
-          <button onClick={() => setOpen(true)} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 md:hidden"><MenuIcon className="h-5 w-5" /></button>
+          <button onClick={() => setOpen(true)} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 md:hidden">
+            <MenuIcon className="h-5 w-5" />
+          </button>
         </div>
       </header>
 
       <AnimatePresence>
         {open && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] bg-stone-950/96 p-6 text-white md:hidden">
-            <button onClick={() => setOpen(false)} className="ml-auto grid h-11 w-11 place-items-center rounded-full bg-white/10"><X /></button>
+            <button onClick={() => setOpen(false)} className="ml-auto grid h-11 w-11 place-items-center rounded-full bg-white/10">
+              <X />
+            </button>
             <div className="mt-14 grid gap-5 text-4xl font-black">
               {navItems.map(([label, href]) => (
-                <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="text-left">{label}</button>
+                <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="text-left">
+                  {label}
+                </button>
               ))}
-              <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">View Menu</button>
+              <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">
+                View Menu
+              </button>
+              <button onClick={() => navigate('/login')} className="text-left text-amber-200">
+                Login
+              </button>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
+  return (
+    <div
+      className="fixed right-3 z-50 flex flex-col gap-1.5 rounded-2xl p-1.5 shadow-2xl"
+      style={{
+        top: '88px',
+        background: 'rgba(15,6,2,0.85)',
+        backdropFilter: 'blur(16px)',
+        border: '1px solid rgba(180,120,40,0.3)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,215,0,0.08)',
+      }}
+    >
+      <button
+        onClick={() => onChange('cafe')}
+        aria-label="Switch to Cafe Aadvikam"
+        className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
+        style={active === 'cafe' ? { background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', boxShadow: '0 4px 16px rgba(200,75,10,0.55)' } : { background: 'rgba(255,255,255,0.05)' }}
+      >
+        <UtensilsCrossed className={cn('size-4 transition-all', active === 'cafe' ? 'text-white' : 'text-white/40')} />
+        <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'cafe' ? 'text-white' : 'text-white/35')}>Cafe</span>
+      </button>
+      <div className="mx-1.5 h-px bg-amber-300/15" />
+      <button
+        onClick={() => onChange('bakery')}
+        aria-label="Switch to SNB Bakery"
+        className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
+        style={active === 'bakery' ? { background: 'linear-gradient(135deg,#b8860b,#8B5E04)', boxShadow: '0 4px 16px rgba(180,140,0,0.5)' } : { background: 'rgba(255,255,255,0.05)' }}
+      >
+        <img src={snbLogo} alt="SNB" className={cn('size-6 object-contain transition-all', active === 'bakery' ? 'opacity-100 drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')} />
+        <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'bakery' ? 'text-white' : 'text-white/35')}>Bakery</span>
+      </button>
+    </div>
   );
 }
 
@@ -218,8 +307,12 @@ function HeroScene() {
               Step into Cafe Aadvikam, where authentic South Indian flavours, fresh bakery aromas, and warm celebrations come alive in every scroll.
             </motion.p>
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.65 }} className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <button onClick={() => scrollToId('#leaf')} className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 font-black text-stone-950 shadow-2xl shadow-black/30">Begin the feast <ChevronDown className="h-4 w-4" /></button>
-              <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-6 py-3 font-black text-white backdrop-blur-xl"><CalendarCheck className="h-4 w-4" /> Book Party Hall</button>
+              <button onClick={() => scrollToId('#leaf')} className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 font-black text-stone-950 shadow-2xl shadow-black/30">
+                Begin the feast <ChevronDown className="h-4 w-4" />
+              </button>
+              <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-6 py-3 font-black text-white backdrop-blur-xl">
+                <CalendarCheck className="h-4 w-4" /> Book Party Hall
+              </button>
             </motion.div>
           </div>
         </motion.div>
@@ -228,28 +321,63 @@ function HeroScene() {
   );
 }
 
+function LeafItem({ item, index, progress }: { item: typeof leafItems[number]; index: number; progress: ReturnType<typeof useScroll>['scrollYProgress'] }) {
+  const start = index / leafItems.length;
+  const end = Math.min(1, start + 0.22);
+  const opacity = useTransform(progress, [start, end], [0, 1]);
+  const y = useTransform(progress, [start, end], [80, 0]);
+  const scale = useTransform(progress, [start, end], [0.7, 1]);
+  return (
+    <motion.div
+      style={{ left: item.x, top: item.y, opacity, y, scale }}
+      className="absolute -translate-x-1/2 -translate-y-1/2"
+    >
+      <div className="relative grid size-24 place-items-center rounded-full border-[6px] border-white bg-gradient-to-br from-orange-50 via-amber-100 to-orange-200 shadow-2xl shadow-black/45 md:size-32">
+        <span className="absolute inset-2 rounded-full border border-orange-300/70" />
+        <span className="text-center text-[10px] font-black uppercase leading-tight tracking-wide text-stone-900 md:text-xs">{item.title}</span>
+      </div>
+    </motion.div>
+  );
+}
+
 function LeafExperience() {
   const ref = useRef<HTMLElement>(null);
   const { scrollYProgress } = useScroll({ target: ref, offset: ['start start', 'end end'] });
-  const imageScale = useTransform(scrollYProgress, [0, 1], [1.04, 1.16]);
-  const imageY = useTransform(scrollYProgress, [0, 1], [0, -45]);
+  const leafScale = useTransform(scrollYProgress, [0, 1], [0.96, 1.05]);
 
   return (
-    <section id="leaf" ref={ref} className="relative h-[360vh] bg-[#120e08] text-white">
+    <section id="leaf" ref={ref} className="relative h-[390vh] bg-[#120e08] text-white">
       <div className="sticky top-0 grid h-screen items-center overflow-hidden px-4 py-24 lg:grid-cols-[1.18fr_.82fr] lg:px-14">
-        <div className="relative mx-auto aspect-[1.65/1] w-full max-w-5xl overflow-hidden rounded-[3rem] border border-white/10 shadow-2xl shadow-black/70">
-          <motion.img src={heroMeal} alt="Real South Indian meal at Cafe Aadvikam" style={{ scale: imageScale, y: imageY }} className="absolute inset-0 h-full w-full object-cover" />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-black/20" />
-          <div className="absolute bottom-5 left-5 right-5 rounded-[2rem] border border-white/15 bg-black/45 p-5 text-center backdrop-blur-xl">
-            <p className="font-display text-3xl font-black md:text-5xl">The real Cafe Aadvikam meal — no fake leaf, no broken circles.</p>
-          </div>
+        <div className="relative mx-auto aspect-[1.65/1] w-full max-w-5xl overflow-hidden rounded-[3rem] border border-white/10 bg-[#0f1c0d] shadow-2xl shadow-black/70">
+          <motion.div style={{ scale: leafScale }} className="absolute inset-0">
+            <div className="absolute inset-6 rounded-[70%_25%_70%_25%] bg-[radial-gradient(circle_at_30%_35%,#9ed56b_0%,#2f7d31_38%,#0e421d_78%)] shadow-inner shadow-black/40" />
+            <div className="absolute left-[51%] top-[5%] h-[90%] w-[3px] -rotate-6 rounded-full bg-lime-200/55 shadow-[0_0_35px_rgba(217,249,157,0.35)]" />
+            {Array.from({ length: 15 }).map((_, i) => (
+              <span
+                key={i}
+                className="absolute left-1/2 top-1/2 h-px w-[44%] origin-left rounded-full bg-lime-100/15"
+                style={{ transform: `rotate(${i * 10 - 74}deg) translateX(-3%)` }}
+              />
+            ))}
+            <div className="absolute inset-0 bg-[linear-gradient(120deg,transparent,rgba(255,255,255,0.12),transparent)]" />
+          </motion.div>
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/5 to-black/10" />
+          {leafItems.map((item, index) => (
+            <LeafItem key={item.title} item={item} index={index} progress={scrollYProgress} />
+          ))}
+          <motion.div
+            style={{ opacity: useTransform(scrollYProgress, [0.84, 1], [0, 1]), y: useTransform(scrollYProgress, [0.84, 1], [30, 0]) }}
+            className="absolute bottom-5 left-5 right-5 rounded-[2rem] border border-white/15 bg-black/45 p-5 text-center backdrop-blur-xl"
+          >
+            <p className="font-display text-3xl font-black md:text-5xl">A plain banana leaf, filled dish by dish as you scroll.</p>
+          </motion.div>
         </div>
 
         <div className="mx-auto mt-10 max-w-xl lg:mt-0">
           <p className="mb-5 text-sm font-bold uppercase tracking-[0.4em] text-amber-300">The banana leaf experience</p>
-          <h2 className="font-display text-5xl font-black leading-none md:text-7xl">A real South Indian plate, narrated as you scroll.</h2>
+          <h2 className="font-display text-5xl font-black leading-none md:text-7xl">A feast assembled with rhythm.</h2>
           <div className="mt-8 space-y-4">
-            {leafHotspots.map((step, i) => (
+            {leafItems.map((step, i) => (
               <motion.article
                 key={step.title}
                 initial={{ opacity: 0.25, x: 26 }}
@@ -259,7 +387,7 @@ function LeafExperience() {
                 className="rounded-3xl border border-white/10 bg-white/[0.06] p-5 backdrop-blur-xl"
               >
                 <p className="text-lg font-black text-amber-100">{step.title}</p>
-                <p className="mt-1 leading-7 text-white/65">{step.copy}</p>
+                <p className="mt-1 text-white/65">{step.copy}</p>
               </motion.article>
             ))}
           </div>
@@ -270,28 +398,26 @@ function LeafExperience() {
 }
 
 function OriginStory() {
-  const cards = [
-    { title: 'A Dream Takes Shape', copy: 'Born from generations of culinary wisdom and a family passion for vegetarian cooking.', icon: Leaf },
-    { title: 'Before Dawn Bakery', copy: 'Hand-kneaded dough, warm ovens, cakes, buns, cookies, and sweet temptations.', icon: Croissant },
-    { title: 'South Indian Soul Food', copy: 'Tamil classics, Karnataka favourites, and Kerala flavours in one destination.', icon: Flame },
-    { title: 'Community At The Core', copy: 'Berikai families, students, artists, and celebrations all find a place here.', icon: Users },
-  ];
   return (
-    <section id="origin" className="relative overflow-hidden bg-[#f8ecd8] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
+    <section className="relative overflow-hidden bg-[#f8ecd8] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
       <div className="absolute -left-20 top-20 h-72 w-72 rounded-full bg-orange-300/40 blur-3xl" />
-      <div className="mx-auto grid max-w-7xl gap-12 lg:grid-cols-[.9fr_1.1fr] lg:items-center">
+      <div className="mx-auto grid max-w-7xl gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
         <motion.div initial={{ opacity: 0, y: 40 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, amount: 0.35 }}>
           <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">Cafe, bakery, hospitality</p>
-          <h2 className="mt-4 font-display text-5xl font-black leading-tight md:text-7xl">From a bakery corner to Berikai's favourite gathering place.</h2>
+          <h2 className="mt-4 font-display text-5xl font-black leading-tight md:text-7xl">From a bakery corner to Berikai&apos;s favourite gathering place.</h2>
           <p className="mt-6 text-xl leading-9 text-stone-700">Cafe Aadvikam brings together pure vegetarian dining, bakery freshness, and a party hall for the moments your family remembers.</p>
         </motion.div>
         <div className="grid gap-4 md:grid-cols-2">
-          {cards.map(({ title, copy, icon: Icon }, i) => (
-            <motion.article key={title} initial={{ opacity: 0, y: 35 }} whileInView={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.12 }} viewport={{ once: true }} className="rounded-[2rem] border border-orange-900/10 bg-white/70 p-7 shadow-xl shadow-orange-950/5 backdrop-blur">
-              <Icon className="mb-8 h-10 w-10 text-orange-800" />
-              <h3 className="text-2xl font-black leading-tight">{title}</h3>
-              <p className="mt-3 leading-7 text-stone-650">{copy}</p>
-            </motion.article>
+          {[
+            ['🥐', 'Before sunrise, dough is kneaded.'],
+            ['🔥', 'Ovens glow and shelves fill.'],
+            ['🍮', 'Traditional sweets meet cakes and pastries.'],
+            ['👨‍👩‍👧‍👦', 'Families gather around familiar flavours.'],
+          ].map(([icon, text], i) => (
+            <motion.div key={text} initial={{ opacity: 0, y: 35 }} whileInView={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.12 }} viewport={{ once: true }} className="rounded-[2rem] border border-orange-900/10 bg-white/70 p-7 shadow-xl shadow-orange-950/5 backdrop-blur">
+              <div className="mb-8 text-4xl">{icon}</div>
+              <p className="text-2xl font-bold leading-tight">{text}</p>
+            </motion.div>
           ))}
         </div>
       </div>
@@ -396,8 +522,12 @@ function PartyHallScene() {
             })}
           </div>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <a href={`https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to enquire about party hall booking.')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full bg-stone-950 px-7 py-4 font-black text-white shadow-2xl shadow-stone-950/20"><Phone className="h-4 w-4" /> Book on WhatsApp</a>
-            <button onClick={() => scrollToId('#visit')} className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-7 py-4 font-black text-stone-950"><MapPin className="h-4 w-4" /> Visit Location</button>
+            <a href={`https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to enquire about party hall booking.')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full bg-stone-950 px-7 py-4 font-black text-white shadow-2xl shadow-stone-950/20">
+              <Phone className="h-4 w-4" /> Book on WhatsApp
+            </a>
+            <button onClick={() => scrollToId('#visit')} className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-7 py-4 font-black text-stone-950">
+              <MapPin className="h-4 w-4" /> Visit Location
+            </button>
           </div>
         </motion.div>
       </div>
@@ -409,53 +539,123 @@ function VisitScene({ onMenuOpen }: { onMenuOpen: () => void }) {
   const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(CAFE.mapsQuery)}`;
   return (
     <section id="visit" className="relative overflow-hidden bg-stone-950 px-5 py-28 text-white md:px-12 lg:px-20">
-      <img src={heroMeal} alt="Cafe Aadvikam meal" className="absolute inset-0 h-full w-full object-cover opacity-25" />
-      <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/88 to-stone-950/50" />
-      <div className="relative z-10 mx-auto grid max-w-7xl gap-10 lg:grid-cols-[.95fr_1.05fr] lg:items-center">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(251,191,36,0.2),transparent_32%),linear-gradient(135deg,#0c0a09,#1c1208_45%,#0c0a09)]" />
+      <div className="relative z-10 mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
         <div>
           <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Location</p>
           <h2 className="mt-5 font-display text-6xl font-black leading-none md:text-8xl">Find Cafe Aadvikam in Berikai.</h2>
           <div className="mt-10 grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
-            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><MapPin className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.address}</p></div>
-            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Clock className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.hours}</p></div>
-            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Phone className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.phone}</p></div>
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl">
+              <MapPin className="mb-3 h-6 w-6 text-amber-300" />
+              <p>{CAFE.address}</p>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl">
+              <Clock className="mb-3 h-6 w-6 text-amber-300" />
+              <p>{CAFE.hours}</p>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl">
+              <Phone className="mb-3 h-6 w-6 text-amber-300" />
+              <p>{CAFE.phone}</p>
+            </div>
           </div>
           <div className="mt-8 flex flex-col gap-4 sm:flex-row">
-            <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">View Menu <ArrowRight className="h-4 w-4" /></button>
-            <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">Get Directions <MapPin className="h-4 w-4" /></a>
+            <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">
+              View Menu <ArrowRight className="h-4 w-4" />
+            </button>
+            <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
+              Get Directions <MapPin className="h-4 w-4" />
+            </a>
           </div>
         </div>
-        <div className="overflow-hidden rounded-[2.5rem] border border-white/15 bg-white/10 p-2 shadow-2xl backdrop-blur-xl">
-          <iframe
-            title="Cafe Aadvikam location map"
-            src={`https://www.google.com/maps?q=${encodeURIComponent(CAFE.mapsQuery)}&output=embed`}
-            className="h-[420px] w-full rounded-[2rem] border-0 md:h-[560px]"
-            loading="lazy"
-            referrerPolicy="no-referrer-when-downgrade"
-          />
-        </div>
+        <a href={mapsUrl} target="_blank" rel="noreferrer" className="group relative min-h-[520px] overflow-hidden rounded-[2.5rem] border border-white/15 bg-white/10 p-8 shadow-2xl backdrop-blur-xl">
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(rgba(255,255,255,0.06)_1px,transparent_1px)] bg-[size:42px_42px] opacity-50" />
+          <div className="absolute left-1/2 top-1/2 h-52 w-52 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-200/25 bg-amber-300/10" />
+          <div className="absolute left-[52%] top-[47%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-amber-300 p-4 text-stone-950 shadow-2xl shadow-amber-500/30 transition group-hover:scale-110">
+            <MapPin className="h-9 w-9" />
+          </div>
+          <div className="relative z-10 flex h-full flex-col justify-end">
+            <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Map preview</p>
+            <h3 className="mt-3 font-display text-4xl font-black">109 Bagalur Main Road</h3>
+            <p className="mt-3 max-w-md text-white/65">Open Google Maps for directions to Cafe Aadvikam. No broken embedded map image.</p>
+          </div>
+        </a>
       </div>
     </section>
   );
 }
 
+function BakeryLanding() {
+  return (
+    <main className="min-h-screen bg-[#160d05] text-white">
+      <section className="relative flex min-h-screen items-center overflow-hidden px-5 py-28 md:px-12 lg:px-20">
+        <img src={IMG.bakeryCounter} alt="SNB Bakery counter" className="absolute inset-0 h-full w-full object-cover opacity-50" />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#160d05] via-[#160d05]/86 to-[#160d05]/25" />
+        <div className="relative z-10 mx-auto max-w-7xl">
+          <div className="flex items-center gap-4">
+            <img src={snbLogo} alt="SNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Sri Nanjundeshwara Bakery</p>
+              <h1 className="mt-2 font-display text-6xl font-black leading-none md:text-8xl">SNB Bakery</h1>
+            </div>
+          </div>
+          <p className="mt-8 max-w-3xl text-xl leading-9 text-white/75">Fresh breads, cakes, cookies, sweets, chips, muruku, and savouries from a bakery tradition that began in 1988.</p>
+          <div className="mt-10 grid max-w-5xl gap-4 md:grid-cols-4">
+            {['Bakery', 'Cakes', 'Cookies', 'Sweets', 'Chips', 'Muruku', 'Snacks', 'Pastries'].map((item) => (
+              <div key={item} className="rounded-3xl border border-white/10 bg-white/10 p-5 text-center font-black backdrop-blur-xl">{item}</div>
+            ))}
+          </div>
+          <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+            <a href={`tel:${BAKERY.phone}`} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950">
+              <Phone className="h-4 w-4" /> Call Bakery
+            </a>
+            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
+              <MessageCircle className="h-4 w-4" /> WhatsApp Order
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default function Landing() {
+  const navigate = useNavigate();
+  const { currentUser } = useAuthStore();
+  const { loadMenu } = useMenuStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [activeVenue, setActiveVenue] = useState<'cafe' | 'bakery'>('cafe');
   const progressSections = useMemo(() => ['#hero', '#leaf', '#bakery', '#signature', '#party-hall', '#visit'], []);
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+  useEffect(() => {
+    if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
+  }, [currentUser, navigate]);
+
+  if (currentUser) return null;
+
   return (
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
       <FloatingNav onMenuOpen={() => setMenuOpen(true)} />
-      <MenuModal open={menuOpen} onClose={() => setMenuOpen(false)} />
-      <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
-        {progressSections.map((id) => <button key={id} onClick={() => scrollToId(id)} className="h-10 w-1.5 rounded-full bg-white/20 transition hover:bg-amber-300" aria-label={`Go to ${id}`} />)}
-      </div>
-      <HeroScene />
-      <LeafExperience />
-      <OriginStory />
-      <BakeryScene />
-      <SignatureScene />
-      <PartyHallScene />
-      <VisitScene onMenuOpen={() => setMenuOpen(true)} />
+      <VenueToggle active={activeVenue} onChange={setActiveVenue} />
+      {menuOpen && <MenuPopup onClose={() => setMenuOpen(false)} />}
+      {activeVenue === 'bakery' ? (
+        <BakeryLanding />
+      ) : (
+        <>
+          <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
+            {progressSections.map((id) => (
+              <button key={id} onClick={() => scrollToId(id)} className="h-10 w-1.5 rounded-full bg-white/20 transition hover:bg-amber-300" aria-label={`Go to ${id}`} />
+            ))}
+          </div>
+          <HeroScene />
+          <LeafExperience />
+          <OriginStory />
+          <BakeryScene />
+          <SignatureScene />
+          <PartyHallScene />
+          <VisitScene onMenuOpen={() => setMenuOpen(true)} />
+        </>
+      )}
     </main>
   );
 }
