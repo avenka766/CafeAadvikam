@@ -26,23 +26,15 @@ import { MENU_CATEGORIES } from '@/constants/config';
 import { cn, formatCurrency } from '@/lib/utils';
 import { useScrollLock } from '@/hooks/useScrollLock';
 import heroMeal from '@/assets/hero-bg.jpg';
-import bananaLeafBg from '@/assets/banana-leaf-bg.jpg';
-import idliImg from '@/assets/foods/idli.jpg';
-import sambarImg from '@/assets/foods/sambar.jpg';
-import chutneyImg from '@/assets/foods/chutney.jpg';
-import dosaImg from '@/assets/foods/ghee-roast-dosa.jpg';
-import specialThaliImg from '@/assets/foods/special-thali.jpg';
-import filterCoffeeImg from '@/assets/foods/filter-coffee.jpg';
-import ravaKesariImg from '@/assets/foods/rava-kesari.jpg';
-import paneerButterMasalaImg from '@/assets/foods/paneer-butter-masala.jpg';
-import freshLimeSodaImg from '@/assets/foods/fresh-lime-soda.jpg';
-import breadImg from '@/assets/bakery/bread.jpg';
-import cakesImg from '@/assets/bakery/cakes.jpg';
-import pastriesImg from '@/assets/bakery/pastries.jpg';
-import sweetsImg from '@/assets/bakery/sweets.jpg';
-import bakeryCounterImg from '@/assets/bakery/bakery-counter.jpg';
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
+import bakeryBread from '@/assets/bakery/bread.jpg';
+import bakeryCakes from '@/assets/bakery/cakes.jpg';
+import bakeryPastries from '@/assets/bakery/pastries.jpg';
+import bakerySweets from '@/assets/bakery/sweets.jpg';
+import bakeryCounter from '@/assets/bakery/bakery-counter.jpg';
+import ChatBot from '@/components/features/ChatBot';
+import { SNB_CATEGORIES, SNB_ITEMS } from '@/branch/snbItems';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
@@ -59,20 +51,15 @@ const BAKERY = {
 
 const IMG = {
   partyHall: '/party-hall.jpg',
-  dosa: dosaImg,
-  thali: specialThaliImg,
-  coffee: filterCoffeeImg,
-  bakery: breadImg,
-  cake: cakesImg,
-  pastry: pastriesImg,
-  sweets: sweetsImg,
-  lime: freshLimeSodaImg,
-  bakeryCounter: bakeryCounterImg,
-  paneer: paneerButterMasalaImg,
-  idli: idliImg,
-  sambar: sambarImg,
-  chutney: chutneyImg,
-  bananaLeaf: bananaLeafBg,
+  dosa: 'https://images.unsplash.com/photo-1668236543090-82eba5ee5976?auto=format&fit=crop&w=1600&q=90',
+  thali: 'https://images.unsplash.com/photo-1596797038530-2c107229654b?auto=format&fit=crop&w=1600&q=90',
+  coffee: 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=1400&q=90',
+  bakery: bakeryBread,
+  cake: bakeryCakes,
+  pastry: bakeryPastries,
+  sweets: bakerySweets,
+  lime: 'https://images.unsplash.com/photo-1523371054106-bbf80586c38c?auto=format&fit=crop&w=1500&q=90',
+  bakeryCounter: bakeryCounter,
 };
 
 const navItems = [
@@ -84,11 +71,11 @@ const navItems = [
 ] as const;
 
 const leafItems = [
-  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.', image: idliImg, x: '21%', y: '38%' },
-  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.', image: sambarImg, x: '42%', y: '52%' },
-  { title: 'Coconut Chutney', copy: 'Ground fresh every morning before the first breakfast order.', image: chutneyImg, x: '61%', y: '36%' },
-  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.', image: dosaImg, x: '47%', y: '69%' },
-  { title: 'Rava Kesari', copy: 'Saffron-sweet comfort to finish the meal.', image: ravaKesariImg, x: '75%', y: '55%' },
+  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.', icon: '○', x: '21%', y: '38%' },
+  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.', icon: '◉', x: '42%', y: '52%' },
+  { title: 'Coconut Chutney', copy: 'Ground fresh every morning before the first breakfast order.', icon: '●', x: '61%', y: '36%' },
+  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.', icon: '◒', x: '47%', y: '69%' },
+  { title: 'Rava Kesari', copy: 'Saffron-sweet comfort to finish the meal.', icon: '◐', x: '75%', y: '55%' },
 ];
 
 const signatureItems = [
@@ -97,7 +84,7 @@ const signatureItems = [
   { name: 'South Indian Breakfast', tag: 'Idli, dosa, sambar, chutney, and coffee.', image: heroMeal },
   { name: 'Filter Coffee', tag: 'Traditional brew, cafe-style comfort.', image: IMG.coffee },
   { name: 'Rava Kesari', tag: 'Saffron-sweet comfort in every spoon.', image: IMG.sweets },
-  { name: 'Paneer Butter Masala', tag: 'Rich, creamy, and family favourite.', image: IMG.paneer },
+  { name: 'Paneer Butter Masala', tag: 'Rich, creamy, and family favourite.', image: IMG.thali },
   { name: 'Fresh Lime Soda', tag: 'Sweet, salty, chilled, and refreshing.', image: IMG.lime },
   { name: 'Fresh Bakery', tag: 'Breads, buns, cakes, pastries, and cookies.', image: IMG.bakery },
   { name: 'Cakes & Pastries', tag: 'Celebration treats from our bakery.', image: IMG.cake },
@@ -108,12 +95,15 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function MenuPopup({ onClose }: { onClose: () => void }) {
+function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue: 'cafe' | 'bakery' }) {
   const { items } = useMenuStore();
   const [sel, setSel] = useState('all');
   const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
   const activeCats = useMemo(() => MENU_CATEGORIES.filter((c) => enabled.some((i) => i.category === c.id)), [enabled]);
   const display = useMemo(() => (sel === 'all' ? activeCats : activeCats.filter((c) => c.id === sel)), [sel, activeCats]);
+  const bakeryCats = useMemo(() => SNB_CATEGORIES.filter((c) => SNB_ITEMS.some((i) => i.category === c)), []);
+  const bakeryDisplay = useMemo(() => (sel === 'all' ? bakeryCats : bakeryCats.filter((c) => c === sel)), [sel, bakeryCats]);
+  useEffect(() => { setSel('all'); }, [activeVenue]);
   useScrollLock();
 
   return (
@@ -125,8 +115,8 @@ function MenuPopup({ onClose }: { onClose: () => void }) {
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-5 pb-3 pt-5">
           <div>
-            <h2 className="font-display text-xl font-bold text-foreground">Full Menu</h2>
-            <p className="text-xs font-body text-muted-foreground">Pure vegetarian · {enabled.length} items</p>
+            <h2 className="font-display text-xl font-bold text-foreground">{activeVenue === 'bakery' ? 'SNB Bakery Menu' : 'Full Menu'}</h2>
+            <p className="text-xs font-body text-muted-foreground">{activeVenue === 'bakery' ? `Bakery items · ${SNB_ITEMS.length} items` : `Pure vegetarian · ${enabled.length} items`}</p>
           </div>
           <button
             onClick={onClose}
@@ -147,52 +137,98 @@ function MenuPopup({ onClose }: { onClose: () => void }) {
             >
               All Items
             </button>
-            {activeCats.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setSel(c.id)}
-                className={cn(
-                  'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                  sel === c.id ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-                )}
-              >
-                {c.icon} {c.name}
-              </button>
-            ))}
+            {activeVenue === 'bakery'
+              ? bakeryCats.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setSel(c)}
+                    className={cn(
+                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
+                      sel === c ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
+                    )}
+                  >
+                    🥐 {c}
+                  </button>
+                ))
+              : activeCats.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setSel(c.id)}
+                    className={cn(
+                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
+                      sel === c.id ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
+                    )}
+                  >
+                    {c.icon} {c.name}
+                  </button>
+                ))}
           </div>
         </div>
         <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
-          {display.map((cat) => {
-            const ci = enabled.filter((i) => i.category === cat.id);
-            if (!ci.length) return null;
-            return (
-              <div key={cat.id}>
-                <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
-                  <span className="text-xl">{cat.icon}</span>
-                  <div>
-                    <h3 className="font-display text-lg font-bold text-foreground">{cat.name}</h3>
-                    <p className="text-[10px] font-body text-muted-foreground">{cat.timing}</p>
+          {activeVenue === 'bakery' ? (
+            bakeryDisplay.map((cat) => {
+              const ci = SNB_ITEMS.filter((i) => i.category === cat);
+              if (!ci.length) return null;
+              return (
+                <div key={cat}>
+                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
+                    <span className="text-xl">🥐</span>
+                    <div>
+                      <h3 className="font-display text-lg font-bold text-foreground">{cat}</h3>
+                      <p className="text-[10px] font-body text-muted-foreground">SNB Bakery</p>
+                    </div>
                   </div>
+                  {ci.map((item) => (
+                    <div key={item.barcode} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-lg">🥐</div>
+                        <div className="min-w-0">
+                          <span className="block truncate text-sm font-body text-foreground">{item.name}</span>
+                          <span className="text-[10px] text-muted-foreground">{item.uom}</span>
+                        </div>
+                      </div>
+                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
+                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
+                        <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-amber-700">SNB</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                {ci.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      {item.imageUrl ? (
-                        <img src={item.imageUrl} alt="" className="size-12 shrink-0 rounded-xl border border-border object-cover" />
-                      ) : (
-                        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-muted text-lg">{cat.icon}</div>
-                      )}
-                      <span className="text-sm font-body text-foreground">{item.name}</span>
-                    </div>
-                    <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
-                      <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
-                      <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-emerald-700">VEG</span>
+              );
+            })
+          ) : (
+            display.map((cat) => {
+              const ci = enabled.filter((i) => i.category === cat.id);
+              if (!ci.length) return null;
+              return (
+                <div key={cat.id}>
+                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
+                    <span className="text-xl">{cat.icon}</span>
+                    <div>
+                      <h3 className="font-display text-lg font-bold text-foreground">{cat.name}</h3>
+                      <p className="text-[10px] font-body text-muted-foreground">{cat.timing}</p>
                     </div>
                   </div>
-                ))}
-              </div>
-            );
-          })}
+                  {ci.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt="" className="size-12 shrink-0 rounded-xl border border-border object-cover" />
+                        ) : (
+                          <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-muted text-lg">{cat.icon}</div>
+                        )}
+                        <span className="text-sm font-body text-foreground">{item.name}</span>
+                      </div>
+                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
+                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-emerald-700">VEG</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })
+          )}
           <div className="h-6" />
         </div>
       </div>
@@ -352,16 +388,9 @@ function LeafItem({ item, index, progress }: { item: typeof leafItems[number]; i
       style={{ left: item.x, top: item.y, opacity, y, scale }}
       className="absolute -translate-x-1/2 -translate-y-1/2"
     >
-      <div className="group relative size-28 overflow-hidden rounded-full border-[6px] border-white bg-white shadow-2xl shadow-black/45 md:size-36">
-        <img
-          src={item.image}
-          alt={item.title}
-          className="h-full w-full object-cover transition duration-700 group-hover:scale-110"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/5 to-transparent" />
-        <span className="absolute bottom-3 left-2 right-2 text-center text-[10px] font-black uppercase leading-tight tracking-wide text-white drop-shadow md:text-xs">
-          {item.title}
-        </span>
+      <div className="relative grid size-24 place-items-center rounded-full border-[6px] border-white bg-gradient-to-br from-orange-50 via-amber-100 to-orange-200 shadow-2xl shadow-black/45 md:size-32">
+        <span className="absolute inset-2 rounded-full border border-orange-300/70" />
+        <span className="text-center text-[10px] font-black uppercase leading-tight tracking-wide text-stone-900 md:text-xs">{item.title}</span>
       </div>
     </motion.div>
   );
@@ -376,13 +405,19 @@ function LeafExperience() {
     <section id="leaf" ref={ref} className="relative h-[390vh] bg-[#120e08] text-white">
       <div className="sticky top-0 grid h-screen items-center overflow-hidden px-4 py-24 lg:grid-cols-[1.18fr_.82fr] lg:px-14">
         <div className="relative mx-auto aspect-[1.65/1] w-full max-w-5xl overflow-hidden rounded-[3rem] border border-white/10 bg-[#0f1c0d] shadow-2xl shadow-black/70">
-          <motion.img
-            style={{ scale: leafScale }}
-            src={bananaLeafBg}
-            alt="Plain banana leaf"
-            className="absolute inset-0 h-full w-full object-cover"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-black/10" />
+          <motion.div style={{ scale: leafScale }} className="absolute inset-0">
+            <div className="absolute inset-6 rounded-[70%_25%_70%_25%] bg-[radial-gradient(circle_at_30%_35%,#9ed56b_0%,#2f7d31_38%,#0e421d_78%)] shadow-inner shadow-black/40" />
+            <div className="absolute left-[51%] top-[5%] h-[90%] w-[3px] -rotate-6 rounded-full bg-lime-200/55 shadow-[0_0_35px_rgba(217,249,157,0.35)]" />
+            {Array.from({ length: 15 }).map((_, i) => (
+              <span
+                key={i}
+                className="absolute left-1/2 top-1/2 h-px w-[44%] origin-left rounded-full bg-lime-100/15"
+                style={{ transform: `rotate(${i * 10 - 74}deg) translateX(-3%)` }}
+              />
+            ))}
+            <div className="absolute inset-0 bg-[linear-gradient(120deg,transparent,rgba(255,255,255,0.12),transparent)]" />
+          </motion.div>
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/5 to-black/10" />
           {leafItems.map((item, index) => (
             <LeafItem key={item.title} item={item} index={index} progress={scrollYProgress} />
           ))}
@@ -605,36 +640,148 @@ function VisitScene({ onMenuOpen }: { onMenuOpen: () => void }) {
   );
 }
 
-function BakeryLanding() {
+function BakeryHero() {
+  const ref = useRef<HTMLElement>(null);
+  const { scrollYProgress } = useScroll({ target: ref, offset: ['start start', 'end start'] });
+  const scale = useTransform(scrollYProgress, [0, 1], [1.04, 1.22]);
+  const y = useTransform(scrollYProgress, [0, 1], [0, 130]);
+  const opacity = useTransform(scrollYProgress, [0, 0.85], [1, 0]);
   return (
-    <main className="min-h-screen bg-[#160d05] text-white">
-      <section className="relative flex min-h-screen items-center overflow-hidden px-5 py-28 md:px-12 lg:px-20">
-        <img src={IMG.bakeryCounter} alt="SNB Bakery counter" className="absolute inset-0 h-full w-full object-cover opacity-50" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#160d05] via-[#160d05]/86 to-[#160d05]/25" />
-        <div className="relative z-10 mx-auto max-w-7xl">
-          <div className="flex items-center gap-4">
-            <img src={snbLogo} alt="SNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
-            <div>
-              <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Sri Nanjundeshwara Bakery</p>
-              <h1 className="mt-2 font-display text-6xl font-black leading-none md:text-8xl">SNB Bakery</h1>
+    <section id="bakery-hero" ref={ref} className="relative h-[210vh] bg-[#160d05]">
+      <div className="sticky top-0 h-screen overflow-hidden">
+        <motion.img src={bakeryCounter} alt="SNB Bakery counter" style={{ scale, y }} className="absolute inset-0 h-full w-full object-cover" />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#160d05] via-[#160d05]/82 to-[#160d05]/25" />
+        <motion.div style={{ opacity }} className="relative z-10 flex h-full items-center px-5 py-28 md:px-12 lg:px-20">
+          <div className="mx-auto w-full max-w-7xl">
+            <div className="flex items-center gap-4">
+              <img src={snbLogo} alt="SNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
+              <div>
+                <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Sri Nanjundeshwara Bakery</p>
+                <h1 className="mt-2 font-display text-6xl font-black leading-none md:text-8xl">Fresh from the oven.</h1>
+              </div>
+            </div>
+            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/78">A warm bakery story of breads, cakes, cookies, sweets, savouries, and celebration treats from SNB Bakery.</p>
+            <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+              <button onClick={() => scrollToId('#bakery-story')} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950">
+                Start Bakery Story <ChevronDown className="h-4 w-4" />
+              </button>
+              <button onClick={() => scrollToId('#bakery-menu')} className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
+                View Bakery Highlights <ArrowRight className="h-4 w-4" />
+              </button>
             </div>
           </div>
-          <p className="mt-8 max-w-3xl text-xl leading-9 text-white/75">Fresh breads, cakes, cookies, sweets, chips, muruku, and savouries from a bakery tradition that began in 1988.</p>
-          <div className="mt-10 grid max-w-5xl gap-4 md:grid-cols-4">
-            {['Bakery', 'Cakes', 'Cookies', 'Sweets', 'Chips', 'Muruku', 'Snacks', 'Pastries'].map((item) => (
-              <div key={item} className="rounded-3xl border border-white/10 bg-white/10 p-5 text-center font-black backdrop-blur-xl">{item}</div>
-            ))}
-          </div>
+        </motion.div>
+      </div>
+    </section>
+  );
+}
+
+function BakeryStoryScene() {
+  const rows = [
+    ['Bread & Buns', 'Soft buns, fresh bread, wheat bread, rusk, and bakery classics.', bakeryBread],
+    ['Cakes & Pastries', 'Cream cakes, brownies, pastries, doughnuts, puffs, and celebration treats.', bakeryCakes],
+    ['Sweets & Savouries', 'Mixtures, muruku, chikki, burfi, halwa, and traditional snacks.', bakerySweets],
+  ] as const;
+  return (
+    <section id="bakery-story" className="bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
+      <div className="mx-auto max-w-7xl">
+        <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">SNB bakery journey</p>
+        <h2 className="mt-4 max-w-4xl font-display text-5xl font-black leading-none md:text-7xl">From dough to display, every shelf tells a story.</h2>
+        <div className="mt-14 space-y-8">
+          {rows.map(([title, copy, image], i) => (
+            <motion.article
+              key={title}
+              initial={{ opacity: 0, y: 50 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ amount: 0.35, once: true }}
+              className="grid overflow-hidden rounded-[3rem] bg-white shadow-2xl shadow-orange-950/10 md:grid-cols-[0.95fr_1.05fr]"
+            >
+              <div className={cn('relative min-h-[360px] overflow-hidden', i % 2 ? 'md:order-2' : '')}>
+                <img src={image} alt={title} className="absolute inset-0 h-full w-full object-cover transition duration-700 hover:scale-105" />
+              </div>
+              <div className="flex flex-col justify-center p-8 md:p-12">
+                <span className="mb-8 grid h-14 w-14 place-items-center rounded-2xl bg-amber-100 text-2xl">{['🍞','🎂','🍬'][i]}</span>
+                <h3 className="font-display text-4xl font-black md:text-6xl">{title}</h3>
+                <p className="mt-5 text-xl leading-9 text-stone-650">{copy}</p>
+              </div>
+            </motion.article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BakeryMenuHighlights() {
+  const ref = useRef<HTMLElement>(null);
+  const { scrollYProgress } = useScroll({ target: ref, offset: ['start start', 'end end'] });
+  const x = useTransform(scrollYProgress, [0, 1], ['0%', '-68%']);
+  const cards = [
+    ['Bread & Buns', 'BUN, SPL BUN, BREAD, WHEAT BREAD, RUSK', bakeryBread],
+    ['Individual Cakes', 'Chocolate Cake, Cream Cake, Brownie, Ice Cake', bakeryCakes],
+    ['Buns & Pastries', 'Cream Bun, Doughnut, Veg Puff, Samosa, Pizza', bakeryPastries],
+    ['Namkeens & Mixtures', 'Kara Boondhi, Bombay Mixture, Muruku, Om Pudi', bakerySweets],
+    ['Bakery Counter', 'Packed fresh for daily walk-ins and orders.', bakeryCounter],
+  ] as const;
+  return (
+    <section id="bakery-menu" ref={ref} className="relative h-[430vh] bg-[#160d05] text-white">
+      <div className="sticky top-0 flex h-screen items-center overflow-hidden">
+        <div className="absolute left-5 top-28 z-20 md:left-12">
+          <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Bakery menu</p>
+          <h2 className="mt-3 max-w-3xl font-display text-5xl font-black leading-none md:text-7xl">The SNB bakery menu, told visually.</h2>
+        </div>
+        <motion.div style={{ x }} className="flex gap-6 pl-[5vw] pt-48">
+          {cards.map(([title, copy, image]) => (
+            <article key={title} className="relative h-[66vh] w-[82vw] shrink-0 overflow-hidden rounded-[2.5rem] border border-white/10 shadow-2xl md:w-[56vw] lg:w-[40vw]">
+              <img src={image} alt={title} className="absolute inset-0 h-full w-full object-cover transition duration-700 hover:scale-110" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+              <div className="absolute bottom-0 p-8 md:p-10">
+                <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-black uppercase tracking-[0.25em] text-amber-200 backdrop-blur-xl">SNB Bakery</div>
+                <h3 className="font-display text-4xl font-black md:text-5xl">{title}</h3>
+                <p className="mt-3 text-lg text-white/75 md:text-xl">{copy}</p>
+              </div>
+            </article>
+          ))}
+        </motion.div>
+      </div>
+    </section>
+  );
+}
+
+function BakeryFinalCTA({ onMenuOpen }: { onMenuOpen: () => void }) {
+  return (
+    <section className="relative overflow-hidden bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
+      <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+        <div>
+          <img src={snbLogo} alt="SNB Bakery" className="mb-8 h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-xl" />
+          <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">Order bakery items</p>
+          <h2 className="mt-4 font-display text-5xl font-black leading-none md:text-7xl">Fresh bakery favourites for home, work, and celebrations.</h2>
           <div className="mt-10 flex flex-col gap-4 sm:flex-row">
-            <a href={`tel:${BAKERY.phone}`} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950">
-              <Phone className="h-4 w-4" /> Call Bakery
-            </a>
-            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
+            <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-stone-950 px-8 py-4 font-black text-white">
+              Open Bakery Menu <ArrowRight className="h-4 w-4" />
+            </button>
+            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-8 py-4 font-black text-stone-950">
               <MessageCircle className="h-4 w-4" /> WhatsApp Order
             </a>
           </div>
         </div>
-      </section>
+        <div className="grid grid-cols-2 gap-4">
+          {[bakeryBread, bakeryCakes, bakeryPastries, bakerySweets].map((image, i) => (
+            <img key={i} src={image} alt="Bakery item" className="h-56 w-full rounded-[2rem] object-cover shadow-xl" />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BakeryLanding({ onMenuOpen }: { onMenuOpen: () => void }) {
+  return (
+    <main className="min-h-screen bg-[#160d05] text-white">
+      <BakeryHero />
+      <BakeryStoryScene />
+      <BakeryMenuHighlights />
+      <BakeryFinalCTA onMenuOpen={onMenuOpen} />
     </main>
   );
 }
@@ -658,9 +805,9 @@ export default function Landing() {
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
       <FloatingNav onMenuOpen={() => setMenuOpen(true)} />
       <VenueToggle active={activeVenue} onChange={setActiveVenue} />
-      {menuOpen && <MenuPopup onClose={() => setMenuOpen(false)} />}
+      {menuOpen && <MenuPopup activeVenue={activeVenue} onClose={() => setMenuOpen(false)} />}
       {activeVenue === 'bakery' ? (
-        <BakeryLanding />
+        <BakeryLanding onMenuOpen={() => setMenuOpen(true)} />
       ) : (
         <>
           <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
@@ -677,6 +824,7 @@ export default function Landing() {
           <VisitScene onMenuOpen={() => setMenuOpen(true)} />
         </>
       )}
+          <ChatBot />
     </main>
   );
 }
