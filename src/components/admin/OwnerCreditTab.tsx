@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import {
   IndianRupee, TrendingUp, TrendingDown, AlertTriangle,
-  CheckCircle2, Clock, Users, BarChart3,
+  CheckCircle2, Clock, Users, BarChart3, Download,
 } from 'lucide-react';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -535,6 +535,33 @@ export default function OwnerCreditTab() {
         <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between gap-3 flex-wrap">
           <h3 className="font-display text-base font-bold text-foreground">All Transactions</h3>
           <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={async () => {
+                const XLSX = await import('xlsx');
+                const rows = filtered.map(s => ({
+                  'Branch':           s.branch,
+                  'Bill No':          s.billNo ?? '',
+                  'Customer Name':    s.customerName,
+                  'Customer Phone':   s.customerPhone ?? '',
+                  'Items':            s.items.map(i => `${i.itemName} ×${i.quantity}`).join(', '),
+                  'Subtotal (₹)':    s.subtotal,
+                  'Amount Paid (₹)': s.amountPaid,
+                  'Credit Due (₹)':  s.creditAmount,
+                  'Status':           s.status,
+                  'Sold By':          s.soldBy,
+                  'Date':             new Date(s.createdAt).toLocaleDateString('en-IN'),
+                  'Due Date':         s.dueDate ? new Date(s.dueDate).toLocaleDateString('en-IN') : '',
+                  'Notes':            s.notes ?? '',
+                }));
+                const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ Note: 'No credit sales match filters' }]);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Credit Sales');
+                XLSX.writeFile(wb, `OwnerCreditReport_${new Date().toISOString().slice(0, 10)}.xlsx`);
+              }}
+              className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition"
+            >
+              <Download className="size-3" />Excel
+            </button>
             <select
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}

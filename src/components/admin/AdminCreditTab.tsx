@@ -14,7 +14,7 @@ import {
 } from 'recharts';
 import {
   IndianRupee, Users, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, Filter, Loader2,
+  ChevronDown, ChevronUp, Filter, Loader2, Download,
 } from 'lucide-react';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -343,9 +343,41 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
 
   const showBranchFilter = branches.length > 1;
 
+  const handleExcelDownload = async () => {
+    const XLSX = await import('xlsx');
+    const rows = filtered.map(s => ({
+      'Branch':           s.branch,
+      'Bill No':          s.billNo ?? '',
+      'Customer Name':    s.customerName,
+      'Customer Phone':   s.customerPhone ?? '',
+      'Items':            s.items.map(i => `${i.itemName} ×${i.quantity}`).join(', '),
+      'Subtotal (₹)':    s.subtotal,
+      'Amount Paid (₹)': s.amountPaid,
+      'Credit Due (₹)':  s.creditAmount,
+      'Status':           s.status,
+      'Sold By':          s.soldBy,
+      'Date':             new Date(s.createdAt).toLocaleDateString('en-IN'),
+      'Due Date':         s.dueDate ? new Date(s.dueDate).toLocaleDateString('en-IN') : '',
+      'Notes':            s.notes ?? '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ Note: 'No credit sales match selected filters' }]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Credit Sales');
+    XLSX.writeFile(wb, `CreditSales_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   return (
     <div className="space-y-4">
-      {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
+      {/* ── Header row with Excel button ─────────────────────────────────────── */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">{allSales.length} total · {filtered.length} shown</p>
+        <button
+          onClick={handleExcelDownload}
+          className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition"
+        >
+          <Download className="size-3" />Excel
+        </button>
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <KpiCard
           icon={<IndianRupee className="size-4" />}
