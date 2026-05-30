@@ -24,6 +24,8 @@ import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
 import StoreReportTab from './StoreReportTab';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
+import { useAuthStore } from '@/stores/authStore';
+import type { DeductionContext } from './storeStockStore';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -101,14 +103,38 @@ function printItemRecipe(
 // ─── Stock Units ──────────────────────────────────────────────────────────────
 const UNITS: StockUnit[] = ['kg', 'L', 'g', 'pcs', 'nos', 'bunch', 'ltr'];
 
-// ─── Item Row (per-item raw materials + print) ────────────────────────────────
+// ─── Item Row (per-item raw materials + stock status) ────────────────────────
 function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items'][number] }) {
   const [showMats, setShowMats] = useState(false);
   const mats = useMemo(() => matForItem(item), [item]);
   const hasMats = mats.length > 0;
+  const { items: stockItems } = useStoreStockStore();
+
+  // Check each recipe material against current inventory
+  const matStatus = useMemo(() => {
+    return mats.map(m => {
+      const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
+      if (!stock) return { status: 'unknown' as const, stock: null };
+      // Convert recipe qty to stock unit for comparison
+      let needed = m.quantity;
+      const from = m.unit.toLowerCase();
+      const to   = stock.unit.toLowerCase();
+      if (from === 'g'  && to === 'kg')  needed = needed / 1000;
+      if (from === 'kg' && to === 'g')   needed = needed * 1000;
+      if (needed > stock.quantity) return { status: 'out' as const, stock };
+      if (stock.quantity <= stock.minThreshold) return { status: 'low' as const, stock };
+      return { status: 'ok' as const, stock };
+    });
+  }, [mats, stockItems]);
+
+  const anyOut = matStatus.some(s => s.status === 'out');
+  const anyLow = !anyOut && matStatus.some(s => s.status === 'low');
 
   return (
-    <div className="rounded-xl border border-border bg-muted/30 overflow-hidden">
+    <div className={cn(
+      "rounded-xl border bg-muted/30 overflow-hidden",
+      anyOut ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
+    )}>
       {/* Item header */}
       <div className="flex items-center gap-2 px-3 py-2.5">
         <span className="text-base leading-none shrink-0">
@@ -122,12 +148,23 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
             </p>
           )}
         </div>
-        <p className="text-sm font-body font-bold tabular-nums text-foreground shrink-0">
-          {/* If originalPcs is set, quantity has already been converted to kg — always show kg */}
-          {item.originalPcs != null
-            ? `${item.quantity} kg`
-            : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
-        </p>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {anyOut && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5">
+              <AlertTriangle className="size-2.5" /> OUT OF STOCK
+            </span>
+          )}
+          {anyLow && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 flex items-center gap-0.5">
+              <AlertTriangle className="size-2.5" /> LOW
+            </span>
+          )}
+          <p className="text-sm font-body font-bold tabular-nums text-foreground">
+            {item.originalPcs != null
+              ? `${item.quantity} kg`
+              : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
+          </p>
+        </div>
       </div>
 
       {/* Raw materials toggle */}
@@ -135,11 +172,15 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
         <div className="border-t border-border/40">
           <button
             onClick={() => setShowMats(v => !v)}
-            className="w-full flex items-center justify-between px-3 py-2 bg-primary/5 text-xs font-body font-semibold text-primary active:scale-[0.99]"
+            className={cn(
+              "w-full flex items-center justify-between px-3 py-2 text-xs font-body font-semibold active:scale-[0.99]",
+              anyOut ? "bg-red-50 text-red-700" : anyLow ? "bg-amber-50 text-amber-700" : "bg-primary/5 text-primary"
+            )}
           >
             <div className="flex items-center gap-1.5">
               <Calculator className="size-3.5" />
               Raw materials ({mats.length} ingredients)
+              {anyOut && <span className="text-[9px] font-bold">— check stock!</span>}
             </div>
             {showMats ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
@@ -147,14 +188,46 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
           {showMats && (
             <>
               <div className="divide-y divide-border/50">
-                {mats.map((m, i) => (
-                  <div key={i} className="flex items-center justify-between px-3 py-2 bg-background">
-                    <span className="text-sm font-body text-foreground">{m.material}</span>
-                    <span className="text-sm font-body font-bold tabular-nums text-foreground">
-                      {m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} {m.unit}
-                    </span>
-                  </div>
-                ))}
+                {mats.map((m, i) => {
+                  const s = matStatus[i];
+                  return (
+                    <div key={i} className={cn(
+                      "flex items-center justify-between px-3 py-2",
+                      s.status === 'out' ? "bg-red-50" : s.status === 'low' ? "bg-amber-50" : "bg-background"
+                    )}>
+                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                        {s.status === 'out' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
+                        {s.status === 'low' && <AlertTriangle className="size-3 text-amber-500 shrink-0" />}
+                        <span className={cn(
+                          "text-sm font-body",
+                          s.status === 'out' ? "text-red-700 font-semibold" : "text-foreground"
+                        )}>{m.material}</span>
+                        {/* Stock status badge */}
+                        {s.status === 'out' && s.stock && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0">
+                            Only {s.stock.quantity % 1 === 0 ? s.stock.quantity : s.stock.quantity.toFixed(2)} {s.stock.unit} left
+                          </span>
+                        )}
+                        {s.status === 'unknown' && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border shrink-0">
+                            Not in stock list
+                          </span>
+                        )}
+                        {s.status === 'low' && s.stock && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0">
+                            Low: {s.stock.quantity % 1 === 0 ? s.stock.quantity : s.stock.quantity.toFixed(2)} {s.stock.unit}
+                          </span>
+                        )}
+                      </div>
+                      <span className={cn(
+                        "text-sm font-body font-bold tabular-nums ml-2 shrink-0",
+                        s.status === 'out' ? "text-red-700" : "text-foreground"
+                      )}>
+                        {m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} {m.unit}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
               <div className="px-3 py-2 border-t border-border/40">
                 <button
@@ -177,6 +250,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
 function OrderCard({ order }: { order: BakeryOrder }) {
   const { sendToBaker } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
+  const currentUser = useAuthStore(s => s.currentUser);
 
   const [expanded,  setExpanded]  = useState(true);
   const [sending,   setSending]   = useState(false);
@@ -207,12 +281,23 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const handleSendToBaker = async () => {
     setSending(true); setSendError(null);
     try {
-      if (allMats.length > 0) {
-        const warn = await deductMaterials(allMats.map(m => ({ name: m.material, qty: m.quantity })));
-        if (warn) console.warn('Stock deduction note:', warn);
-      }
+      // BUG-FIX: sendToBaker FIRST — if it fails, no stock deducted (was reversed before)
       await sendToBaker(order.id);
       setSent(true);
+
+      // Deduct materials after confirmed send — pass unit (BUG-FIX) and audit ctx
+      if (allMats.length > 0) {
+        const ctx: DeductionContext = {
+          orderId:     order.id,
+          orderNumber: order.orderNumber ?? order.id,
+          deductedBy:  currentUser?.displayName ?? 'Store',
+        };
+        const warn = await deductMaterials(
+          allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })), // BUG-FIX: pass unit
+          ctx,
+        );
+        if (warn) console.warn('Stock deduction note:', warn);
+      }
     } catch {
       setSendError('Failed to send — please try again.');
     } finally {

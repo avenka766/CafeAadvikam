@@ -13,7 +13,7 @@ import {
   Download, Calendar, Loader2, FileSpreadsheet,
   Package, Scissors, AlertCircle, RefreshCw,
   ClipboardList, Receipt, FileText, IndianRupee,
-  CheckCircle2, Clock, XCircle,
+  CheckCircle2, Clock, XCircle, MinusCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -623,10 +623,224 @@ function InvoiceReportTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── DEDUCTION REPORT sub-tab ──────────────────────────────────────────────────
+// Shows per-material deductions logged when store sends an order to baker.
+// Reads from store_material_deductions (created by storeStockStore.deductMaterials)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface DeductionRow {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  materialName: string;
+  quantityDeducted: number;
+  unit: string;
+  stockBefore: number;
+  stockAfter: number;
+  deductedBy: string;
+  deductedAt: string;
+}
+
+async function fetchDeductions(from: Date, to: Date): Promise<DeductionRow[]> {
+  const { data, error } = await supabase
+    .from('store_material_deductions')
+    .select('*')
+    .gte('deducted_at', from.toISOString())
+    .lte('deducted_at', to.toISOString())
+    .order('deducted_at', { ascending: false });
+  if (error) { console.warn('StoreReport – deductions:', error.message); return []; }
+  return (data ?? []).map(r => ({
+    id:               r.id as string,
+    orderId:          r.order_id as string,
+    orderNumber:      r.order_number as string,
+    materialName:     r.material_name as string,
+    quantityDeducted: Number(r.quantity_deducted),
+    unit:             r.unit as string,
+    stockBefore:      Number(r.stock_before),
+    stockAfter:       Number(r.stock_after),
+    deductedBy:       (r.deducted_by as string) ?? '—',
+    deductedAt:       r.deducted_at as string,
+  }));
+}
+
+function DeductionPreviewRow({ r, index }: { r: DeductionRow; index: number }) {
+  const isZeroAfter = r.stockAfter <= 0;
+  return (
+    <div className={cn('px-4 py-3 flex items-start gap-3 border-b border-border last:border-0', index % 2 === 0 ? 'bg-card' : 'bg-muted/20')}>
+      <div className={cn('size-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5', isZeroAfter ? 'bg-red-50' : 'bg-amber-50')}>
+        <MinusCircle className={cn('size-3.5', isZeroAfter ? 'text-red-500' : 'text-amber-600')} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-xs font-body font-bold text-foreground truncate">{r.materialName}</p>
+          {isZeroAfter && (
+            <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+              EMPTY
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] font-body font-semibold text-foreground mt-0.5">
+          −{r.quantityDeducted % 1 === 0 ? r.quantityDeducted : r.quantityDeducted.toFixed(3)}{' '}
+          <span className="font-normal text-muted-foreground">{r.unit}</span>
+          <span className="text-muted-foreground font-normal ml-2 text-[10px]">
+            ({r.stockBefore.toFixed(2)} → {r.stockAfter.toFixed(2)} {r.unit})
+          </span>
+        </p>
+        <p className="text-[10px] font-body text-muted-foreground mt-0.5">
+          Order #{r.orderNumber} · {r.deductedBy}
+        </p>
+        <p className="text-[10px] font-body text-muted-foreground">{fmtDate(r.deductedAt)} · {fmtTime(r.deductedAt)}</p>
+      </div>
+    </div>
+  );
+}
+
+function DeductionReportTab() {
+  const today = new Date();
+  const [period, setPeriod]         = useState<PeriodKey>('today');
+  const [customFrom, setCustomFrom] = useState(toInputDate(today));
+  const [customTo,   setCustomTo]   = useState(toInputDate(today));
+  const [rows,       setRows]       = useState<DeductionRow[]>([]);
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState<string | null>(null);
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
+  const [orderFilter, setOrderFilter] = useState('');
+
+  const { from, to } = useMemo(() => {
+    if (period === 'custom') return { from: startOfDay(new Date(customFrom + 'T00:00:00')), to: endOfDay(new Date(customTo + 'T00:00:00')) };
+    const days = PERIODS.find(p => p.key === period)?.days ?? 0;
+    const f = new Date(today); f.setDate(f.getDate() - days);
+    return { from: startOfDay(f), to: endOfDay(today) };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, customFrom, customTo]);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const data = await fetchDeductions(from, to);
+      setRows(data); setLastLoaded(new Date());
+    } catch { setError('Failed to load deduction data. Please try again.'); }
+    finally { setLoading(false); }
+  }, [from, to]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const periodLabel = period === 'custom' ? `${customFrom}-to-${customTo}` : PERIODS.find(p => p.key === period)?.label ?? '';
+
+  const filtered = useMemo(() => {
+    const q = orderFilter.trim().toLowerCase();
+    return q ? rows.filter(r => r.orderNumber.toLowerCase().includes(q) || r.materialName.toLowerCase().includes(q)) : rows;
+  }, [rows, orderFilter]);
+
+  // Aggregate totals per material
+  const totals = useMemo(() => {
+    const map = new Map<string, { qty: number; unit: string }>();
+    for (const r of filtered) {
+      const key = `${r.materialName}__${r.unit}`;
+      const ex = map.get(key);
+      if (ex) ex.qty = parseFloat((ex.qty + r.quantityDeducted).toFixed(4));
+      else map.set(key, { qty: r.quantityDeducted, unit: r.unit });
+    }
+    return Array.from(map.entries())
+      .map(([k, v]) => ({ name: k.split('__')[0], ...v }))
+      .sort((a, b) => b.qty - a.qty);
+  }, [filtered]);
+
+  const handleDownload = () => {
+    const detailSheet = {
+      name: 'Deductions',
+      headers: ['Date', 'Time', 'Order #', 'Material', 'Qty Deducted', 'Unit', 'Stock Before', 'Stock After', 'Deducted By'],
+      rows: filtered.map(r => [
+        fmtDate(r.deductedAt), fmtTime(r.deductedAt), r.orderNumber,
+        r.materialName, r.quantityDeducted, r.unit,
+        r.stockBefore, r.stockAfter, r.deductedBy,
+      ]),
+    };
+    const summarySheet = {
+      name: 'Summary by Material',
+      headers: ['Material', 'Total Deducted', 'Unit'],
+      rows: totals.map(t => [t.name, t.qty, t.unit]),
+    };
+    exportExcel([detailSheet, summarySheet], `deductions-${periodLabel}`);
+  };
+
+  const uniqueOrders = new Set(filtered.map(r => r.orderNumber)).size;
+
+  return (
+    <div className="space-y-4">
+      <PeriodSelector period={period} setPeriod={setPeriod} customFrom={customFrom} setCustomFrom={setCustomFrom} customTo={customTo} setCustomTo={setCustomTo} />
+
+      {/* Search / filter */}
+      <div className="relative">
+        <ClipboardList className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={orderFilter}
+          onChange={e => setOrderFilter(e.target.value)}
+          placeholder="Filter by order # or material name…"
+          className="w-full h-10 pl-9 pr-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+
+      {loading && <LoadingState />}
+      {error && !loading && <ErrorState msg={error} onRetry={load} />}
+
+      {!loading && !error && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <SummaryCard icon={MinusCircle} label="Total Deductions" value={filtered.length}    sub={`${uniqueOrders} orders`}                  color="bg-amber-500" />
+            <SummaryCard icon={Package}     label="Materials Used"   value={totals.length}      sub="unique ingredients"                         color="bg-primary" />
+          </div>
+
+          {/* Top deducted materials */}
+          {totals.length > 0 && (
+            <div className="bg-card border border-border rounded-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-border">
+                <p className="text-xs font-body font-bold text-foreground">Top Materials Consumed</p>
+              </div>
+              {totals.slice(0, 8).map((t, i) => (
+                <div key={t.name} className={cn('flex items-center justify-between px-4 py-2.5 border-b border-border/50 last:border-0', i % 2 === 0 ? 'bg-card' : 'bg-muted/20')}>
+                  <span className="text-sm font-body text-foreground">{t.name}</span>
+                  <span className="text-sm font-body font-bold tabular-nums text-foreground">
+                    {t.qty % 1 === 0 ? t.qty : t.qty.toFixed(3)} <span className="text-muted-foreground font-normal text-xs">{t.unit}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <ActionBar onDownload={handleDownload} onRefresh={load} rowCount={filtered.length} lastLoaded={lastLoaded} loading={loading} />
+
+          {filtered.length === 0
+            ? <EmptyState label="No material deductions found. Deductions are logged when you tap 'Send to Baker'." />
+            : (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <MinusCircle className="size-4 text-muted-foreground" />
+                    <p className="text-xs font-body font-bold text-foreground">Deduction Log</p>
+                    <span className="text-[10px] font-body text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{filtered.length} entries</span>
+                  </div>
+                  {filtered.length > 50 && <p className="text-[10px] font-body text-muted-foreground">Showing first 50</p>}
+                </div>
+                {filtered.slice(0, 50).map((r, i) => <DeductionPreviewRow key={r.id} r={r} index={i} />)}
+                {filtered.length > 50 && (
+                  <div className="px-4 py-3 text-center">
+                    <p className="text-[11px] font-body text-muted-foreground">+{filtered.length - 50} more — download Excel to see all</p>
+                  </div>
+                )}
+              </div>
+            )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ── ROOT: StoreReportTab (sub-tab shell) ──────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type SubTab = 'inventory' | 'invoice';
+type SubTab = 'inventory' | 'invoice' | 'deductions';
 
 export default function StoreReportTab() {
   const [sub, setSub] = useState<SubTab>('inventory');
@@ -647,8 +861,9 @@ export default function StoreReportTab() {
       {/* Sub-tab switcher */}
       <div className="flex gap-1.5 bg-muted/60 p-1.5 rounded-xl">
         {([
-          { key: 'inventory', label: 'Inventory Report', icon: Package },
-          { key: 'invoice',   label: 'Invoice Report',   icon: Receipt  },
+          { key: 'inventory',  label: 'Inventory',  icon: Package    },
+          { key: 'deductions', label: 'Deductions', icon: MinusCircle },
+          { key: 'invoice',    label: 'Invoices',   icon: Receipt    },
         ] as { key: SubTab; label: string; icon: React.ElementType }[]).map(t => (
           <button key={t.key} onClick={() => setSub(t.key)}
             className={cn(
@@ -662,8 +877,9 @@ export default function StoreReportTab() {
       </div>
 
       {/* Sub-tab content */}
-      {sub === 'inventory' && <InventoryReportTab />}
-      {sub === 'invoice'   && <InvoiceReportTab />}
+      {sub === 'inventory'  && <InventoryReportTab />}
+      {sub === 'deductions' && <DeductionReportTab />}
+      {sub === 'invoice'    && <InvoiceReportTab />}
     </div>
   );
 }

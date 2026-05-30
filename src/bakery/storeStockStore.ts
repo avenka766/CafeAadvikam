@@ -17,6 +17,27 @@ export interface StockItem {
   minThreshold: number; // low-stock warning level
 }
 
+// Logged entry written to store_material_deductions on each Send to Baker
+export interface MaterialDeductionLog {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  materialName: string;
+  quantityDeducted: number;
+  unit: string;
+  stockBefore: number;
+  stockAfter: number;
+  deductedBy: string;
+  deductedAt: string;
+}
+
+// Context passed by the caller (OrderCard) so we can write a proper audit log
+export interface DeductionContext {
+  orderId: string;
+  orderNumber: string | number;
+  deductedBy: string;
+}
+
 interface StoreStockState {
   items: StockItem[];
   loaded: boolean;
@@ -26,8 +47,13 @@ interface StoreStockState {
   updateQuantity: (id: string, quantity: number) => Promise<string | null>;
   updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
+  bulkImportFromRecipes: () => Promise<{ added: number; skipped: number; error?: string }>;
   // H-06 FIX: unit is now required so conversions are explicit, not guessed
-  deductMaterials: (deductions: { name: string; qty: number; unit?: string }[]) => Promise<string | null>;
+  // DEDUCT-LOG: ctx is optional for backwards compat; when supplied, each deduction is logged
+  deductMaterials: (
+    deductions: { name: string; qty: number; unit?: string }[],
+    ctx?: DeductionContext,
+  ) => Promise<string | null>;
 }
 
 // H-06 FIX: explicit unit conversion — replaces the fragile "qty ≤ 10 = kg" heuristic.
@@ -159,7 +185,27 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     set(s => ({ items: s.items.filter(i => i.id !== id) }));
   },
 
-  deductMaterials: async (deductions) => {
+  bulkImportFromRecipes: async () => {
+    const recipeMats = getAllRecipeMaterials();
+    const existing = get().items;
+    const toInsert = recipeMats.filter(
+      m => !existing.some(e => normaliseName(e.name) === normaliseName(m.name))
+    );
+    if (toInsert.length === 0) return { added: 0, skipped: recipeMats.length };
+    const { data, error } = await supabase
+      .from('store_raw_stock')
+      .insert(toInsert.map(m => ({ name: m.name, unit: m.unit, quantity: 0, min_threshold: 1 })))
+      .select();
+    if (error) return { added: 0, skipped: existing.length, error: error.message };
+    const newItems: StockItem[] = (data ?? []).map(r => ({
+      id: r.id as string, name: r.name as string, unit: r.unit as StockUnit,
+      quantity: Number(r.quantity), minThreshold: Number(r.min_threshold),
+    }));
+    set(s => ({ items: [...s.items, ...newItems].sort((a, b) => a.name.localeCompare(b.name)) }));
+    return { added: newItems.length, skipped: existing.length };
+  },
+
+  deductMaterials: async (deductions, ctx?) => {
     // M-08 FIX: read fresh quantities from DB immediately before each write to
     // narrow the stale-read race window. Concurrent deductions from multiple staff
     // devices can still race within the same request, but the window is now ms not
@@ -214,6 +260,31 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         return upd ? { ...i, quantity: upd.newQty } : i;
       }),
     }));
+
+    // ── DEDUCT-LOG: write one audit row per material to store_material_deductions ─
+    if (ctx) {
+      const logRows = updates.map(u => {
+        const stockItem = get().items.find(i => i.id === u.id);
+        const finalU = finalUpdates.find(f => f.id === u.id);
+        return {
+          order_id:          ctx.orderId,
+          order_number:      String(ctx.orderNumber),
+          material_name:     stockItem?.name ?? u.id,
+          quantity_deducted: u.deductQty,
+          unit:              stockItem?.unit ?? 'kg',
+          stock_before:      finalU ? finalU.newQty + u.deductQty : 0,
+          stock_after:       finalU?.newQty ?? 0,
+          deducted_by:       ctx.deductedBy,
+        };
+      });
+      if (logRows.length > 0) {
+        // Non-blocking — if insert fails, deduction already succeeded; just log to console
+        supabase.from('store_material_deductions').insert(logRows).then(({ error }) => {
+          if (error) console.warn('[storeStockStore] deduction log insert failed:', error.message);
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Fire low-stock notification for any item that dropped below its threshold
     const currentItems = get().items;
