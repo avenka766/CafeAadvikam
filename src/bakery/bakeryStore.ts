@@ -226,13 +226,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .eq('id', orderId);
     if (error) return;
 
-    // ── DISCREPANCY-FIX (B2+B3+B4+B6): check with receiver's original request ──
-    // Root causes fixed:
-    //  B2/B4: was using p.quantityPrepared (baker's kg) as "requested".
-    //         Must use originalPcs for pcs items (what receiver actually ordered).
-    //  B3:    multi-dispatch: alert fires per-item when that item is fully covered,
-    //         so partial batches (8 pcs + 1 pcs later) both get checked independently.
-    //  B6:    alert also fires when allFullyDispatched so permanent shortfalls surface.
+    // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──
+    // Strategy: always pass the full list of discrepant items to pushPackingDiscrepancy
+    // on every dispatch call. pushPackingDiscrepancy now upserts (merges) rather than
+    // deduping, so repeated calls safely update the single notification row for this order.
+    // This ensures that even if Item A dispatches first and Item B dispatches second,
+    // both discrepancies end up in the same notification record.
     //
     // NOTE: orderItems and kgToPcs already fetched above in the allFullyDispatched block.
 
@@ -257,28 +256,22 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         ? (kgToPcs(p.quantityPrepared, orderItem.weightGrams) ?? p.quantityPrepared)
         : p.quantityPrepared;
 
-      const isItemFullyCovered = totalDispatched >= preparedInUnit - 0.001;
-      const isExactVsRequested = Math.abs(totalDispatched - requested) <= 0.001;
+      // Only include items that have been touched by at least one dispatch entry
+      // (avoids flagging items the packer hasn't dispatched yet as "0 dispatched")
+      const hasBeenDispatched = updatedLog.some(d => d.itemName === p.itemName);
+      if (!hasBeenDispatched) continue;
 
-      // Fire alert for THIS item if:
-      //  (a) it's now fully dispatched (covers all prepared) AND differs from requested, OR
-      //  (b) the whole order just finished and this item is still short
-      if (p.itemName === entry.itemName && isItemFullyCovered && !isExactVsRequested) {
-        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested, unit: isPcs ? 'pcs' : 'kg' });
-      } else if (allFullyDispatched && !isExactVsRequested) {
-        // Catch all remaining discrepancies when order completes
+      const isExactVsRequested = Math.abs(totalDispatched - requested) <= 0.001;
+      if (!isExactVsRequested) {
         discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested, unit: isPcs ? 'pcs' : 'kg' });
       }
     }
-    // Deduplicate (allFullyDispatched path may add same item twice)
-    const seen = new Set<string>();
-    const uniqueDiscrepancies = discrepancies.filter(d => { if (seen.has(d.itemName)) return false; seen.add(d.itemName); return true; });
 
-    if (uniqueDiscrepancies.length > 0) {
+    if (discrepancies.length > 0) {
       const orderNumber = (freshOrder.order_number as number | string) ?? orderId;
       const { useNotificationStore } = await import('./notificationStore');
       void useNotificationStore.getState().pushPackingDiscrepancy(
-        orderId, String(orderNumber), entry.branch, uniqueDiscrepancies,
+        orderId, String(orderNumber), entry.branch, discrepancies,
       );
     }
     // ─────────────────────────────────────────────────────────────────────
