@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion';
 import {
   ArrowRight,
@@ -11,7 +10,6 @@ import {
   Croissant,
   Flame,
   Leaf,
-  LogIn,
   MapPin,
   Menu as MenuIcon,
   Phone,
@@ -19,7 +17,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import ChatBot from '@/components/features/ChatBot';
 import heroMeal from '@/assets/hero-bg.jpg';
 import cafeLogo from '@/assets/cafe-logo.png';
 
@@ -28,6 +25,7 @@ const CAFE = {
   hours: '7 AM – 10 PM Daily',
   phone: '+91 90954 45444',
   whatsapp: '919095445444',
+  mapsQuery: '109 Bagalur Main Road Berikai 635105 Cafe Aadvikam',
 };
 
 const IMG = {
@@ -41,7 +39,6 @@ const IMG = {
   sweets: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=1500&q=90',
   lime: 'https://images.unsplash.com/photo-1523371054106-bbf80586c38c?auto=format&fit=crop&w=1500&q=90',
   bakeryCounter: 'https://images.unsplash.com/photo-1555507036-ab1f4038808a?auto=format&fit=crop&w=1600&q=90',
-  gathering: 'https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&w=1600&q=90',
 };
 
 const navItems = [
@@ -49,15 +46,26 @@ const navItems = [
   ['Bakery', '#bakery'],
   ['Signature', '#signature'],
   ['Party Hall', '#party-hall'],
-  ['Visit', '#visit'],
+  ['Location', '#visit'],
 ] as const;
 
 const leafHotspots = [
-  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.', left: '49%', top: '43%' },
-  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.', left: '24%', top: '61%' },
-  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.', left: '56%', top: '63%' },
-  { title: 'Fresh Chutneys', copy: 'Coconut and house chutneys ground fresh every day.', left: '69%', top: '71%' },
-  { title: 'Filter Coffee', copy: 'Traditional cafe finish with warm aroma and foam.', left: '79%', top: '25%' },
+  { title: 'Soft Idli', copy: 'Steamed fresh for a comforting South Indian start.' },
+  { title: 'Sambar', copy: 'Slow-cooked lentils, vegetables, and roasted spices.' },
+  { title: 'Ghee Roast Dosa', copy: 'Crispy, golden, and served hot from the tawa.' },
+  { title: 'Fresh Chutneys', copy: 'Coconut and house chutneys ground fresh every day.' },
+  { title: 'Filter Coffee', copy: 'Traditional cafe finish with warm aroma and foam.' },
+];
+
+const menuHighlights = [
+  ['Ghee Roast Dosa', 'Crispy perfection with aromatic ghee'],
+  ['Aadvikam Special Thali', 'A complete vegetarian feast'],
+  ['Filter Coffee', 'Traditional brew in steel tumblers'],
+  ['Rava Kesari', 'Saffron-infused semolina dessert'],
+  ['Paneer Butter Masala', 'Creamy cottage cheese in rich gravy'],
+  ['Fresh Lime Soda', 'Sweet, salty, and refreshing'],
+  ['Fresh Bakery', 'Breads, buns, pastries, cakes, and sweets'],
+  ['South Indian Breakfast', 'Idli, dosa, sambar, chutney, and coffee'],
 ];
 
 const signatureItems = [
@@ -77,8 +85,69 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function FloatingNav() {
-  const navigate = useNavigate();
+function MenuModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-stone-950/80 px-4 py-8 text-white backdrop-blur-md"
+        >
+          <motion.div
+            initial={{ scale: 0.95, y: 30, opacity: 0 }}
+            animate={{ scale: 1, y: 0, opacity: 1 }}
+            exit={{ scale: 0.95, y: 30, opacity: 0 }}
+            className="relative max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-[2rem] border border-white/15 bg-[#120e08] shadow-2xl"
+          >
+            <button
+              onClick={onClose}
+              aria-label="Close menu"
+              className="absolute right-4 top-4 z-20 grid h-11 w-11 place-items-center rounded-full bg-white text-stone-950 shadow-xl transition hover:scale-105"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="grid max-h-[88vh] overflow-y-auto lg:grid-cols-[0.8fr_1.2fr]">
+              <div className="relative min-h-[320px] overflow-hidden">
+                <img src={heroMeal} alt="Cafe Aadvikam menu" className="absolute inset-0 h-full w-full object-cover" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-black/10" />
+                <div className="absolute bottom-6 left-6 right-6">
+                  <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Menu highlights</p>
+                  <h2 className="mt-3 font-display text-4xl font-black md:text-5xl">Pure vegetarian favourites</h2>
+                </div>
+              </div>
+              <div className="p-6 md:p-9">
+                <p className="mb-6 text-white/65">A quick view of Cafe Aadvikam favourites. This popup intentionally has no waiter/call-waiter button.</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {menuHighlights.map(([name, desc]) => (
+                    <div key={name} className="rounded-2xl border border-white/10 bg-white/[0.06] p-4">
+                      <h3 className="font-black text-amber-100">{name}</h3>
+                      <p className="mt-1 text-sm leading-6 text-white/65">{desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+                  <a
+                    href={`https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent('Hi Cafe Aadvikam, I would like to know today\'s menu.')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-6 py-3 font-black text-stone-950"
+                  >
+                    Ask on WhatsApp <ArrowRight className="h-4 w-4" />
+                  </a>
+                  <button onClick={onClose} className="rounded-full border border-white/20 px-6 py-3 font-black text-white">Close</button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -99,8 +168,7 @@ function FloatingNav() {
           </nav>
 
           <div className="hidden items-center gap-2 md:flex">
-            <button onClick={() => navigate('/digital-menu')} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">View Menu</button>
-            <button onClick={() => navigate('/login')} className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20"><LogIn className="h-4 w-4" /> Login</button>
+            <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">View Menu</button>
             <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105"><CalendarCheck className="h-4 w-4" /> Book Party Hall</button>
           </div>
 
@@ -116,8 +184,7 @@ function FloatingNav() {
               {navItems.map(([label, href]) => (
                 <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="text-left">{label}</button>
               ))}
-              <button onClick={() => navigate('/digital-menu')} className="text-left text-amber-200">View Menu</button>
-              <button onClick={() => navigate('/login')} className="text-left text-amber-300">Login</button>
+              <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">View Menu</button>
             </div>
           </motion.div>
         )}
@@ -164,25 +231,23 @@ function HeroScene() {
 function LeafExperience() {
   const ref = useRef<HTMLElement>(null);
   const { scrollYProgress } = useScroll({ target: ref, offset: ['start start', 'end end'] });
-  const imageScale = useTransform(scrollYProgress, [0, 1], [1.05, 1.18]);
-  const spotlightX = useTransform(scrollYProgress, [0, 0.25, 0.5, 0.75, 1], ['49%', '24%', '56%', '69%', '79%']);
-  const spotlightY = useTransform(scrollYProgress, [0, 0.25, 0.5, 0.75, 1], ['43%', '61%', '63%', '71%', '25%']);
+  const imageScale = useTransform(scrollYProgress, [0, 1], [1.04, 1.16]);
+  const imageY = useTransform(scrollYProgress, [0, 1], [0, -45]);
 
   return (
-    <section id="leaf" ref={ref} className="relative h-[430vh] bg-[#120e08] text-white">
+    <section id="leaf" ref={ref} className="relative h-[360vh] bg-[#120e08] text-white">
       <div className="sticky top-0 grid h-screen items-center overflow-hidden px-4 py-24 lg:grid-cols-[1.18fr_.82fr] lg:px-14">
         <div className="relative mx-auto aspect-[1.65/1] w-full max-w-5xl overflow-hidden rounded-[3rem] border border-white/10 shadow-2xl shadow-black/70">
-          <motion.img src={heroMeal} alt="Real South Indian banana leaf meal" style={{ scale: imageScale }} className="absolute inset-0 h-full w-full object-cover" />
-          <div className="absolute inset-0 bg-black/20" />
-          <motion.div style={{ left: spotlightX, top: spotlightY }} className="absolute h-36 w-36 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-200/80 bg-amber-200/15 shadow-[0_0_80px_rgba(251,191,36,0.75)] backdrop-blur-[1px] md:h-48 md:w-48" />
+          <motion.img src={heroMeal} alt="Real South Indian meal at Cafe Aadvikam" style={{ scale: imageScale, y: imageY }} className="absolute inset-0 h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-black/20" />
           <div className="absolute bottom-5 left-5 right-5 rounded-[2rem] border border-white/15 bg-black/45 p-5 text-center backdrop-blur-xl">
-            <p className="font-display text-3xl font-black md:text-5xl">A real South Indian meal, explored dish by dish.</p>
+            <p className="font-display text-3xl font-black md:text-5xl">The real Cafe Aadvikam meal — no fake leaf, no broken circles.</p>
           </div>
         </div>
 
         <div className="mx-auto mt-10 max-w-xl lg:mt-0">
           <p className="mb-5 text-sm font-bold uppercase tracking-[0.4em] text-amber-300">The banana leaf experience</p>
-          <h2 className="font-display text-5xl font-black leading-none md:text-7xl">Real food. Real steam. Real comfort.</h2>
+          <h2 className="font-display text-5xl font-black leading-none md:text-7xl">A real South Indian plate, narrated as you scroll.</h2>
           <div className="mt-8 space-y-4">
             {leafHotspots.map((step, i) => (
               <motion.article
@@ -303,7 +368,6 @@ function PartyHallScene() {
       <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.15fr_.85fr] lg:items-center">
         <motion.div initial={{ opacity: 0, x: -45 }} whileInView={{ opacity: 1, x: 0 }} viewport={{ amount: 0.35 }} className="relative overflow-hidden rounded-[3rem] bg-stone-900 shadow-2xl shadow-orange-950/20">
           <img src={IMG.partyHall} alt="Cafe Aadvikam Party Hall" className="h-[72vh] min-h-[520px] w-full object-cover" />
-          <div className="absolute left-5 top-5 rounded-full border border-white/20 bg-black/40 px-4 py-2 text-sm font-black uppercase tracking-[0.22em] text-white backdrop-blur-xl">Actual Party Hall</div>
           <div className="absolute bottom-5 left-5 right-5 rounded-[2rem] border border-white/15 bg-black/45 p-5 text-white backdrop-blur-xl">
             <p className="font-display text-3xl font-black">Cafe Aadvikam Party Hall</p>
             <p className="mt-2 text-white/70">A dedicated space for birthdays, family functions, meetings, and ceremonies.</p>
@@ -341,23 +405,34 @@ function PartyHallScene() {
   );
 }
 
-function VisitScene() {
-  const navigate = useNavigate();
+function VisitScene({ onMenuOpen }: { onMenuOpen: () => void }) {
+  const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(CAFE.mapsQuery)}`;
   return (
-    <section id="visit" className="relative min-h-screen overflow-hidden bg-stone-950 px-5 py-28 text-white md:px-12 lg:px-20">
-      <img src={heroMeal} alt="Cafe Aadvikam meal" className="absolute inset-0 h-full w-full object-cover opacity-35" />
-      <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/82 to-stone-950/40" />
-      <div className="relative z-10 mx-auto flex min-h-[70vh] max-w-6xl flex-col justify-end text-center">
-        <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Visit us today</p>
-        <h2 className="mt-5 font-display text-6xl font-black leading-none md:text-8xl">Every dish has a story. Come taste yours.</h2>
-        <div className="mx-auto mt-10 grid max-w-4xl gap-4 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><MapPin className="mx-auto mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.address}</p></div>
-          <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Clock className="mx-auto mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.hours}</p></div>
-          <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Phone className="mx-auto mb-3 h-6 w-6 text-amber-300" /><p>Party hall & catering bookings</p></div>
+    <section id="visit" className="relative overflow-hidden bg-stone-950 px-5 py-28 text-white md:px-12 lg:px-20">
+      <img src={heroMeal} alt="Cafe Aadvikam meal" className="absolute inset-0 h-full w-full object-cover opacity-25" />
+      <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/88 to-stone-950/50" />
+      <div className="relative z-10 mx-auto grid max-w-7xl gap-10 lg:grid-cols-[.95fr_1.05fr] lg:items-center">
+        <div>
+          <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Location</p>
+          <h2 className="mt-5 font-display text-6xl font-black leading-none md:text-8xl">Find Cafe Aadvikam in Berikai.</h2>
+          <div className="mt-10 grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><MapPin className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.address}</p></div>
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Clock className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.hours}</p></div>
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-5 backdrop-blur-xl"><Phone className="mb-3 h-6 w-6 text-amber-300" /><p>{CAFE.phone}</p></div>
+          </div>
+          <div className="mt-8 flex flex-col gap-4 sm:flex-row">
+            <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">View Menu <ArrowRight className="h-4 w-4" /></button>
+            <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">Get Directions <MapPin className="h-4 w-4" /></a>
+          </div>
         </div>
-        <div className="mt-10 flex flex-col justify-center gap-4 sm:flex-row">
-          <button onClick={() => navigate('/digital-menu')} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">View Full Menu <ArrowRight className="h-4 w-4" /></button>
-          <a href="https://maps.google.com/?q=109%20Bagalur%20Main%20Road%20Berikai" target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">Get Directions <MapPin className="h-4 w-4" /></a>
+        <div className="overflow-hidden rounded-[2.5rem] border border-white/15 bg-white/10 p-2 shadow-2xl backdrop-blur-xl">
+          <iframe
+            title="Cafe Aadvikam location map"
+            src={`https://www.google.com/maps?q=${encodeURIComponent(CAFE.mapsQuery)}&output=embed`}
+            className="h-[420px] w-full rounded-[2rem] border-0 md:h-[560px]"
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
         </div>
       </div>
     </section>
@@ -365,10 +440,12 @@ function VisitScene() {
 }
 
 export default function Landing() {
+  const [menuOpen, setMenuOpen] = useState(false);
   const progressSections = useMemo(() => ['#hero', '#leaf', '#bakery', '#signature', '#party-hall', '#visit'], []);
   return (
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
-      <FloatingNav />
+      <FloatingNav onMenuOpen={() => setMenuOpen(true)} />
+      <MenuModal open={menuOpen} onClose={() => setMenuOpen(false)} />
       <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
         {progressSections.map((id) => <button key={id} onClick={() => scrollToId(id)} className="h-10 w-1.5 rounded-full bg-white/20 transition hover:bg-amber-300" aria-label={`Go to ${id}`} />)}
       </div>
@@ -378,8 +455,7 @@ export default function Landing() {
       <BakeryScene />
       <SignatureScene />
       <PartyHallScene />
-      <VisitScene />
-      <ChatBot />
+      <VisitScene onMenuOpen={() => setMenuOpen(true)} />
     </main>
   );
 }
