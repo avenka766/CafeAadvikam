@@ -76,12 +76,22 @@ interface DiscrepancyItem {
   unit: string;
 }
 
+interface RemainderItem {
+  itemName:      string;
+  remainderKg:   number;
+  dispatchedPcs: number;
+  preparedKg:    number;
+}
+
 function NotificationCard({ n, onRead }: {
   n: { id: string; title: string; body: string; isRead: boolean; createdAt: string; meta?: Record<string, unknown> };
   onRead: (id: string) => void;
 }) {
-  const meta  = n.meta as { items?: DiscrepancyItem[] } | undefined;
-  const items = meta?.items ?? [];
+  const meta           = n.meta as { items?: DiscrepancyItem[] | RemainderItem[] } | undefined;
+  const items          = meta?.items ?? [];
+  const isRemainder    = n.type === 'packing_remainder';
+  const remainderItems = isRemainder ? (items as RemainderItem[]) : [];
+  const discrepItems   = isRemainder ? [] : (items as DiscrepancyItem[]);
 
   return (
     <div
@@ -110,10 +120,10 @@ function NotificationCard({ n, onRead }: {
         )}
       </div>
 
-      {/* Per-item breakdown */}
-      {items.length > 0 && (
+      {/* Per-item breakdown — discrepancy type */}
+      {!isRemainder && discrepItems.length > 0 && (
         <div className="space-y-1.5 pl-1">
-          {items.map((item, i) => {
+          {discrepItems.map((item, i) => {
             const diff     = item.dispatched - item.requested;
             const isShort  = diff < 0;
             const isExcess = diff > 0;
@@ -146,6 +156,28 @@ function NotificationCard({ n, onRead }: {
                     </span>
                   )}
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Per-item breakdown — remainder type */}
+      {isRemainder && remainderItems.length > 0 && (
+        <div className="space-y-1.5 pl-1">
+          {remainderItems.map((item, i) => {
+            const remainderGrams = Math.round(item.remainderKg * 1000);
+            return (
+              <div key={i} className="px-3 py-2 rounded-xl text-xs bg-amber-50 border border-amber-100">
+                <div className="flex items-center justify-between">
+                  <span className="font-body font-semibold text-foreground truncate flex-1">{item.itemName}</span>
+                  <span className="flex items-center gap-0.5 text-amber-600 font-bold shrink-0 ml-2">
+                    <AlertTriangle className="size-3" />{remainderGrams}g at bakery
+                  </span>
+                </div>
+                <p className="text-muted-foreground mt-0.5">
+                  {item.preparedKg} kg → <strong>{item.dispatchedPcs} pcs</strong> dispatched · {remainderGrams}g cannot form a whole piece
+                </p>
               </div>
             );
           })}

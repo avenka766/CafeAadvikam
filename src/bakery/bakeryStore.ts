@@ -123,14 +123,29 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Compare each prepared qty against the requested qty and notify admin of any shortfall.
     const order = get().orders.find(o => o.id === orderId);
     if (order) {
+      // FIX B1+B5: compare in the receiver's original unit (pcs or kg).
+      // item.quantity is always in kg (even for pcs items after conversion).
+      // For pcs items we must use originalPcs as "requested" and convert
+      // the baker's kg output → pcs so the numbers and units actually match.
+      const { kgToPcs } = await import('./itemMatcher');
       const shortages = order.items
         .map(item => {
-          const prep = preparedItems.find(p => p.itemId === item.itemId);
+          const prep   = preparedItems.find(p => p.itemId === item.itemId);
+          const isPcs  = item.dispatchUnit === 'pcs';
+          // requested: receiver's original entry
+          const requested = isPcs && item.originalPcs != null
+            ? item.originalPcs
+            : item.quantity;
+          // prepared: baker always submits in kg; convert to pcs if needed
+          const prepKg  = prep?.quantityPrepared ?? 0;
+          const prepared = isPcs && item.weightGrams != null
+            ? (kgToPcs(prepKg, item.weightGrams) ?? prepKg)
+            : prepKg;
           return {
             itemName:  item.itemName,
-            requested: item.quantity,
-            prepared:  prep?.quantityPrepared ?? 0,
-            unit:      item.dispatchUnit ?? 'kg',
+            requested,
+            prepared,
+            unit: isPcs ? 'pcs' : 'kg',
           };
         })
         .filter(x => x.prepared < x.requested - 0.001);
@@ -174,11 +189,33 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     ];
 
     // Only mark 'dispatched' when every prepared item is fully covered by the log.
+    // FIX B7: for pcs items, compare totalDispatched (pcs) against flooredPcs
+    // (Math.floor of kg→pcs conversion), NOT against raw quantityPrepared (kg).
+    // Without this, 7 pcs dispatched from 1.5 kg never satisfies "7 >= 1.5" → stuck forever.
     const preparedItems = (freshOrder.prepared_items as PreparedItem[]) || [];
+
+    // We need order items for weightGrams/dispatchUnit — fetch lazily; reused below too.
+    const { data: fullOrderData } = await supabase
+      .from('bakery_orders')
+      .select('items, order_number')
+      .eq('id', orderId)
+      .single();
+    const orderItems = (fullOrderData?.items as import('./types').BakeryOrderItem[]) ?? [];
+    const { kgToPcs } = await import('./itemMatcher');
+
     const allFullyDispatched = preparedItems.length > 0 && preparedItems.every(p => {
+      const orderItem = orderItems.find(oi => oi.itemName === p.itemName);
+      const isPcs     = orderItem?.dispatchUnit === 'pcs';
       const totalDispatched = updatedLog
         .filter(d => d.itemName === p.itemName)
         .reduce((s, d) => s + d.quantity, 0);
+      if (isPcs && orderItem?.weightGrams != null) {
+        // For pcs items: max dispatchable = floor(kg → pcs). 
+        // If totalDispatched (pcs) >= that floor, item is done — even if grams remain.
+        const flooredPcs = kgToPcs(p.quantityPrepared, orderItem.weightGrams) ?? 0;
+        return totalDispatched >= flooredPcs;
+      }
+      // kg items: standard comparison
       return totalDispatched >= p.quantityPrepared - 0.001;
     });
     const newStatus: WorkflowStatus = allFullyDispatched ? 'dispatched' : 'packed';
@@ -189,35 +226,92 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .eq('id', orderId);
     if (error) return;
 
-    // ── DISCREPANCY-FIX: check for discrepancies using fresh DB data ──────
-    // Previously this check lived in PackingDashboard using stale React state,
-    // causing it to miss alerts. Now it runs here with the authoritative DB log.
-    // Fire on EVERY dispatch — not just the last — so per-item discrepancies
-    // (shortage OR excess) are reported immediately when they occur.
+    // ── DISCREPANCY-FIX (B2+B3+B4+B6): check with receiver's original request ──
+    // Root causes fixed:
+    //  B2/B4: was using p.quantityPrepared (baker's kg) as "requested".
+    //         Must use originalPcs for pcs items (what receiver actually ordered).
+    //  B3:    multi-dispatch: alert fires per-item when that item is fully covered,
+    //         so partial batches (8 pcs + 1 pcs later) both get checked independently.
+    //  B6:    alert also fires when allFullyDispatched so permanent shortfalls surface.
+    //
+    // NOTE: orderItems and kgToPcs already fetched above in the allFullyDispatched block.
+
     const discrepancies: { itemName: string; dispatched: number; requested: number; unit: string }[] = [];
+
     for (const p of preparedItems) {
-      if (p.itemName !== entry.itemName) continue; // only check the item just dispatched
+      const orderItem  = orderItems.find(oi => oi.itemName === p.itemName);
+      const isPcs      = orderItem?.dispatchUnit === 'pcs';
+
+      // requested = what the RECEIVER ordered (in pcs or kg)
+      const requested = isPcs && orderItem?.originalPcs != null
+        ? orderItem.originalPcs
+        : orderItem?.quantity ?? p.quantityPrepared;
+
+      // totalDispatched is always in the dispatch unit (pcs or kg)
       const totalDispatched = updatedLog
         .filter(d => d.itemName === p.itemName)
         .reduce((s, d) => s + d.quantity, 0);
-      const isExact = Math.abs(totalDispatched - p.quantityPrepared) <= 0.001;
-      // Flag if dispatching this item is now complete (no more expected) AND there's a gap
-      const isFullyCoveredOrOver = totalDispatched >= p.quantityPrepared - 0.001;
-      if (isFullyCoveredOrOver && !isExact) {
-        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested: p.quantityPrepared, unit: entry.unit ?? 'kg' });
-      } else if (allFullyDispatched && !isExact) {
-        // Catch items that ended short when the whole order is marked dispatched
-        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested: p.quantityPrepared, unit: entry.unit ?? 'kg' });
+
+      // prepared = baker's output converted to dispatch unit for comparison
+      const preparedInUnit = isPcs && orderItem?.weightGrams != null
+        ? (kgToPcs(p.quantityPrepared, orderItem.weightGrams) ?? p.quantityPrepared)
+        : p.quantityPrepared;
+
+      const isItemFullyCovered = totalDispatched >= preparedInUnit - 0.001;
+      const isExactVsRequested = Math.abs(totalDispatched - requested) <= 0.001;
+
+      // Fire alert for THIS item if:
+      //  (a) it's now fully dispatched (covers all prepared) AND differs from requested, OR
+      //  (b) the whole order just finished and this item is still short
+      if (p.itemName === entry.itemName && isItemFullyCovered && !isExactVsRequested) {
+        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested, unit: isPcs ? 'pcs' : 'kg' });
+      } else if (allFullyDispatched && !isExactVsRequested) {
+        // Catch all remaining discrepancies when order completes
+        discrepancies.push({ itemName: p.itemName, dispatched: totalDispatched, requested, unit: isPcs ? 'pcs' : 'kg' });
       }
     }
-    if (discrepancies.length > 0) {
+    // Deduplicate (allFullyDispatched path may add same item twice)
+    const seen = new Set<string>();
+    const uniqueDiscrepancies = discrepancies.filter(d => { if (seen.has(d.itemName)) return false; seen.add(d.itemName); return true; });
+
+    if (uniqueDiscrepancies.length > 0) {
       const orderNumber = (freshOrder.order_number as number | string) ?? orderId;
       const { useNotificationStore } = await import('./notificationStore');
       void useNotificationStore.getState().pushPackingDiscrepancy(
-        orderId, String(orderNumber), entry.branch, discrepancies,
+        orderId, String(orderNumber), entry.branch, uniqueDiscrepancies,
       );
     }
     // ─────────────────────────────────────────────────────────────────────
+
+    // FIX B8: Calculate and notify remainder grams for pcs items.
+    // When baker sends 1.5 kg of a 200g item → 7 pcs dispatched, 100g leftover.
+    // These grams cannot form a whole piece, so they stay at the bakery.
+    // Admin must know about them so they can track waste / partial batches.
+    if (allFullyDispatched) {
+      const remainderItems: { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[] = [];
+      for (const p of preparedItems) {
+        const orderItem = orderItems.find(oi => oi.itemName === p.itemName);
+        if (orderItem?.dispatchUnit !== 'pcs' || !orderItem.weightGrams) continue;
+        const flooredPcs   = kgToPcs(p.quantityPrepared, orderItem.weightGrams) ?? 0;
+        const usedKg       = (flooredPcs * orderItem.weightGrams) / 1000;
+        const remainderKg  = Math.round((p.quantityPrepared - usedKg) * 1000) / 1000;
+        if (remainderKg > 0.001) { // more than 1g remainder
+          remainderItems.push({
+            itemName:     p.itemName,
+            remainderKg,
+            dispatchedPcs: flooredPcs,
+            preparedKg:   p.quantityPrepared,
+          });
+        }
+      }
+      if (remainderItems.length > 0) {
+        const orderNumber = (fullOrderData?.order_number as number | string) ?? orderId;
+        const { useNotificationStore } = await import('./notificationStore');
+        void useNotificationStore.getState().pushPackingRemainder(
+          orderId, String(orderNumber), entry.branch, remainderItems,
+        );
+      }
+    }
 
     const { error: incomingErr } = await supabase.from('branch_incoming').upsert({
       dispatch_id:   newEntry.id,

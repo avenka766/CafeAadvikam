@@ -69,6 +69,14 @@ const TYPE_META: Record<
     iconColor: 'text-blue-600',
     badgeCls: 'bg-blue-100 text-blue-700 border-blue-200',
   },
+  packing_remainder: {
+    label: 'Packing Remainder',
+    icon: Scale,
+    cardBorder: 'border-amber-300',
+    iconBg: 'bg-amber-50',
+    iconColor: 'text-amber-600',
+    badgeCls: 'bg-amber-100 text-amber-700 border-amber-200',
+  },
 };
 
 // ─── Detail modal ─────────────────────────────────────────────────────────────
@@ -328,6 +336,46 @@ function NotificationDetailModal({
       );
     }
 
+    if (notification.type === 'packing_remainder' && m?.items) {
+      const items = m.items as { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[];
+      return (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl">
+            <Scale className="size-4 text-amber-600 shrink-0" />
+            <p className="text-xs font-body text-amber-800">
+              <span className="font-bold">Branch:</span> {String(m.branch ?? '—')} · <span className="font-bold">Order:</span> {String(m.orderNumber ?? '—')}
+            </p>
+          </div>
+          <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Remainder After Pcs Conversion</p>
+          <div className="rounded-xl border border-amber-200 overflow-hidden">
+            <div className="grid grid-cols-12 px-3 py-2 bg-amber-50 text-[9px] font-body font-bold text-amber-700 uppercase">
+              <span className="col-span-4">Item</span>
+              <span className="col-span-2 text-right">Baker Sent</span>
+              <span className="col-span-3 text-right">Dispatched</span>
+              <span className="col-span-3 text-right">Remainder</span>
+            </div>
+            {items.map((item, i) => {
+              const remainderGrams = Math.round(item.remainderKg * 1000);
+              return (
+                <div key={i} className="grid grid-cols-12 px-3 py-2.5 border-t border-amber-100 text-xs font-body items-center">
+                  <span className="col-span-4 font-semibold text-foreground truncate">{item.itemName}</span>
+                  <span className="col-span-2 text-right text-muted-foreground">{item.preparedKg} kg</span>
+                  <span className="col-span-3 text-right font-bold text-emerald-700">{item.dispatchedPcs} pcs</span>
+                  <span className="col-span-3 text-right font-bold text-amber-600">{remainderGrams}g</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+            <AlertTriangle className="size-3.5 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-xs font-body text-amber-800">
+              <span className="font-bold">Note:</span> These grams cannot form a complete piece and are kept at the bakery. Consider accumulating remainders before the next batch.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <p className="text-sm font-body text-muted-foreground px-3 py-2 bg-muted/40 rounded-xl">
         {notification.body}
@@ -519,6 +567,7 @@ export default function AdminNotificationsTab() {
             { id: 'invoice_pending',     label: '📄 Invoices' },
             { id: 'baker_shortage',      label: '📦 Shortage' },
             { id: 'packing_discrepancy', label: '⚖️ Discrepancy' },
+            { id: 'packing_remainder',   label: '⚖️ Remainder' },
             { id: 'low_stock',           label: '⚠️ Low Stock' },
             { id: 'credit_sale',         label: '💳 Credit' },
             { id: 'price_change',        label: '🏷️ Prices' },

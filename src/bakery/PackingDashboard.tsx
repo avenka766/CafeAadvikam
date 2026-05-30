@@ -22,6 +22,7 @@ interface PackedEntry {
   weightGrams?:  number;
   dispatchUnit?: 'pcs' | 'kg';
   confirmedPcs?: number;
+  remainderKg?:  number; // leftover grams that can't form a whole pcs
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
@@ -203,7 +204,14 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const confirmEntry = (idx: number) => setPackedEntries(prev => prev.map((e, i) => {
     if (i !== idx) return e;
     const confirmedPcs = e.dispatchUnit === 'pcs' && e.weightGrams != null ? kgToPcs(e.qty, e.weightGrams) ?? undefined : undefined;
-    return { ...e, confirmed: true, confirmedPcs };
+    // FIX B8: compute leftover grams that cannot form a whole pcs
+    let remainderKg: number | undefined;
+    if (e.dispatchUnit === 'pcs' && e.weightGrams != null && confirmedPcs != null) {
+      const usedKg    = (confirmedPcs * e.weightGrams) / 1000;
+      const remainder = Math.round((e.qty - usedKg) * 1000) / 1000;
+      remainderKg = remainder > 0.001 ? remainder : undefined;
+    }
+    return { ...e, confirmed: true, confirmedPcs, remainderKg };
   }));
   const unconfirmEntry = (idx: number) => setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, confirmed: false, confirmedPcs: undefined } : e));
   const updateEntryQty = (idx: number, val: string) => {
@@ -346,10 +354,20 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                     </span>
                   </div>
                   {entry.confirmed && entry.dispatchUnit === 'pcs' && entry.confirmedPcs != null && (
-                    <div className="mt-2 flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200">
-                      <span className="text-[11px] font-body font-bold text-blue-700">
-                        {entry.qty} kg → <span className="text-emerald-700">{entry.confirmedPcs} pcs</span>
-                      </span>
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200">
+                        <span className="text-[11px] font-body font-bold text-blue-700">
+                          {entry.qty} kg → <span className="text-emerald-700">{entry.confirmedPcs} pcs</span>
+                        </span>
+                      </div>
+                      {entry.remainderKg != null && entry.remainderKg > 0 && (
+                        <div className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-amber-50 border border-amber-200">
+                          <AlertTriangle className="size-3 text-amber-600 shrink-0" />
+                          <span className="text-[11px] font-body font-bold text-amber-700">
+                            {Math.round(entry.remainderKg * 1000)}g remainder — kept at bakery, not dispatched
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -382,6 +400,21 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
               <p className="text-[10px] font-body text-muted-foreground mb-2 pl-8">Enter quantity, select branch, tap Send</p>
             </div>
             <div className="px-4 pb-3">
+              {/* Remainder warning — shown above dispatch rows if any pcs item has leftover grams */}
+              {packedEntries.some(e => e.remainderKg != null && e.remainderKg > 0) && (
+                <div className="mb-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                  <AlertTriangle className="size-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[11px] font-body font-bold text-amber-700">Remainder grams at bakery</p>
+                    {packedEntries.filter(e => e.remainderKg != null && e.remainderKg! > 0).map(e => (
+                      <p key={e.itemId} className="text-[10px] font-body text-amber-600">
+                        {e.itemName}: {Math.round(e.remainderKg! * 1000)}g — cannot form a whole pcs, kept at bakery
+                      </p>
+                    ))}
+                    <p className="text-[10px] font-body text-amber-500 mt-0.5">Admin has been notified automatically.</p>
+                  </div>
+                </div>
+              )}
               {preparedItems.map(p => {
                 const stock = stockByItem[p.itemName];
                 return (

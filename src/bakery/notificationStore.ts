@@ -11,6 +11,7 @@ export type NotificationType =
   | 'invoice_pending'
   | 'baker_shortage'
   | 'packing_discrepancy'
+  | 'packing_remainder'
   | 'low_stock'
   | 'credit_sale'
   | 'price_change';
@@ -43,6 +44,7 @@ interface NotificationState {
   pushPackingDiscrepancy: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; dispatched: number; requested: number; unit: string }[]) => Promise<void>;
   pushLowStock: (items: { name: string; quantity: number; minThreshold: number; unit: string }[]) => Promise<void>;
   pushCreditSale: (params: { customerName: string; amount: number; billNo: string; branch: string; soldBy: string; dueDate?: string }) => Promise<void>;
+  pushPackingRemainder: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[]) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -210,6 +212,33 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id:    billNo,
       ref_label: `Bill #${shortBill}`,
       meta:      { customerName, amount, billNo, branch, soldBy, dueDate: dueDate ?? null },
+    });
+    if (!error) await get().load();
+  },
+
+
+  pushPackingRemainder: async (orderId, orderNumber, branch, items) => {
+    // Dedup — don't fire a remainder alert for the same order twice
+    const { data: existing } = await supabase
+      .from('admin_notifications')
+      .select('id')
+      .eq('type', 'packing_remainder')
+      .eq('ref_id', orderId)
+      .limit(1);
+    if (existing && existing.length > 0) return;
+
+    const lines = items.map(i => {
+      const remainderGrams = Math.round(i.remainderKg * 1000);
+      return `${i.itemName}: ${i.preparedKg} kg → ${i.dispatchedPcs} pcs dispatched · ${remainderGrams}g remainder kept at bakery`;
+    }).join('; ');
+
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'packing_remainder',
+      title:     `⚖️ Packing Remainder – ${items.length} item${items.length > 1 ? 's' : ''} have leftover grams`,
+      body:      `Order ${orderNumber} → ${branch}: ${lines}`,
+      ref_id:    orderId,
+      ref_label: `Order ${orderNumber} → ${branch}`,
+      meta:      { orderId, orderNumber, branch, items },
     });
     if (!error) await get().load();
   },
