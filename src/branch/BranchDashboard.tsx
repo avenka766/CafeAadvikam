@@ -77,16 +77,22 @@ export default function BranchDashboard({ branch }: Props) {
   );
 
   // STAT-FIX: show number of sales transactions today, not raw quantity sum.
-  // Summing quantities is meaningless when sales mix pcs and kg items
-  // (e.g. 5 pcs + 0.5 kg = 5.5 is an incoherent number).
   const totalTodayQty = useMemo(
     () => todaySalesLog.length,
     [todaySalesLog],
   );
 
+  // Revenue today — sum of unitPrice × quantitySold for all today's sales
+  const totalTodayRevenue = useMemo(
+    () => todaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0),
+    [todaySalesLog],
+  );
+
   return (
-    <div className="bg-background pt-14 pb-28">
-      <div className={cn('px-4 pt-4 pb-3 border-b', colors.bg)}>
+    // LAYOUT-FIX: Use flex-col + min-h-0 so BillTab (which uses flex-1) can fill
+    // the full viewport height. pb-28 only applies to non-bill tabs to clear the bottom nav.
+    <div className="bg-background flex flex-col" style={{ minHeight: '100dvh' }}>
+      <div className={cn('px-4 pt-14 pb-3 border-b shrink-0', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
         </h1>
@@ -95,9 +101,10 @@ export default function BranchDashboard({ branch }: Props) {
         </p>
       </div>
 
-      <div className="px-4 py-3 grid grid-cols-2 gap-2">
-        <StatCard label="In Stock"    value={availableStock.length} color={colors.text} />
-        <StatCard label="Sales Today" value={totalTodayQty}         color="text-blue-700" />
+      <div className="px-4 py-3 grid grid-cols-3 gap-2">
+        <StatCard label="In Stock"      value={availableStock.length}                                                          color={colors.text} />
+        <StatCard label="Sales Today"   value={totalTodayQty}                                                                  color="text-blue-700" />
+        <StatCard label="Revenue Today" value={`₹${totalTodayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}  color="text-emerald-700" />
       </div>
 
       <div className="mx-4 mb-3">
@@ -105,7 +112,7 @@ export default function BranchDashboard({ branch }: Props) {
       </div>
 
       {/* Tabs kept mounted so cart state survives tab switches */}
-      <div className="px-4 space-y-3">
+      <div className={cn('px-4 pb-28 space-y-3', tab === 'bill' && 'hidden')}>
         <div className={tab !== 'stock'    ? 'hidden' : undefined}>
           <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
             branchThresholds={branchThresholds} loading={loading} />
@@ -117,8 +124,8 @@ export default function BranchDashboard({ branch }: Props) {
           <SettingsTab branch={branch} branchStock={branchStock} />
         </div>
       </div>
-      {/* BillTab outside padded wrapper — needs full height, no extra padding */}
-      <div className={tab !== 'bill' ? 'hidden' : undefined}>
+      {/* BillTab outside padded wrapper — needs flex-1 to fill all remaining height */}
+      <div className={cn('flex flex-col flex-1 min-h-0', tab !== 'bill' && 'hidden')}>
         <BillTab branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />
       </div>
     </div>

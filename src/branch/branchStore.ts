@@ -353,6 +353,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   recordAdvanceOrder: async (branch, order) => {
     const now = new Date().toISOString();
     const balanceDue = Math.max(0, order.subtotal - order.advanceAmount);
+    // BUGFIX: if full amount collected upfront, mark as completed immediately
+    const status = balanceDue <= 0 ? 'completed' : 'pending';
 
     const { data, error } = await supabase
       .from('branch_advance_orders')
@@ -366,7 +368,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         balance_due:    balanceDue,
         sold_by:        order.soldBy,
         created_at:     now,
-        status:         'pending',
+        status,
         delivery_date:  order.deliveryDate ?? null,
       })
       .select()
@@ -385,9 +387,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       balanceDue,
       soldBy:        order.soldBy,
       createdAt:     now,
-      fullyPaidAt:   null,
+      fullyPaidAt:   status === 'completed' ? now : null,
       balanceMethod: null,
-      status:        'pending',
+      status,
       deliveryDate:  order.deliveryDate ?? null,
     };
 
