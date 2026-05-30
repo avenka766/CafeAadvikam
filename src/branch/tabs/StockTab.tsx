@@ -310,8 +310,15 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
 
   const today = new Date().toDateString();
+  // INCOMING-FIX: show all unconfirmed items from the last 3 days, not just today.
+  // Items dispatched from Packing in the late evening may have a receivedAt timestamp
+  // from the previous calendar day in the branch's local time, causing them to vanish
+  // from the "today" list and never be confirmed. 3-day window is a safe catch-all.
+  const threeDaysAgo = new Date();
+  threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+  threeDaysAgo.setHours(0, 0, 0, 0);
   const todayIncoming = branchIncoming.filter(
-    (inc) => !inc.confirmed && new Date(inc.receivedAt).toDateString() === today
+    (inc) => !inc.confirmed && new Date(inc.receivedAt) >= threeDaysAgo
   );
 
   const handleConfirmAll = async () => {
