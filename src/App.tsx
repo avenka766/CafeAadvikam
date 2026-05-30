@@ -1,6 +1,6 @@
 // src/App.tsx  ← REPLACE EXISTING FILE
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import Header from '@/components/layout/Header';
 import BottomNav from '@/components/layout/BottomNav';
@@ -46,6 +46,8 @@ import AdminAlertsPage     from '@/pages/AdminAlertsPage';
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AppRoutes() {
+  const location = useLocation();
+  const isLandingRoute = location.pathname === '/';
   const { currentUser } = useAuthStore();
   const [hydrated, setHydrated] = useState(
     () => useAuthStore.persist.hasHydrated()
@@ -75,7 +77,7 @@ function AppRoutes() {
 
   return (
     <>
-      <Header />
+      {!isLandingRoute && <Header />}
       {/* 
         Layout shell: pt-14 clears the fixed header (h-14 = 56px).
         pb-24 clears the fixed bottom nav (~72px) + safe-area.
