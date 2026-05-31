@@ -924,7 +924,7 @@ function BillPanel({ branchStock }: { branchStock: StockItem[] }) {
     <div className="flex flex-1 min-h-0 overflow-hidden" style={{ height: 'calc(100dvh - 260px)' }}>
 
       {/* ── COL 1: Category sidebar ──────────────────────────────────────────── */}
-      <div className="w-[110px] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+      <div className="w-1/4 shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
         {(['All', ...SNB_CATEGORIES] as string[]).map(cat => {
           const isActive = activeCategory === cat && !search.trim();
           return (
@@ -940,7 +940,7 @@ function BillPanel({ branchStock }: { branchStock: StockItem[] }) {
       </div>
 
       {/* ── COL 2: Item grid ─────────────────────────────────────────────────── */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <div className="w-[45%] min-w-0 flex flex-col overflow-hidden">
         <div className="px-3 py-2 border-b bg-background shrink-0">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
@@ -989,7 +989,7 @@ function BillPanel({ branchStock }: { branchStock: StockItem[] }) {
       </div>
 
       {/* ── COL 3: Bill panel ────────────────────────────────────────────────── */}
-      <div className="w-[280px] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
 
         {/* Bill header */}
         <div className="px-4 py-3 bg-zinc-900 shrink-0">
@@ -1275,13 +1275,13 @@ export default function HosurDashboard() {
 
   const unconfirmedCount = branchIncoming.filter(i => !i.confirmed).length;
   const hosurMismatches  = stockMismatches.filter(m => m.branch === BRANCH);
-  const alertCount       = unconfirmedCount + hosurMismatches.length;
+  // alertCount retained for potential future use
+  const _alertCount       = unconfirmedCount + hosurMismatches.length;
   const pendingCredit    = branchCredit.filter(c => c.status !== 'settled').length;
 
   const TABS: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; badgeColor?: string }[] = [
     { id: 'bill',    label: 'Bill',    icon: Receipt },
     { id: 'confirm', label: 'Stock',   icon: CheckCheck,    badge: unconfirmedCount, badgeColor: 'bg-emerald-500' },
-    { id: 'alert',   label: 'Alerts',  icon: Bell,          badge: alertCount,       badgeColor: 'bg-red-500' },
     { id: 'credit',  label: 'Credit',  icon: CreditIcon,    badge: pendingCredit,    badgeColor: 'bg-orange-500' },
     { id: 'history', label: 'History', icon: History },
   ];
@@ -1314,8 +1314,8 @@ export default function HosurDashboard() {
             <p className="text-[10px] font-semibold text-muted-foreground uppercase mt-0.5">Open Credit</p>
           </div>
           <div className="bg-card border border-border rounded-xl p-3">
-            <p className={cn('font-display text-xl font-bold tabular-nums', alertCount > 0 ? 'text-red-600' : 'text-emerald-600')}>{alertCount}</p>
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase mt-0.5">Alerts</p>
+            <p className={cn('font-display text-xl font-bold tabular-nums', unconfirmedCount > 0 ? 'text-amber-600' : 'text-emerald-600')}>{unconfirmedCount}</p>
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase mt-0.5">Pending Stock</p>
           </div>
         </div>
       </div>
@@ -1346,7 +1346,6 @@ export default function HosurDashboard() {
       {tab !== 'bill' && (
         <div className="px-4 pt-4 overflow-y-auto" style={{ height: 'calc(100dvh - 260px)' }}>
           {tab === 'confirm' && <ConfirmStockTab branchIncoming={branchIncoming} />}
-          {tab === 'alert'   && <DiscrepancyAlertTab branchStock={branchStock} branchIncoming={branchIncoming} />}
           {tab === 'credit'  && <CreditTab creditSales={branchCredit} />}
           {tab === 'history' && <HosurHistoryTab />}
         </div>
