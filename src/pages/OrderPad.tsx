@@ -32,7 +32,7 @@ export default function OrderPad() {
   const getQty = (id: string) => cart.find((c) => c.menuItem.id === id)?.quantity ?? 0;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-36">
+    <div className="page-wrapper">
 
       {/* ── Sticky top bar ── */}
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border">
@@ -96,7 +96,7 @@ export default function OrderPad() {
 
       {/* ── Floating cart bar ── */}
       {cartCount > 0 && (
-        <div className="fixed bottom-20 left-0 right-0 z-30 px-4 animate-slide-up">
+        <div className="fixed left-0 right-0 z-40 px-4 animate-slide-up" style={{ bottom: 'calc(var(--nav-h, 5.25rem) + 0.5rem)' }}>
           <button
             onClick={() => setCartOpen(true)}
             className="w-full py-4 px-5 rounded-2xl flex items-center justify-between active:scale-[0.98] transition-transform"
