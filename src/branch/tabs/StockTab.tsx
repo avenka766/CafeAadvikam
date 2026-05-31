@@ -3,7 +3,7 @@ import { useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
-  PencilLine, Search, X, Plus,
+  PencilLine, Search, X, Plus, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
@@ -267,11 +267,12 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
 type StockSubTab = 'incoming' | 'current' | 'manual';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading }: Props) {
-  const { confirmIncoming, confirmAllIncoming } = useBranchStore();
+  const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [confirmAllError, setConfirmAllError] = useState('');
+  const [syncing, setSyncing]             = useState(false);
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -331,6 +332,13 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     if (err) setConfirmAllError(err);
   };
 
+  const handleRefreshIncoming = async () => {
+    setSyncing(true);
+    await syncIncomingFromDispatches(branch, true); // force bypass guard
+    await fetchBranchData(branch);
+    setSyncing(false);
+  };
+
   const SUBTABS: { id: StockSubTab; label: string }[] = [
     { id: 'incoming', label: `Incoming${todayIncoming.length > 0 ? ` (${todayIncoming.length})` : ''}` },
     { id: 'current',  label: 'Current stock' },
@@ -360,18 +368,23 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
             icon={<ArrowDownToLine className="size-4 text-emerald-600" />}
             title="Incoming Stock"
             right={
-              todayIncoming.length > 0 ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
-                  <button onClick={handleConfirmAll} disabled={confirmingAll}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
-                    {confirmingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
-                    {confirmingAll ? 'Adding…' : 'Confirm All'}
-                  </button>
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground">Today</span>
-              )
+              <div className="flex items-center gap-2">
+                <button onClick={handleRefreshIncoming} disabled={syncing}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
+                  <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
+                  {syncing ? 'Checking…' : 'Refresh'}
+                </button>
+                {todayIncoming.length > 0 && (
+                  <>
+                    <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
+                    <button onClick={handleConfirmAll} disabled={confirmingAll}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
+                      {confirmingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
+                      {confirmingAll ? 'Adding…' : 'Confirm All'}
+                    </button>
+                  </>
+                )}
+              </div>
             }
           />
           {confirmAllError && (
