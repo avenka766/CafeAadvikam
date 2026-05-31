@@ -1979,7 +1979,6 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       customerName: printSnapshot.customerNameSnapshot,
       creditAmountPaid: printSnapshot.creditAmountPaidSnapshot,
     });
-    if (isVRSNB) setTimeout(() => printKOT(printSnapshot.billNoSnapshot, printSnapshot.items), 400);
   };
 
   // ── Success ──────────────────────────────────────────────────────────────────
