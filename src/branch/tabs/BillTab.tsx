@@ -1389,14 +1389,15 @@ function BranchAdvancePanel({ branch, advanceOrders }: { branch: Branch; advance
 
               <div>
                 <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
-                {/* BUGFIX: "Collect full amount" quick-fill button */}
+                {/* Toggle: click to fill full amount, click again to clear */}
                 <div className="flex gap-2 mb-1.5">
-                  <button onClick={() => { setAdvanceAmt(String(total)); setAdvanceErr(''); }}
-                    className={cn('px-3 py-1 rounded-lg text-[11px] font-bold border transition active:scale-95',
+                  <button onClick={() => { setAdvanceAmt(parseFloat(advanceAmt) === total ? '' : String(total)); setAdvanceErr(''); }}
+                    className={cn('px-3 py-1 rounded-lg text-[11px] font-bold border transition active:scale-95 flex items-center gap-1.5',
                       parseFloat(advanceAmt) === total
                         ? 'bg-emerald-500 text-white border-transparent'
                         : 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100')}>
-                    Full Amount ({fmt(total)})
+                    {parseFloat(advanceAmt) === total ? <CheckCircle2 className="size-3" /> : null}
+                    {parseFloat(advanceAmt) === total ? `Fully Paid ✓ (${fmt(total)})` : `Full Amount (${fmt(total)})`}
                   </button>
                 </div>
                 <div className="relative">
@@ -2413,18 +2414,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                         <input type="text" placeholder="Customer name (required)"
                           value={customerName} onChange={e => setCustomerName(e.target.value)}
                           className="w-full px-3 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
-                        {/* Fully Paid toggle */}
-                        {allPriced && (
-                          <button
-                            onClick={() => setCreditAmountPaid(creditAmountPaid === String(finalTotal) ? '' : String(finalTotal))}
-                            className={cn('w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition active:scale-95',
-                              creditAmountPaid === String(finalTotal)
-                                ? 'bg-emerald-500 text-white border-transparent'
-                                : 'bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50')}>
-                            <CheckCircle2 className="size-3.5" />
-                            {creditAmountPaid === String(finalTotal) ? 'Fully Paid ✓' : 'Mark as Fully Paid'}
-                          </button>
-                        )}
+
                         <div className="relative">
                           <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
                           <input type="number" placeholder="Amount paid now (0 = full credit)"
@@ -2525,21 +2515,14 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                   <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2.5 rounded-xl">{error}</p>
                 )}
 
-                <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className="pt-1">
                   <button
-                    onClick={() => {
-                      if (!splitReady) { setError('Select payment method first.'); return; }
-                      setError(''); setShowPreview(true);
-                    }}
-                    disabled={cart.length === 0 || submitting}
-                    className="py-3.5 rounded-2xl border-2 border-slate-950 text-slate-950 bg-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
-                    <Printer className="size-4" /> Print
-                  </button>
-                  <button onClick={doCheckout} disabled={submitting || !splitReady}
-                    className="py-3.5 rounded-2xl bg-orange-500 text-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-lg shadow-orange-200">
+                    onClick={handlePrintAndConfirm}
+                    disabled={cart.length === 0 || submitting || !splitReady}
+                    className="w-full py-3.5 rounded-2xl bg-orange-500 text-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-lg shadow-orange-200">
                     {submitting
                       ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
-                      : <><Receipt className="size-4" /> Done</>}
+                      : <><Printer className="size-4" /> Bill &amp; Print</>}
                   </button>
                 </div>
               </div>

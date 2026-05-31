@@ -3,14 +3,14 @@ import { useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
-  PencilLine, Search, X, Plus, RefreshCw,
+  PencilLine, Search, X, Plus, RefreshCw, TrendingDown, Clock, User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
 import { useBranchStore } from '../branchStore';
 import { useAuthStore } from '@/stores/authStore';
 import type { Branch } from '../types';
-import type { StockItem, IncomingStock } from '../branchStore';
+import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
 import type { SnbItem } from '../snbItems';
 import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '../vrsnbItems';
@@ -21,6 +21,7 @@ interface Props {
   branchIncoming: IncomingStock[];
   branchThresholds: Record<string, number>;
   loading: boolean;
+  stockMismatches: StockMismatch[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -262,11 +263,141 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   );
 }
 
+// ─── NegativeStockTab ─────────────────────────────────────────────────────────
+
+function NegativeStockTab({
+  negativeItems,
+  mismatches,
+}: {
+  negativeItems: { itemName: string; quantity: number; unit?: 'pcs' | 'kg' }[];
+  mismatches: StockMismatch[];
+}) {
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
+      ' · ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+  };
+
+  return (
+    <div className="space-y-4">
+
+      {/* ── Currently Negative Items ── */}
+      <div className="bg-white border border-red-200 rounded-[1.75rem] overflow-hidden shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 bg-red-50/60 border-b border-red-100">
+          <div className="flex items-center gap-2">
+            <TrendingDown className="size-4 text-red-600" />
+            <span className="text-sm font-bold text-red-700">Items in Negative Stock</span>
+          </div>
+          <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">
+            {negativeItems.length} items
+          </span>
+        </div>
+
+        {negativeItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 gap-2 text-center px-4">
+            <CheckCircle2 className="size-8 text-emerald-400" />
+            <p className="text-sm font-semibold text-emerald-700">All clear!</p>
+            <p className="text-xs text-muted-foreground">No items are currently in negative stock.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-red-50">
+            {negativeItems.map((s) => {
+              const unit = s.unit ?? detectSellUnit(s.itemName);
+              const absQty = Math.abs(s.quantity);
+              const label = unit === 'kg'
+                ? absQty >= 1 ? `${absQty.toFixed(3)} kg` : `${Math.round(absQty * 1000)}g`
+                : `${Math.round(absQty)} pcs`;
+              return (
+                <div key={s.itemName} className="flex items-center justify-between px-4 py-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="size-2 rounded-full bg-red-500 shrink-0 animate-pulse" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">{s.itemName}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        Needs <span className="font-bold text-red-600">{label}</span> to break even
+                      </p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 tabular-nums shrink-0">
+                    <TrendingDown className="size-3" />
+                    -{label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {negativeItems.length > 0 && (
+          <div className="px-4 py-3 bg-amber-50/60 border-t border-amber-100">
+            <p className="text-[11px] text-amber-700 font-medium">
+              ℹ️ When stock arrives and is confirmed via <span className="font-bold">Incoming</span>, it will automatically offset these negatives.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Shortage Event Log ── */}
+      <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <Clock className="size-4 text-slate-500" />
+            <span className="text-sm font-bold text-slate-700">Shortage Event Log</span>
+          </div>
+          <span className="text-[10px] text-muted-foreground">Last 30 days</span>
+        </div>
+
+        {mismatches.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 gap-2 text-center px-4">
+            <CheckCircle2 className="size-8 text-emerald-400" />
+            <p className="text-sm font-semibold text-emerald-700">No shortages recorded</p>
+            <p className="text-xs text-muted-foreground">Every bill in the last 30 days had sufficient stock.</p>
+          </div>
+        ) : (
+          <div className="divide-y max-h-[480px] overflow-y-auto">
+            {mismatches.map((m) => {
+              const unit = detectSellUnit(m.itemName);
+              const fmtQty = (q: number) => unit === 'kg'
+                ? q >= 1 ? `${q.toFixed(3)} kg` : `${Math.round(q * 1000)}g`
+                : `${Math.round(q)} pcs`;
+              return (
+                <div key={m.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold truncate">{m.itemName}</p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <User className="size-3 text-muted-foreground shrink-0" />
+                        <p className="text-[10px] text-muted-foreground">{m.soldBy}</p>
+                        <span className="text-muted-foreground text-[10px]">·</span>
+                        <p className="text-[10px] text-muted-foreground">{fmtDate(m.soldAt)}</p>
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right space-y-1">
+                      <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-700">
+                        Sold {fmtQty(m.soldQty)}
+                      </div>
+                      <div className="block">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">
+                          Short by {fmtQty(m.shortage)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-type StockSubTab = 'incoming' | 'current' | 'manual';
+type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative';
 
-export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading }: Props) {
+export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches }: Props) {
   const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
@@ -309,6 +440,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
   const availableItems  = completeStock.filter((s) => s.quantity > 0);
   const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
+  const negativeItems   = completeStock.filter((s) => s.quantity < 0);
 
   const today = new Date().toDateString();
   // Show ALL unconfirmed incoming — no date cutoff.
@@ -339,6 +471,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     { id: 'incoming', label: `Incoming${todayIncoming.length > 0 ? ` (${todayIncoming.length})` : ''}` },
     { id: 'current',  label: 'Current stock' },
     { id: 'manual',   label: 'Update stock' },
+    { id: 'negative', label: `Negative${negativeItems.length > 0 ? ` (${negativeItems.length})` : ''}` },
   ];
 
   return (
@@ -350,8 +483,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
           <button key={t.id} onClick={() => setSubTab(t.id)}
             className={cn('flex-1 py-2.5 text-xs font-black rounded-2xl transition active:scale-[0.98]',
               subTab === t.id
-                ? 'bg-slate-950 shadow text-white'
-                : 'text-slate-500 hover:bg-slate-50')}>
+                ? t.id === 'negative'
+                  ? 'bg-red-600 shadow text-white'
+                  : 'bg-slate-950 shadow text-white'
+                : t.id === 'negative' && negativeItems.length > 0
+                  ? 'text-red-600 hover:bg-red-50'
+                  : 'text-slate-500 hover:bg-slate-50')}>
             {t.label}
           </button>
         ))}
@@ -480,6 +617,14 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
       {/* ── Manual stock update ──────────────────────────────────────────────── */}
       {subTab === 'manual' && <ManualStockUpdate branch={branch} branchStock={branchStock} />}
+
+      {/* ── Negative stock ───────────────────────────────────────────────────── */}
+      {subTab === 'negative' && (
+        <NegativeStockTab
+          negativeItems={negativeItems}
+          mismatches={stockMismatches}
+        />
+      )}
 
     </div>
   );
