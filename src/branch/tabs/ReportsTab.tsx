@@ -374,8 +374,7 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
                 </div>
               </div>
               );
-            }
-            ))}
+            })}
           </div>
         )}
       </div>
