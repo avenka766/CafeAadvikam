@@ -98,11 +98,8 @@ export default function BottomNav() {
       { label: 'History',   icon: <History         className="size-5" />, path: '/admin-snb/history' },
     );
   } else if (currentUser.role === 'owner') {
-    // N-07: owner had only 1 item — add relevant secondary pages
     navItems.push(
-      { label: 'Sales',    icon: <BarChart3      className="size-5" />, path: '/owner' },
-      { label: 'History',  icon: <History        className="size-5" />, path: '/order-history' },
-      { label: 'Staff',    icon: <Users          className="size-5" />, path: '/staff-management' },
+      { label: 'Sales', icon: <BarChart3 className="size-5" />, path: '/owner' },
     );
   }
 
