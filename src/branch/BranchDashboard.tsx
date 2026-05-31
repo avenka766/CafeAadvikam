@@ -1,6 +1,6 @@
 // src/branch/BranchDashboard.tsx
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { Package, Settings, Receipt, History, Bell } from 'lucide-react';
+import { Package, Settings, Receipt, History, Bell, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import { TabBar } from './components';
@@ -8,15 +8,17 @@ import { StockTab }   from './tabs/StockTab';
 import { BillTab }    from './tabs/BillTab';
 import { SettingsTab }from './tabs/SettingsTab';
 import { HistoryTab } from './tabs/HistoryTab';
+import { ReportsTab } from './tabs/ReportsTab';
 import type { Branch } from './types';
 import { BRANCH_COLORS } from './types';
 
-type TabId = 'stock' | 'bill' | 'history' | 'settings';
+type TabId = 'stock' | 'bill' | 'history' | 'reports' | 'settings';
 
 const TABS = [
   { id: 'stock'   as const, label: 'Stock',     icon: Package },
   { id: 'bill'    as const, label: 'Bill',      icon: Receipt },
   { id: 'history' as const, label: 'History',   icon: History },
+  { id: 'reports' as const, label: 'Reports',   icon: FileText },
   { id: 'settings'as const, label: 'Thresholds',icon: Settings },
 ];
 
@@ -131,6 +133,9 @@ export default function BranchDashboard({ branch }: Props) {
         </div>
         <div className={tab !== 'history' ? 'hidden' : undefined}>
           <HistoryTab branchSales={branchSales} />
+        </div>
+        <div className={tab !== 'reports' ? 'hidden' : undefined}>
+          <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />
         </div>
         <div className={tab !== 'settings' ? 'hidden' : undefined}>
           <SettingsTab branch={branch} branchStock={branchStock} />
