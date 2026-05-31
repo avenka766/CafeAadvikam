@@ -283,12 +283,22 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // ARCH-04: capture previous state for rollback
     const prev = get().orders;
     const now = new Date().toISOString();
-    const updates: Record<string, unknown> = { status, updated_at: now };
+
+    // If the kitchen is marking an order 'ready' but payment was already collected
+    // (biller paid before cooking finished), skip 'ready' and go straight to 'served'
+    // so the kitchen card auto-dismisses cleanly.
+    const order = get().orders.find(o => o.id === orderId);
+    const effectiveStatus: OrderStatus =
+      status === 'ready' && order && order.paymentType !== 'unpaid'
+        ? 'served'
+        : status;
+
+    const updates: Record<string, unknown> = { status: effectiveStatus, updated_at: now };
     if (cancelReason) updates.cancel_reason = cancelReason;
 
     set((state) => ({
       orders: state.orders.map((o) =>
-        o.id === orderId ? { ...o, status, updatedAt: now, ...(cancelReason ? { cancelReason } : {}) } : o,
+        o.id === orderId ? { ...o, status: effectiveStatus, updatedAt: now, ...(cancelReason ? { cancelReason } : {}) } : o,
       ),
     }));
 
