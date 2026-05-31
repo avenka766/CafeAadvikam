@@ -654,10 +654,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     }
     return null;
   },
-      if (err) return err;
-    }
-    return null;
-  },
 
   // ── SNB / Hosur sale — items come from price list, not stock requirement ──
   // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
