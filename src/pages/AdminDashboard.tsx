@@ -20,6 +20,7 @@ import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import StaffActivityLog from '@/bakery/StaffActivityLog';
 import DayEndReport from '@/bakery/DayEndReport';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
+import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
 
 const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
@@ -1310,7 +1311,7 @@ function BakeryView() {
 
 // ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
 export default function AdminDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit'>('cafe');
+  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit' | 'advance'>('cafe');
   // BUG-03 FIX: single polling registration at root — previously registered twice
   // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
   // STORE-01 FIX: granular selector — stable action refs, no re-renders from unrelated state
@@ -1337,12 +1338,12 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Cafe / Bakery / Credit toggle */}
-      <div className="mx-4 my-4 flex gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
+      {/* Cafe / Bakery / Credit / Advance toggle */}
+      <div className="mx-4 my-4 grid grid-cols-2 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
         <button
           onClick={() => setMode('cafe')}
           className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
             mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
           )}
         >
@@ -1351,7 +1352,7 @@ export default function AdminDashboard() {
         <button
           onClick={() => setMode('bakery')}
           className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
             mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
           )}
         >
@@ -1360,11 +1361,20 @@ export default function AdminDashboard() {
         <button
           onClick={() => setMode('credit')}
           className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
             mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
           )}
         >
           💳 Credit
+        </button>
+        <button
+          onClick={() => setMode('advance')}
+          className={cn(
+            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
+            mode === 'advance' ? 'bg-amber-500 text-white shadow-soft' : 'text-muted-foreground hover:text-foreground'
+          )}
+        >
+          🏷️ Advance
         </button>
       </div>
 
@@ -1375,6 +1385,9 @@ export default function AdminDashboard() {
           <AdminCreditTab
             branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']}
           />
+        )}
+        {mode === 'advance' && (
+          <AdminAdvanceTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
         )}
       </div>
 
