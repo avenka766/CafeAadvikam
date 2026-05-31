@@ -293,42 +293,26 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
   recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice) => {
     const now = new Date().toISOString();
-    // MISSING-ITEM FIX: don't block the sale if the item has no stock row yet.
-    // Items newly added to the price list may not have been seeded into branch_stock.
-    // We treat missing stock as quantity 0 and let the sale proceed — the RPC will
-    // create/update the row, stock goes negative, and the Negative tab shows it.
-    const localStock = get().stock[branch].find((s) => s.itemName === itemName) ?? null;
+    const localStock = get().stock[branch].find((s) => s.itemName === itemName);
+    if (!localStock) return 'Item not found in stock';
 
     // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
-    const resolvedPrice = unitPrice ?? localStock?.price ?? 0;
+    const resolvedPrice = unitPrice ?? localStock.price ?? 0;
 
     // NEGATIVE-STOCK FIX: allow sales even when stock is 0 or insufficient.
     // Uses the allow-negative RPC so stock can go below 0 — shortages are logged.
-    // If localStock is null (item never seeded), optimistic qty starts at -qty.
-    let newQty = Math.round(((localStock?.quantity ?? 0) - qty) * 1000) / 1000;
+    let newQty = Math.round((localStock.quantity - qty) * 1000) / 1000; // optimistic local fallback
 
     // Use the allow-negative RPC so stock can go below 0 when biller sells without stock.
-    // IMPORTANT: if the item has no branch_stock row yet, the RPC returns NULL (it can only
-    // UPDATE an existing row, not INSERT). In that case we fall through to a manual upsert.
+    // The old `decrement_branch_stock` returns NULL on insufficient stock; this one always succeeds.
     {
       const { data: newQtyRpc, error: rpcErr } = await supabase
         .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSale] stock RPC error:', rpcErr.message);
-      }
-      if (newQtyRpc !== null && !rpcErr) {
-        // RPC succeeded and returned the new quantity — use it.
+        // Non-fatal: continue recording sale with optimistic local qty
+      } else if (newQtyRpc !== null) {
         newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
-      } else {
-        // RPC returned null (no DB row existed) or errored — manually upsert so the
-        // Negative tab can show this item. newQty is already set to (0 - qty) above.
-        const { error: upsertErr } = await supabase.from('branch_stock').upsert(
-          { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
-          { onConflict: 'branch,item_name' },
-        );
-        if (upsertErr) {
-          console.error('[recordSale] stock upsert error:', upsertErr.message);
-        }
       }
     }
 
@@ -351,8 +335,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return `Failed to record sale: ${saleErr.message}`;
     }
 
-    // Log a mismatch if stock went negative so admin can track shortages.
-    // This covers both items that were at 0 and items that had no row at all.
+    // Log a mismatch if stock went negative so admin can track shortages
     if (newQty < 0) {
       const actualShortage = Math.abs(newQty);
       await supabase.from('branch_stock_mismatches').insert({
@@ -376,19 +359,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      if (localStock !== null) {
-        // Item already existed in local state — update its quantity in place
-        stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: newQty } : si,
-        );
-      } else {
-        // Item had no stock row — add it to local state so the Negative tab renders it
-        // immediately without waiting for a full fetchBranchData() round-trip.
-        stock[branch] = [
-          ...stock[branch],
-          { itemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: resolvedPrice || null },
-        ];
-      }
+      stock[branch] = stock[branch].map((si) =>
+        si.itemName === itemName ? { ...si, quantity: newQty } : si,
+      );
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
     });
@@ -741,31 +714,38 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
   recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice, billNo) => {
     const now = new Date().toISOString();
-    const currentStock = get().stock[branch].find((s) => s.itemName === itemName);
+    const currentStock = get().stock[branch].find((s) => s.itemName === itemName) ?? null;
     const availableQty = currentStock?.quantity ?? 0;
     const shortage     = Math.max(0, qty - availableQty);
     const mismatch     = shortage > 0;
 
-    // Use allow-negative RPC (same as recordSale) so stock goes below 0 when
-    // items are sold beyond available quantity — this is what populates the Negative tab.
-    // The old `decrement_branch_stock` was clamped to availableQty, so stock
-    // never went negative and the Negative tab stayed empty.
-    let rpcNewQty: number | null = null;
+    // Use allow-negative RPC so stock goes below 0 when items are sold beyond
+    // available quantity — this is what populates the Negative tab.
+    // MISSING-ITEM FIX (same as recordSale): if the item has no branch_stock row yet,
+    // the RPC returns NULL (it can only UPDATE). In that case we manually upsert a
+    // negative row so the Negative tab shows this item.
+    let newQty = Math.round((availableQty - qty) * 1000) / 1000; // optimistic fallback
     {
       const { data: newQtyRpc, error: rpcErr } = await supabase
         .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
-        // Non-fatal: continue recording sale with optimistic local qty
-      } else if (newQtyRpc !== null) {
-        rpcNewQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+      }
+      if (newQtyRpc !== null && !rpcErr) {
+        // RPC succeeded — use the authoritative new quantity from DB.
+        newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+      } else {
+        // RPC returned null (no DB row) or errored — upsert so the Negative tab
+        // reflects reality. newQty is already (0 - qty) when no stock row existed.
+        const { error: upsertErr } = await supabase.from('branch_stock').upsert(
+          { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
+          { onConflict: 'branch,item_name' },
+        );
+        if (upsertErr) {
+          console.error('[recordSnbSale] stock upsert error:', upsertErr.message);
+        }
       }
     }
-
-    // Optimistic local fallback if RPC didn't return a value
-    const newQty = rpcNewQty !== null
-      ? rpcNewQty
-      : Math.round((availableQty - qty) * 1000) / 1000;
 
     // 2. Insert sales record
     const { data: saleData, error: saleErr } = await supabase
@@ -833,10 +813,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      if (currentStock) {
+      if (currentStock !== null) {
+        // Item already existed in local state — update its quantity in place.
         stock[branch] = stock[branch].map((si) =>
           si.itemName === itemName ? { ...si, quantity: newQty } : si,
         );
+      } else {
+        // Item had no stock row — push it into local state so the Negative tab
+        // renders it immediately without waiting for fetchBranchData().
+        stock[branch] = [
+          ...stock[branch],
+          { itemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: unitPrice || null },
+        ];
       }
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
