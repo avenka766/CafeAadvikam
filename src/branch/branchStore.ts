@@ -127,7 +127,7 @@ interface BranchState {
   recordAdvanceOrder: (branch: Branch, order: Omit<BranchAdvanceOrder, 'id' | 'createdAt' | 'fullyPaidAt' | 'balanceMethod' | 'status'>) => Promise<string | null>;
   collectAdvanceBalance: (branch: Branch, orderId: string, balanceMethod: string) => Promise<string | null>;
   updateThreshold: (branch: Branch, itemName: string, threshold: number) => Promise<void>;
-  syncIncomingFromDispatches: (branch: Branch) => Promise<void>;
+  syncIncomingFromDispatches: (branch: Branch, force?: boolean) => Promise<void>;
   confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
   confirmAllIncoming: (branch: Branch) => Promise<string | null>;
   manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
@@ -138,6 +138,8 @@ interface BranchState {
   recordCreditSale: (branch: Branch, sale: Omit<CreditSale, 'id' | 'createdAt' | 'settledAt' | 'status'>) => Promise<string | null>;
   settleCreditSale: (branch: Branch, saleId: string, amountCollected: number) => Promise<string | null>;
   fetchCreditSales: (branch: Branch) => Promise<void>;
+  // ── Live stock ────────────────────────────────────────────────────────────
+  subscribeToStock:   (branch: Branch) => () => void; // returns unsubscribe fn
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -508,10 +510,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   // B5 FIX: per-branch lastSyncedAt guard — each branch runs at most once per 5 minutes.
   // Previously used a single shared timestamp so one branch's sync blocked all others.
-  syncIncomingFromDispatches: async (branch) => {
+  syncIncomingFromDispatches: async (branch, force = false) => {
     const { lastSyncedAt } = get();
     const now = Date.now();
-    if (lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 5 * 60 * 1000) return;
+    if (!force && lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 60 * 1000) return;
     set((s) => ({ lastSyncedAt: { ...s.lastSyncedAt, [branch]: now } }));
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
@@ -981,5 +983,39 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await supabase.rpc('archive_old_branch_sales');
 
     set({ lastCleanedAt: now });
+  },
+
+  // ── Live stock subscription via Supabase Realtime ─────────────────────────
+  // Subscribes to branch_stock + branch_incoming for the given branch.
+  // Any INSERT/UPDATE/DELETE fires a full fetchBranchData() to keep state fresh.
+  // Also subscribes to branch_sales so the sales log updates instantly.
+  // Returns an unsubscribe function — call it in the component's cleanup.
+  subscribeToStock: (branch) => {
+    const channelName = `branch-live-${branch}`;
+
+    const channel = supabase
+      .channel(channelName)
+      // branch_stock changes (confirms, manual updates, sales deductions)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_stock', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      // branch_incoming changes (new dispatches from packing, confirmations)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_incoming', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      // branch_sales changes (new sales so today's log is always current)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'branch_sales', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      .subscribe();
+
+    // Return cleanup function
+    return () => { supabase.removeChannel(channel); };
   },
 }));

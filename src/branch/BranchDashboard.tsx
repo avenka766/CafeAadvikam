@@ -24,7 +24,8 @@ interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
   const { stock, sales, incoming, advanceOrders, thresholds, loading,
-          fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems } =
+          fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
+          subscribeToStock } =
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
@@ -44,20 +45,30 @@ export default function BranchDashboard({ branch }: Props) {
 
     // B10 FIX: syncIncomingFromDispatches and seedBranchItems are expensive one-time
     // operations.  Only run them when the branch actually changes, not on every re-render.
-    // The branchStore.syncIncomingFromDispatches also has an internal 5-min guard (B5 fix).
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
-      syncIncomingFromDispatches(branch);
+      syncIncomingFromDispatches(branch, true); // force=true on first load
       seedBranchItems(branch);
       cleanOldData();
     }
 
-    const id = setInterval(() => fetchBranchData(branch), 30_000);
-    // INCOMING-FIX: also re-run syncIncomingFromDispatches periodically so new dispatches
-    // from Packing appear in the branch Incoming list without a manual page reload.
-    // The store's per-branch 5-min guard prevents this from being expensive.
-    const syncId = setInterval(() => syncIncomingFromDispatches(branch), 5 * 60 * 1000);
-    return () => { clearInterval(id); clearInterval(syncId); };
+    // ── Supabase Realtime: instant updates on stock/incoming/sales changes ──
+    // subscribeToStock returns an unsubscribe fn; store it for cleanup.
+    const unsubscribe = subscribeToStock(branch);
+
+    // ── 3-second safety-net poll ────────────────────────────────────────────
+    // Realtime covers DB-triggered changes; the poll catches any edge cases
+    // (network hiccup, Realtime lag) so the UI is never more than 3s stale.
+    const id = setInterval(() => fetchBranchData(branch), 3_000);
+
+    // ── Incoming sync: every 60s (guarded internally to 60s minimum) ────────
+    const syncId = setInterval(() => syncIncomingFromDispatches(branch), 60 * 1000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(id);
+      clearInterval(syncId);
+    };
   }, [branch]);
 
   const availableStock = branchStock.filter((s) => s.quantity > 0);
