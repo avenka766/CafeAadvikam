@@ -508,12 +508,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     });
   },
 
-  // B5 FIX: per-branch lastSyncedAt guard — each branch runs at most once per 5 minutes.
-  // Previously used a single shared timestamp so one branch's sync blocked all others.
+  // B5 FIX: per-branch lastSyncedAt guard — each branch runs at most once per 10 seconds on manual, 60s on auto.
   syncIncomingFromDispatches: async (branch, force = false) => {
     const { lastSyncedAt } = get();
     const now = Date.now();
-    if (!force && lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 60 * 1000) return;
+    if (!force && lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 10 * 1000) return;
     set((s) => ({ lastSyncedAt: { ...s.lastSyncedAt, [branch]: now } }));
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
@@ -524,7 +523,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .not('dispatch_log', 'is', null)
       .gte('created_at', sixMonthsAgo.toISOString());
 
-    if (!orders) return;
+    if (!orders) {
+      // Even if dispatch_log sync finds nothing, re-fetch branch_incoming directly
+      // to pick up any records written by submitDispatch that may have been missed
+      await get().fetchBranchData(branch);
+      return;
+    }
 
     // FIXED: use dispatch_id column (the dispatch_log entry id) as the dedup key.
     const { data: existingIncoming } = await supabase
@@ -552,8 +556,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             dispatch_id:   e.id,
             item_name:     e.itemName,
             quantity:      e.quantity,
-            // UNIT-FIX: preserve the unit from the dispatch log entry so pcs items
-            // are not silently coerced to 'kg' when synced via the fallback path.
             unit:          e.unit ?? 'kg',
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
@@ -562,13 +564,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         );
     }
 
-    if (newEntries.length === 0) return;
+    if (newEntries.length > 0) {
+      await supabase
+        .from('branch_incoming')
+        .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
+    }
 
-    // Insert incoming records as unconfirmed — branch must confirm before stock is updated
-    await supabase
-      .from('branch_incoming')
-      .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
-
+    // Always re-fetch branch data after sync to ensure UI reflects latest DB state
     await get().fetchBranchData(branch);
   },
 
@@ -641,16 +643,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     return null;
   },
 
-  // Confirm all today's unconfirmed incoming items at once
+  // Confirm all unconfirmed incoming items at once (not restricted to today)
   confirmAllIncoming: async (branch) => {
-    const today = new Date().toDateString();
-    const toConfirm = get().incoming[branch].filter(
-      (i) => !i.confirmed && new Date(i.receivedAt).toDateString() === today
-    );
+    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed);
     if (toConfirm.length === 0) return null;
 
     for (const inc of toConfirm) {
       const err = await get().confirmIncoming(branch, inc.id);
+      if (err) return err;
+    }
+    return null;
+  },
       if (err) return err;
     }
     return null;
