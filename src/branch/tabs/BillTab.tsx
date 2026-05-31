@@ -1902,7 +1902,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       });
       if (creditErr) { setError(creditErr); return; }
       // Still record each sale for history/stock
-      if (isSNB) {
+      if (isSNB && !isVRSNB) {
         for (const item of cart) {
           await recordSnbSale(branch, item.itemName, item.quantity, soldBy, 'credit', item.price ?? 0, billNo.current);
         }
@@ -1911,7 +1911,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current, item.price ?? 0);
         }
       }
-    } else if (isSNB) {
+    } else if (isSNB && !isVRSNB) {
+      // SNB / Hosur — price-list sale, uses recordSnbSale
       // C-04 NOTE: items are committed one-by-one (no DB-level rollback).
       // TODO: replace with a single atomic complete_checkout() RPC once backend is ready.
       const snbSucceeded: string[] = [];
@@ -1929,7 +1930,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         snbSucceeded.push(item.itemName);
       }
     } else {
-      // VRSNB — stock-gated sale
+      // VRSNB — uses recordSale (allow-negative RPC) so stock goes negative in DB
+      // and appears in the Negative tab
       const succeeded: string[] = [];
       for (const item of cart) {
         const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current, item.price ?? 0);
