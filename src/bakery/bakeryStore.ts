@@ -307,18 +307,29 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       }
     }
 
-    const { error: incomingErr } = await supabase.from('branch_incoming').upsert({
-      dispatch_id:   newEntry.id,
-      branch:        newEntry.branch,
-      item_name:     newEntry.itemName,
-      quantity:      parseFloat(String(newEntry.quantity)),
-      unit:          newEntry.unit ?? 'kg',
-      received_at:   newEntry.dispatchedAt,
-      dispatched_by: newEntry.dispatchedBy,
-      confirmed:     false,
-    }, { onConflict: 'dispatch_id' });
-    if (incomingErr) {
-      console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
+    // DISPATCH-FIX: Don't rely on onConflict:'dispatch_id' — that requires a unique
+    // constraint in the DB which may not exist, causing the upsert to silently fail.
+    // Instead: check if a row with this dispatch_id already exists, insert only if not.
+    const { data: existingRow } = await supabase
+      .from('branch_incoming')
+      .select('id')
+      .eq('dispatch_id', newEntry.id)
+      .maybeSingle();
+
+    if (!existingRow) {
+      const { error: incomingErr } = await supabase.from('branch_incoming').insert({
+        dispatch_id:   newEntry.id,
+        branch:        newEntry.branch,
+        item_name:     newEntry.itemName,
+        quantity:      parseFloat(String(newEntry.quantity)),
+        unit:          newEntry.unit ?? 'kg',
+        received_at:   newEntry.dispatchedAt,
+        dispatched_by: newEntry.dispatchedBy,
+        confirmed:     false,
+      });
+      if (incomingErr) {
+        console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
+      }
     }
 
     // H-01 FIX: use computed newStatus instead of hardcoding 'dispatched'.
