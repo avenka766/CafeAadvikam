@@ -1,6 +1,6 @@
 // src/branch/tabs/SalesTab.tsx  ← UPDATED
-import { useState } from 'react';
-import { ShoppingCart, TrendingUp, CheckCircle2, Loader2, IndianRupee } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { ShoppingCart, TrendingUp, CheckCircle2, Loader2, IndianRupee, Wallet } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
 import { useBranchStore } from '../branchStore';
@@ -8,6 +8,42 @@ import { useAuthStore } from '@/stores/authStore';
 import type { Branch } from '../types';
 import { BRANCH_COLORS } from '../types';
 import type { StockItem, SaleRecord } from '../branchStore';
+
+interface Props {
+  branch: Branch;
+  branchStock: StockItem[];
+  todaySalesLog: SaleRecord[];
+  totalTodayQty: number;
+}
+
+function isAdvanceSale(paymentMethod: string | null) {
+  if (!paymentMethod) return false;
+  return paymentMethod.startsWith('advance:') || paymentMethod.startsWith('advance+');
+}
+
+function payLabel(method: string | null): string {
+  if (!method) return '';
+  if (method.startsWith('advance:')) return `Adv(${method.slice(8).toUpperCase()})`;
+  if (method.startsWith('advance+')) return `Adv+${method.slice(8).toUpperCase()}`;
+  const map: Record<string, string> = {
+    cash: 'Cash', upi: 'UPI', card: 'Card', credit: 'Credit',
+    'cash+upi': 'Cash+UPI', 'cash+card': 'Cash+Card', 'upi+card': 'UPI+Card',
+  };
+  return map[method.toLowerCase()] ?? method;
+}
+
+const PM_COLOR: Record<string, string> = {
+  cash:   'bg-emerald-100 text-emerald-700',
+  upi:    'bg-blue-100 text-blue-700',
+  card:   'bg-purple-100 text-purple-700',
+  credit: 'bg-red-100 text-red-700',
+};
+function pmColor(method: string | null) {
+  if (!method) return 'bg-muted text-muted-foreground';
+  if (PM_COLOR[method.toLowerCase()]) return PM_COLOR[method.toLowerCase()];
+  if (method.startsWith('advance')) return 'bg-amber-100 text-amber-800';
+  return 'bg-muted text-muted-foreground';
+}
 
 interface Props {
   branch: Branch;
@@ -149,23 +185,65 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
             </span>
           }
         />
+
+        {/* Revenue + advance summary */}
+        {todaySalesLog.length > 0 && (() => {
+          const todayRevenue = todaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0);
+          const advanceEntries = todaySalesLog.filter(s => isAdvanceSale(s.paymentMethod));
+          return (
+            <div className="px-4 py-2 flex gap-2 flex-wrap border-b border-border/50">
+              <div className="flex-1 min-w-[100px] flex items-center gap-1.5 bg-emerald-50 rounded-lg px-2 py-1.5">
+                <IndianRupee className="size-3 text-emerald-600 shrink-0" />
+                <span className="text-[11px] font-semibold text-emerald-700 tabular-nums">
+                  ₹{todayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                </span>
+              </div>
+              {advanceEntries.length > 0 && (
+                <div className="flex-1 min-w-[100px] flex items-center gap-1.5 bg-amber-50 rounded-lg px-2 py-1.5">
+                  <Wallet className="size-3 text-amber-600 shrink-0" />
+                  <span className="text-[11px] font-semibold text-amber-700">
+                    {advanceEntries.length} advance
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {todaySalesLog.length === 0 ? (
           <EmptyState message="No sales today." />
         ) : (
           <div className="divide-y">
-            {todaySalesLog.map((s) => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium">{s.itemName}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {fmt(s.soldAt)} · {s.soldBy}
-                  </p>
+            {todaySalesLog.map((s) => {
+              const lineRev = (s.unitPrice ?? 0) * s.quantitySold;
+              const isAdv = isAdvanceSale(s.paymentMethod);
+              return (
+                <div key={s.id} className={cn('flex items-center justify-between px-4 py-3',
+                  isAdv && 'bg-amber-50/40')}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{s.itemName}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                      <p className="text-xs text-muted-foreground">{fmt(s.soldAt)} · {s.soldBy}</p>
+                      {s.paymentMethod && (
+                        <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', pmColor(s.paymentMethod))}>
+                          {payLabel(s.paymentMethod)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right ml-2 shrink-0">
+                    <span className="text-sm font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full block">
+                      ×{s.quantitySold}
+                    </span>
+                    {lineRev > 0 && (
+                      <span className="text-[11px] font-semibold text-primary tabular-nums mt-0.5 block">
+                        ₹{lineRev.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <span className="text-sm font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
-                  ×{s.quantitySold}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

@@ -1,18 +1,20 @@
 // src/branch/tabs/ReportsTab.tsx
 import { useState, useMemo, useEffect } from 'react';
-import { Download, Filter } from 'lucide-react';
+import { Download, Filter, Wallet } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { downloadCSV, fmtDate, EmptyState } from '../components';
 import { useBranchStore } from '../branchStore';
-import type { CreditSale } from '../branchStore';
+import type { CreditSale, BranchAdvanceOrder } from '../branchStore';
 import type { Branch } from '../types';
 import type { SaleRecord } from '../branchStore';
 import { formatCurrency } from '@/lib/utils';
 import { BRANCH_COLORS } from '../types';
+import { AdvancePaymentsTab } from './AdvancePaymentsTab';
 
 interface Props {
   branch: Branch;
   branchSales: SaleRecord[];
+  advanceOrders?: BranchAdvanceOrder[];
 }
 
 // FIX #8 — convert a UTC ISO timestamp to local-date YYYY-MM-DD string
@@ -25,8 +27,9 @@ function toLocalDateString(isoString: string): string {
   return `${y}-${m}-${day}`;
 }
 
-export function ReportsTab({ branch, branchSales }: Props) {
+export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
   const { creditSales, fetchCreditSales } = useBranchStore();
+  const [reportView, setReportView] = useState<'sales' | 'advance'>('sales');
   const [reportType, setReportType] = useState<'item' | 'branch'>('item');
 
   const todayISO = toLocalDateString(new Date().toISOString());
@@ -164,6 +167,33 @@ export function ReportsTab({ branch, branchSales }: Props) {
 
   return (
     <div className="space-y-4">
+      {/* ── Top-level tab: Sales / Advance Payments ─────────────────────── */}
+      <div className="flex gap-1 p-1 rounded-2xl bg-muted">
+        <button onClick={() => setReportView('sales')}
+          className={cn('flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
+            reportView === 'sales' ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
+          📊 Sales Reports
+        </button>
+        <button onClick={() => setReportView('advance')}
+          className={cn('flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
+            reportView === 'advance' ? 'bg-amber-500 text-white shadow' : 'text-muted-foreground')}>
+          <Wallet className="size-4" /> Advance Payments
+          {advanceOrders.filter(o => o.status === 'pending').length > 0 && (
+            <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
+              reportView === 'advance' ? 'bg-amber-300 text-amber-900' : 'bg-amber-200 text-amber-800')}>
+              {advanceOrders.filter(o => o.status === 'pending').length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* ── Advance Payments view ────────────────────────────────────────── */}
+      {reportView === 'advance' && (
+        <AdvancePaymentsTab branch={branch} advanceOrders={advanceOrders} />
+      )}
+
+      {/* ── Sales view ──────────────────────────────────────────────────── */}
+      {reportView === 'sales' && (<>
       {/* ── Revenue KPI ─────────────────────────────────────────────────── */}
       <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
         <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
@@ -349,6 +379,7 @@ export function ReportsTab({ branch, branchSales }: Props) {
           </div>
         )}
       </div>
+      </>)}
     </div>
   );
 }
