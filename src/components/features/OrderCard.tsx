@@ -133,7 +133,12 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     setPaymentError('');
     try {
       await setPaymentType(order.id, pt, billerName);
-      await updateOrderStatus(order.id, 'served');
+      // Only move to 'served' if the kitchen has already finished (status === 'ready').
+      // If payment is collected before cooking starts (pending/preparing), keep the
+      // current kitchen status so the chef's card stays visible on the Kitchen screen.
+      if (order.status === 'ready') {
+        await updateOrderStatus(order.id, 'served');
+      }
       setShowPayment(false);
     } catch (err) {
       setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
@@ -205,7 +210,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
     const breakdown: PaymentBreakdown = { cash: cashAmt, upi: upiAmt, card: cardAmt };
     try {
       await setPaymentType(order.id, 'part_payment', billerName, breakdown);
-      await updateOrderStatus(order.id, 'served');
+      // Only mark served once the kitchen is done — same logic as handleSinglePayment.
+      if (order.status === 'ready') {
+        await updateOrderStatus(order.id, 'served');
+      }
       resetPaymentState();
     } catch (err) {
       setPaymentError(err instanceof Error ? err.message : 'Payment failed — please try again.');
