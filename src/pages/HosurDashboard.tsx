@@ -531,18 +531,20 @@ function CreditTab({ creditSales }: { creditSales: CreditSale[] }) {
   const [settleAmt, setSettleAmt] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
 
-  const filtered = creditSales.filter(cs =>
+  const safeSales = creditSales.filter((cs): cs is CreditSale => cs != null);
+
+  const filtered = safeSales.filter(cs =>
     filter === 'all' ? true : cs.status === filter
   );
 
-  const totalCredit = creditSales
+  const totalCredit = safeSales
     .filter(cs => cs.status !== 'settled')
-    .reduce((s, cs) => s + cs.creditAmount, 0);
+    .reduce((s, cs) => s + (cs.creditAmount ?? 0), 0);
 
   const handleSettle = async (cs: CreditSale) => {
     const amt = parseFloat(settleAmt[cs.id] || '0');
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
-    if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
+    if (amt > (cs.creditAmount ?? 0)) { setError('Amount exceeds balance due'); return; }
     setSettling(cs.id); setError('');
     const err = await settleCreditSale(BRANCH, cs.id, amt);
     setSettling(null);
@@ -556,7 +558,7 @@ function CreditTab({ creditSales }: { creditSales: CreditSale[] }) {
       <div className="bg-gradient-to-br from-red-50 to-orange-50 border border-red-200 rounded-2xl p-4">
         <p className="text-xs font-bold text-red-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
         <p className="font-display text-3xl font-bold text-red-600 tabular-nums">{fmtMoney(totalCredit)}</p>
-        <p className="text-xs text-muted-foreground mt-1">{creditSales.filter(cs => cs.status !== 'settled').length} open credit accounts</p>
+        <p className="text-xs text-muted-foreground mt-1">{safeSales.filter(cs => cs.status !== 'settled').length} open credit accounts</p>
       </div>
 
       {error && (
@@ -606,38 +608,43 @@ function CreditCard({ cs, settling, settleAmt, onSettleAmtChange, onSettle }: {
     settled: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   };
 
+  // Guard against undefined/null cs (can occur during concurrent store updates)
+  if (!cs) return null;
+
+  const safeItems = (cs.items || []).filter((item): item is CreditSaleItem => item != null);
+
   return (
     <div className="bg-card border-2 border-border rounded-2xl overflow-hidden">
       <div className="px-4 py-3 flex items-center justify-between">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName}</span>
-            <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
-              {cs.status.toUpperCase()}
+            <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName ?? 'Unknown'}</span>
+            <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status ?? 'pending'])}>
+              {(cs.status ?? 'pending').toUpperCase()}
             </span>
           </div>
           {cs.customerPhone && <p className="text-xs text-muted-foreground">{cs.customerPhone}</p>}
           <p className="text-[10px] text-muted-foreground mt-0.5">
-            Bill #{cs.billNo.split('-').pop()} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })} · {cs.soldBy}
+            Bill #{(cs.billNo ?? '').split('-').pop() || '—'} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })} · {cs.soldBy ?? 'Staff'}
           </p>
         </div>
         <div className="text-right ml-3">
           <p className="text-xs text-muted-foreground">Due</p>
-          <p className="font-display font-bold text-lg text-red-600 tabular-nums">{fmtMoney(cs.creditAmount)}</p>
+          <p className="font-display font-bold text-lg text-red-600 tabular-nums">{fmtMoney(cs.creditAmount ?? 0)}</p>
         </div>
       </div>
 
       {/* Expand toggle */}
       <button onClick={() => setExpanded(v=>!v)}
         className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground font-semibold">
-        <span>Total: {fmtMoney(cs.subtotal)} · Paid: {fmtMoney(cs.amountPaid)}</span>
+        <span>Total: {fmtMoney(cs.subtotal ?? 0)} · Paid: {fmtMoney(cs.amountPaid ?? 0)}</span>
         {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
       </button>
 
       {expanded && (
         <div className="px-4 py-3 border-t border-border/50 space-y-2">
           <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
-          {cs.items.map((item, i) => (
+          {safeItems.map((item, i) => (
             <div key={i} className="flex justify-between text-xs">
               <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
               <span className="font-bold tabular-nums text-primary">{fmtMoney(item.lineTotal)}</span>
@@ -659,7 +666,7 @@ function CreditCard({ cs, settling, settleAmt, onSettleAmtChange, onSettle }: {
           <div className="flex gap-2">
             <div className="relative flex-1">
               <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-              <input type="number" placeholder={`Max ${fmtMoney(cs.creditAmount)}`}
+              <input type="number" placeholder={`Max ${fmtMoney(cs.creditAmount ?? 0)}`}
                 value={settleAmt} onChange={e => onSettleAmtChange(e.target.value)}
                 className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-emerald-400/40" />
             </div>
@@ -1253,7 +1260,7 @@ export default function HosurDashboard() {
 
   const branchStock    = stock[BRANCH]          || [];
   const branchIncoming = incoming[BRANCH]        || [];
-  const branchCredit   = creditSales?.[BRANCH]   || [];
+  const branchCredit   = (creditSales?.[BRANCH] || []).filter((c): c is NonNullable<typeof c> => c != null);
   const branchSales    = sales[BRANCH]           || [];
 
   useEffect(() => {
