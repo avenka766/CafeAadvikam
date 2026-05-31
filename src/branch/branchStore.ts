@@ -718,22 +718,27 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const availableQty = currentStock?.quantity ?? 0;
     const shortage     = Math.max(0, qty - availableQty);
     const mismatch     = shortage > 0;
-    const deductQty    = Math.min(qty, availableQty);
-    const newQty       = Math.round((availableQty - deductQty) * 1000) / 1000;
 
-    // B2 FIX: use atomic RPC decrement instead of stale-local-state read
-    // BUG #9 FIX: actually use the authoritative qty returned by the RPC.
+    // Use allow-negative RPC (same as recordSale) so stock goes below 0 when
+    // items are sold beyond available quantity — this is what populates the Negative tab.
+    // The old `decrement_branch_stock` was clamped to availableQty, so stock
+    // never went negative and the Negative tab stayed empty.
     let rpcNewQty: number | null = null;
-    if (deductQty > 0 && currentStock) {
+    {
       const { data: newQtyRpc, error: rpcErr } = await supabase
-        .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: deductQty });
+        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
-        // Non-fatal for SNB: log mismatch, continue with sale
+        // Non-fatal: continue recording sale with optimistic local qty
       } else if (newQtyRpc !== null) {
         rpcNewQty = Math.round((newQtyRpc as number) * 1000) / 1000;
       }
     }
+
+    // Optimistic local fallback if RPC didn't return a value
+    const newQty = rpcNewQty !== null
+      ? rpcNewQty
+      : Math.round((availableQty - qty) * 1000) / 1000;
 
     // 2. Insert sales record
     const { data: saleData, error: saleErr } = await supabase
@@ -798,16 +803,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       billNo:        saleData.bill_no ?? null,
     };
 
-    // B2 local state fix: use the RPC-returned quantity for local state
-    // to avoid showing a stale value after a concurrent sale on another device.
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
       if (currentStock) {
-        // BUG #9 FIX: prefer authoritative DB value from RPC over stale local calculation
-        const finalQty = rpcNewQty !== null ? rpcNewQty : newQty;
         stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: finalQty } : si,
+          si.itemName === itemName ? { ...si, quantity: newQty } : si,
         );
       }
       sales[branch] = [newSale, ...sales[branch]];
