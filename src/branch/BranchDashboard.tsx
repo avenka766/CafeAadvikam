@@ -102,7 +102,7 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     // LAYOUT-FIX: Use flex-col + min-h-0 so BillTab (which uses flex-1) can fill
     // the full viewport height. pb-28 only applies to non-bill tabs to clear the bottom nav.
-    <div className="bg-background flex flex-col" style={{ minHeight: '100dvh' }}>
+    <div className="bg-background flex flex-col" style={{ height: '100dvh', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
       <div className={cn('px-4 pt-14 pb-3 border-b shrink-0', colors.bg)}>
         <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
           {branch} Branch
@@ -123,7 +123,7 @@ export default function BranchDashboard({ branch }: Props) {
       </div>
 
       {/* Tabs kept mounted so cart state survives tab switches */}
-      <div className={cn('px-4 pb-28 space-y-3', tab === 'bill' && 'hidden')}>
+      <div className={cn('flex-1 overflow-y-auto px-4 py-3 space-y-3', tab === 'bill' && 'hidden')}>
         <div className={tab !== 'stock'    ? 'hidden' : undefined}>
           <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
             branchThresholds={branchThresholds} loading={loading} />
