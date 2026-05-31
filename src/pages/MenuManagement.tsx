@@ -164,6 +164,8 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [search,           setSearch]           = useState('');
   const [editingId,        setEditingId]        = useState<string | null>(null);
   const [editPrice,        setEditPrice]        = useState('');
+  const [savingPrice,      setSavingPrice]      = useState(false);
+  const [priceError,       setPriceError]       = useState<string | null>(null);
   const [showAddSheet,     setShowAddSheet]     = useState(false);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
@@ -194,13 +196,23 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   };
 
   const startEditPrice = (id: string, currentPrice: number) => {
-    setEditingId(id); setEditPrice(String(currentPrice));
+    setEditingId(id); setEditPrice(String(currentPrice)); setPriceError(null);
   };
 
-  const savePrice = (id: string) => {
+  const savePrice = async (id: string) => {
     const val = parseInt(editPrice);
-    if (!isNaN(val) && val > 0) updateItem(id, { price: val });
-    setEditingId(null); setEditPrice('');
+    if (isNaN(val) || val <= 0) { setPriceError('Enter a valid price.'); return; }
+    setSavingPrice(true);
+    setPriceError(null);
+    try {
+      await updateItem(id, { price: val });
+      setEditingId(null);
+      setEditPrice('');
+    } catch (err: unknown) {
+      setPriceError(err instanceof Error ? err.message : 'Failed to save price.');
+    } finally {
+      setSavingPrice(false);
+    }
   };
 
   const enabledCount  = items.filter(i => i.enabled).length;
@@ -303,23 +315,38 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
               <p className="text-[10px] font-body text-muted-foreground">{categoryName(item.category)}</p>
               <div className="mt-1 flex items-center gap-2">
                 {editingId === item.id ? (
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm">₹</span>
-                    <input
-                      type="number"
-                      value={editPrice}
-                      onChange={e => setEditPrice(e.target.value)}
-                      className="w-16 px-1.5 py-0.5 border border-border rounded text-sm font-body tabular-nums"
-                      autoFocus
-                      onKeyDown={e => e.key === 'Enter' && savePrice(item.id)}
-                    />
-                    <button
-                      onClick={() => savePrice(item.id)}
-                      className="size-6 rounded bg-primary text-primary-foreground flex items-center justify-center"
-                      aria-label="Save price"
-                    >
-                      <Check className="size-3.5" />
-                    </button>
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm">₹</span>
+                      <input
+                        type="number"
+                        value={editPrice}
+                        onChange={e => { setEditPrice(e.target.value); setPriceError(null); }}
+                        className="w-16 px-1.5 py-0.5 border border-border rounded text-sm font-body tabular-nums"
+                        autoFocus
+                        disabled={savingPrice}
+                        onKeyDown={e => e.key === 'Enter' && savePrice(item.id)}
+                      />
+                      <button
+                        onClick={() => savePrice(item.id)}
+                        disabled={savingPrice}
+                        className="size-6 rounded bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-50"
+                        aria-label="Save price"
+                      >
+                        {savingPrice ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => { setEditingId(null); setEditPrice(''); setPriceError(null); }}
+                        disabled={savingPrice}
+                        className="size-6 rounded bg-muted text-muted-foreground flex items-center justify-center"
+                        aria-label="Cancel"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </div>
+                    {priceError && (
+                      <p className="text-[10px] text-destructive font-medium pl-4">{priceError}</p>
+                    )}
                   </div>
                 ) : (
                   <button
