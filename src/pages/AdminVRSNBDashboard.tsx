@@ -7,6 +7,7 @@ import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import { useMemo, useEffect, useState } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { useNotificationStore } from '@/bakery/notificationStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import {
@@ -17,8 +18,11 @@ import {
   IndianRupee, ShoppingBag, TrendingUp, Clock,
   RefreshCw, Wifi, Download, Filter,
   LayoutDashboard, FileText, Trash2, BarChart3, Package,
-  ArrowUpRight,
+  ArrowUpRight, Bell, CreditCard, Truck, Scale, CheckCheck,
+  AlertTriangle, PackageX, Tag, ChevronDown, ChevronUp,
+  Check, Trash2 as TrashIcon, Loader2, X,
 } from 'lucide-react';
+import type { AdminNotification, NotificationType } from '@/bakery/notificationStore';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B'];
 
@@ -115,7 +119,6 @@ function CafeDashboardTab() {
     { name: 'Card', value: pay.card, color: COLORS[2] },
   ].filter(p => p.value > 0);
 
-  // Hourly orders chart
   const hourlyData = useMemo(() => {
     const map: Record<number, number> = {};
     served.forEach(o => {
@@ -128,7 +131,6 @@ function CafeDashboardTab() {
     })).filter((_, h) => h >= 6 && h <= 22);
   }, [served]);
 
-  // Daily revenue trend
   const dailyData = useMemo(() => {
     const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
     return Array.from({ length: days }, (_, i) => {
@@ -139,7 +141,6 @@ function CafeDashboardTab() {
     });
   }, [orders, dateRange]);
 
-  // Order type split
   const dineIn = served.filter(o => o.orderType === 'dine_in').length;
   const takeaway = served.filter(o => o.orderType !== 'dine_in').length;
   const orderTypePie = [
@@ -154,7 +155,6 @@ function CafeDashboardTab() {
 
   return (
     <div className="space-y-4">
-      {/* Live indicator + date toggle */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
@@ -169,7 +169,6 @@ function CafeDashboardTab() {
         </div>
       </div>
 
-      {/* KPIs */}
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<IndianRupee className="size-4" />} label="Revenue" value={formatCurrency(totalRevenue)} sub={`${served.length} orders`} color="bg-primary/10 text-primary" />
         <KPI icon={<ShoppingBag className="size-4" />} label="Orders" value={String(served.length)} sub={`avg ${formatCurrency(avgOrderValue)}`} color="bg-accent/20 text-accent-foreground" />
@@ -177,7 +176,6 @@ function CafeDashboardTab() {
         <KPI icon={<Clock className="size-4" />} label="Peak Hour" value={peakHour} color="bg-amber-50 text-amber-700" />
       </div>
 
-      {/* Live order status */}
       <div className="bg-card border border-border rounded-xl p-4">
         <h3 className="font-display text-base font-bold text-foreground mb-3 flex items-center gap-2">
           <RefreshCw className="size-4 text-primary" />Live Order Status
@@ -190,7 +188,6 @@ function CafeDashboardTab() {
         </div>
       </div>
 
-      {/* Revenue Trend */}
       {dateRange !== 'today' && dailyData.some(d => d.revenue > 0) && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
@@ -215,7 +212,6 @@ function CafeDashboardTab() {
         </div>
       )}
 
-      {/* Hourly order heatmap */}
       {hourlyData.some(d => d.orders > 0) && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
@@ -234,7 +230,6 @@ function CafeDashboardTab() {
         </div>
       )}
 
-      {/* Payment Breakdown */}
       <div className="bg-card border border-border rounded-xl p-4">
         <h3 className="font-display text-base font-bold mb-3">Payment Breakdown</h3>
         {totalRevenue === 0 ? (
@@ -248,7 +243,6 @@ function CafeDashboardTab() {
         )}
       </div>
 
-      {/* Order type split pie */}
       {orderTypePie.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Order Type Split</h3>
@@ -276,7 +270,6 @@ function CafeDashboardTab() {
         </div>
       )}
 
-      {/* Top items by revenue — bar chart */}
       {topItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
@@ -293,7 +286,6 @@ function CafeDashboardTab() {
         </div>
       )}
 
-      {/* Top items by qty list */}
       {topItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Top Selling (by Quantity)</h3>
@@ -345,7 +337,6 @@ function CafeReportsTab() {
     return [...map.values()].sort((a, b) => b.qty - a.qty);
   }, [filtered]);
 
-  // Category revenue breakdown
   const categoryData = useMemo(() => {
     const map = new Map<string, number>();
     filtered.forEach(o => o.items.forEach(ci => {
@@ -395,7 +386,6 @@ function CafeReportsTab() {
         </div>
       </div>
 
-      {/* Summary KPIs */}
       <div className="grid grid-cols-3 gap-2">
         <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-center">
           <p className="font-display text-xl font-bold text-primary tabular-nums">{filtered.length}</p>
@@ -411,7 +401,6 @@ function CafeReportsTab() {
         </div>
       </div>
 
-      {/* Category revenue pie */}
       {categoryData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Revenue by Category</h3>
@@ -437,7 +426,6 @@ function CafeReportsTab() {
         </div>
       )}
 
-      {/* Top items bar chart */}
       {chartItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Top Items by Quantity</h3>
@@ -453,7 +441,6 @@ function CafeReportsTab() {
         </div>
       )}
 
-      {/* Item revenue table */}
       {topItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Item Revenue Breakdown</h3>
@@ -485,7 +472,7 @@ function CafeReportsTab() {
   );
 }
 
-// ── VRSNB Bakery Dashboard ────────────────────────────────────────────────────
+// ── VRSNB Bakery Dashboard Tab ────────────────────────────────────────────────
 function VRSNBBakeryDashboardTab() {
   const { stock, sales, fetchBranchData } = useBranchStore();
   const [dateRange, setDateRange] = useState<'today' | '7d' | '30d'>('today');
@@ -521,7 +508,6 @@ function VRSNBBakeryDashboardTab() {
       .map(([name, v]) => ({ name: name.length > 16 ? name.slice(0, 16) + '…' : name, ...v }));
   }, [filteredSales]);
 
-  // Daily revenue trend
   const dailyData = useMemo(() => {
     const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
     return Array.from({ length: days }, (_, i) => {
@@ -533,7 +519,6 @@ function VRSNBBakeryDashboardTab() {
     });
   }, [allSales, dateRange]);
 
-  // Stock health pie
   const inStock = stockItems.filter(s => s.quantity > s.minThreshold).length;
   const stockPie = [
     { name: 'OK', value: inStock, color: COLORS[0] },
@@ -542,7 +527,6 @@ function VRSNBBakeryDashboardTab() {
 
   return (
     <div className="space-y-4">
-      {/* Date range */}
       <div className="flex gap-1 p-1 rounded-xl bg-muted">
         {(['today', '7d', '30d'] as const).map(r => (
           <button key={r} onClick={() => setDateRange(r)} className={cn('flex-1 py-2 rounded-lg text-xs font-semibold transition-all', dateRange === r ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
@@ -551,7 +535,6 @@ function VRSNBBakeryDashboardTab() {
         ))}
       </div>
 
-      {/* KPIs */}
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<IndianRupee className="size-4" />} label="Revenue" value={formatCurrency(totalRevenue)} sub="VRSNB branch" color="bg-primary/10 text-primary" />
         <KPI icon={<ShoppingBag className="size-4" />} label="Items Sold" value={String(totalQty)} sub={`${filteredSales.length} txns`} color="bg-blue-50 text-blue-700" />
@@ -559,7 +542,6 @@ function VRSNBBakeryDashboardTab() {
         <KPI icon={<Package className="size-4" />} label="Low Stock" value={String(lowStock)} sub={`of ${stockItems.length} items`} color={lowStock > 0 ? 'bg-red-50 text-red-700' : 'bg-muted text-muted-foreground'} />
       </div>
 
-      {/* Revenue trend */}
       {dateRange !== 'today' && dailyData.some(d => d.revenue > 0) && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
@@ -584,7 +566,6 @@ function VRSNBBakeryDashboardTab() {
         </div>
       )}
 
-      {/* Daily qty trend */}
       {dateRange !== 'today' && dailyData.some(d => d.qty > 0) && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
@@ -602,7 +583,6 @@ function VRSNBBakeryDashboardTab() {
         </div>
       )}
 
-      {/* Top items bar chart */}
       {topItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
@@ -619,7 +599,6 @@ function VRSNBBakeryDashboardTab() {
         </div>
       )}
 
-      {/* Revenue vs Qty dual view */}
       {topItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-3">Revenue vs Quantity</h3>
@@ -648,7 +627,6 @@ function VRSNBBakeryDashboardTab() {
         </div>
       )}
 
-      {/* Stock health */}
       <div className="bg-card border border-border rounded-xl p-4">
         <h3 className="font-display text-base font-bold mb-3 flex items-center gap-2">
           <Package className="size-4 text-primary" />Stock Health
@@ -671,7 +649,6 @@ function VRSNBBakeryDashboardTab() {
         </div>
       </div>
 
-      {/* Low stock alerts */}
       {lowStock > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <h3 className="font-display text-base font-bold text-red-700 mb-2">⚠ Low Stock Alerts</h3>
@@ -689,8 +666,8 @@ function VRSNBBakeryDashboardTab() {
   );
 }
 
-// ── VRSNB Bakery Sales Tab ────────────────────────────────────────────────────
-function VRSNBBakerySalesTab() {
+// ── VRSNB Bakery Reports & Sales Combined Tab ─────────────────────────────────
+function VRSNBBakeryReportsSalesTab() {
   const { sales, fetchBranchData } = useBranchStore();
   const [filterItem, setFilterItem] = useState('');
   const [filterDate, setFilterDate] = useState('');
@@ -722,53 +699,328 @@ function VRSNBBakerySalesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
-          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
-          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
-        </div>
-      </div>
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – VRSNB</h3></div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <select value={filterItem} onChange={e => setFilterItem(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
-            <option value="">All Items</option>
-            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
-          </select>
-          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2" />
-        </div>
-        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
-      </div>
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {filtered.length === 0 ? (
-          <EmptyState icon="📊" message="No sales found" sub="Sales will appear here once items are billed." />
-        ) : (
-          <div className="divide-y">
-            {filtered.slice(0, 50).map(s => {
-              const lineRev = s.unitPrice * s.quantitySold;
-              return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
-                    <p className="text-sm font-medium">{s.itemName}</p>
-                    <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
-              );
-            })}
+      {/* Analytics from BakeryReportsMerged */}
+      <BakeryReportsMerged branch="VRSNB" />
+
+      {/* Sales log section merged below */}
+      <div className="pt-2 border-t border-border">
+        <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-widest mb-3">Sales Log</p>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
+            <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
+            <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
           </div>
+          <div className="bg-card border border-border rounded-xl p-3">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
+            <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
+          </div>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-4 space-y-3 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Filter className="size-4 text-muted-foreground" />
+              <h3 className="font-semibold text-sm">Filters – VRSNB</h3>
+            </div>
+            <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
+              <Download className="size-3" />Excel
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <select value={filterItem} onChange={e => setFilterItem(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
+              <option value="">All Items</option>
+              {allItems.map(i => <option key={i} value={i}>{i}</option>)}
+            </select>
+            <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2" />
+          </div>
+          <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          {filtered.length === 0 ? (
+            <EmptyState icon="📊" message="No sales found" sub="Sales will appear here once items are billed." />
+          ) : (
+            <div className="divide-y">
+              {filtered.slice(0, 50).map(s => {
+                const lineRev = s.unitPrice * s.quantitySold;
+                return (
+                  <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                    <div>
+                      <p className="text-sm font-medium">{s.itemName}</p>
+                      <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
+                      <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── VRSNB Alerts Tab ──────────────────────────────────────────────────────────
+// Shows Credit, Today's Deliveries, and Packing Discrepancy alerts
+// scoped to Cafe and VRSNB Branch only.
+
+const ALERT_BRANCHES = new Set(['Cafe', 'VRSNB']);
+
+const ALERT_TYPE_META: Record<string, { label: string; icon: React.ElementType; cardBorder: string; iconBg: string; iconColor: string; badgeCls: string }> = {
+  credit_sale: {
+    label: 'Credit Sale',
+    icon: CreditCard,
+    cardBorder: 'border-red-300',
+    iconBg: 'bg-red-50',
+    iconColor: 'text-red-600',
+    badgeCls: 'bg-red-100 text-red-700 border-red-300',
+  },
+  packing_discrepancy: {
+    label: 'Packing Discrepancy',
+    icon: Scale,
+    cardBorder: 'border-orange-300',
+    iconBg: 'bg-orange-50',
+    iconColor: 'text-orange-600',
+    badgeCls: 'bg-orange-100 text-orange-700 border-orange-200',
+  },
+};
+
+function AlertNotificationCard({ n, onDelete }: { n: AdminNotification; onDelete: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const { markRead, deleteNotification } = useNotificationStore();
+  const meta = ALERT_TYPE_META[n.type];
+  if (!meta) return null;
+  const Icon = meta.icon;
+
+  const handleOpen = () => {
+    setExpanded(v => !v);
+    if (!n.isRead) markRead(n.id);
+  };
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await deleteNotification(n.id);
+    onDelete(n.id);
+  };
+
+  return (
+    <div className={cn('rounded-xl border overflow-hidden', meta.cardBorder, !n.isRead && 'shadow-md')}>
+      <button onClick={handleOpen} className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-muted/40 transition">
+        <div className={cn('size-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5', meta.iconBg)}>
+          <Icon className={cn('size-4', meta.iconColor)} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className={cn('text-sm font-semibold', !n.isRead && 'text-foreground')}>{n.title}</p>
+            {!n.isRead && <span className="size-2 rounded-full bg-blue-500 shrink-0" />}
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.body}</p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {new Date(n.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={handleDelete}
+            className="size-7 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-red-50 hover:text-red-600 transition"
+          >
+            <TrashIcon className="size-3.5" />
+          </button>
+          {expanded ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
+        </div>
+      </button>
+
+      {expanded && n.meta && (
+        <div className="px-4 pb-3 pt-1 border-t border-dashed border-muted bg-muted/20">
+          {n.type === 'credit_sale' && (() => {
+            const m = n.meta as { customerName?: string; amount?: number; billNo?: string; branch?: string; soldBy?: string; dueDate?: string | null };
+            return (
+              <div className="space-y-1.5 text-sm">
+                {m.customerName && <div className="flex justify-between"><span className="text-muted-foreground">Customer</span><span className="font-medium">{m.customerName}</span></div>}
+                {m.amount !== undefined && <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-bold text-red-700">{formatCurrency(m.amount)}</span></div>}
+                {m.branch && <div className="flex justify-between"><span className="text-muted-foreground">Branch</span><span className="font-medium">{m.branch}</span></div>}
+                {m.soldBy && <div className="flex justify-between"><span className="text-muted-foreground">Sold By</span><span className="font-medium">{m.soldBy}</span></div>}
+                {m.dueDate && <div className="flex justify-between"><span className="text-muted-foreground">Due Date</span><span className="font-medium text-amber-700">{new Date(m.dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span></div>}
+                {m.billNo && <div className="flex justify-between"><span className="text-muted-foreground">Bill No</span><span className="font-medium font-mono text-xs">{m.billNo}</span></div>}
+              </div>
+            );
+          })()}
+          {n.type === 'packing_discrepancy' && (() => {
+            const m = n.meta as { branch?: string; orderNumber?: string; items?: { itemName: string; dispatched: number; requested: number; unit: string }[] };
+            return (
+              <div className="space-y-2">
+                {m.branch && <p className="text-xs font-semibold text-muted-foreground">Branch: {m.branch} · Order {m.orderNumber}</p>}
+                {(m.items || []).map((item, i) => {
+                  const diff = item.requested - item.dispatched;
+                  return (
+                    <div key={i} className="flex items-center justify-between text-sm">
+                      <span className="font-medium truncate mr-2">{item.itemName}</span>
+                      <span className={cn('text-xs font-bold tabular-nums px-2 py-0.5 rounded-full', diff > 0 ? 'bg-red-100 text-red-700' : diff < 0 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700')}>
+                        {diff > 0 ? `−${diff} short` : diff < 0 ? `+${Math.abs(diff)} extra` : '✓'} ({item.unit})
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VRSNBDeliveryAlerts() {
+  const { advanceOrders, fetchBranchData } = useBranchStore();
+  useEffect(() => {
+    fetchBranchData('Cafe');
+    fetchBranchData('VRSNB');
+  }, [fetchBranchData]);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const todayDeliveries = useMemo(() => {
+    const cafeOrders = (advanceOrders['Cafe'] || []).filter(o =>
+      o.deliveryDate === todayStr && o.status === 'pending'
+    ).map(o => ({ ...o, branchLabel: 'Cafe' }));
+    const vrsnbOrders = (advanceOrders['VRSNB'] || []).filter(o =>
+      o.deliveryDate === todayStr && o.status === 'pending'
+    ).map(o => ({ ...o, branchLabel: 'VRSNB' }));
+    return [...cafeOrders, ...vrsnbOrders];
+  }, [advanceOrders, todayStr]);
+
+  if (todayDeliveries.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 mb-1">
+        <Truck className="size-4 text-blue-600" />
+        <p className="text-sm font-bold text-blue-800">Deliveries Due Today</p>
+        <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{todayDeliveries.length}</span>
+      </div>
+      {todayDeliveries.map(order => (
+        <div key={order.id} className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-sm font-semibold text-blue-900">{order.customerName || 'Customer'}</p>
+                <span className="text-[10px] font-bold bg-blue-200 text-blue-800 px-2 py-0.5 rounded-full">{order.branchLabel}</span>
+              </div>
+              <p className="text-xs text-blue-700 mt-0.5">
+                {order.items.map(i => `${i.itemName} ×${i.quantity}`).join(', ')}
+              </p>
+              <p className="text-[10px] text-blue-600 mt-1">
+                Balance due: <span className="font-bold">{formatCurrency(order.balanceDue)}</span>
+                {' · '}By: {order.soldBy}
+              </p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-sm font-bold tabular-nums text-blue-900">{formatCurrency(order.balanceDue)}</p>
+              <p className="text-[10px] text-blue-600">balance</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VRSNBAlertsTab() {
+  const { notifications, loaded, loading, load, markAllRead } = useNotificationStore();
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+
+  // Filter: only credit_sale and packing_discrepancy, scoped to Cafe/VRSNB
+  const alertNotifications = useMemo(() => notifications.filter(n => {
+    if (deletedIds.has(n.id)) return false;
+    if (n.type === 'credit_sale') {
+      const branch = (n.meta as { branch?: string })?.branch ?? '';
+      return ALERT_BRANCHES.has(branch);
+    }
+    if (n.type === 'packing_discrepancy') {
+      const branch = (n.meta as { branch?: string })?.branch ?? '';
+      return ALERT_BRANCHES.has(branch);
+    }
+    return false;
+  }), [notifications, deletedIds]);
+
+  const unreadCount = alertNotifications.filter(n => !n.isRead).length;
+
+  const handleDelete = (id: string) => setDeletedIds(prev => new Set([...prev, id]));
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bell className="size-4 text-primary" />
+          <h2 className="font-display text-base font-bold">Alerts</h2>
+          {unreadCount > 0 && (
+            <span className="text-[10px] font-bold bg-red-500 text-white px-2 py-0.5 rounded-full">{unreadCount} new</span>
+          )}
+        </div>
+        {unreadCount > 0 && (
+          <button
+            onClick={markAllRead}
+            className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted text-muted-foreground"
+          >
+            <CheckCheck className="size-3" />Mark all read
+          </button>
         )}
       </div>
+
+      <p className="text-[11px] text-muted-foreground -mt-2">Showing alerts for Cafe & VRSNB Branch</p>
+
+      {loading && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
+
+      {/* Today's Deliveries */}
+      {!loading && <VRSNBDeliveryAlerts />}
+
+      {/* Credit & Packing Discrepancy notifications */}
+      {!loading && alertNotifications.length > 0 && (
+        <div className="space-y-2">
+          {/* Section headers */}
+          {alertNotifications.some(n => n.type === 'credit_sale') && (
+            <div className="flex items-center gap-2 pt-2">
+              <CreditCard className="size-4 text-red-600" />
+              <p className="text-sm font-bold text-red-800">Credit Sales</p>
+            </div>
+          )}
+          {alertNotifications.filter(n => n.type === 'credit_sale').map(n => (
+            <AlertNotificationCard key={n.id} n={n} onDelete={handleDelete} />
+          ))}
+
+          {alertNotifications.some(n => n.type === 'packing_discrepancy') && (
+            <div className="flex items-center gap-2 pt-2">
+              <Scale className="size-4 text-orange-600" />
+              <p className="text-sm font-bold text-orange-800">Packing Discrepancies</p>
+            </div>
+          )}
+          {alertNotifications.filter(n => n.type === 'packing_discrepancy').map(n => (
+            <AlertNotificationCard key={n.id} n={n} onDelete={handleDelete} />
+          ))}
+        </div>
+      )}
+
+      {!loading && alertNotifications.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <div className="size-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
+            <Bell className="size-6 text-muted-foreground" />
+          </div>
+          <p className="font-semibold text-foreground">All clear!</p>
+          <p className="text-sm text-muted-foreground mt-1">No pending credit, delivery, or packing alerts.</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -799,16 +1051,16 @@ function CafeView() {
   );
 }
 
-// ── VRSNB Bakery Sub-View ────────────────────────────────────────────────────
+// ── VRSNB Bakery Sub-View ─────────────────────────────────────────────────────
+// Reports and Sales tabs are now merged into a single "Reports & Sales" tab
 function VRSNBBakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports-sales'>('dashboard');
   return (
     <div className="space-y-4">
       <div className="flex gap-1 p-1 rounded-xl bg-muted overflow-x-auto">
         {([
-          { id: 'dashboard', label: '📊 Dashboard' },
-          { id: 'sales',     label: '🧾 Sales'     },
-          { id: 'reports',   label: '📋 Reports'   },
+          { id: 'dashboard',     label: '📊 Dashboard'       },
+          { id: 'reports-sales', label: '📋 Reports & Sales' },
         ] as const).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={cn('shrink-0 flex-1 py-2 rounded-lg text-xs font-semibold transition-all', tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground')}>
@@ -816,18 +1068,39 @@ function VRSNBBakeryView() {
           </button>
         ))}
       </div>
-      {tab === 'dashboard' && <VRSNBBakeryDashboardTab />}
-      {tab === 'sales'     && <VRSNBBakerySalesTab />}
-      {tab === 'reports'   && <BakeryReportsMerged branch="VRSNB" />}
+      {tab === 'dashboard'     && <VRSNBBakeryDashboardTab />}
+      {tab === 'reports-sales' && <VRSNBBakeryReportsSalesTab />}
     </div>
   );
 }
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function AdminVRSNBDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit'>('cafe');
+  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit' | 'alerts'>('cafe');
   const { startPolling, stopPolling } = useOrderStore();
+  const { notifications, loaded, load } = useNotificationStore();
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+
+  // Count unread alerts scoped to Cafe/VRSNB
+  const alertBadgeCount = useMemo(() => notifications.filter(n => {
+    if (n.isRead) return false;
+    const branch = (n.meta as { branch?: string })?.branch ?? '';
+    if (n.type === 'credit_sale') return ALERT_BRANCHES.has(branch);
+    if (n.type === 'packing_discrepancy') return ALERT_BRANCHES.has(branch);
+    return false;
+  }).length, [notifications]);
+
+  // Delivery badge: today's pending deliveries for Cafe+VRSNB
+  const { advanceOrders } = useBranchStore();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const deliveryBadge = useMemo(() => {
+    const cafe  = (advanceOrders['Cafe']  || []).filter(o => o.deliveryDate === todayStr && o.status === 'pending').length;
+    const vrsnb = (advanceOrders['VRSNB'] || []).filter(o => o.deliveryDate === todayStr && o.status === 'pending').length;
+    return cafe + vrsnb;
+  }, [advanceOrders, todayStr]);
+
+  const totalAlertBadge = alertBadgeCount + deliveryBadge;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
@@ -852,11 +1125,20 @@ export default function AdminVRSNBDashboard() {
         <button onClick={() => setMode('credit')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
           💳 Credit
         </button>
+        <button onClick={() => setMode('alerts')} className={cn('flex-1 relative py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'alerts' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+          🔔 Alerts
+          {totalAlertBadge > 0 && (
+            <span className="absolute -top-1 -right-1 size-4 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold">
+              {totalAlertBadge > 9 ? '9+' : totalAlertBadge}
+            </span>
+          )}
+        </button>
       </div>
       <div className="px-4 space-y-4">
-        {mode === 'cafe'   && <CafeView />}
-        {mode === 'bakery' && <VRSNBBakeryView />}
-        {mode === 'credit' && <AdminCreditTab branches={['Cafe', 'VRSNB']} accentColor="text-blue-700" />}
+        {mode === 'cafe'    && <CafeView />}
+        {mode === 'bakery'  && <VRSNBBakeryView />}
+        {mode === 'credit'  && <AdminCreditTab branches={['Cafe', 'VRSNB']} accentColor="text-blue-700" />}
+        {mode === 'alerts'  && <VRSNBAlertsTab />}
       </div>
     </div>
   );
