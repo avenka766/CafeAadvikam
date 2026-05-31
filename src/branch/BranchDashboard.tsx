@@ -26,8 +26,9 @@ interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
   const { stock, sales, incoming, advanceOrders, thresholds, loading,
+          stockMismatches,
           fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
-          subscribeToStock } =
+          subscribeToStock, fetchStockMismatches } =
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
@@ -42,6 +43,7 @@ export default function BranchDashboard({ branch }: Props) {
 
   useEffect(() => {
     fetchBranchData(branch);
+    fetchStockMismatches();
 
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
@@ -129,7 +131,8 @@ export default function BranchDashboard({ branch }: Props) {
       <div className={cn('flex-1 overflow-y-auto px-4 py-4 md:px-6 space-y-4', tab === 'bill' && 'hidden')}>
         <div className={tab !== 'stock' ? 'hidden' : undefined}>
           <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
-            branchThresholds={branchThresholds} loading={loading} />
+            branchThresholds={branchThresholds} loading={loading}
+            stockMismatches={stockMismatches.filter((m) => m.branch === branch)} />
         </div>
         <div className={tab !== 'history' ? 'hidden' : undefined}>
           <HistoryTab branchSales={branchSales} />
