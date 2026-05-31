@@ -308,22 +308,27 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     let newQty = Math.round(((localStock?.quantity ?? 0) - qty) * 1000) / 1000;
 
     // Use the allow-negative RPC so stock can go below 0 when biller sells without stock.
-    // If item row doesn't exist in DB, the RPC will upsert it at a negative quantity.
+    // IMPORTANT: if the item has no branch_stock row yet, the RPC returns NULL (it can only
+    // UPDATE an existing row, not INSERT). In that case we fall through to a manual upsert.
     {
       const { data: newQtyRpc, error: rpcErr } = await supabase
         .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSale] stock RPC error:', rpcErr.message);
-        // Non-fatal: if the RPC fails (e.g. item row truly missing and RPC can't upsert),
-        // manually upsert a negative row so the Negative tab still reflects reality.
-        if (localStock === null) {
-          await supabase.from('branch_stock').upsert(
-            { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
-            { onConflict: 'branch,item_name' },
-          );
-        }
-      } else if (newQtyRpc !== null) {
+      }
+      if (newQtyRpc !== null && !rpcErr) {
+        // RPC succeeded and returned the new quantity — use it.
         newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+      } else {
+        // RPC returned null (no DB row existed) or errored — manually upsert so the
+        // Negative tab can show this item. newQty is already set to (0 - qty) above.
+        const { error: upsertErr } = await supabase.from('branch_stock').upsert(
+          { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
+          { onConflict: 'branch,item_name' },
+        );
+        if (upsertErr) {
+          console.error('[recordSale] stock upsert error:', upsertErr.message);
+        }
       }
     }
 
