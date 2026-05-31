@@ -48,6 +48,7 @@ interface StoreStockState {
   updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
   bulkImportFromRecipes: () => Promise<{ added: number; skipped: number; error?: string }>;
+  subscribe: () => () => void;
   // H-06 FIX: unit is now required so conversions are explicit, not guessed
   // DEDUCT-LOG: ctx is optional for backwards compat; when supplied, each deduction is logged
   deductMaterials: (
@@ -309,5 +310,19 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     }
 
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
+  },
+
+  // Realtime subscription on store_raw_stock — any change (deduction, manual update)
+  // immediately re-fetches stock so ItemRow stock alerts are always current.
+  subscribe: () => {
+    const channel = supabase
+      .channel('store-raw-stock-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'store_raw_stock' },
+        () => { get().load(); },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   },
 }));

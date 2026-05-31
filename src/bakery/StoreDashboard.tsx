@@ -857,12 +857,20 @@ function StoreInventoryTab() {
 
 // ─── Orders Tab ───────────────────────────────────────────────────────────────
 function OrdersTab() {
-  const { orders, fetchOrders } = useBakeryStore();
+  const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
+  const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const [initialLoading, setInitialLoading] = useState(true);
   useEffect(() => {
+    // Initial fetch
     fetchOrders().finally(() => setInitialLoading(false));
-    const id = setInterval(() => fetchOrders(true), 15_000);
-    return () => clearInterval(id);
+    loadStock();
+    // Realtime subscriptions — instant updates instead of polling
+    const unsubOrders = subscribeOrders();
+    const unsubStock  = subscribeStock();
+    return () => {
+      unsubOrders();
+      unsubStock();
+    };
   }, []);
   const pending    = orders.filter(o => o.status === 'pending');
   const inProgress = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));

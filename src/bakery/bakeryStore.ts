@@ -15,6 +15,7 @@ interface BakeryState {
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
+  subscribe: () => () => void; // returns unsubscribe fn
 }
 
 function rowToOrder(d: Record<string, unknown>): BakeryOrder {
@@ -388,5 +389,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         o.id === orderId ? { ...o, dispatchLog: updatedLog, status: newStatus } : o
       ),
     }));
+  },
+
+  // Realtime subscription — any INSERT/UPDATE to bakery_orders triggers immediate re-fetch.
+  // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
+  subscribe: () => {
+    const channel = supabase
+      .channel('bakery-orders-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bakery_orders' },
+        () => { get().fetchOrders(true); },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   },
 }));
