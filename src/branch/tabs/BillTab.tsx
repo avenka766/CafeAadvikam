@@ -1992,7 +1992,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
       {/* ── Advance tab ── */}
       <div className={cn('flex-1 overflow-y-auto', activeTab !== 'advance' && 'hidden')}>
-        <div className="p-3" style={{ paddingBottom: 'calc(var(--nav-h, 5.25rem) + 0.75rem)' }}>
+        <div className="p-3">
           <BranchAdvancePanel branch={branch} advanceOrders={advanceOrders} />
         </div>
       </div>
@@ -2000,7 +2000,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       {/* ── Alert tab (today's deliveries) — VRSNB & SNB only ── */}
       {isAlertBranch && activeTab === 'alert' && (
         <div className="flex-1 overflow-y-auto">
-          <div className="p-3 space-y-3" style={{ paddingBottom: 'calc(var(--nav-h, 5.25rem) + 0.75rem)' }}>
+          <div className="p-3 space-y-3">
             <div className="flex items-center gap-2 px-1">
               <Bell className={cn("size-5", todayDeliveries.length > 0 ? "text-red-500" : "text-muted-foreground")} />
               <h2 className="font-display font-bold text-base text-foreground">Today's Deliveries</h2>
@@ -2082,7 +2082,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
       {/* ── Credit tab ── */}
       {activeTab === 'credit' && (
-        <div className="flex-1 overflow-y-auto" style={{ paddingBottom: 'var(--nav-h, 5.25rem)' }}>
+        <div className="flex-1 overflow-y-auto">
           <BranchCreditPanel branch={branch} creditSales={branchCreditSales} />
         </div>
       )}
@@ -2266,7 +2266,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
             {/* Totals + payment — fixed at bottom, own scroll if tall */}
             {cart.length > 0 && (
-              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 shrink-0 overflow-y-auto" style={{ maxHeight: '55vh', paddingBottom: 'calc(var(--nav-h, 5.25rem) + 0.75rem)' }}>
+              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
 
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Subtotal</span>
