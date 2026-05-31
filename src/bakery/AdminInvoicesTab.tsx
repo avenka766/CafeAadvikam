@@ -79,7 +79,7 @@ function ReviewModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-28 space-y-4" onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <div className="flex items-center justify-between">
           <div>
