@@ -43,6 +43,7 @@ import VRSNBHistoryPage    from '@/pages/VRSNBHistoryPage';
 import SNBHistoryPage      from '@/pages/SNBHistoryPage';
 import AdminInvoicesPage   from '@/pages/AdminInvoicesPage';
 import AdminAlertsPage     from '@/pages/AdminAlertsPage';
+import IncomingDebugPage   from '@/bakery/IncomingDebugPage';
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AppRoutes() {
@@ -128,6 +129,7 @@ function AppRoutes() {
         <Route path="/admin/invoices"      element={<ProtectedRoute allowedRoles={['admin']}><AdminInvoicesPage /></ProtectedRoute>} />
         <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb']}><AdminAlertsPage /></ProtectedRoute>} />
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
+        <Route path="/debug/incoming"      element={<IncomingDebugPage />} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
       {currentUser && <BottomNav />}
