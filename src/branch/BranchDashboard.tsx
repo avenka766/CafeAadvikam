@@ -89,7 +89,7 @@ export default function BranchDashboard({ branch }: Props) {
   );
 
   return (
-    <div className="min-h-0 bg-slate-100 flex flex-col" style={{ height: '100dvh', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
+    <div className="min-h-0 bg-slate-100 flex flex-col pt-14" style={{ height: '100dvh', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
       <div className="shrink-0 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
         <div className="px-4 pt-3 pb-2 md:px-6">
           <div className="rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-4 py-3 text-white shadow-lg shadow-slate-300/50">
