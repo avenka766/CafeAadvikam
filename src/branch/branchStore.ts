@@ -564,10 +564,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         );
     }
 
-    if (newEntries.length > 0) {
-      await supabase
+    // SYNC-FIX: Don't use upsert onConflict:'dispatch_id' — requires a unique constraint
+    // that may not exist. Instead insert each new entry individually, skipping any that
+    // already exist (checked via the existingDispatchIds set built above).
+    for (const entry of newEntries) {
+      const { error: insertErr } = await supabase
         .from('branch_incoming')
-        .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
+        .insert(entry);
+      if (insertErr) {
+        // Duplicate key errors are expected and safe to ignore (race condition between
+        // two devices syncing simultaneously). Log everything else.
+        if (!insertErr.message?.includes('duplicate') && !insertErr.code?.includes('23505')) {
+          console.error('[syncIncoming] insert failed:', insertErr.message);
+        }
+      }
     }
 
     // Always re-fetch branch data after sync to ensure UI reflects latest DB state
