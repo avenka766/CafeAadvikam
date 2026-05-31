@@ -32,7 +32,17 @@ const METHOD_COLORS: Record<string, string> = {
   'advance+cash':      'bg-orange-100 text-orange-700',
   'advance+upi':       'bg-orange-100 text-orange-700',
   'advance+card':      'bg-orange-100 text-orange-700',
+  'advance:cash':      'bg-amber-100 text-amber-800',
+  'advance:upi':       'bg-amber-100 text-amber-800',
+  'advance:card':      'bg-amber-100 text-amber-800',
 };
+
+function methodColor(method: string | null): string {
+  if (!method) return 'bg-muted text-muted-foreground';
+  if (METHOD_COLORS[method]) return METHOD_COLORS[method];
+  if (method.startsWith('advance:')) return 'bg-amber-100 text-amber-800';
+  return 'bg-muted text-muted-foreground';
+}
 
 export function HistoryTab({ branchSales }: Props) {
   const [search, setSearch] = useState('');
@@ -145,7 +155,7 @@ export function HistoryTab({ branchSales }: Props) {
                       {s.paymentMethod && (
                         <span className={cn(
                           'text-[10px] font-bold px-2 py-0.5 rounded-full capitalize',
-                          METHOD_COLORS[s.paymentMethod] ?? 'bg-muted text-muted-foreground',
+                          methodColor(s.paymentMethod),
                         )}>
                           {s.paymentMethod}
                         </span>

@@ -145,23 +145,27 @@ interface PrintArgs {
   subtotal: number; discount: number; discountType: DiscountType;
   discountValue: string; roundOff: number; finalTotal: number;
   cgst: number; sgst: number;
-  payMode: 'single'|'split'; singleMethod: PaymentMethod|null;
+  payMode: 'single'|'split'|'credit'; singleMethod: PaymentMethod|null;
   splitMethods: [PaymentMethod|null, PaymentMethod|null];
   splitAmounts: [string,string]; soldBy: string;
-  creditAmount?: number; amountPaid?: number; customerName?: string;
+  customerName?: string; creditAmountPaid?: number;
 }
 
 function printBill(args: PrintArgs) {
   const { branch, billNo, items, subtotal, discount, discountType,
     discountValue, roundOff, finalTotal, cgst, sgst, payMode, singleMethod,
-    splitMethods, splitAmounts, soldBy } = args;
+    splitMethods, splitAmounts, soldBy, customerName, creditAmountPaid } = args;
 
   const isSNB = SNB_BRANCHES.includes(branch);
   const now   = new Date();
   const dateStr = now.toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g, '/');
   const timeStr = now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', hour12: true });
 
-  const payLabel = payMode === 'single'
+  // Build payment label — credit sales show what was paid upfront + amount due
+  const creditDue = payMode === 'credit' ? Math.max(0, finalTotal - (creditAmountPaid ?? 0)) : 0;
+  const payLabel = payMode === 'credit'
+    ? `Credit — Paid: ₹${(creditAmountPaid ?? 0).toFixed(2)} / Due: ₹${creditDue.toFixed(2)}`
+    : payMode === 'single'
     ? (singleMethod ?? 'cash').charAt(0).toUpperCase() + (singleMethod ?? 'cash').slice(1)
     : [
         splitMethods[0] ? `${splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1)}: ₹${splitAmounts[0]}` : '',
@@ -184,7 +188,10 @@ function printBill(args: PrintArgs) {
         <td class="num">${item.lineTotal != null ? fmtNum(item.lineTotal) : '—'}</td>
       </tr>`).join('');
 
-    const payRows = payMode === 'single'
+    const payRows = payMode === 'credit'
+      ? `<tr><td class="lab">Advance Paid</td><td class="num">${fmtNum(creditAmountPaid ?? 0)}</td></tr>
+         <tr><td class="lab" style="color:red;font-weight:bold">Balance Due</td><td class="num" style="color:red;font-weight:bold">${fmtNum(Math.max(0, finalTotal - (creditAmountPaid ?? 0)))}</td></tr>`
+      : payMode === 'single'
       ? `<tr><td class="lab">${payLabel}</td><td class="num">${fmtNum(finalTotal)}</td></tr>`
       : `${splitMethods[0] ? `<tr><td class="lab">${splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1)}</td><td class="num">${fmtNum(parseFloat(splitAmounts[0])||0)}</td></tr>` : ''}
          ${splitMethods[1] ? `<tr><td class="lab">${splitMethods[1].charAt(0).toUpperCase()+splitMethods[1].slice(1)}</td><td class="num">${fmtNum(parseFloat(splitAmounts[1])||0)}</td></tr>` : ''}`;
@@ -252,6 +259,7 @@ function printBill(args: PrintArgs) {
       <td class="net num">Rs. ${fmtNum(finalTotal)}</td>
     </tr></table>
     <hr/>
+    ${payMode === 'credit' ? `<div class="bold" style="margin-bottom:2px">Customer: ${escHtml(customerName ?? 'Customer')}</div>` : ''}
     <div class="bold" style="margin-bottom:3px">Payment Details</div>
     <table>${payRows}</table>
     <hr/>
@@ -684,21 +692,27 @@ function CancelDialog({ onConfirm, onClose }: { onConfirm: () => void; onClose: 
 // ─── Bill Preview Sheet ───────────────────────────────────────────────────────
 
 function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountType, discountValue,
-  roundOff, finalTotal, payMode, singleMethod, splitMethods, splitAmounts, soldBy, onClose, onConfirmPrint }: {
+  roundOff, finalTotal, payMode, singleMethod, splitMethods, splitAmounts, soldBy,
+  customerName, creditAmountPaid,
+  onClose, onConfirmPrint }: {
   branch: Branch; billNo: string; items: CartItem[]; subtotal: number;
   discount: number; discountType: DiscountType; discountValue: string;
-  roundOff: number; finalTotal: number; payMode: 'single'|'split';
+  roundOff: number; finalTotal: number; payMode: 'single'|'split'|'credit';
   singleMethod: PaymentMethod|null;
   splitMethods: [PaymentMethod|null, PaymentMethod|null];
   splitAmounts: [string,string]; soldBy: string;
+  customerName?: string; creditAmountPaid?: number;
   onClose: () => void; onConfirmPrint: () => void;
 }) {
   const isVRSNB  = branch === 'VRSNB';
   const isSNB    = SNB_BRANCHES.includes(branch) && !isVRSNB;
   const now      = new Date();
   const totalQty = items.reduce((s,i) => s + i.quantity, 0);
+  const creditDue = payMode === 'credit' ? Math.max(0, finalTotal - (creditAmountPaid ?? 0)) : 0;
 
-  const payLabel = payMode === 'single'
+  const payLabel = payMode === 'credit'
+    ? `Credit — Paid: ${fmt(creditAmountPaid ?? 0)} / Due: ${fmt(creditDue)}`
+    : payMode === 'single'
     ? (singleMethod ?? 'cash').charAt(0).toUpperCase() + (singleMethod ?? 'cash').slice(1)
     : [
         splitMethods[0] ? `${splitMethods[0].charAt(0).toUpperCase()+splitMethods[0].slice(1)} ${fmt(parseFloat(splitAmounts[0])||0)}` : '',
@@ -815,9 +829,17 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
                     <span>Grand Total</span>
                     <span>₹{fmtNum(finalTotal)}</span>
                   </div>
-                  <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
-                    Paid via {payLabel}
-                  </div>
+                  {payMode === 'credit' ? (
+                    <div style={{ marginTop: 4 }}>
+                      {customerName && <div style={{ fontSize: 10, color: '#555' }}>Customer: <strong>{customerName}</strong></div>}
+                      <div style={{ fontSize: 10, color: '#555' }}>Advance Paid: {fmtNum(creditAmountPaid ?? 0)}</div>
+                      <div style={{ fontSize: 10, color: '#dc2626', fontWeight: 700 }}>Balance Due: {fmtNum(creditDue)}</div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
+                      Paid via {payLabel}
+                    </div>
+                  )}
                 </div>
               ) : isSNB ? (
                 /* SNB summary rows */
@@ -838,7 +860,18 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
                   </div>
                   <div style={{ borderTop: '1px dashed #ccc', marginTop: 6, paddingTop: 6 }}>
                     <p style={{ fontWeight: 700, fontSize: 10, fontFamily: 'sans-serif', marginBottom: 3 }}>Payment Details</p>
-                    {payMode === 'single' ? (
+                    {payMode === 'credit' ? (
+                      <>
+                        {customerName && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 2 }}>
+                          <span style={{ color: '#555' }}>Customer</span><span style={{ fontWeight: 700 }}>{customerName}</span></div>}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10 }}>
+                          <span>Advance Paid</span><span>{fmtNum(creditAmountPaid ?? 0)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#dc2626', fontWeight: 700 }}>
+                          <span>Balance Due</span><span>{fmtNum(creditDue)}</span>
+                        </div>
+                      </>
+                    ) : payMode === 'single' ? (
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10 }}>
                         <span>{payLabel}</span><span>{fmtNum(finalTotal)}</span>
                       </div>
@@ -870,6 +903,22 @@ function BillPreviewSheet({ branch, billNo, items, subtotal, discount, discountT
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'sans-serif', fontWeight: 700, fontSize: 14, borderTop: '2px solid #111', marginTop: 5, paddingTop: 5 }}>
                     <span>TOTAL</span><span>{fmt(finalTotal)}</span>
                   </div>
+                  {payMode === 'credit' ? (
+                    <div style={{ borderTop: '1px dashed #ccc', marginTop: 6, paddingTop: 6 }}>
+                      {customerName && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                        <span style={{ color: '#555' }}>Customer</span><strong>{customerName}</strong></div>}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                        <span style={{ color: '#555' }}>Advance Paid</span><span style={{ fontWeight: 600 }}>{fmt(creditAmountPaid ?? 0)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#dc2626', fontWeight: 700 }}>
+                        <span>Balance Due</span><span>{fmt(creditDue)}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: '#555', marginTop: 4 }}>
+                      Paid via {payLabel}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1627,6 +1676,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const [splitAmounts, setSplitAmounts] = useState<[string,string]>(['','']);
 
   // Credit sale
+  const [customerName, setCustomerName]   = useState('');
   const [creditAmountPaid, setCreditAmountPaid] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
   const [creditNotes, setCreditNotes]     = useState('');
@@ -1642,7 +1692,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const resetPayment = useCallback(() => {
     setPayMode('single'); setSingle(null);
     setSplitMethods([null,null]); setSplitAmounts(['','']);
-    setCreditAmountPaid(''); setCreditDueDate(''); setCreditNotes(''); setCustomerPhone('');
+    setCreditAmountPaid(''); setCreditDueDate(''); setCreditNotes(''); setCustomerPhone(''); setCustomerName('');
     setError('');
   }, []);
 
@@ -1912,6 +1962,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       splitMethods: [...splitMethods] as [PaymentMethod|null, PaymentMethod|null],
       splitAmounts: [...splitAmounts] as [string, string],
       billNoSnapshot: billNo.current,
+      customerNameSnapshot: customerName.trim() || 'Customer',
+      creditAmountPaidSnapshot: parseFloat(creditAmountPaid) || 0,
     };
     // L-03 FIX: run checkout first; only print bill/KOT if it succeeds
     const success = await doCheckout();
@@ -1922,7 +1974,10 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       roundOff: printSnapshot.roundOff, finalTotal: printSnapshot.finalTotal,
       cgst: cafeCgst, sgst: cafeSgst,
       payMode: printSnapshot.payMode, singleMethod: printSnapshot.singleMethod,
-      splitMethods: printSnapshot.splitMethods, splitAmounts: printSnapshot.splitAmounts, soldBy });
+      splitMethods: printSnapshot.splitMethods, splitAmounts: printSnapshot.splitAmounts, soldBy,
+      customerName: printSnapshot.customerNameSnapshot,
+      creditAmountPaid: printSnapshot.creditAmountPaidSnapshot,
+    });
     if (isVRSNB) setTimeout(() => printKOT(printSnapshot.billNoSnapshot, printSnapshot.items), 400);
   };
 
@@ -2354,6 +2409,22 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                         <p className="text-xs font-bold text-white uppercase tracking-wider text-center">Credit Sale</p>
                       </div>
                       <div className="p-3 space-y-2.5">
+                        {/* Customer name */}
+                        <input type="text" placeholder="Customer name (required)"
+                          value={customerName} onChange={e => setCustomerName(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white border border-red-200 text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300" />
+                        {/* Fully Paid toggle */}
+                        {allPriced && (
+                          <button
+                            onClick={() => setCreditAmountPaid(creditAmountPaid === String(finalTotal) ? '' : String(finalTotal))}
+                            className={cn('w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border transition active:scale-95',
+                              creditAmountPaid === String(finalTotal)
+                                ? 'bg-emerald-500 text-white border-transparent'
+                                : 'bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50')}>
+                            <CheckCircle2 className="size-3.5" />
+                            {creditAmountPaid === String(finalTotal) ? 'Fully Paid ✓' : 'Mark as Fully Paid'}
+                          </button>
+                        )}
                         <div className="relative">
                           <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
                           <input type="number" placeholder="Amount paid now (0 = full credit)"
@@ -2456,8 +2527,11 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   <button
-                    onClick={() => { if (!splitReady) { setError('Select payment method first.'); return; } setError(''); setShowPreview(true); }}
-                    disabled={!allPriced || submitting}
+                    onClick={() => {
+                      if (!splitReady) { setError('Select payment method first.'); return; }
+                      setError(''); setShowPreview(true);
+                    }}
+                    disabled={cart.length === 0 || submitting}
                     className="py-3.5 rounded-2xl border-2 border-slate-950 text-slate-950 bg-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
                     <Printer className="size-4" /> Print
                   </button>
@@ -2485,6 +2559,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           discountValue={discountValue} roundOff={roundOff} finalTotal={finalTotal}
           payMode={payMode} singleMethod={singleMethod}
           splitMethods={splitMethods} splitAmounts={splitAmounts} soldBy={soldBy}
+          customerName={customerName.trim() || undefined}
+          creditAmountPaid={parseFloat(creditAmountPaid) || 0}
           onClose={() => setShowPreview(false)}
           onConfirmPrint={handlePrintAndConfirm} />
       )}
