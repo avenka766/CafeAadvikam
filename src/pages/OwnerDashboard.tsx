@@ -1,33 +1,55 @@
 // src/pages/OwnerDashboard.tsx
-// Owner Dashboard: All sales visualizations + Attendance & Salary breakdown
+// Owner Dashboard — Sales · Attendance · Credit · Waste Logs
+// New in this version:
+//   • Removed History and Staff tabs
+//   • Added Waste Logs tab (reads kitchen_waste_log via KitchenWasteLogTab)
+//   • Sales tab enhanced with:
+//       – Today's live cash-in-drawer card
+//       – Average Order Value KPI
+//       – Peak Hours heatmap (from order timestamps)
+//       – Menu availability (enabled vs disabled items)
+//   • Credit tab: credit age / overdue flagging already exists in OwnerCreditTab
+//   • Waste tab: waste cost estimate (maps waste food_item → menu prices)
+//   • Attendance tab: advance-to-salary ratio per employee + attendance rate
+
 import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { useMenuStore } from '@/stores/menuStore';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import OwnerCreditTab from '@/components/admin/OwnerCreditTab';
+import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, LineChart, Line, AreaChart, Area, RadialBarChart, RadialBar,
+  PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts';
 import {
   IndianRupee, ShoppingBag, TrendingUp, Users,
   Building2, BarChart3, CalendarCheck, ArrowUpRight, ArrowDownRight,
-  Store, Layers,
+  Store, Layers, Banknote, Smartphone, CreditCard, Clock,
+  Utensils, Trash2, AlertTriangle,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
 
-function KPI({ icon, label, value, sub, color, trend }: { icon: React.ReactNode; label: string; value: string; sub?: string; color: string; trend?: 'up' | 'down' | null }) {
+// ── Shared KPI card ───────────────────────────────────────────────────────────
+function KPI({
+  icon, label, value, sub, color, trend,
+}: {
+  icon: React.ReactNode; label: string; value: string;
+  sub?: string; color: string; trend?: 'up' | 'down' | null;
+}) {
   return (
     <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6" style={{ background: 'hsl(var(--primary))' }} />
+      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6"
+        style={{ background: 'hsl(var(--primary))' }} />
       <div className="flex items-start justify-between mb-2">
         <div className={cn('size-9 rounded-xl flex items-center justify-center', color)}>{icon}</div>
-        {trend === 'up' && <ArrowUpRight className="size-4 text-emerald-500" />}
-        {trend === 'down' && <ArrowDownRight className="size-4 text-red-500" />}
+        {trend === 'up'   && <ArrowUpRight   className="size-4 text-emerald-500" />}
+        {trend === 'down' && <ArrowDownRight  className="size-4 text-red-500" />}
       </div>
       <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
       <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1">{label}</p>
@@ -36,14 +58,16 @@ function KPI({ icon, label, value, sub, color, trend }: { icon: React.ReactNode;
   );
 }
 
-// ── Sales Overview Tab ─────────────────────────────────────────────────────────
+// ── Sales Overview Tab ────────────────────────────────────────────────────────
 function SalesOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, fetchBranchData } = useBranchStore();
+  const { items: menuItems, loadMenu } = useMenuStore();
   const [dateRange, setDateRange] = useState<'today' | '7d' | '30d'>('7d');
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-  useEffect(() => { ['VRSNB', 'SNB', 'Hosur'].forEach(b => fetchBranchData(b as 'VRSNB' | 'SNB' | 'Hosur')); }, [fetchBranchData]);
+  useEffect(() => { (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
+  useEffect(() => { loadMenu(); }, [loadMenu]);
 
   const cutoff = useMemo(() => {
     const d = new Date();
@@ -52,23 +76,47 @@ function SalesOverviewTab() {
     d.setDate(d.getDate() - 30); return d;
   }, [dateRange]);
 
-  // Cafe orders
-  const cafeOrders = useMemo(() => orders.filter(o => new Date(o.createdAt) >= cutoff && o.status === 'served'), [orders, cutoff]);
-  const cafeRevenue = cafeOrders.reduce((s, o) => s + o.total, 0);
-  const cafeCount = cafeOrders.length;
+  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
-  // Bakery branch sales — revenue = qty * unit_price where available, fallback to qty
+  // Cafe orders within range
+  const cafeOrders = useMemo(() =>
+    orders.filter(o => new Date(o.createdAt) >= cutoff && o.status === 'served'),
+    [orders, cutoff]);
+
+  // Today's orders for cash-in-drawer
+  const todayOrders = useMemo(() =>
+    orders.filter(o => new Date(o.createdAt) >= todayStart && o.status === 'served'),
+    [orders, todayStart]);
+
+  const cafeRevenue = cafeOrders.reduce((s, o) => s + o.total, 0);
+  const cafeCount   = cafeOrders.length;
+  const avgOrderValue = cafeCount > 0 ? Math.round(cafeRevenue / cafeCount) : 0;
+
+  // Today's cash split
+  const todayCash = useMemo(() => {
+    let cash = 0, upi = 0, card = 0;
+    todayOrders.forEach(o => {
+      if (o.paymentType === 'cash') cash += o.total;
+      else if (o.paymentType === 'upi') upi += o.total;
+      else if (o.paymentType === 'card') card += o.total;
+      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
+        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
+      }
+    });
+    return { cash, upi, card, total: cash + upi + card };
+  }, [todayOrders]);
+
+  // Branch sales
   const branchSales = useMemo(() => {
     const branches: Record<string, { qty: number; count: number; revenue: number }> = {
       VRSNB: { qty: 0, count: 0, revenue: 0 },
-      SNB: { qty: 0, count: 0, revenue: 0 },
+      SNB:   { qty: 0, count: 0, revenue: 0 },
       Hosur: { qty: 0, count: 0, revenue: 0 },
     };
     (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
       (sales[b] || []).filter(s => new Date(s.soldAt) >= cutoff).forEach(s => {
         branches[b].qty += s.quantitySold;
         branches[b].count += 1;
-        // Use unit_price field if available on the record
         const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
         branches[b].revenue += unitPrice * s.quantitySold;
       });
@@ -77,18 +125,18 @@ function SalesOverviewTab() {
   }, [sales, cutoff]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
-  const totalBakeryQty = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
-  const grandTotal = cafeRevenue + totalBakeryRevenue;
+  const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
+  const grandTotal         = cafeRevenue + totalBakeryRevenue;
 
   // Daily cafe revenue chart
   const dailyRevenueData = useMemo(() => {
     const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
     const result = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+      const d = new Date(); d.setDate(d.getDate() - i);
       const dateStr = d.toDateString();
-      const cafeRev = cafeOrders.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
+      const cafeRev = cafeOrders.filter(o => new Date(o.createdAt).toDateString() === dateStr)
+        .reduce((s, o) => s + o.total, 0);
       const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
       result.push({ date: label, cafe: cafeRev });
     }
@@ -97,13 +145,13 @@ function SalesOverviewTab() {
 
   // Revenue share pie
   const revShareData = [
-    { name: 'Cafe', value: cafeRevenue, color: COLORS[0] },
+    { name: 'Cafe',  value: cafeRevenue,              color: COLORS[0] },
     { name: 'VRSNB', value: branchSales.VRSNB.revenue, color: COLORS[1] },
-    { name: 'SNB', value: branchSales.SNB.revenue, color: COLORS[2] },
-    { name: 'Hosur', value: branchSales.Hosur.revenue, color: COLORS[3] },
+    { name: 'SNB',   value: branchSales.SNB.revenue,   color: COLORS[2] },
+    { name: 'Hosur', value: branchSales.Hosur.revenue,  color: COLORS[3] },
   ].filter(d => d.value > 0);
 
-  // Cafe payment breakdown
+  // Payment breakdown
   const payBreakdown = useMemo(() => {
     let cash = 0, upi = 0, card = 0;
     cafeOrders.forEach(o => {
@@ -114,14 +162,11 @@ function SalesOverviewTab() {
         cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
       }
     });
-    return [
-      { name: 'Cash', value: cash },
-      { name: 'UPI', value: upi },
-      { name: 'Card', value: card },
-    ].filter(p => p.value > 0);
+    return [{ name: 'Cash', value: cash }, { name: 'UPI', value: upi }, { name: 'Card', value: card }]
+      .filter(p => p.value > 0);
   }, [cafeOrders]);
 
-  // Top cafe items by revenue
+  // Top items by revenue
   const topCafeItems = useMemo(() => {
     const map = new Map<string, { qty: number; revenue: number }>();
     cafeOrders.forEach(o => o.items.forEach(ci => {
@@ -134,6 +179,22 @@ function SalesOverviewTab() {
       .map(([name, v]) => ({ name: name.length > 14 ? name.slice(0, 14) + '…' : name, revenue: v.revenue, qty: v.qty }));
   }, [cafeOrders]);
 
+  // ── Peak hours heatmap (0–23) ──
+  const peakHours = useMemo(() => {
+    const counts = Array(24).fill(0);
+    cafeOrders.forEach(o => { counts[new Date(o.createdAt).getHours()]++; });
+    return counts.map((count, hour) => ({
+      hour: `${hour.toString().padStart(2, '0')}:00`,
+      count,
+      label: hour < 12 ? `${hour === 0 ? 12 : hour}am` : `${hour === 12 ? 12 : hour - 12}pm`,
+    }));
+  }, [cafeOrders]);
+  const maxHourCount = Math.max(...peakHours.map(h => h.count), 1);
+
+  // Menu availability
+  const enabledCount  = menuItems.filter(i => i.enabled).length;
+  const disabledCount = menuItems.filter(i => !i.enabled).length;
+
   const maxBranchRev = Math.max(cafeRevenue, branchSales.VRSNB.revenue, branchSales.SNB.revenue, branchSales.Hosur.revenue, 1);
 
   return (
@@ -141,21 +202,85 @@ function SalesOverviewTab() {
       {/* Date Range Toggle */}
       <div className="flex gap-1 p-1 rounded-xl bg-muted">
         {(['today', '7d', '30d'] as const).map(r => (
-          <button key={r} onClick={() => setDateRange(r)} className={cn('flex-1 py-2 rounded-lg text-sm font-semibold transition-all', dateRange === r ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
+          <button key={r} onClick={() => setDateRange(r)}
+            className={cn('flex-1 py-2 rounded-lg text-sm font-semibold transition-all',
+              dateRange === r ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
             {r === 'today' ? 'Today' : r === '7d' ? '7 Days' : '30 Days'}
           </button>
         ))}
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(grandTotal)} sub="All branches" color="bg-primary/10 text-primary" />
-        <KPI icon={<Store className="size-4" />} label="Cafe Revenue" value={formatCurrency(cafeRevenue)} sub={`${cafeCount} orders`} color="bg-emerald-50 text-emerald-700" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(totalBakeryRevenue)} sub={`${totalBakeryQty} items sold`} color="bg-amber-50 text-amber-700" />
-        <KPI icon={<Layers className="size-4" />} label="Bakery Items" value={String(totalBakeryQty)} sub="All branches" color="bg-blue-50 text-blue-700" />
+      {/* ── Today's Cash-in-Drawer ── */}
+      <div className="bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 rounded-2xl p-4">
+        <p className="text-[10px] font-semibold text-primary uppercase tracking-widest mb-1">Today's Collection</p>
+        <p className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(todayCash.total)}</p>
+        <p className="text-xs text-muted-foreground mt-1 mb-3">{todayOrders.length} orders served today</p>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: 'Cash', value: todayCash.cash, icon: <Banknote className="size-3" />, color: 'text-emerald-700 bg-emerald-50' },
+            { label: 'UPI',  value: todayCash.upi,  icon: <Smartphone className="size-3" />, color: 'text-blue-700 bg-blue-50' },
+            { label: 'Card', value: todayCash.card, icon: <CreditCard className="size-3" />, color: 'text-purple-700 bg-purple-50' },
+          ].map(p => (
+            <div key={p.label} className="bg-card rounded-xl p-2.5 text-center border border-border">
+              <div className={cn('size-6 rounded-lg flex items-center justify-center mx-auto mb-1', p.color)}>{p.icon}</div>
+              <p className="text-sm font-bold tabular-nums">{formatCurrency(p.value)}</p>
+              <p className="text-[10px] text-muted-foreground">{p.label}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Branch Performance — Revenue */}
+      {/* KPIs */}
+      <div className="grid grid-cols-2 gap-3">
+        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue"   value={formatCurrency(grandTotal)}    sub="All branches"               color="bg-primary/10 text-primary" />
+        <KPI icon={<Store       className="size-4" />} label="Cafe Revenue"    value={formatCurrency(cafeRevenue)}   sub={`${cafeCount} orders`}       color="bg-emerald-50 text-emerald-700" />
+        <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue"  value={formatCurrency(totalBakeryRevenue)} sub={`${totalBakeryQty} items`} color="bg-amber-50 text-amber-700" />
+        <KPI icon={<TrendingUp  className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} sub="Cafe only"                    color="bg-blue-50 text-blue-700" />
+      </div>
+
+      {/* ── Menu Availability ── */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
+          <Utensils className="size-4 text-primary" />Menu Availability
+        </h3>
+        <p className="text-[10px] text-muted-foreground mb-3">Current item status on the menu</p>
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
+            <p className="font-display text-2xl font-bold text-emerald-700 tabular-nums">{enabledCount}</p>
+            <p className="text-[10px] font-semibold text-emerald-600 uppercase">Active</p>
+          </div>
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-center">
+            <p className="font-display text-2xl font-bold text-red-700 tabular-nums">{disabledCount}</p>
+            <p className="text-[10px] font-semibold text-red-600 uppercase">Disabled</p>
+          </div>
+          <div className="bg-card border border-border rounded-xl p-3 text-center">
+            <p className="font-display text-2xl font-bold text-foreground tabular-nums">{menuItems.length}</p>
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase">Total</p>
+          </div>
+        </div>
+        {disabledCount > 0 && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-50 border border-red-100">
+            <AlertTriangle className="size-3.5 text-red-500 shrink-0" />
+            <p className="text-xs text-red-600 font-medium">
+              {disabledCount} item{disabledCount > 1 ? 's are' : ' is'} currently hidden from customers
+            </p>
+          </div>
+        )}
+        {/* Availability bar */}
+        {menuItems.length > 0 && (
+          <div className="mt-3">
+            <div className="h-2.5 bg-red-100 rounded-full overflow-hidden">
+              <div className="h-full bg-emerald-500 rounded-full transition-all"
+                style={{ width: `${Math.round((enabledCount / menuItems.length) * 100)}%` }} />
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1 text-right">
+              {Math.round((enabledCount / menuItems.length) * 100)}% available
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Branch Performance */}
       <div className="bg-card border border-border rounded-xl p-4">
         <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
           <BarChart3 className="size-4 text-primary" />Branch Performance
@@ -163,10 +288,10 @@ function SalesOverviewTab() {
         <p className="text-[10px] text-muted-foreground mb-4">Revenue comparison across all branches</p>
         <div className="space-y-3">
           {[
-            { label: 'Cafe', value: cafeRevenue, color: 'bg-emerald-500', qty: `${cafeCount} orders` },
-            { label: 'VRSNB', value: branchSales.VRSNB.revenue, color: 'bg-blue-500', qty: `${branchSales.VRSNB.qty} items` },
-            { label: 'SNB', value: branchSales.SNB.revenue, color: 'bg-amber-500', qty: `${branchSales.SNB.qty} items` },
-            { label: 'Hosur', value: branchSales.Hosur.revenue, color: 'bg-purple-500', qty: `${branchSales.Hosur.qty} items` },
+            { label: 'Cafe',  value: cafeRevenue,              color: 'bg-emerald-500', qty: `${cafeCount} orders` },
+            { label: 'VRSNB', value: branchSales.VRSNB.revenue, color: 'bg-blue-500',   qty: `${branchSales.VRSNB.qty} items` },
+            { label: 'SNB',   value: branchSales.SNB.revenue,   color: 'bg-amber-500',  qty: `${branchSales.SNB.qty} items` },
+            { label: 'Hosur', value: branchSales.Hosur.revenue,  color: 'bg-purple-500', qty: `${branchSales.Hosur.qty} items` },
           ].map(row => (
             <div key={row.label}>
               <div className="flex items-center justify-between mb-1">
@@ -177,7 +302,8 @@ function SalesOverviewTab() {
                 </div>
               </div>
               <div className="flex-1 bg-muted rounded-full h-2.5">
-                <div className={cn('h-full rounded-full transition-all', row.color)} style={{ width: `${Math.round((row.value / maxBranchRev) * 100)}%` }} />
+                <div className={cn('h-full rounded-full transition-all', row.color)}
+                  style={{ width: `${Math.round((row.value / maxBranchRev) * 100)}%` }} />
               </div>
             </div>
           ))}
@@ -201,7 +327,7 @@ function SalesOverviewTab() {
               </ResponsiveContainer>
             </div>
             <div className="flex flex-col justify-center gap-2.5">
-              {revShareData.map((d, i) => (
+              {revShareData.map(d => (
                 <div key={d.name} className="flex items-center gap-2">
                   <div className="size-3 rounded-full shrink-0" style={{ background: d.color }} />
                   <div>
@@ -225,7 +351,7 @@ function SalesOverviewTab() {
             <AreaChart data={dailyRevenueData}>
               <defs>
                 <linearGradient id="cafeGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                  <stop offset="5%"  stopColor="hsl(var(--primary))" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                 </linearGradient>
               </defs>
@@ -250,7 +376,9 @@ function SalesOverviewTab() {
                 <div key={p.name}>
                   <div className="flex justify-between mb-1">
                     <span className="text-sm font-medium">{p.name}</span>
-                    <span className="text-sm font-bold tabular-nums">{formatCurrency(p.value)} <span className="text-xs text-muted-foreground font-normal">({pct}%)</span></span>
+                    <span className="text-sm font-bold tabular-nums">
+                      {formatCurrency(p.value)} <span className="text-xs text-muted-foreground font-normal">({pct}%)</span>
+                    </span>
                   </div>
                   <div className="h-2 bg-muted rounded-full">
                     <div className="h-full rounded-full" style={{ width: `${pct}%`, background: COLORS[i % COLORS.length] }} />
@@ -262,7 +390,54 @@ function SalesOverviewTab() {
         </div>
       )}
 
-      {/* Top Cafe Items by Revenue */}
+      {/* ── Peak Hours Heatmap ── */}
+      {cafeOrders.length > 0 && (
+        <div className="bg-card border border-border rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
+            <Clock className="size-4 text-primary" />Peak Hours
+          </h3>
+          <p className="text-[10px] text-muted-foreground mb-4">Order volume by hour — plan staffing around these peaks</p>
+          <div className="flex items-end gap-0.5 h-20">
+            {peakHours.filter((_, i) => i >= 6 && i <= 22).map((h) => {
+              const pct = maxHourCount > 0 ? (h.count / maxHourCount) : 0;
+              const isHigh = pct > 0.7;
+              const isMed  = pct > 0.3;
+              return (
+                <div key={h.hour} className="flex-1 flex flex-col items-center gap-0.5 group relative">
+                  <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-foreground text-background text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                    {h.label}: {h.count}
+                  </div>
+                  <div
+                    className={cn('w-full rounded-sm transition-all',
+                      isHigh ? 'bg-primary' : isMed ? 'bg-primary/50' : 'bg-muted')}
+                    style={{ height: `${Math.max(pct * 100, 4)}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-[9px] text-muted-foreground">6am</span>
+            <span className="text-[9px] text-muted-foreground">12pm</span>
+            <span className="text-[9px] text-muted-foreground">10pm</span>
+          </div>
+          {/* Peak hour callout */}
+          {(() => {
+            const peak = peakHours.reduce((a, b) => b.count > a.count ? b : a, peakHours[0]);
+            if (peak.count === 0) return null;
+            return (
+              <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-xl bg-primary/5 border border-primary/10">
+                <Clock className="size-3.5 text-primary shrink-0" />
+                <p className="text-xs text-foreground">
+                  Busiest hour: <span className="font-bold">{peak.label}</span> with {peak.count} orders
+                </p>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Top Items by Revenue */}
       {topCafeItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-4">Top Items by Revenue</h3>
@@ -281,53 +456,55 @@ function SalesOverviewTab() {
   );
 }
 
-// ── Attendance & Salary Tab ────────────────────────────────────────────────────
+// ── Attendance & Salary Tab ───────────────────────────────────────────────────
 function AttendanceSalaryTab() {
   const [employees, setEmployees] = useState<Array<{
     id: string; name: string; branch: string; department: string;
     grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;
   }>>([]);
   const [loading, setLoading] = useState(true);
-  // U-15 FIX: track fetch error so we show an error state instead of a silent empty table
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const loadEmployees = () => {
-    setLoading(true);
-    setFetchError(null);
+    setLoading(true); setFetchError(null);
     supabase.from('employees').select('*').then(({ data, error }) => {
-      if (error) {
-        setFetchError(error.message || 'Failed to load employee data.');
-      } else if (data) {
-        setEmployees(data);
-      }
+      if (error) setFetchError(error.message || 'Failed to load employee data.');
+      else if (data) setEmployees(data);
       setLoading(false);
     });
   };
-
   useEffect(() => { loadEmployees(); }, []);
 
   const branchGroups = useMemo(() => {
     const groups: Record<string, typeof employees> = {};
-    employees.forEach(e => {
-      if (!groups[e.branch]) groups[e.branch] = [];
-      groups[e.branch].push(e);
-    });
+    employees.forEach(e => { if (!groups[e.branch]) groups[e.branch] = []; groups[e.branch].push(e); });
     return groups;
   }, [employees]);
 
-  const branchChartData = useMemo(() => Object.entries(branchGroups).map(([branch, emps]) => ({
-    branch: branch.length > 10 ? branch.slice(0, 10) + '…' : branch,
-    count: emps.length,
-    totalSalary: emps.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0),
-  })), [branchGroups]);
+  const branchChartData = useMemo(() =>
+    Object.entries(branchGroups).map(([branch, emps]) => ({
+      branch: branch.length > 10 ? branch.slice(0, 10) + '…' : branch,
+      count: emps.length,
+      totalSalary: emps.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0),
+    })), [branchGroups]);
 
   const salaryStats = useMemo(() => {
-    const total = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
-    const advances = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
+    const total      = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
+    const advances   = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
     const deductions = employees.reduce((a, e) => a + (Number(e.uniformDeduction) || 0) + (Number(e.otherDeduction) || 0), 0);
-    const netPayable = total - advances - deductions;
-    return { total, advances, deductions, netPayable };
+    return { total, advances, deductions, netPayable: total - advances - deductions };
   }, [employees]);
+
+  // Advance-to-salary ratio flags
+  const atRiskEmployees = useMemo(() =>
+    employees
+      .filter(e => Number(e.grossSalary) > 0 && (Number(e.salaryAdvance) / Number(e.grossSalary)) >= 0.5)
+      .map(e => ({
+        ...e,
+        ratio: Math.round((Number(e.salaryAdvance) / Number(e.grossSalary)) * 100),
+      }))
+      .sort((a, b) => b.ratio - a.ratio),
+    [employees]);
 
   const deptData = useMemo(() => {
     const map = new Map<string, { count: number; salary: number }>();
@@ -336,7 +513,9 @@ function AttendanceSalaryTab() {
       if (ex) { ex.count++; ex.salary += (Number(e.grossSalary) || 0); }
       else map.set(e.department, { count: 1, salary: (Number(e.grossSalary) || 0) });
     });
-    return [...map.entries()].map(([dept, v]) => ({ dept: dept.length > 12 ? dept.slice(0, 12) + '…' : dept, ...v })).sort((a, b) => b.salary - a.salary);
+    return [...map.entries()]
+      .map(([dept, v]) => ({ dept: dept.length > 12 ? dept.slice(0, 12) + '…' : dept, ...v }))
+      .sort((a, b) => b.salary - a.salary);
   }, [employees]);
 
   if (loading) return (
@@ -345,7 +524,6 @@ function AttendanceSalaryTab() {
     </div>
   );
 
-  // U-15 FIX: show explicit error state with retry so owner doesn't see an empty table and think no staff exist
   if (fetchError) return (
     <div className="flex flex-col items-center justify-center py-20 gap-4 px-6">
       <div className="size-14 rounded-2xl bg-destructive/10 flex items-center justify-center">
@@ -355,18 +533,16 @@ function AttendanceSalaryTab() {
         <p className="font-display font-bold text-foreground">Failed to load employee data</p>
         <p className="text-sm font-body text-muted-foreground mt-1">{fetchError}</p>
       </div>
-      <button
-        onClick={loadEmployees}
-        className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-body font-semibold active:scale-95 transition-transform"
-      >
+      <button onClick={loadEmployees}
+        className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-body font-semibold active:scale-95 transition-transform">
         Try again
       </button>
     </div>
   );
 
   const salaryPieData = [
-    { name: 'Net Pay', value: Math.max(salaryStats.netPayable, 0) },
-    { name: 'Advances', value: salaryStats.advances },
+    { name: 'Net Pay',    value: Math.max(salaryStats.netPayable, 0) },
+    { name: 'Advances',   value: salaryStats.advances },
     { name: 'Deductions', value: salaryStats.deductions },
   ].filter(d => d.value > 0);
 
@@ -374,11 +550,48 @@ function AttendanceSalaryTab() {
     <div className="space-y-5">
       {/* Salary KPIs */}
       <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<Users className="size-4" />} label="Total Staff" value={String(employees.length)} color="bg-primary/10 text-primary" />
-        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll" value={formatCurrency(salaryStats.total)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Net Payable" value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" />
-        <KPI icon={<IndianRupee className="size-4" />} label="Advances" value={formatCurrency(salaryStats.advances)} color="bg-amber-50 text-amber-700" />
+        <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}           color="bg-primary/10 text-primary" />
+        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll" value={formatCurrency(salaryStats.total)}   color="bg-blue-50 text-blue-700" />
+        <KPI icon={<TrendingUp  className="size-4" />} label="Net Payable"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" />
+        <KPI icon={<IndianRupee className="size-4" />} label="Advances"      value={formatCurrency(salaryStats.advances)} color="bg-amber-50 text-amber-700" />
       </div>
+
+      {/* ── Advance-to-Salary Risk Flags ── */}
+      {atRiskEmployees.length > 0 && (
+        <div className="bg-card border border-amber-200 rounded-xl p-4">
+          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
+            <AlertTriangle className="size-4 text-amber-500" />Advance Risk Alerts
+          </h3>
+          <p className="text-[10px] text-muted-foreground mb-3">
+            Staff with advance ≥ 50% of their salary — review before next payout
+          </p>
+          <div className="space-y-2.5">
+            {atRiskEmployees.map(e => (
+              <div key={e.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold truncate">{e.name}</p>
+                    <span className={cn(
+                      'text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0',
+                      e.ratio >= 80 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                    )}>{e.ratio}%</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{e.branch} · {e.department}</p>
+                  <div className="mt-1 h-1.5 bg-muted rounded-full">
+                    <div className={cn('h-full rounded-full transition-all',
+                      e.ratio >= 80 ? 'bg-red-500' : 'bg-amber-500')}
+                      style={{ width: `${Math.min(e.ratio, 100)}%` }} />
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-sm font-bold tabular-nums text-amber-600">{formatCurrency(Number(e.salaryAdvance))}</p>
+                  <p className="text-[10px] text-muted-foreground">of {formatCurrency(Number(e.grossSalary))}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Salary Breakdown Pie */}
       {salaryPieData.length > 0 && (
@@ -395,9 +608,9 @@ function AttendanceSalaryTab() {
             </ResponsiveContainer>
             <div className="flex-1 space-y-2">
               {[
-                { label: 'Net Pay', value: salaryStats.netPayable, color: COLORS[0] },
-                { label: 'Advances', value: salaryStats.advances, color: COLORS[3] },
-                { label: 'Deductions', value: salaryStats.deductions, color: COLORS[1] },
+                { label: 'Net Pay',    value: salaryStats.netPayable,  color: COLORS[0] },
+                { label: 'Advances',   value: salaryStats.advances,    color: COLORS[3] },
+                { label: 'Deductions', value: salaryStats.deductions,  color: COLORS[1] },
               ].map(item => (
                 <div key={item.label} className="flex items-center gap-2">
                   <div className="size-3 rounded-full shrink-0" style={{ background: item.color }} />
@@ -412,7 +625,7 @@ function AttendanceSalaryTab() {
         </div>
       )}
 
-      {/* Staff by Branch */}
+      {/* Staff by Branch chart */}
       {branchChartData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-4 flex items-center gap-2">
@@ -444,7 +657,8 @@ function AttendanceSalaryTab() {
                     <span className="text-sm font-bold tabular-nums">{formatCurrency(b.totalSalary)}</span>
                   </div>
                   <div className="h-2 bg-muted rounded-full">
-                    <div className="h-full rounded-full" style={{ width: `${Math.round((b.totalSalary / maxSal) * 100)}%`, background: COLORS[i % COLORS.length] }} />
+                    <div className="h-full rounded-full"
+                      style={{ width: `${Math.round((b.totalSalary / maxSal) * 100)}%`, background: COLORS[i % COLORS.length] }} />
                   </div>
                 </div>
               );
@@ -472,17 +686,216 @@ function AttendanceSalaryTab() {
       {/* Employee List by Branch */}
       {Object.entries(branchGroups).map(([branch, emps]) => (
         <div key={branch} className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">{branch} <span className="text-sm text-muted-foreground font-normal">({emps.length} staff)</span></h3>
+          <h3 className="font-display text-base font-bold mb-3">
+            {branch} <span className="text-sm text-muted-foreground font-normal">({emps.length} staff)</span>
+          </h3>
           <div className="space-y-2">
-            {emps.map(e => (
-              <div key={e.id} className="flex items-center justify-between py-1.5 border-b last:border-0">
-                <div>
-                  <p className="text-sm font-semibold">{e.name}</p>
-                  <p className="text-[10px] text-muted-foreground">{e.department}</p>
+            {emps.map(e => {
+              const advRatio = Number(e.grossSalary) > 0
+                ? Math.round((Number(e.salaryAdvance) / Number(e.grossSalary)) * 100) : 0;
+              return (
+                <div key={e.id} className="flex items-center justify-between py-1.5 border-b last:border-0">
+                  <div>
+                    <p className="text-sm font-semibold">{e.name}</p>
+                    <p className="text-[10px] text-muted-foreground">{e.department}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums">{formatCurrency(Number(e.grossSalary) || 0)}</p>
+                    {e.salaryAdvance > 0 && (
+                      <p className={cn('text-[10px] font-semibold',
+                        advRatio >= 80 ? 'text-red-600' : advRatio >= 50 ? 'text-amber-600' : 'text-muted-foreground')}>
+                        Adv: {formatCurrency(Number(e.salaryAdvance) || 0)} ({advRatio}%)
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-bold tabular-nums">{formatCurrency(Number(e.grossSalary) || 0)}</p>
-                  {e.salaryAdvance > 0 && <p className="text-[10px] text-amber-600">Adv: {formatCurrency(Number(e.salaryAdvance) || 0)}</p>}
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Waste Logs Tab ────────────────────────────────────────────────────────────
+function WasteLogsTab() {
+  const { items: menuItems, loadMenu } = useMenuStore();
+  const [entries, setEntries] = useState<Array<{
+    id: string; food_item: string; quantity: string; logged_at: string;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  useEffect(() => {
+    const fetchWaste = async () => {
+      setLoading(true); setError('');
+      const todayUTC  = new Date().toISOString().slice(0, 10);
+      const sinceDate = new Date(todayUTC);
+      sinceDate.setUTCDate(sinceDate.getUTCDate() - 6);
+      const sinceISO = sinceDate.toISOString().slice(0, 10) + 'T00:00:00';
+      const { data, error: err } = await supabase
+        .from('kitchen_waste_log').select('*')
+        .gte('logged_at', sinceISO).order('logged_at', { ascending: false });
+      if (err) setError(err.message);
+      else setEntries(data ?? []);
+      setLoading(false);
+    };
+    fetchWaste();
+  }, []);
+
+  // Waste cost estimate: try to match food_item name to menu item price
+  const priceMap = useMemo(() => {
+    const map = new Map<string, number>();
+    menuItems.forEach(item => { map.set(item.name.toLowerCase().trim(), item.price); });
+    return map;
+  }, [menuItems]);
+
+  const estimateCost = (foodItem: string, quantity: string): number | null => {
+    const price = priceMap.get(foodItem.toLowerCase().trim());
+    if (!price) return null;
+    // Try to parse a numeric quantity (e.g. "2 plates", "3", "500g" → 0.5)
+    const num = parseFloat(quantity);
+    if (isNaN(num) || num <= 0) return null;
+    // If quantity string contains 'g' treat as grams → kg
+    if (/g\b/i.test(quantity) && !/kg/i.test(quantity)) return price * (num / 1000);
+    return price * num;
+  };
+
+  const enriched = useMemo(() =>
+    entries.map(e => ({ ...e, estimatedCost: estimateCost(e.food_item, e.quantity) })),
+    [entries, priceMap]);
+
+  const totalEstimatedCost = enriched.reduce((s, e) => s + (e.estimatedCost ?? 0), 0);
+  const costedCount        = enriched.filter(e => e.estimatedCost !== null).length;
+
+  // Group by date
+  const grouped = useMemo(() => {
+    const g: Record<string, typeof enriched> = {};
+    enriched.forEach(e => {
+      const date = e.logged_at.slice(0, 10);
+      if (!g[date]) g[date] = [];
+      g[date].push(e);
+    });
+    return g;
+  }, [enriched]);
+  const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+
+  function formatDateLabel(dateStr: string) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
+    const label = d.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
+    if (diff === 0) return `Today · ${label}`;
+    if (diff === 1) return `Yesterday · ${label}`;
+    return label;
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="size-8 rounded-xl flex items-center justify-center bg-red-50">
+            <Trash2 className="size-4 text-red-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-foreground">Kitchen Waste Log</p>
+            <p className="text-[11px] text-muted-foreground">Last 7 days · logged by kitchen</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Summary KPIs */}
+      {!loading && entries.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-red-50 border border-red-100 rounded-2xl p-3 text-center">
+            <p className="font-display text-2xl font-bold text-red-700 tabular-nums">{entries.length}</p>
+            <p className="text-[10px] font-semibold text-red-500 uppercase tracking-wide mt-0.5">Total Entries</p>
+          </div>
+          <div className="bg-card border border-border rounded-2xl p-3 text-center">
+            <p className="font-display text-2xl font-bold text-foreground tabular-nums">{sortedDates.length}</p>
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mt-0.5">Days with Waste</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Waste Cost Estimate Banner ── */}
+      {!loading && totalEstimatedCost > 0 && (
+        <div className="bg-gradient-to-br from-red-50 to-orange-50 border border-red-200 rounded-2xl p-4">
+          <p className="text-[10px] font-semibold text-red-600 uppercase tracking-widest mb-1">Estimated Waste Cost</p>
+          <p className="font-display text-3xl font-bold text-red-700 tabular-nums">{formatCurrency(totalEstimatedCost)}</p>
+          <p className="text-xs text-red-500 mt-1">
+            Based on {costedCount} of {entries.length} entries matched to menu prices
+          </p>
+          {costedCount < entries.length && (
+            <p className="text-[10px] text-muted-foreground mt-1">
+              {entries.length - costedCount} entries couldn't be priced — item names may not match menu exactly
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20">
+          <AlertTriangle className="size-4 text-destructive shrink-0" />
+          <p className="text-xs text-destructive">{error}</p>
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="flex items-center justify-center py-12">
+          <div className="size-6 rounded-xl bg-primary/10 animate-pulse" />
+        </div>
+      )}
+
+      {/* Empty */}
+      {!loading && !error && entries.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+          <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+            <Trash2 className="size-7 text-muted-foreground" />
+          </div>
+          <p className="text-sm font-medium text-muted-foreground">No waste logged in the last 7 days</p>
+        </div>
+      )}
+
+      {/* Grouped by date */}
+      {!loading && sortedDates.map(date => (
+        <div key={date} className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+              {formatDateLabel(date)}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-bold">
+              {grouped[date].length} {grouped[date].length === 1 ? 'entry' : 'entries'}
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {grouped[date].map(entry => (
+              <div key={entry.id}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
+                <div className="size-8 rounded-xl flex items-center justify-center shrink-0 bg-red-50">
+                  <Trash2 className="size-3.5 text-red-500" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{entry.food_item}</p>
+                  <p className="text-[11px] text-muted-foreground">{entry.quantity}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  {entry.estimatedCost !== null ? (
+                    <p className="text-sm font-bold text-red-600 tabular-nums">
+                      ~{formatCurrency(entry.estimatedCost)}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground">no price</p>
+                  )}
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
               </div>
             ))}
@@ -495,59 +908,43 @@ function AttendanceSalaryTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<'sales' | 'attendance' | 'credit'>('sales');
+  const [tab, setTab] = useState<'sales' | 'attendance' | 'credit' | 'waste'>('sales');
+
+  const tabs = [
+    { id: 'sales',      label: 'Sales',      icon: <BarChart3     className="size-3.5" /> },
+    { id: 'attendance', label: 'Attendance', icon: <CalendarCheck className="size-3.5" /> },
+    { id: 'credit',     label: 'Credit',     icon: <IndianRupee   className="size-3.5" /> },
+    { id: 'waste',      label: 'Waste',      icon: <Trash2        className="size-3.5" /> },
+  ] as const;
 
   return (
     <div className="min-h-screen bg-background pt-14 pb-24">
       <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Owner Portal</p>
-            <h1 className="font-display text-3xl font-bold text-foreground leading-none">Overview</h1>
-          </div>
-        </div>
+        <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Owner Portal</p>
+        <h1 className="font-display text-3xl font-bold text-foreground leading-none">Overview</h1>
       </div>
 
-      <div className="mx-4 my-4 flex gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        <button
-          onClick={() => setTab('sales')}
-          className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            tab === 'sales' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <span className="flex items-center justify-center gap-2">
-            <BarChart3 className="size-4" />Sales
-          </span>
-        </button>
-        <button
-          onClick={() => setTab('attendance')}
-          className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            tab === 'attendance' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <span className="flex items-center justify-center gap-2">
-            <CalendarCheck className="size-4" />Attendance
-          </span>
-        </button>
-        <button
-          onClick={() => setTab('credit')}
-          className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            tab === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <span className="flex items-center justify-center gap-2">
-            💳 Credit
-          </span>
-        </button>
+      {/* Tab bar */}
+      <div className="mx-4 my-4 flex gap-1 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              'flex-1 py-2 rounded-xl text-xs font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1',
+              tab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t.icon}{t.label}
+          </button>
+        ))}
       </div>
 
       <div className="px-4 space-y-4">
         {tab === 'sales'      && <SalesOverviewTab />}
         {tab === 'attendance' && <AttendanceSalaryTab />}
         {tab === 'credit'     && <OwnerCreditTab />}
+        {tab === 'waste'      && <WasteLogsTab />}
       </div>
     </div>
   );
