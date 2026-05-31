@@ -333,11 +333,11 @@ function InventoryReportTab() {
   const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
 
   const { from, to } = useMemo(() => {
+    const now = new Date();
     if (period === 'custom') return { from: startOfDay(new Date(customFrom + 'T00:00:00')), to: endOfDay(new Date(customTo + 'T00:00:00')) };
     const days = PERIODS.find(p => p.key === period)?.days ?? 0;
-    const f = new Date(today); f.setDate(f.getDate() - days);
-    return { from: startOfDay(f), to: endOfDay(today) };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const f = new Date(now); f.setDate(f.getDate() - days);
+    return { from: startOfDay(f), to: endOfDay(now) };
   }, [period, customFrom, customTo]);
 
   const load = useCallback(async () => {
@@ -512,11 +512,11 @@ function InvoiceReportTab() {
   const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
 
   const { from, to } = useMemo(() => {
+    const now = new Date();
     if (period === 'custom') return { from: startOfDay(new Date(customFrom + 'T00:00:00')), to: endOfDay(new Date(customTo + 'T00:00:00')) };
     const days = PERIODS.find(p => p.key === period)?.days ?? 0;
-    const f = new Date(today); f.setDate(f.getDate() - days);
-    return { from: startOfDay(f), to: endOfDay(today) };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const f = new Date(now); f.setDate(f.getDate() - days);
+    return { from: startOfDay(f), to: endOfDay(now) };
   }, [period, customFrom, customTo]);
 
   const load = useCallback(async () => {
@@ -713,11 +713,11 @@ function DeductionReportTab() {
   const [orderFilter, setOrderFilter] = useState('');
 
   const { from, to } = useMemo(() => {
+    const now = new Date();
     if (period === 'custom') return { from: startOfDay(new Date(customFrom + 'T00:00:00')), to: endOfDay(new Date(customTo + 'T00:00:00')) };
     const days = PERIODS.find(p => p.key === period)?.days ?? 0;
-    const f = new Date(today); f.setDate(f.getDate() - days);
-    return { from: startOfDay(f), to: endOfDay(today) };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const f = new Date(now); f.setDate(f.getDate() - days);
+    return { from: startOfDay(f), to: endOfDay(now) };
   }, [period, customFrom, customTo]);
 
   const load = useCallback(async () => {
