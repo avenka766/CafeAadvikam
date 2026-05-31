@@ -290,30 +290,38 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // `decrement_branch_stock` does: UPDATE SET quantity = quantity - p_qty WHERE quantity >= p_qty
   // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
   recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice) => {
-    // Pre-flight UX check (authoritative guard is in the DB)
+    const now = new Date().toISOString();
     const localStock = get().stock[branch].find((s) => s.itemName === itemName);
     if (!localStock) return 'Item not found in stock';
-    if (localStock.quantity < qty) return 'Insufficient stock';
 
     // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
     const resolvedPrice = unitPrice ?? localStock.price ?? 0;
 
-    const { data: newQtyData, error: rpcErr } = await supabase
-      .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+    // NEGATIVE-STOCK FIX: allow sales even when stock is 0 or insufficient.
+    // Uses the allow-negative RPC so stock can go below 0 — shortages are logged.
+    let newQty = Math.round((localStock.quantity - qty) * 1000) / 1000; // optimistic local fallback
 
-    if (rpcErr) return `Failed to update stock: ${rpcErr.message}`;
-    // RPC returns NULL when quantity < p_qty (concurrent sale depleted stock)
-    if (newQtyData === null) return 'Insufficient stock (modified by another device — please refresh)';
+    // Use the allow-negative RPC so stock can go below 0 when biller sells without stock.
+    // The old `decrement_branch_stock` returns NULL on insufficient stock; this one always succeeds.
+    {
+      const { data: newQtyRpc, error: rpcErr } = await supabase
+        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+      if (rpcErr) {
+        console.error('[recordSale] stock RPC error:', rpcErr.message);
+        // Non-fatal: continue recording sale with optimistic local qty
+      } else if (newQtyRpc !== null) {
+        newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+      }
+    }
 
-    const newQty = Math.round((newQtyData as number) * 1000) / 1000;
-
+    // Record the sale
     const { data: saleData, error: saleErr } = await supabase
       .from('branch_sales')
       .insert({
         branch,
         item_name:      itemName,
         quantity_sold:  qty,
-        sold_at:        new Date().toISOString(),
+        sold_at:        now,
         sold_by:        soldBy,
         payment_method: paymentMethod,
         unit_price:     resolvedPrice,
@@ -323,6 +331,15 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (saleErr) {
       console.error('[recordSale] sale insert error:', saleErr);
       return `Failed to record sale: ${saleErr.message}`;
+    }
+
+    // Log a mismatch if stock went negative so admin can track shortages
+    if (newQty < 0) {
+      const actualShortage = Math.abs(newQty);
+      await supabase.from('branch_stock_mismatches').insert({
+        branch, item_name: itemName, sold_qty: qty,
+        shortage: actualShortage, sold_at: now, sold_by: soldBy,
+      }).select().single();
     }
 
     const newSale: SaleRecord = {
@@ -340,7 +357,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      // FIX #1 — use pre-computed newQty instead of subtracting again
       stock[branch] = stock[branch].map((si) =>
         si.itemName === itemName ? { ...si, quantity: newQty } : si,
       );
@@ -395,6 +411,24 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       deliveryDate:  order.deliveryDate ?? null,
     };
 
+    // ADVANCE-HISTORY FIX: record the advance payment itself into branch_sales so it
+    // appears in History and SalesTab immediately. payment_method='advance' marks it clearly.
+    // quantity_sold=0 for custom items (no inventory); for stock items we record qty so
+    // the admin sees what was ordered. Stock is NOT deducted here — that happens at delivery.
+    const advanceSalesRows = order.items.map(item => ({
+      branch,
+      item_name:      item.itemName ?? 'Custom item',
+      quantity_sold:  item.quantity ?? 0,
+      sold_at:        now,
+      sold_by:        order.soldBy,
+      payment_method: `advance:${order.advanceMethod}`,
+      unit_price:     item.price ?? 0,
+      bill_no:        null,
+    }));
+    if (advanceSalesRows.length > 0) {
+      await supabase.from('branch_sales').insert(advanceSalesRows);
+    }
+
     set((s) => {
       const advanceOrders = { ...s.advanceOrders };
       advanceOrders[branch] = [newOrder, ...advanceOrders[branch]];
@@ -412,14 +446,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const now = new Date().toISOString();
 
-    // 1. Check stock is sufficient for all non-custom items
-    for (const item of order.items) {
-      if (item.isCustom) continue;
-      const stock = get().stock[branch].find((s) => s.itemName === item.itemName);
-      if (!stock) return `"${item.itemName}" not found in stock`;
-      if (stock.quantity < item.quantity)
-        return `Insufficient stock for "${item.itemName}" (have ${stock.quantity}, need ${item.quantity})`;
-    }
+    // ADVANCE-STOCK FIX: removed pre-flight stock check. The advance was already
+    // committed at order time — blocking delivery because stock ran low is worse UX
+    // than a mismatch. The atomic RPC below will catch genuine DB-level issues and
+    // the mismatch log gives admin visibility. Custom items skip RPC entirely.
 
     // M-10 FIX: deduct stock BEFORE marking order completed.
     // Previously: mark completed → deduct stock → if deduction fails, order is
@@ -436,19 +466,30 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const { data: newQtyRpc, error: stockRpcErr } = await supabase
         .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: item.itemName, p_qty: item.quantity });
 
-      if (stockRpcErr || newQtyRpc === null) {
-        const msg = newQtyRpc === null
-          ? `Insufficient stock for "${item.itemName}" — modified by another device`
-          : `Failed to deduct stock for "${item.itemName}": ${stockRpcErr!.message}`;
-
-        // M-10 FIX: order status was never changed yet — just restore any partially decremented stock
+      if (stockRpcErr) {
+        // Hard DB error: roll back and surface to operator
+        const msg = `Failed to deduct stock for "${item.itemName}": ${stockRpcErr.message}`;
         for (const d of decremented) {
           await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
         }
-
-        // Refresh local state to match DB
         await get().fetchBranchData(branch);
         return msg;
+      }
+
+      // NEGATIVE-STOCK FIX: if RPC returns NULL (stock already at 0), force stock to negative
+      // so the DB reflects reality and admin can see the shortage.
+      if (newQtyRpc === null) {
+        const currentStock = get().stock[branch].find((s) => s.itemName === item.itemName);
+        const negQty = Math.round(((currentStock?.quantity ?? 0) - item.quantity) * 1000) / 1000;
+        await supabase.from('branch_stock')
+          .update({ quantity: negQty })
+          .eq('branch', branch)
+          .eq('item_name', item.itemName);
+        await supabase.from('branch_stock_mismatches').insert({
+          branch, item_name: item.itemName,
+          sold_qty: item.quantity, shortage: item.quantity - Math.max(0, currentStock?.quantity ?? 0),
+          sold_at: now, sold_by: order.soldBy,
+        }).select().single();
       }
 
       decremented.push({ itemName: item.itemName, qty: item.quantity });
