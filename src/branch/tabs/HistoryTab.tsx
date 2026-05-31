@@ -67,7 +67,7 @@ export function HistoryTab({ branchSales }: Props) {
 
   return (
     <div className="space-y-3">
-      <div className="bg-card border rounded-xl overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
         <SectionHeader
           icon={<History className="size-4 text-blue-600" />}
           title="Sales History"

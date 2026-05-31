@@ -513,8 +513,8 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
 }) {
   const unit = detectSellUnit(item.itemName);
   return (
-    <div className={cn('relative bg-card border rounded-xl p-3 flex flex-col gap-2.5 transition-all duration-150',
-      inCart ? 'border-primary/50 shadow-md ring-1 ring-primary/15 bg-primary/[0.02]' : 'border-border hover:border-border/80')}>
+    <div className={cn('relative bg-white border rounded-3xl p-4 flex flex-col gap-3 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md',
+      inCart ? 'border-emerald-400 shadow-md ring-4 ring-emerald-100 bg-emerald-50/30' : 'border-slate-200 hover:border-slate-300')}>
       {inCart && <span className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary animate-pulse" />}
       <div className="pr-4">
         <p className="text-base font-bold leading-snug line-clamp-2">{item.itemName}</p>
@@ -564,8 +564,8 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
   const noStock  = stockQty <= 0;
   const overStock = inCart && cartQty > stockQty && stockQty > 0;
   return (
-    <div className={cn('relative bg-card border rounded-xl p-3 flex flex-col gap-2.5 transition-all duration-150',
-      inCart ? 'border-primary/50 shadow-md ring-1 ring-primary/15 bg-primary/[0.02]' : 'border-border hover:border-border/80')}>
+    <div className={cn('relative bg-white border rounded-3xl p-4 flex flex-col gap-3 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md',
+      inCart ? 'border-emerald-400 shadow-md ring-4 ring-emerald-100 bg-emerald-50/30' : 'border-slate-200 hover:border-slate-300')}>
       {inCart && <span className="absolute top-2.5 right-2.5 size-2 rounded-full bg-primary animate-pulse" />}
       <div className="pr-4">
         <p className="text-base font-bold leading-snug line-clamp-2">{item.name}</p>
@@ -1942,18 +1942,18 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
   return (
     // U-04 FIX: use flex-1 so this fills whatever space the parent leaves — no magic pixel values
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
 
       {/* ── Tab switcher (compact top bar) ── */}
-      <div className="flex gap-1 p-1.5 bg-muted border-b border-border shrink-0 overflow-x-auto">
+      <div className="flex gap-2 p-2 bg-slate-50 border-b border-slate-200 shrink-0 overflow-x-auto">
         <button onClick={() => setActiveTab('bill')}
-          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
-            activeTab === 'bill' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+          className={cn('flex-1 min-w-fit py-2.5 px-3 rounded-2xl text-sm font-body font-black transition-all flex items-center justify-center gap-1.5 active:scale-[0.98]',
+            activeTab === 'bill' ? 'bg-slate-950 shadow text-white' : 'text-slate-500 hover:bg-white active:scale-95')}>
           <Receipt className="size-3.5" />Bill
         </button>
         <button onClick={() => setActiveTab('advance')}
-          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
-            activeTab === 'advance' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+          className={cn('flex-1 min-w-fit py-2.5 px-3 rounded-2xl text-sm font-body font-black transition-all flex items-center justify-center gap-1.5 active:scale-[0.98]',
+            activeTab === 'advance' ? 'bg-amber-500 shadow text-white' : 'text-slate-500 hover:bg-white active:scale-95')}>
           <Wallet className="size-3.5" />Advance
           {pendingAdvance.length > 0 && (
             <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
@@ -1965,8 +1965,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         {/* Alert tab — VRSNB & SNB only */}
         {isAlertBranch && (
           <button onClick={() => setActiveTab('alert')}
-            className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
-              activeTab === 'alert' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+            className={cn('flex-1 min-w-fit py-2.5 px-3 rounded-2xl text-sm font-body font-black transition-all flex items-center justify-center gap-1.5 active:scale-[0.98]',
+              activeTab === 'alert' ? 'bg-red-500 shadow text-white' : 'text-slate-500 hover:bg-white active:scale-95')}>
             <Bell className={cn("size-3.5", todayDeliveries.length > 0 && "text-red-500 animate-pulse")} />Alert
             {todayDeliveries.length > 0 && (
               <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
@@ -1978,8 +1978,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         )}
         {/* Credit tab — all branches */}
         <button onClick={() => setActiveTab('credit')}
-          className={cn('flex-1 min-w-fit py-2 rounded-lg text-sm font-body font-semibold transition-all flex items-center justify-center gap-1.5',
-            activeTab === 'credit' ? 'bg-card shadow text-foreground' : 'text-muted-foreground active:scale-95')}>
+          className={cn('flex-1 min-w-fit py-2.5 px-3 rounded-2xl text-sm font-body font-black transition-all flex items-center justify-center gap-1.5 active:scale-[0.98]',
+            activeTab === 'credit' ? 'bg-orange-500 shadow text-white' : 'text-slate-500 hover:bg-white active:scale-95')}>
           <IndianRupee className={cn("size-3.5", pendingCredit > 0 && "text-orange-500")} />Credit
           {pendingCredit > 0 && (
             <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
@@ -2089,11 +2089,11 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
       {/* ── Bill tab: 3-column POS layout ── */}
       {activeTab === 'bill' && (
-        <div className="flex flex-1 min-h-0 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden bg-slate-50/70">
 
           {/* ═══ COL 1: Category sidebar — 25% of screen ══════════════════════ */}
           {isSNB && (
-            <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+            <div className="w-[25%] shrink-0 flex flex-col border-r border-slate-200 bg-white overflow-y-auto">
               {(['All', ...activeCategories] as const).map((cat) => {
                 const isActive = activeCategory === cat && !search.trim();
                 const catCount = cat === 'All'
@@ -2121,7 +2121,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           )}
 
           {/* ═══ COL 2: Search + Item grid — 45% (flex-1 fills remaining after COL1+COL3) */}
-          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-slate-50/70">
 
             {/* Search bar — always at top, searches ALL items */}
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
@@ -2154,13 +2154,13 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
             </div>
 
             {/* Item grid — scrolls independently */}
-            <div className="flex-1 overflow-y-auto p-3">
+            <div className="flex-1 overflow-y-auto p-4">
               {displayItems.length === 0 ? (
                 <div className="text-center py-12 text-sm text-muted-foreground bg-muted/30 rounded-2xl border border-dashed">
                   {totalItemCount === 0 ? 'No items in stock.' : 'No items match your search.'}
                 </div>
               ) : isSNB ? (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
                   {(displayItems as SnbItem[]).map((item) => {
                     const ci = getCartItem(item.name);
                     const stockQtyForItem = getStockQty(item.name);
@@ -2180,7 +2180,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                   })}
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
                   {(displayItems as StockItem[]).map((item) => {
                     const ci = getCartItem(item.itemName);
                     return (
@@ -2203,7 +2203,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
           </div>
 
           {/* ═══ COL 3: Bill panel — 35% of screen ═══════════════════════════ */}
-          <div className="w-[35%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+          <div className="w-[30%] shrink-0 flex flex-col border-l border-slate-200 bg-white overflow-hidden shadow-[-12px_0_30px_rgba(15,23,42,0.06)]">
 
             {/* Bill header */}
             <div className="px-4 py-3 bg-zinc-900 shrink-0">
@@ -2266,7 +2266,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
 
             {/* Totals + payment — fixed at bottom, own scroll if tall */}
             {cart.length > 0 && (
-              <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/10 flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
+              <div className="border-t border-slate-200 px-4 py-4 space-y-3 bg-slate-50/70 flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
 
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Subtotal</span>
@@ -2458,11 +2458,11 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
                   <button
                     onClick={() => { if (!splitReady) { setError('Select payment method first.'); return; } setError(''); setShowPreview(true); }}
                     disabled={!allPriced || submitting}
-                    className="py-3.5 rounded-xl border-2 border-primary text-primary font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
+                    className="py-3.5 rounded-2xl border-2 border-slate-950 text-slate-950 bg-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition">
                     <Printer className="size-4" /> Print
                   </button>
                   <button onClick={doCheckout} disabled={submitting || !splitReady}
-                    className="py-3.5 rounded-xl cafe-gradient text-primary-foreground font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-md">
+                    className="py-3.5 rounded-2xl bg-orange-500 text-white font-black text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98] transition shadow-lg shadow-orange-200">
                     {submitting
                       ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
                       : <><Receipt className="size-4" /> Done</>}

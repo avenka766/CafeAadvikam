@@ -168,7 +168,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   };
 
   return (
-    <div className="bg-card border rounded-xl overflow-hidden">
+    <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
       <SectionHeader
         icon={<PencilLine className="size-4 text-violet-600" />}
         title="Manual Stock Update"
@@ -342,13 +342,13 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     <div className="space-y-3">
 
       {/* Sub-tab bar */}
-      <div className="flex gap-1.5 bg-muted/60 p-1 rounded-xl">
+      <div className="flex gap-2 rounded-[1.25rem] bg-white p-1.5 ring-1 ring-slate-200 shadow-sm">
         {SUBTABS.map((t) => (
           <button key={t.id} onClick={() => setSubTab(t.id)}
-            className={cn('flex-1 py-2 text-xs font-semibold rounded-lg transition',
+            className={cn('flex-1 py-2.5 text-xs font-black rounded-2xl transition active:scale-[0.98]',
               subTab === t.id
-                ? 'bg-card shadow text-foreground'
-                : 'text-muted-foreground hover:text-foreground')}>
+                ? 'bg-slate-950 shadow text-white'
+                : 'text-slate-500 hover:bg-slate-50')}>
             {t.label}
           </button>
         ))}
@@ -356,7 +356,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
       {/* ── Incoming ────────────────────────────────────────────────────────── */}
       {subTab === 'incoming' && (
-        <div className="bg-card border rounded-xl overflow-hidden">
+        <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
           <SectionHeader
             icon={<ArrowDownToLine className="size-4 text-emerald-600" />}
             title="Incoming Stock"
@@ -417,7 +417,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       {/* ── Current stock ────────────────────────────────────────────────────── */}
       {subTab === 'current' && (
         <>
-          <div className="bg-card border rounded-xl overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
             <SectionHeader
               icon={<Package className="size-4 text-primary" />}
               title="Available Stock"
@@ -450,7 +450,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
           </div>
 
           {outOfStockItems.length > 0 && (
-            <div className="bg-card border border-red-100 rounded-xl overflow-hidden">
+            <div className="bg-white border border-red-200 rounded-[1.75rem] overflow-hidden shadow-sm">
               <button onClick={() => setOutOfStockExpanded((v) => !v)}
                 className="w-full flex items-center justify-between px-4 py-3 bg-red-50/50 hover:bg-red-50 transition">
                 <div className="flex items-center gap-2">
