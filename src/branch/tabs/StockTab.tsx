@@ -327,7 +327,10 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
   const handleRefreshIncoming = async () => {
     setSyncing(true);
-    await syncIncomingFromDispatches(branch, true); // force bypass guard
+    // Force sync from dispatch_log (catches any missed records)
+    await syncIncomingFromDispatches(branch, true);
+    // fetchBranchData is already called inside syncIncomingFromDispatches,
+    // but call again to ensure UI is refreshed even if sync was a no-op
     await fetchBranchData(branch);
     setSyncing(false);
   };
