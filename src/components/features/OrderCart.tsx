@@ -166,7 +166,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
 
             {cart.length > 0 && (
               <>
-                <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50">
+                <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50 overflow-y-auto max-h-[38vh]">
                   <div className="flex gap-2">
                     <button onClick={() => { setOrderType('dine_in'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
                     <button onClick={() => { setOrderType('takeaway'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
