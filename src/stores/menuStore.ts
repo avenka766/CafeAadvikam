@@ -81,7 +81,8 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),
     }));
-    const dbUpdates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const dbUpdates: Record<string, unknown> = { updated_at: now };
     if (updates.price !== undefined) dbUpdates.price = updates.price;
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.enabled !== undefined) dbUpdates.enabled = updates.enabled;
@@ -92,6 +93,30 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
         items: state.items.map((i) => (i.id === id ? prevItem : i)),
       }));
       throw error;
+    }
+
+    // Fire admin notification for price or name changes
+    const priceChanged = updates.price !== undefined && updates.price !== prevItem.price;
+    const nameChanged  = updates.name  !== undefined && updates.name  !== prevItem.name;
+    if (priceChanged || nameChanged) {
+      const effectiveName = updates.name ?? prevItem.name;
+      const changes: string[] = [];
+      if (nameChanged)  changes.push(`name: "${prevItem.name}" → "${updates.name}"`);
+      if (priceChanged) changes.push(`price: ₹${prevItem.price} → ₹${updates.price}`);
+      await supabase.from('admin_notifications').insert({
+        type:      'price_change',
+        title:     `Cafe Menu Updated — ${effectiveName}`,
+        body:      `${changes.join(' · ')} · Cafe menu`,
+        ref_label: `Cafe · Item ID ${id}`,
+        meta:      {
+          branch:   'CAFE',
+          itemId:   id,
+          name:     effectiveName,
+          oldName:  prevItem.name,
+          price:    updates.price ?? prevItem.price,
+          oldPrice: prevItem.price,
+        },
+      });
     }
   },
 
