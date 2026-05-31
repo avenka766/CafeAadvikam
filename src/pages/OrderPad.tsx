@@ -6,6 +6,7 @@ import { formatCurrency } from '@/lib/utils';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
 import OrderCart from '@/components/features/OrderCart';
+import EmptyState from '@/components/ui/EmptyState';
 
 export default function OrderPad() {
   const { items, loadMenu } = useMenuStore();
@@ -31,7 +32,7 @@ export default function OrderPad() {
   const getQty = (id: string) => cart.find((c) => c.menuItem.id === id)?.quantity ?? 0;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-36">
+    <div className="page-wrapper">
 
       {/* ── Sticky top bar ── */}
       <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-md border-b border-border">
@@ -61,24 +62,23 @@ export default function OrderPad() {
             )}
           </div>
         </div>
-        <CategoryFilter selectedCategory={selectedCategory} onSelect={setSelectedCategory} />
+        {/* U-16 FIX: clear search when category changes so both filters never stack silently */}
+        <CategoryFilter
+          selectedCategory={selectedCategory}
+          onSelect={(cat) => { setSelectedCategory(cat); setSearch(''); }}
+        />
       </div>
 
       {/* ── Menu grid ── */}
       <div className="px-4 py-4">
         {filteredItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <div className="size-16 rounded-2xl bg-muted flex items-center justify-center">
-              <span className="text-3xl">🍽️</span>
-            </div>
-            <p className="font-body text-muted-foreground text-sm">No items found</p>
-            <button
-              onClick={() => { setSearch(''); setSelectedCategory('all'); }}
-              className="text-sm font-body font-semibold text-primary active:opacity-70"
-            >
-              Clear filters
-            </button>
-          </div>
+          <EmptyState
+            icon="🍽️"
+            message="No items found"
+            sub="Try a different category or clear your search"
+            cta="Clear filters"
+            onCta={() => { setSearch(''); setSelectedCategory('all'); }}
+          />
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {filteredItems.map((item) => (
@@ -96,7 +96,7 @@ export default function OrderPad() {
 
       {/* ── Floating cart bar ── */}
       {cartCount > 0 && (
-        <div className="fixed bottom-20 left-0 right-0 z-30 px-4 animate-slide-up">
+        <div className="fixed left-0 right-0 z-40 px-4 animate-slide-up" style={{ bottom: 'calc(var(--nav-h, 5.25rem) + 0.5rem)' }}>
           <button
             onClick={() => setCartOpen(true)}
             className="w-full py-4 px-5 rounded-2xl flex items-center justify-between active:scale-[0.98] transition-transform"

@@ -4,13 +4,14 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   ChefHat, Plus, Trash2, Pencil, Check, X, Loader2,
-  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info,
+  Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { BAKERY_ITEMS } from './types';
+import { useBakeryItemsStore } from './bakeryItemsStore';
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
 import type { RecipeDefinition } from './recipeDefinitions';
 import { cn } from '@/lib/utils';
+import EmptyState from '@/components/ui/EmptyState';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Material { material: string; qty: number; unit: string }
@@ -67,6 +68,7 @@ function MatRow({
         {['kg','g','L','ml','nos','pcs'].map(u => <option key={u} value={u}>{u}</option>)}
       </select>
       <button onClick={() => onRemove(idx)} disabled={isLast}
+        aria-label="Remove ingredient"
         className="size-8 flex items-center justify-center rounded-lg text-destructive hover:bg-destructive/10 disabled:opacity-20 transition-colors">
         <Trash2 className="size-3.5" />
       </button>
@@ -234,6 +236,12 @@ export default function RecipeManagement() {
   const [loading, setLoading]     = useState(true);
   const [saving,  setSaving]      = useState(false);
   const [toast,   setToast]       = useState('');
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddItemId, setQuickAddItemId] = useState('');
+
+  // Load live bakery items from Supabase (so newly added items appear here)
+  const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
+  useEffect(() => { loadAllItems(); }, [loadAllItems]);
 
   // Load DB overrides
   useEffect(() => {
@@ -274,17 +282,17 @@ export default function RecipeManagement() {
   };
 
   const filteredItems = useMemo(() => {
-    return BAKERY_ITEMS.filter(item => {
+    return bakeryItems.filter(item => {
       const matchesCat  = catFilter === 'All' || item.category === catFilter;
       const matchesSearch = search.trim() === '' || item.name.toLowerCase().includes(search.toLowerCase());
       return matchesCat && matchesSearch;
     });
-  }, [search, catFilter]);
+  }, [bakeryItems, search, catFilter]);
 
   const handleSave = async (itemId: string, data: Omit<RecipeRow,'itemId'|'source'>) => {
     setSaving(true);
     try {
-      const item = BAKERY_ITEMS.find(b => b.id === itemId)!;
+      const item = bakeryItems.find(b => b.id === itemId)!;
       const payload = {
         item_id:     itemId,
         item_name:   item.name,
@@ -312,7 +320,7 @@ export default function RecipeManagement() {
     setSaving(false);
   };
 
-  const editingItem = editingId ? BAKERY_ITEMS.find(b => b.id === editingId) : null;
+  const editingItem = editingId ? bakeryItems.find(b => b.id === editingId) : null;
   const editingInitial = editingId ? (getRecipe(editingId) ?? { ...blankRecipe() }) : blankRecipe();
 
   const recipeCounts = {
@@ -324,15 +332,78 @@ export default function RecipeManagement() {
     <div className="min-h-screen bg-background pt-14 pb-24 px-4">
       {/* Header */}
       <div className="pt-4 pb-3">
-        <div className="flex items-center gap-3 mb-1">
-          <ChefHat className="size-6 text-primary" />
-          <h1 className="font-display text-2xl font-bold text-foreground">Recipe Management</h1>
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-3">
+            <ChefHat className="size-6 text-primary" />
+            <h1 className="font-display text-2xl font-bold text-foreground">Recipe Management</h1>
+          </div>
+          <button
+            onClick={() => { setQuickAddOpen(true); setQuickAddItemId(''); }}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition shrink-0"
+          >
+            <Plus className="size-3.5" />
+            Add Recipe
+          </button>
         </div>
         <p className="text-xs font-body text-muted-foreground">
           View and edit ingredient recipes for all items.
           Excel data auto-loaded · {recipeCounts.withRecipe}/{recipeCounts.total} items have recipes.
         </p>
       </div>
+
+      {/* Quick Add Recipe modal */}
+      {quickAddOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm px-4 pb-4">
+          <div className="w-full max-w-sm bg-card rounded-2xl border border-border shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2">
+                <BookOpen className="size-4 text-primary" />
+                <p className="font-display font-bold text-foreground text-base">Add Recipe</p>
+              </div>
+              <button onClick={() => setQuickAddOpen(false)} className="size-8 rounded-xl hover:bg-muted flex items-center justify-center transition">
+                <X className="size-4 text-muted-foreground" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">Select Bakery Item *</label>
+                <select
+                  value={quickAddItemId}
+                  onChange={e => setQuickAddItemId(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                >
+                  <option value="">— Choose an item —</option>
+                  {bakeryItems.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}{getRecipe(item.id) ? ' ✓' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-muted-foreground mt-1">Items marked ✓ already have a recipe</p>
+              </div>
+            </div>
+            <div className="flex gap-2 px-5 pb-5">
+              <button
+                onClick={() => setQuickAddOpen(false)}
+                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!quickAddItemId) return;
+                  setEditingId(quickAddItemId);
+                  setQuickAddOpen(false);
+                }}
+                disabled={!quickAddItemId}
+                className="flex-1 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-40"
+              >
+                Open Editor
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Info banner */}
       <div className="flex items-start gap-2 px-3 py-2 mb-3 bg-blue-50 border border-blue-200 rounded-xl">
@@ -398,7 +469,7 @@ export default function RecipeManagement() {
           {filteredItems.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
               <ChefHat className="size-10 opacity-20 mx-auto mb-2" />
-              <p className="text-sm font-body">No items found</p>
+              <EmptyState icon="📋" message="No items found" />
             </div>
           )}
         </div>

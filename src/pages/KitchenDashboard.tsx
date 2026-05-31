@@ -1,20 +1,203 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors to prevent excessive re-renders
 import { formatTime, cn } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS, CAFE_CONFIG } from '@/constants/config';
 import type { OrderStatus, Order } from '@/types';
 import {
   Wifi, Inbox, Clock, MapPin, User as UserIcon,
   ChefHat, Bell, CheckCircle2, QrCode, UserCheck,
-  Volume2, VolumeX, Printer,
+  Volume2, VolumeX, Printer, Trash2, Plus, Loader2,
+  AlertTriangle, X,
 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
+import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
+import EmptyState from '@/components/ui/EmptyState';
 
-const TABS: { key: OrderStatus | 'active'; label: string; accent: string; textColor: string }[] = [
+const TABS: { key: OrderStatus | 'active' | 'waste'; label: string; accent: string; textColor: string }[] = [
   { key: 'active',    label: 'Active',   accent: '#1D9E75', textColor: '#fff' },
   { key: 'pending',   label: 'New',      accent: '#F59E0B', textColor: '#fff' },
   { key: 'preparing', label: 'Cooking',  accent: '#3B82F6', textColor: '#fff' },
   { key: 'ready',     label: 'Ready',    accent: '#10B981', textColor: '#fff' },
+  { key: 'waste',     label: 'Wastage',  accent: '#EF4444', textColor: '#fff' },
 ];
+
+// ─── Waste Log ────────────────────────────────────────────────────────────────
+interface WasteEntry {
+  id: string;
+  food_item: string;
+  quantity: string;
+  logged_at: string;
+}
+
+function WasteTab() {
+  const [entries, setEntries] = useState<WasteEntry[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [foodItem, setFoodItem] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState('');
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase
+        .from('kitchen_waste_log')
+        .select('*')
+        .gte('logged_at', today + 'T00:00:00')
+        .order('logged_at', { ascending: false });
+      setEntries((data as WasteEntry[]) ?? []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const handleAdd = async () => {
+    if (!foodItem.trim()) { setError('Enter a food item'); return; }
+    if (!quantity.trim()) { setError('Enter a quantity'); return; }
+    setSaving(true); setError('');
+    const { data, error: err } = await supabase
+      .from('kitchen_waste_log')
+      .insert({ food_item: foodItem.trim(), quantity: quantity.trim() })
+      .select()
+      .single();
+    if (err) { setError(err.message); setSaving(false); return; }
+    setEntries(prev => [data as WasteEntry, ...prev]);
+    setFoodItem(''); setQuantity('');
+    setSaving(false);
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeleting(id);
+    await supabase.from('kitchen_waste_log').delete().eq('id', id);
+    setEntries(prev => prev.filter(e => e.id !== id));
+    setDeleting(null);
+  };
+
+  const totalEntries = entries.length;
+
+  return (
+    <div className="px-4 py-4 space-y-4">
+      {/* Header card */}
+      <div className="rounded-2xl p-4 space-y-1"
+        style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)' }}>
+        <div className="flex items-center gap-2">
+          <Trash2 className="size-4" style={{ color: '#EF4444' }} />
+          <span className="font-body font-bold text-sm text-white">Today's Waste Log</span>
+          {totalEntries > 0 && (
+            <span className="ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold text-white"
+              style={{ background: 'rgba(239,68,68,0.5)' }}>
+              {totalEntries} {totalEntries === 1 ? 'item' : 'items'}
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] font-body" style={{ color: 'rgba(255,255,255,0.4)' }}>
+          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+        </p>
+      </div>
+
+      {/* Input form */}
+      <div className="rounded-2xl p-4 space-y-3"
+        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+        <p className="text-[11px] font-body font-bold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.4)' }}>
+          Log Wasted Food
+        </p>
+
+        <div className="flex flex-col gap-2.5">
+          <div>
+            <label className="text-[10px] font-body font-semibold mb-1 block" style={{ color: 'rgba(255,255,255,0.5)' }}>
+              Food Item
+            </label>
+            <input
+              value={foodItem}
+              onChange={e => { setFoodItem(e.target.value); setError(''); }}
+              onKeyDown={e => e.key === 'Enter' && document.getElementById('waste-qty-input')?.focus()}
+              placeholder="e.g. Sambar, Idli, Chicken Curry…"
+              className="w-full h-11 px-4 rounded-xl text-sm font-body text-white placeholder:text-white/25 focus:outline-none focus:ring-2"
+              style={{
+                background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                '--tw-ring-color': 'rgba(239,68,68,0.5)',
+              } as React.CSSProperties}
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-body font-semibold mb-1 block" style={{ color: 'rgba(255,255,255,0.5)' }}>
+              Quantity (include unit — e.g. 2 kg, 15 pcs, 1 pot)
+            </label>
+            <input
+              id="waste-qty-input"
+              value={quantity}
+              onChange={e => { setQuantity(e.target.value); setError(''); }}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              placeholder="e.g. 2 kg, 15 pcs, half pot…"
+              className="w-full h-11 px-4 rounded-xl text-sm font-body text-white placeholder:text-white/25 focus:outline-none focus:ring-2"
+              style={{
+                background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                '--tw-ring-color': 'rgba(239,68,68,0.5)',
+              } as React.CSSProperties}
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
+            style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}>
+            <AlertTriangle className="size-3.5 shrink-0" style={{ color: '#EF4444' }} />
+            <p className="text-xs font-body" style={{ color: '#FCA5A5' }}>{error}</p>
+          </div>
+        )}
+
+        <button onClick={handleAdd} disabled={saving}
+          className="w-full h-11 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50"
+          style={{ background: '#EF4444', color: '#fff', boxShadow: '0 4px 16px rgba(239,68,68,0.4)' }}>
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+          Add to Waste Log
+        </button>
+      </div>
+
+      {/* Log list */}
+      {loading ? (
+        <LoadingSkeleton variant="list" count={3} className="mx-4" />
+      ) : entries.length === 0 ? (
+        <EmptyState icon="🗑️" message="No wastage logged today" className="text-white/40" />
+      ) : (
+        <div className="space-y-2">
+          <p className="text-[10px] font-body font-bold uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.3)' }}>
+            Logged Today
+          </p>
+          {entries.map(entry => (
+            <div key={entry.id}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div className="size-8 rounded-xl flex items-center justify-center shrink-0"
+                style={{ background: 'rgba(239,68,68,0.15)' }}>
+                <Trash2 className="size-3.5" style={{ color: '#EF4444' }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-body font-semibold text-white truncate">{entry.food_item}</p>
+                <p className="text-[11px] font-body" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                  {entry.quantity} · {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </p>
+              </div>
+              <button onClick={() => handleDelete(entry.id)} disabled={deleting === entry.id}
+                className="size-8 flex items-center justify-center rounded-xl transition-all active:scale-90 disabled:opacity-40"
+                style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                {deleting === entry.id
+                  ? <Loader2 className="size-3.5 animate-spin" style={{ color: '#EF4444' }} />
+                  : <X className="size-3.5" style={{ color: '#EF4444' }} />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Shared AudioContext — created once, resumed on first user gesture.
 // Browsers block sound until a tap/click; this handles that correctly.
@@ -81,8 +264,18 @@ ${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6
 }
 
 export default function KitchenDashboard() {
-  const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'active'>('active');
+  // STORE-01 FIX: granular selector with shallow equality — only re-renders when
+  // orders/polling actually change, not on any unrelated store mutation.
+  const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore(
+    useShallow(s => ({
+      orders: s.orders,
+      updateOrderStatus: s.updateOrderStatus,
+      startPolling: s.startPolling,
+      stopPolling: s.stopPolling,
+      polling: s.polling,
+    }))
+  );
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'active' | 'waste'>('active');
   const [soundEnabled, setSoundEnabled] = useState(true);
   // KITCHEN-FIX: track which order is in-flight; show inline error instead of alert()
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -226,6 +419,7 @@ export default function KitchenDashboard() {
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className="size-9 rounded-xl flex items-center justify-center transition-all active:scale-90"
+            aria-label={soundEnabled ? 'Mute alerts' : 'Enable alerts'}
             style={{ background: soundEnabled ? 'rgba(29,158,117,0.2)' : 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
           >
             {soundEnabled
@@ -253,6 +447,7 @@ export default function KitchenDashboard() {
             })}
           </div>
           <button onClick={() => setNewlyCancelledIds(new Set())}
+            aria-label="Dismiss cancelled order alert"
             className="shrink-0 text-red-400 text-lg font-bold">✕</button>
         </div>
       )}
@@ -264,6 +459,7 @@ export default function KitchenDashboard() {
           const isActive = activeTab === tab.key;
           const count = tab.key === 'active'
             ? todayOrders.filter(o => ['pending','preparing','ready'].includes(o.status)).length
+            : tab.key === 'waste' ? 0
             : todayOrders.filter(o => o.status === tab.key).length;
           return (
             <button
@@ -294,8 +490,8 @@ export default function KitchenDashboard() {
         })}
       </div>
 
-      {/* ── Orders grid ── */}
-      <div className="px-4 py-4">
+      {/* ── Orders grid / Waste tab ── */}
+      {activeTab === 'waste' ? <WasteTab /> : <div className="px-4 py-4">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 gap-4">
             <div className="size-20 rounded-3xl flex items-center justify-center"
@@ -303,7 +499,11 @@ export default function KitchenDashboard() {
               <Inbox className="size-10" style={{ color: 'rgba(255,255,255,0.2)' }} />
             </div>
             <p className="font-body font-semibold text-lg" style={{ color: 'rgba(255,255,255,0.4)' }}>
-              {activeTab === 'pending' ? 'Waiting for new orders…' : 'All clear!'}
+              {/* U-07 FIX: context-specific messages so "All clear!" only appears where it makes sense */}
+              {activeTab === 'pending'   && 'Waiting for new orders…'}
+              {activeTab === 'active'    && 'No active orders right now'}
+              {activeTab === 'preparing' && 'No orders currently cooking'}
+              {activeTab === 'ready'     && 'No orders ready to serve'}
             </p>
           </div>
         ) : (
@@ -349,6 +549,7 @@ export default function KitchenDashboard() {
                         <p className="text-[10px] font-body" style={{ color: 'rgba(255,255,255,0.35)' }}>{formatTime(order.createdAt)}</p>
                       </div>
                       <button onClick={() => printKot(order)}
+                        aria-label="Print KOT"
                         className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
                         style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)' }}>
                         <Printer className="size-4 text-white/60" />
@@ -462,7 +663,7 @@ export default function KitchenDashboard() {
             })}
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

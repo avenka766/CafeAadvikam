@@ -7,6 +7,7 @@ import {
 import { formatCurrency, cn } from '@/lib/utils';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import { MENU_CATEGORIES } from '@/constants/config';
+import EmptyState from '@/components/ui/EmptyState';
 
 // ─── Add Item Sheet ──────────────────────────────────────────────────────────
 function AddItemSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -163,6 +164,8 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const [search,           setSearch]           = useState('');
   const [editingId,        setEditingId]        = useState<string | null>(null);
   const [editPrice,        setEditPrice]        = useState('');
+  const [savingPrice,      setSavingPrice]      = useState(false);
+  const [priceError,       setPriceError]       = useState<string | null>(null);
   const [showAddSheet,     setShowAddSheet]     = useState(false);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
@@ -193,20 +196,30 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   };
 
   const startEditPrice = (id: string, currentPrice: number) => {
-    setEditingId(id); setEditPrice(String(currentPrice));
+    setEditingId(id); setEditPrice(String(currentPrice)); setPriceError(null);
   };
 
-  const savePrice = (id: string) => {
+  const savePrice = async (id: string) => {
     const val = parseInt(editPrice);
-    if (!isNaN(val) && val > 0) updateItem(id, { price: val });
-    setEditingId(null); setEditPrice('');
+    if (isNaN(val) || val <= 0) { setPriceError('Enter a valid price.'); return; }
+    setSavingPrice(true);
+    setPriceError(null);
+    try {
+      await updateItem(id, { price: val });
+      setEditingId(null);
+      setEditPrice('');
+    } catch (err: unknown) {
+      setPriceError(err instanceof Error ? err.message : 'Failed to save price.');
+    } finally {
+      setSavingPrice(false);
+    }
   };
 
   const enabledCount  = items.filter(i => i.enabled).length;
   const disabledCount = items.filter(i => !i.enabled).length;
 
   return (
-    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-20')}>
+    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-24')}>
 
       {/* Stats row */}
       <div className="px-4 pt-4 pb-2 flex gap-3">
@@ -261,24 +274,16 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
       {/* Item list */}
       <div className="px-4 py-4 space-y-2">
         {filtered.length === 0 && (
-          <div className="flex flex-col items-center py-16 text-muted-foreground gap-3">
-            <p className="text-sm font-body">No items found.</p>
-            {search || selectedCategory !== 'all' ? (
-              <button
-                onClick={() => { setSearch(''); setSelectedCategory('all'); }}
-                className="text-xs text-primary font-semibold"
-              >
-                Clear filters
-              </button>
-            ) : (
-              <button
-                onClick={() => setShowAddSheet(true)}
-                className="text-xs text-primary font-semibold flex items-center gap-1"
-              >
-                <Plus className="size-3" /> Add your first item
-              </button>
-            )}
-          </div>
+          <EmptyState
+            icon="🍽️"
+            message="No items found"
+            sub={search || selectedCategory !== 'all' ? 'Try a different category or clear your search' : 'Add your first menu item to get started'}
+            cta={search || selectedCategory !== 'all' ? 'Clear filters' : 'Add item'}
+            onCta={search || selectedCategory !== 'all'
+              ? () => { setSearch(''); setSelectedCategory('all'); }
+              : () => setShowAddSheet(true)
+            }
+          />
         )}
 
         {filtered.map(item => (
@@ -310,23 +315,38 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
               <p className="text-[10px] font-body text-muted-foreground">{categoryName(item.category)}</p>
               <div className="mt-1 flex items-center gap-2">
                 {editingId === item.id ? (
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm">₹</span>
-                    <input
-                      type="number"
-                      value={editPrice}
-                      onChange={e => setEditPrice(e.target.value)}
-                      className="w-16 px-1.5 py-0.5 border border-border rounded text-sm font-body tabular-nums"
-                      autoFocus
-                      onKeyDown={e => e.key === 'Enter' && savePrice(item.id)}
-                    />
-                    <button
-                      onClick={() => savePrice(item.id)}
-                      className="size-6 rounded bg-primary text-primary-foreground flex items-center justify-center"
-                      aria-label="Save price"
-                    >
-                      <Check className="size-3.5" />
-                    </button>
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm">₹</span>
+                      <input
+                        type="number"
+                        value={editPrice}
+                        onChange={e => { setEditPrice(e.target.value); setPriceError(null); }}
+                        className="w-16 px-1.5 py-0.5 border border-border rounded text-sm font-body tabular-nums"
+                        autoFocus
+                        disabled={savingPrice}
+                        onKeyDown={e => e.key === 'Enter' && savePrice(item.id)}
+                      />
+                      <button
+                        onClick={() => savePrice(item.id)}
+                        disabled={savingPrice}
+                        className="size-6 rounded bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-50"
+                        aria-label="Save price"
+                      >
+                        {savingPrice ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => { setEditingId(null); setEditPrice(''); setPriceError(null); }}
+                        disabled={savingPrice}
+                        className="size-6 rounded bg-muted text-muted-foreground flex items-center justify-center"
+                        aria-label="Cancel"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </div>
+                    {priceError && (
+                      <p className="text-[10px] text-destructive font-medium pl-4">{priceError}</p>
+                    )}
                   </div>
                 ) : (
                   <button

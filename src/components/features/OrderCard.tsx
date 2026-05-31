@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { supabase } from '@/lib/supabase';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency, formatTime } from '@/lib/utils';
 import { ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '@/constants/config';
-import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell, AlertCircle } from 'lucide-react';
+import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck, Bell, AlertCircle, Loader2 } from 'lucide-react';
 import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 import { AdvancePaymentPanel } from '@/pages/BillingDashboard';
@@ -48,7 +49,9 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   const [cancelCustomReason, setCancelCustomReason] = useState('');
   const [cancelPassword, setCancelPassword] = useState('');
   const [cancelPasswordError, setCancelPasswordError] = useState('');
+  const [cancelSubmitting, setCancelSubmitting] = useState(false); // C-01
   const [showAdvance, setShowAdvance] = useState(false);
+  const [discountError, setDiscountError] = useState(''); // U-02
 
   const [splitMode, setSplitMode] = useState(false);
   const [splitMethods, setSplitMethods] = useState<SplitMethod[]>([]);
@@ -60,19 +63,70 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
   const billerName = currentUser?.displayName || currentUser?.username || '';
 
-  // Biller can ONLY collect payment — they cannot advance status
+  // C-01 FIX: derived cancel state at component level so handleConfirmCancel can be async
+  const finalReason = cancelReason === '__custom__' ? cancelCustomReason.trim() : cancelReason;
+  const canConfirm  = finalReason.length > 0 && cancelPassword.length > 0 && !cancelSubmitting;
+
+  const handleConfirmCancel = async () => {
+    setCancelPasswordError('');
+    if (!finalReason) { setCancelPasswordError('Select or enter a reason.'); return; }
+    setCancelSubmitting(true);
+    try {
+      // C-01 FIX: verify password server-side via RPC — never compare on the client.
+      // currentUser.password is always '' (auth store intentionally omits it), so any
+      // client-side comparison is trivially bypassed. The RPC checks against the
+      // bcrypt hash stored in the DB.
+      const { data: verified, error: verifyErr } = await supabase.rpc('verify_staff_password', {
+        p_username: currentUser!.username,
+        p_password: cancelPassword,
+      });
+      if (verifyErr || !verified) {
+        setCancelPasswordError('Incorrect password. Try again.');
+        return;
+      }
+      await updateOrderStatus(order.id, 'cancelled', finalReason);
+      setShowCancelPrompt(false);
+      setCancelReason('');
+      setCancelCustomReason('');
+      setCancelPassword('');
+      setCancelPasswordError('');
+    } catch {
+      setCancelPasswordError('Verification failed — please try again.');
+    } finally {
+      setCancelSubmitting(false);
+    }
+  };
+
+  const handleCancelBack = () => {
+    setShowCancelPrompt(false);
+    setCancelReason('');
+    setCancelCustomReason('');
+    setCancelPassword('');
+    setCancelPasswordError('');
+  };
+
+  // Biller can collect payment at ANY status (pending/preparing/ready) — no need to wait for kitchen
   const isBiller = currentUser?.role === 'billing';
   const isReadyOrder = order.status === 'ready';
-  const canCollectPayment = showActions && isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const canCollectPayment = showActions && isBiller && order.status !== 'served' && order.status !== 'cancelled' && order.paymentType === 'unpaid';
   const canAdvanceNonBiller = showActions && !isBiller && order.status !== 'served' && order.status !== 'cancelled';
 
   const handleApplyDiscount = () => {
     const val = parseFloat(discValue);
-    if (!isNaN(val) && val > 0) {
-      applyDiscount(order.id, discType, val).catch(() => {});
-      setShowDiscount(false);
-      setDiscValue('');
+    if (isNaN(val) || val <= 0) { setDiscountError('Enter a valid amount.'); return; }
+    // U-02 FIX: hard caps — percentage ≤ 100%, flat ≤ subtotal
+    if (discType === 'percentage' && val > 100) {
+      setDiscountError('Percentage discount cannot exceed 100%.');
+      return;
     }
+    if (discType === 'flat' && val > order.subtotal) {
+      setDiscountError(`Flat discount cannot exceed subtotal (₹${order.subtotal.toFixed(2)}).`);
+      return;
+    }
+    setDiscountError('');
+    applyDiscount(order.id, discType, val).catch(() => {});
+    setShowDiscount(false);
+    setDiscValue('');
   };
 
   const handleSinglePayment = async (pt: PaymentType) => {
@@ -169,7 +223,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   };
 
   // Ready notification badge for billers
-  const showReadyBadge = isBiller && isReadyOrder && order.paymentType === 'unpaid';
+  const showReadyBadge = isBiller && canCollectPayment;
   const isKitchen = currentUser?.role === 'kitchen' || currentUser?.role === 'order_taker';
 
   return (
@@ -179,12 +233,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           ? 'ring-2 ring-emerald-400 shadow-lifted'
           : 'border border-border'
       }`}>
-        {/* Ready notification for biller */}
+        {/* Billing available badge for biller */}
         {showReadyBadge && (
           <div className="px-4 py-2.5 flex items-center gap-2"
-            style={{ background: 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))', borderBottom: '1px solid rgba(16,185,129,0.25)' }}>
-            <Bell className="size-4 text-emerald-600 animate-bounce" />
-            <span className="text-xs font-body font-bold text-emerald-700">Order Ready — Collect Payment</span>
+            style={{ background: isReadyOrder ? 'linear-gradient(135deg,rgba(16,185,129,0.12),rgba(16,185,129,0.06))' : 'linear-gradient(135deg,rgba(245,158,11,0.10),rgba(245,158,11,0.05))', borderBottom: isReadyOrder ? '1px solid rgba(16,185,129,0.25)' : '1px solid rgba(245,158,11,0.25)' }}>
+            <Bell className={`size-4 ${isReadyOrder ? 'text-emerald-600 animate-bounce' : 'text-amber-500'}`} />
+            <span className={`text-xs font-body font-bold ${isReadyOrder ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {isReadyOrder ? 'Order Ready — Collect Payment' : 'Collect Payment (Kitchen still preparing)'}
+            </span>
           </div>
         )}
 
@@ -254,6 +310,12 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                 <span className="tabular-nums">-{formatCurrency(order.discount)}</span>
               </div>
             </>
+          )}
+          {order.parcelCharges && order.parcelCharges > 0 && (
+            <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 mb-1">
+              <span>📦 Parcel charges</span>
+              <span className="tabular-nums font-bold">+{formatCurrency(order.parcelCharges)}</span>
+            </div>
           )}
           <div className="flex justify-between">
             <span className="text-sm font-body font-semibold">Total</span>
@@ -368,51 +430,18 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           </div>
         )}
 
-        {/* Biller: show pending/preparing status without actions */}
+        {/* Biller: small kitchen status badge — informational only, doesn't block billing */}
         {showActions && isBiller && !isReadyOrder && order.status !== 'served' && order.status !== 'cancelled' && (
-          <div className="px-3.5 py-2.5 border-t border-border flex items-center gap-2">
-            <div className="flex-1 py-2 rounded-lg bg-muted/50 text-center text-xs font-body font-semibold text-muted-foreground">
-              {order.status === 'pending' ? '⏳ Waiting for kitchen to start' : '🍳 Kitchen is preparing'}
-            </div>
-            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-xs font-body font-bold active:scale-95 flex items-center gap-1" title="Cancel Order">
-              ✕ Cancel
-            </button>
-            <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
-              <Printer className="size-4" />
-            </button>
+          <div className="px-3.5 pt-2 flex items-center gap-2">
+            <span className="text-[11px] font-body font-semibold text-muted-foreground bg-muted/60 px-2.5 py-1 rounded-full border border-border">
+              {order.status === 'pending' ? '⏳ Kitchen: pending' : '🍳 Kitchen: preparing'}
+            </span>
           </div>
         )}
 
         {/* Cancel Prompt — reason required + password required */}
-        {showCancelPrompt && (() => {
-          const finalReason = cancelReason === '__custom__' ? cancelCustomReason.trim() : cancelReason;
-          const canConfirm = finalReason.length > 0 && cancelPassword.length > 0;
-
-          const handleConfirmCancel = () => {
-            setCancelPasswordError('');
-            if (!finalReason) { setCancelPasswordError('Select or enter a reason.'); return; }
-            if (currentUser?.password && cancelPassword !== currentUser.password) {
-              setCancelPasswordError('Incorrect password. Try again.');
-              return;
-            }
-            updateOrderStatus(order.id, 'cancelled', finalReason);
-            setShowCancelPrompt(false);
-            setCancelReason('');
-            setCancelCustomReason('');
-            setCancelPassword('');
-            setCancelPasswordError('');
-          };
-
-          const handleBack = () => {
-            setShowCancelPrompt(false);
-            setCancelReason('');
-            setCancelCustomReason('');
-            setCancelPassword('');
-            setCancelPasswordError('');
-          };
-
-          return (
-            <div className="px-3.5 py-3 border-t border-destructive/30 bg-destructive/5 space-y-3">
+        {showCancelPrompt && (
+          <div className="px-3.5 py-3 border-t border-destructive/30 bg-destructive/5 space-y-3">
               <div className="flex items-center gap-2">
                 <AlertCircle className="size-4 text-destructive shrink-0" />
                 <p className="text-xs font-body font-bold text-destructive">Cancel Order #{String(order.orderNumber).padStart(3, '0')}</p>
@@ -485,18 +514,17 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                   disabled={!canConfirm}
                   className="flex-1 py-2.5 rounded-lg bg-destructive text-destructive-foreground text-sm font-body font-bold active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                 >
-                  Confirm Cancel
+                  {cancelSubmitting ? <><Loader2 className="size-4 animate-spin inline mr-1" />Verifying…</> : 'Confirm Cancel'}
                 </button>
                 <button
-                  onClick={handleBack}
+                  onClick={handleCancelBack}
                   className="px-4 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body font-semibold active:scale-95"
                 >
                   Back
                 </button>
               </div>
             </div>
-          );
-        })()}
+        )}
 
         {/* Payment Panel */}
         {showPayment && (
@@ -613,13 +641,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         {showDiscount && (
           <div className="px-3.5 py-3 border-t border-border bg-accent/5 space-y-2">
             <div className="flex gap-2">
-              <button onClick={() => setDiscType('percentage')} className={`flex-1 py-2 rounded-md text-xs font-body font-semibold ${discType === 'percentage' ? 'bg-accent text-accent-foreground' : 'bg-muted'}`}>Percentage %</button>
-              <button onClick={() => setDiscType('flat')} className={`flex-1 py-2 rounded-md text-xs font-body font-semibold ${discType === 'flat' ? 'bg-accent text-accent-foreground' : 'bg-muted'}`}>Flat ₹</button>
+              <button onClick={() => { setDiscType('percentage'); setDiscountError(''); }} className={`flex-1 py-2 rounded-md text-xs font-body font-semibold ${discType === 'percentage' ? 'bg-accent text-accent-foreground' : 'bg-muted'}`}>Percentage %</button>
+              <button onClick={() => { setDiscType('flat'); setDiscountError(''); }} className={`flex-1 py-2 rounded-md text-xs font-body font-semibold ${discType === 'flat' ? 'bg-accent text-accent-foreground' : 'bg-muted'}`}>Flat ₹</button>
             </div>
             <div className="flex gap-2">
-              <input type="number" placeholder={discType === 'percentage' ? 'e.g. 10' : 'e.g. 50'} value={discValue} onChange={(e) => setDiscValue(e.target.value)} className="flex-1 px-3 py-2 bg-card border border-border rounded-md text-sm font-body" />
+              <input type="number" placeholder={discType === 'percentage' ? 'e.g. 10' : 'e.g. 50'} value={discValue} onChange={(e) => { setDiscValue(e.target.value); setDiscountError(''); }} className="flex-1 px-3 py-2 bg-card border border-border rounded-md text-sm font-body" />
               <button onClick={handleApplyDiscount} className="px-4 py-2 rounded-md cafe-gradient text-primary-foreground text-sm font-body font-bold active:scale-95">Apply</button>
             </div>
+            {discountError && <p className="text-[11px] text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{discountError}</p>}
           </div>
         )}
 

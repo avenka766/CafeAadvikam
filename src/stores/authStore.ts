@@ -54,6 +54,8 @@ export const useAuthStore = create<AuthState>()(
         const user = rowToUser(data[0] as Record<string, unknown>);
         set({ currentUser: user });
         get()._resetSessionTimer();
+        // M-03 FIX: start sliding-session listeners on fresh login too
+        _attachActivityListeners();
         return true;
       },
 
@@ -78,11 +80,15 @@ export const useAuthStore = create<AuthState>()(
       // SEC-11: enforce min password length
       addStaff: async (user) => {
         if (user.password.trim().length < 6) return 'Password must be at least 6 characters';
+        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+        // The DB RPC add_staff_hashed() runs pgcrypto.crypt() before inserting.
         const { data, error } = await supabase
-          .from('staff_users')
-          .insert({ username: user.username, password: user.password, display_name: user.displayName, role: user.role })
-          .select('id, username, display_name, role')
-          .single();
+          .rpc('add_staff_hashed', {
+            p_username:     user.username,
+            p_password:     user.password,
+            p_display_name: user.displayName,
+            p_role:         user.role,
+          });
         if (error) return error.code === '23505' ? 'Username already taken' : error.message;
         if (!data) return 'Failed to add staff member';
         set((s) => ({ staffList: [...s.staffList, rowToUser(data as Record<string, unknown>)] }));
@@ -91,7 +97,12 @@ export const useAuthStore = create<AuthState>()(
 
       updateStaffPassword: async (userId, newPassword) => {
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
-        const { error } = await supabase.from('staff_users').update({ password: newPassword }).eq('id', userId);
+        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+        const { error } = await supabase
+          .rpc('update_staff_password_hashed', {
+            p_user_id:      userId,
+            p_new_password: newPassword,
+          });
         if (error) return 'Failed to update password';
         return null;
       },
@@ -132,8 +143,44 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'cafe-aadvikam-auth',
-      storage: createJSONStorage(() => sessionStorage),
+      storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null }),
+      // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
+      // but that means after a page reload the 8-hour auto-logout timer is never restarted.
+      // onRehydrateStorage fires once after sessionStorage is loaded — restart the timer here
+      // if the user session was restored (so they are still auto-logged out after 8 hours).
+      onRehydrateStorage: () => (state) => {
+        if (state?.currentUser) {
+          state._resetSessionTimer();
+          // M-03 FIX: attach sliding-session activity listeners after rehydration so that
+          // staff who are actively using the app never get kicked mid-shift.
+          _attachActivityListeners();
+        }
+      },
     },
   ),
 );
+
+// M-03 FIX: sliding session — reset the timeout on meaningful user interactions.
+// Throttled to at most once per minute to avoid hammering clearTimeout/setTimeout.
+let _activityListenersAttached = false;
+let _lastActivityReset = 0;
+
+function _attachActivityListeners() {
+  if (_activityListenersAttached) return;
+  _activityListenersAttached = true;
+
+  const THROTTLE_MS = 60_000; // reset at most once per minute
+  const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'visibilitychange'] as const;
+
+  const handleActivity = () => {
+    const store = useAuthStore.getState();
+    if (!store.currentUser) return; // not logged in — nothing to reset
+    const now = Date.now();
+    if (now - _lastActivityReset < THROTTLE_MS) return;
+    _lastActivityReset = now;
+    store._resetSessionTimer();
+  };
+
+  ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
+}

@@ -2,46 +2,44 @@
 // Drop this file into src/components/features/
 // Then add <ChatBot /> anywhere in Landing.tsx (see instructions at bottom)
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { MessageCircle, X, Send, Phone, ShoppingBag, CalendarDays, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+// PERF-03: menu dataset lazy-loaded via dynamic import so it's excluded from the
+// main bundle and only fetched when the chatbot first mounts.
+import { useState as _useState, useEffect as _useEffect } from 'react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CAFE_WA = '918883122246';
-const BAKERY_PHONE = '+91 9443388257';
+// Fallback empty structure while the JSON loads
+let _menuDataCache: { menu: Record<string, { timing: string; items: [string, number][] }>; bakery: Record<string, string[]> } | null = null;
+
+function getMenuData() {
+  return _menuDataCache;
+}
+
+// Kick off the dynamic import immediately when this module loads —
+// it resolves before the user can type their first message.
+import('./chatBotMenuData.json').then(m => { _menuDataCache = m.default as typeof _menuDataCache; });
+
+const CAFE_WA = '919095445444';
+const BAKERY_PHONE = '+91 9095445444';
 const MAPS_URL = 'https://www.google.com/maps/place/Cafe+Aadvikam/@12.808481,77.9602846,17z/data=!4m6!3m5!1s0x3baddf00120caa5f:0x7cf353554e2c66a9!8m2!3d12.808481!4d77.9628595!16s%2Fg%2F11z0zvhx9p';
 const SNB_WEBSITE = 'https://www.snbbakery.in';
 
-const MENU: Record<string, { timing: string; items: [string, number][] }> = {
-  'South Indian Breakfast': { timing: '7AM–11AM', items: [['Idly (2pc)', 39], ['Plain Dosa', 55], ['Set Dosa (2pc)', 69], ['Mushroom Dosa', 89], ['Podi Dosa', 80], ['Ghee Dosa', 80], ['Sambar Vada', 40], ['Masala Dosa', 69], ['Ghee Pongal', 89], ['Vada (1pc)', 19], ['Lemon Rice', 69], ['Pulihora', 69], ['Tomato Bath', 69], ['Ghee Veg Upma', 79], ['Kesaribath', 39], ['Onion Uttapam', 59], ['Ghee Onion Uttapam', 89], ['Rice Bath', 69]] },
-  'Soup': { timing: '12PM–10PM', items: [['Tomato Soup', 59], ['Corn Soup', 59], ['Hot n Sour Soup', 59], ['Lemon Coriander Soup', 59], ['Cream & Mushroom Soup', 79], ['Drum Stick Soup', 79]] },
-  'Lunch': { timing: '12PM–3PM', items: [['Pappu Avakaya Rice', 89], ['Gongura Rice', 89], ['Rasam Rice', 79], ['Curd Rice', 79], ['Sambar Sadam', 89], ['Bisibelebath', 89]] },
-  'Biriyani': { timing: '12PM–3PM & 7PM–10PM', items: [['Handi Biriyani', 169], ['Hyderabad Biriyani', 150], ['Tawa Biriyani', 140], ['Paneer Tikka Biriyani', 200], ['Jack Fruit Biriyani', 200], ['Veg Biriyani', 140]] },
-  'Mini Meals': { timing: '12PM–3PM', items: [['Mini Meals', 110]] },
-  'Tandoori Starters': { timing: '12PM–3PM & 7PM–10PM', items: [['Paneer Tikka', 140], ['Malai Paneer Tikka', 140], ['Mushroom Tikka', 120], ['Veg Sheek Kabab', 120], ['Achari Kabab', 130], ['Haryali Kabab', 130], ['Soya Chop Kabab', 140], ['Harabara Kabab', 120], ['Stuffed Tandoori Aloo', 189], ['Grilled Corn', 110], ['Tandoori Platter', 190], ['Pineapple Tandoori', 160], ['Tandoori Momos', 110]] },
-  'Chinese': { timing: '12PM–3PM & 7PM–10PM', items: [['Veg Manchurian', 99], ['Gobi Manchurian', 90], ['Paneer Manchurian', 110], ['Mushroom Manchurian', 99], ['Baby Corn Manchurian', 99], ['Chilli Paneer', 120], ['Chilli Gobi', 110], ['Chilli Mushroom', 110], ['Paneer 65 Dry', 120], ['Gobi 65 Dry', 90], ['Baby Corn 65 Dry', 110], ['Masala Pepper Corn', 110], ['Crispy Mix Vegetables', 79], ['Veg Ball Manchurian', 80]] },
-  'Rice & Noodles': { timing: '12PM–10PM', items: [['Veg Fried Rice', 110], ['Paneer Fried Rice', 130], ['Gobi Fried Rice', 130], ['Mushroom Fried Rice', 130], ['Veg Schezwan Fried Rice', 130], ['Veg Noodles', 110], ['Paneer Noodles', 130], ['Mushroom Noodles', 130], ['Gobi Noodles', 130], ['SNB Special Triple Rice', 189], ['Jeera Rice', 110], ['Ghee Rice', 110], ['Green Peas Pulav', 130], ['Veg Pulav', 130]] },
-  'Breads': { timing: '12PM–3PM & 7PM–10PM', items: [['Plain Naan', 40], ['Butter Naan', 45], ['Garlic Naan', 45], ['Roti', 30], ['Butter Roti', 35], ['Stuffed Paratha', 45], ['Stuffed Onion Paratha', 50], ['Stuffed Paneer Paratha', 65], ['Kashmiri Naan', 60], ['Plain Kulcha', 45], ['Stuffed Kulcha', 70], ['Aloo Paratha', 90]] },
-  'Parotta': { timing: '7PM–10PM', items: [['Kottu Parotta + Kurma', 79], ['Fried Parotta + Kurma', 70], ['Potlam Parotta + Kurma', 130], ['Noolu Parotta + Kurma', 50], ['Parotta + Kurma', 40], ['Bun Parotta + Kurma', 60]] },
-  'Gravy & Curry': { timing: '7PM–10PM', items: [['Paneer Tikka Masala', 170], ['Paneer Butter Masala', 160], ['Palak Paneer', 160], ['Mix Veg Kadai', 160], ['Mix Veg Kolhapuri', 170], ['Palak Dal', 140], ['Dal Tadka', 140], ['Mushroom Masala', 160], ['Veg Kurma', 160], ['Dal Makhani', 160], ['Kadai Paneer', 160], ['Kadai Mushroom Masala', 160], ['Aloo Matar Subzi', 160]] },
-  'Kids Menu': { timing: '11AM–10PM', items: [['Veg Burger', 70], ['Veg Cheese Grilled Burger', 80], ['Sandwich', 70], ['Bombay Triple Sandwich', 99], ['Cheese Grilled Sandwich', 99], ['French Fries', 70], ['Honey Chilli Potato', 99], ['Corn Cheese Ball', 99], ['Pizza', 99], ['Veg Corn Pizza', 120], ['Veg Cheese Pizza', 120], ['Veg Paneer Tikka Pizza', 139], ['Veg Farmhouse Pizza', 139], ['Veg Momos', 99]] },
-  'Beverages': { timing: '6AM–10PM', items: [['Tea', 20], ['Coffee', 30], ['Badam Milk Hot & Cold', 30], ['Ice Tea', 40], ['Lemon Tea', 20], ['Tandoori Tea', 25], ['Black Tea', 20], ['Lassi Plain', 60], ['Mango Lassi', 70], ['Gulab Shake', 70], ['Masala Shikanji', 50], ['Badam Milk', 70], ['Rose Milk', 60], ['Butter Milk', 60]] },
-  'Evening Snacks': { timing: '3PM–7PM', items: [['Mirchi Bajji (2pc)', 45], ['Banana Bajji (2pc)', 45], ['Onion Bonda', 45], ['Masala Mirchi Bajji', 49], ['Aloo Bonda', 40], ['Mix Bajji', 60]] },
-  'Chats': { timing: '3PM–10PM', items: [['Pani Puri', 40], ['Masala Puri', 40], ['Dahi Puri', 50], ['Pav Bhaji', 70], ['Chole Bhature', 80], ['Vada Pav (2pc)', 50], ['Dabeli', 50], ['Raj Kachori', 60], ['Papdi Chat', 50], ['Bhel Puri', 50], ['Congress Masala', 50]] },
-};
-
-const BAKERY: Record<string, string[]> = {
-  Sweets: ['Mysore Pak', 'Spl Mysore Pak', 'Ragi Mysore Pak', 'Millet Mix Mysore Pak', 'Coconut Burfi', 'Peanut Burfi', 'Boost Burfi', 'Horlicks Burfi', 'Soan Papdi', 'Dryfruit Halwa', 'Carrot Halwa', 'Bombay Halwa', 'Milk Halwa', 'Boondhi Laadu', 'Rava Laadu', 'Thirupathi Laadu', 'Kaju Pista Laadu', 'Jelabi', 'Jangiri', 'Mini Badusha', 'Chandrakala', 'Jamoon', 'Peda', 'Kaju Chikki', 'Dryfruit Chikkies', 'Oppat', 'Sweet Boondhi', 'Vanilla Bites', 'Chocolate Bites'],
-  Savouries: ['Masala Cashew', 'Pepper Cashew', 'Regular Nippat', 'Garlic Nippat', 'Ragi Nippat', 'Pakoda', 'Cashew Pakoda', 'Finger Chips', 'Potato Chips', 'Banana Chips', 'Kachori', 'Samosa', 'Regular Mixture', 'Bombay Mixture', 'SNB Special Mixture', 'Ragi Mixture', 'Kara Boondhi', 'Chana Dal', 'Mix Dal', 'Till Muruk', 'Ribbon Muruk', 'Mullu Muruk', 'Beetroot Muruk', 'Onion Muruk', 'Garlic Muruk', 'Ragi Muruk', 'Om Pudi', 'Mota Sev', 'Madur Vada', 'Athirasam'],
-  Bakery: ['Bread', 'Bun', 'Masala Bun', 'Coconut Bun', 'Rusk', 'Butter Rusk', 'Wheat Bread', 'Pav Bread', 'Plain Cake', 'Banana Cake', 'Carrot Cake', 'Black Forest', 'Brownie', 'Muffins', 'Croissant', 'Veg Roll', 'Cutlet', 'French Macaroons', 'Vanilla Sponge', 'Eggless Vanilla Sponge', 'Chocolate Sponge', 'Red Velvet Sponge'],
-  Cookies: ['Salt Biscuit', 'Kara Biscuit', 'Coconut Biscuit', 'Groundnut Biscuit', 'Butter Biscuit'],
-};
-
+// PERF-03: Menu dataset moved to a separate JSON file so it's only loaded when
+// the chatbot first opens, instead of bloating the main bundle for all users.
+// Use the lazily-loaded cache (falls back to empty objects before load completes)
+const MENU: Record<string, { timing: string; items: [string, number][] }> = new Proxy({} as Record<string, { timing: string; items: [string, number][] }>, {
+  get(_t, key) { return getMenuData()?.menu[key as string]; }
+});
+const BAKERY: Record<string, string[]> = new Proxy({} as Record<string, string[]>, {
+  get(_t, key) { return getMenuData()?.bakery[key as string]; }
+});
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Message {
-  id: number;
+  id: string;
   role: 'bot' | 'user';
   text: string;
   time: string;
@@ -81,7 +79,7 @@ function getResponse(q: string): string {
     return 'Vanakkam! 🙏 Welcome to Cafe Aadvikam — pure veg Restaurant & Party Hall, Berikai.\n\nAsk me about our menu & prices, bakery sweets & savouries, or party hall booking!';
 
   if (/order.*online|how.*order|place.*order|delivery|takeaway|online/i.test(ql))
-    return 'You can order in 3 easy ways:\n\n1. 💬 WhatsApp — +91 88831 22246\n2. 📞 Call — +91 9443388257\n3. 🚶 Walk in — 109 Bagalur Main Road, Berikai\n\nFor bakery items, WhatsApp a day in advance!';
+    return 'You can order in 3 easy ways:\n\n1. 💬 WhatsApp — +91 90954 45444\n2. 📞 Call — +91 9095445444\n3. 🚶 Walk in — 109 Bagalur Main Road, Berikai\n\nFor bakery items, WhatsApp a day in advance!';
 
   if (/location|address|where|map|direction|berikai|how to reach/i.test(ql))
     return '📍 Cafe Aadvikam\n109 Bagalur Main Road, Berikai 635105\n\n⏰ Open 6 AM – 10 PM daily\n\nAmple parking available!';
@@ -93,7 +91,7 @@ function getResponse(q: string): string {
     return '🎉 Party Hall — Cafe Aadvikam\n\nPerfect for:\n• Birthday parties\n• Family gatherings\n• Corporate events\n• Receptions & celebrations\n\n✅ Spacious hall with ample parking\n✅ Pure veg catering from our kitchen\n✅ Customisable arrangements\n\n📍 109 Bagalur Main Road, Berikai\n\nTap "Book Party Hall" below to send your details via WhatsApp!';
 
   if (/contact|enquir|reach.*us|get.*touch/i.test(ql))
-    return '📞 +91 9443388257\n💬 WhatsApp: +91 88831 22246\n🌐 www.snbbakery.in\n📍 109 Bagalur Main Road, Berikai 635105';
+    return '📞 +91 9095445444\n💬 WhatsApp: +91 90954 45444\n🌐 www.snbbakery.in\n📍 109 Bagalur Main Road, Berikai 635105';
 
   if (/about|who are|what is cafe|aadvikam|vrsnb/i.test(ql))
     return 'Cafe Aadvikam — Restaurant & Party Hall\n\nA pure vegetarian restaurant serving authentic South Indian breakfast, North Indian cuisine, Chinese dishes, and freshly baked goods.\n\n• Type: Pure Vegetarian 🌿\n• Hours: 6 AM – 10 PM Daily\n• Address: 109 Bagalur Main Road, Berikai 635105\n• Venture of: VRSNB Foods LLP\n• Website: www.snbbakery.in';
@@ -223,11 +221,11 @@ function ContactModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (f
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-sm p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50" onClick={onClose} role="presentation">
+      <div className="bg-white rounded-2xl w-full max-w-sm p-5 shadow-xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Book Party Hall or Enquiry">
         <div className="flex items-center justify-between mb-1">
           <h3 className="font-semibold text-gray-800">Book Party Hall / Enquiry</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="size-5" /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="Close"><X className="size-5" /></button>
         </div>
         <p className="text-xs text-gray-500 mb-4">Your details will be sent to us via WhatsApp for a quick response.</p>
 
@@ -278,11 +276,11 @@ function OrderModal({ onClose }: { onClose: () => void }) {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50" onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-sm p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50" onClick={onClose} role="presentation">
+      <div className="bg-white rounded-2xl w-full max-w-sm p-5 shadow-xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Order and visit options">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-gray-800">Order / Visit Options</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="size-5" /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="Close"><X className="size-5" /></button>
         </div>
         <div className="space-y-2">
           {options.map(opt => (
@@ -316,12 +314,14 @@ const QUICK_CHIPS = [
 export default function ChatBot() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
-    { id: 0, role: 'bot', text: 'Vanakkam! 🙏 Welcome to <strong>Cafe Aadvikam</strong> — pure veg Restaurant & Party Hall, Berikai.\n\nAsk me about our menu & prices, bakery, or party hall booking!', time: nowStr() },
+    { id: crypto.randomUUID(), role: 'bot', text: 'Vanakkam! 🙏 Welcome to <strong>Cafe Aadvikam</strong> — pure veg Restaurant & Party Hall, Berikai.\n\nAsk me about our menu & prices, bakery, or party hall booking!', time: nowStr() },
   ]);
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
   const [showContact, setShowContact] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
+  // MOB-03: track keyboard height so the chat panel lifts above the keyboard
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -329,22 +329,61 @@ export default function ChatBot() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, typing]);
 
+  // FIX A-09: focus trap — keep keyboard focus inside the chat panel when open.
+  const chatPanelRef = useRef<HTMLDivElement>(null);
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (!open) return;
+    if (e.key === 'Escape') { setOpen(false); return; }
+    if (e.key !== 'Tab') return;
+    const panel = chatPanelRef.current;
+    if (!panel) return;
+    const focusable = panel.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last?.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+  }, [open]);
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 300);
   }, [open]);
+
+  // MOB-03: listen to visualViewport resize to detect soft keyboard
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      const keyboardH = window.innerHeight - vv.height - vv.offsetTop;
+      setKeyboardOffset(Math.max(0, keyboardH));
+    };
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
+    return () => { vv.removeEventListener('resize', onResize); vv.removeEventListener('scroll', onResize); };
+  }, []);
 
   const sendMsg = (text?: string) => {
     const q = (text ?? input).trim();
     if (!q) return;
     setInput('');
 
-    const userMsg: Message = { id: Date.now(), role: 'user', text: q, time: nowStr() };
+    // L-02: use crypto.randomUUID() — Date.now() risks key collisions for rapid messages
+    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', text: q, time: nowStr() };
     setMessages(prev => [...prev, userMsg]);
     setTyping(true);
 
     setTimeout(() => {
       setTyping(false);
-      const botMsg: Message = { id: Date.now() + 1, role: 'bot', text: getResponse(q), time: nowStr() };
+      const botMsg: Message = { id: crypto.randomUUID(), role: 'bot', text: getResponse(q), time: nowStr() };
       setMessages(prev => [...prev, botMsg]);
     }, 500 + Math.random() * 400);
   };
@@ -353,7 +392,7 @@ export default function ChatBot() {
     const waText = `Hi Cafe Aadvikam! 🙏\n\n*${form.type}*\nName: ${form.name}\nPhone: ${form.phone}${form.details ? '\nDetails: ' + form.details : ''}`;
     openWA(waText);
     const confirmMsg: Message = {
-      id: Date.now(),
+      id: crypto.randomUUID(),
       role: 'bot',
       text: `Your <strong>${form.type}</strong> details have been sent via WhatsApp! We'll get back to you on <strong>${form.phone}</strong> shortly. 🙏`,
       time: nowStr(),
@@ -363,13 +402,14 @@ export default function ChatBot() {
 
   return (
     <>
-      {/* Floating toggle button */}
+      {/* Floating toggle button — z-50 (U-18: was z-40, covered by modals) */}
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'fixed bottom-20 right-4 z-40 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
+          'fixed right-4 z-50 w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all duration-300',
           'bg-[#8B4513] text-white hover:bg-[#6b3310] active:scale-95',
         )}
+        style={{ bottom: `calc(env(safe-area-inset-bottom, 0px) + 5rem + ${keyboardOffset}px)` }}
         aria-label="Open chat"
       >
         {open ? <X className="size-6" /> : <MessageCircle className="size-6" />}
@@ -378,15 +418,22 @@ export default function ChatBot() {
         )}
       </button>
 
-      {/* Chat window */}
+      {/* Chat window — z-50, repositions above keyboard (MOB-03) */}
       <div
+        ref={chatPanelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Chat with Cafe Aadvikam"
         className={cn(
-          'fixed bottom-36 right-4 z-40 w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
+          'fixed right-4 z-layer-modal w-[340px] max-w-[calc(100vw-2rem)] flex flex-col',
           'bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden',
           'transition-all duration-300 origin-bottom-right',
           open ? 'opacity-100 scale-100 pointer-events-auto' : 'opacity-0 scale-95 pointer-events-none',
         )}
-        style={{ height: '520px' }}
+        style={{
+          bottom: `calc(env(safe-area-inset-bottom, 0px) + 9rem + ${keyboardOffset}px)`,
+          height: '520px',
+        }}
       >
         {/* Header */}
         <div className="bg-[#8B4513] px-4 py-3 flex items-center gap-3 flex-shrink-0">

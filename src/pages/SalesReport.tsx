@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 import type { PaymentType } from '@/types';
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
-  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance',
+  cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid', advance: 'Advance', credit: 'Credit',
 };
 const PIE_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#999'];
 const SOURCE_COLORS = ['#3B82F6', '#8B5CF6'];
@@ -36,6 +36,20 @@ export default function SalesReport() {
   const [startDate, setStartDate] = useState<string>(toInputDate(new Date()));
   const [endDate, setEndDate] = useState<string>(toInputDate(new Date()));
   const [filterMode, setFilterMode] = useState<'today' | 'custom'>('today');
+  // U-05 FIX: flag when the user has set an invalid range so we can show inline error
+  const dateRangeInvalid = filterMode === 'custom' && startDate > endDate;
+
+  const handleStartDateChange = (val: string) => {
+    setStartDate(val);
+    // Auto-swap if end is now before start
+    if (val > endDate) setEndDate(val);
+  };
+
+  const handleEndDateChange = (val: string) => {
+    setEndDate(val);
+    // Auto-swap if start is now after end
+    if (val < startDate) setStartDate(val);
+  };
 
   useEffect(() => {
     startPolling();
@@ -53,8 +67,16 @@ export default function SalesReport() {
     });
   }, [orders, filterMode, startDate, endDate]);
 
-  const dayOrders = useMemo(() => filteredOrders.filter((o) => o.status === 'served'), [filteredOrders]);
+  const dayOrders = useMemo(() =>
+    filteredOrders.filter((o) => o.status === 'served' && o.paymentType !== 'advance'),
+    [filteredOrders]
+  );
   const cancelledOrders = useMemo(() => filteredOrders.filter((o) => o.status === 'cancelled'), [filteredOrders]);
+  // Advance orders in the period — used for the Advance sheet in Excel
+  const advanceOrders = useMemo(() =>
+    filteredOrders.filter((o) => o.paymentType === 'advance'),
+    [filteredOrders]
+  );
 
   const totalRevenue = dayOrders.reduce((s, o) => s + o.total, 0);
   const orderCount = dayOrders.length;
@@ -127,11 +149,12 @@ export default function SalesReport() {
   }, [dayOrders]);
 
   const paymentBreakdown = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
+    let cash = 0, upi = 0, card = 0, credit = 0;
     dayOrders.forEach((o) => {
       if (o.paymentType === 'cash') cash += o.total;
       else if (o.paymentType === 'upi') upi += o.total;
       else if (o.paymentType === 'card') card += o.total;
+      else if (o.paymentType === 'credit') credit += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
       }
@@ -140,6 +163,7 @@ export default function SalesReport() {
     if (cash > 0) result.push({ name: 'Cash', value: cash });
     if (upi > 0) result.push({ name: 'UPI', value: upi });
     if (card > 0) result.push({ name: 'Card', value: card });
+    if (credit > 0) result.push({ name: 'Credit', value: credit });
     return result;
   }, [dayOrders]);
 
@@ -258,20 +282,22 @@ export default function SalesReport() {
     ];
 
     // ── Sheet 6: Payment Breakdown ────────────────────────────────────────────
-    let totalCash = 0, totalUpi = 0, totalCard = 0;
+    let totalCash = 0, totalUpi = 0, totalCard = 0, totalCredit = 0;
     dayOrders.forEach(o => {
       if (o.paymentType === 'cash') totalCash += o.total;
       else if (o.paymentType === 'upi') totalUpi += o.total;
       else if (o.paymentType === 'card') totalCard += o.total;
+      else if (o.paymentType === 'credit') totalCredit += o.total;
       else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
         totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
       }
     });
     const paymentRows = [
-      { 'Payment Method': 'Cash',  'Orders': dayOrders.filter(o => o.paymentType === 'cash' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
-      { 'Payment Method': 'UPI',   'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
-      { 'Payment Method': 'Card',  'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
-      { 'Payment Method': 'TOTAL', 'Orders': orderCount, 'Amount (₹)': totalRevenue },
+      { 'Payment Method': 'Cash',   'Orders': dayOrders.filter(o => o.paymentType === 'cash' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
+      { 'Payment Method': 'UPI',    'Orders': dayOrders.filter(o => o.paymentType === 'upi'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
+      { 'Payment Method': 'Card',   'Orders': dayOrders.filter(o => o.paymentType === 'card' || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
+      { 'Payment Method': 'Credit', 'Orders': dayOrders.filter(o => o.paymentType === 'credit').length, 'Amount (₹)': totalCredit },
+      { 'Payment Method': 'TOTAL',  'Orders': orderCount, 'Amount (₹)': totalRevenue },
     ];
 
     // ── Sheet 7: Top Items ────────────────────────────────────────────────────
@@ -331,7 +357,43 @@ export default function SalesReport() {
       XLSX.utils.book_append_sheet(wb, ws, name);
     };
 
+    // ── Sheet 2: Advance Orders ───────────────────────────────────────────────
+    const advanceTotalPaid    = advanceOrders.reduce((s, o) => s + (o.advanceAmount ?? o.total), 0);
+    const advanceTotalBalance = advanceOrders.reduce((s, o) => s + (o.balanceDue ?? 0), 0);
+    const advancePending      = advanceOrders.filter(o => (o.balanceDue ?? 0) > 0).length;
+    const advanceClosed       = advanceOrders.filter(o => (o.balanceDue ?? 0) === 0).length;
+
+    const advanceRows = advanceOrders.map((o, i) => ({
+      'S.No':                i + 1,
+      'Order ID':            `#${String(o.orderNumber).padStart(3, '0')}`,
+      'Order Date':          new Date(o.createdAt).toLocaleDateString('en-IN'),
+      'Order Time':          new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      'Delivery Date':       o.deliveryDate ? new Date(o.deliveryDate).toLocaleDateString('en-IN') : '-',
+      'Customer':            o.customerName || '-',
+      'Items':               o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
+      'Full Bill (₹)':       o.fullAmount ?? o.subtotal,
+      'Advance Paid (₹)':    o.advanceAmount ?? o.total,
+      'Balance Due (₹)':     o.balanceDue ?? 0,
+      'Advance Via':         o.advancePaidBy ? o.advancePaidBy.toUpperCase() : '-',
+      'Status':              (o.balanceDue ?? 0) === 0 ? 'Fully Paid' : 'Balance Pending',
+      'Balance Paid Via':    o.balancePaymentType ? o.balancePaymentType.toUpperCase() : '-',
+      'Fully Paid At':       o.fullyPaidAt ? new Date(o.fullyPaidAt).toLocaleString('en-IN') : '-',
+      'Biller':              o.billedBy || o.createdBy || '-',
+    }));
+
+    // Append advance summary to Daily Closing
+    closingRows.push(
+      { 'Metric': '', 'Value': '' },
+      { 'Metric': 'ADVANCE ORDERS', 'Value': '' },
+      { 'Metric': 'Total Advance Orders', 'Value': advanceOrders.length },
+      { 'Metric': 'Pending Balance', 'Value': advancePending },
+      { 'Metric': 'Fully Paid', 'Value': advanceClosed },
+      { 'Metric': 'Total Advance Collected (₹)', 'Value': advanceTotalPaid },
+      { 'Metric': 'Total Balance Outstanding (₹)', 'Value': advanceTotalBalance },
+    );
+
     addSheet(mainRows,       'Sales Report',     'No served orders');
+    addSheet(advanceRows,    'Advance Orders',   'No advance orders');
     addSheet(cancelRows,     'Cancelled Orders', 'No cancellations');
     addSheet(cgstRows,       'CGST 2.5%',        'No data');
     addSheet(sgstRows,       'SGST 2.5%',        'No data');
@@ -374,13 +436,19 @@ export default function SalesReport() {
           <div className="flex gap-2 items-end">
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">From</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
             <div className="flex-1">
               <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">To</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
+              <input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} max={toInputDate(new Date())} className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body" />
             </div>
           </div>
+        )}
+        {/* U-05 FIX: show inline error when date range is invalid */}
+        {dateRangeInvalid && (
+          <p className="text-xs font-body text-destructive flex items-center gap-1">
+            ⚠ Start date must be before end date — dates have been swapped automatically.
+          </p>
         )}
         <div className="flex items-center gap-1.5">
           <CalendarDays className="size-3.5 text-primary" />

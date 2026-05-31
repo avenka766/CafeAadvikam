@@ -1,5 +1,5 @@
 // src/types/index.ts
-// ── CHANGE: Added 'branch_vrsnb' | 'branch_snb' | 'branch_hosur' to UserRole ──
+// ── CHANGE: Replaced 'order_receiver' with 3 branch-specific receiver roles ──
 export type UserRole =
   | 'order_taker'
   | 'billing'
@@ -8,10 +8,15 @@ export type UserRole =
   | 'store'
   | 'baker'
   | 'packing'
-  | 'order_receiver'
-  | 'branch_vrsnb'   // NEW
-  | 'branch_snb'     // NEW
-  | 'branch_hosur';  // NEW
+  | 'receiver_vrsnb'   // VRSNB Order Receiver (orders VRSNB items only)
+  | 'receiver_snb'     // SNB Order Receiver   (orders SNB items only)
+  | 'receiver_hosur'   // Hosur Order Receiver (orders Hosur/SNB items only)
+  | 'branch_vrsnb'
+  | 'branch_snb'
+  | 'branch_hosur'
+  | 'admin_vrsnb'   // VRSNB Admin Dashboard
+  | 'admin_snb'     // SNB Admin Dashboard
+  | 'owner';        // Owner Dashboard
 
 export interface User {
   id: string;
@@ -39,7 +44,7 @@ export interface CartItem {
 
 export type OrderType = 'dine_in' | 'takeaway';
 export type OrderStatus = 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled';
-export type PaymentType = 'cash' | 'upi' | 'card' | 'part_payment' | 'unpaid' | 'advance';
+export type PaymentType = 'cash' | 'upi' | 'card' | 'part_payment' | 'unpaid' | 'advance' | 'credit';
 export type OrderSource = 'staff' | 'qr';
 
 export interface PaymentBreakdown {
@@ -73,9 +78,13 @@ export interface Order {
   advanceAmount?: number;
   advancePaidBy?: string;
   balanceDue?: number;
+  fullAmount?: number;       // original full bill total for advance orders
   fullyPaidAt?: string;
   balancePaymentType?: string;
   balancePaidBy?: string;
+  balanceOrderId?: string;   // id of the balance-collection order row
+  parcelCharges?: number;
+  deliveryDate?: string;     // ISO date string — mandatory for advance orders
 }
 
 export interface MenuCategory {

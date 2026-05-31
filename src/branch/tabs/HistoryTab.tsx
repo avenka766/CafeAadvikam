@@ -22,13 +22,27 @@ function toLocalDateKey(iso: string) {
 }
 
 const METHOD_COLORS: Record<string, string> = {
-  cash:      'bg-emerald-100 text-emerald-700',
-  upi:       'bg-blue-100 text-blue-700',
-  card:      'bg-purple-100 text-purple-700',
-  'cash+upi':'bg-amber-100 text-amber-700',
-  'cash+card':'bg-amber-100 text-amber-700',
-  'upi+card': 'bg-amber-100 text-amber-700',
+  cash:                'bg-emerald-100 text-emerald-700',
+  upi:                 'bg-blue-100 text-blue-700',
+  card:                'bg-purple-100 text-purple-700',
+  credit:              'bg-red-100 text-red-700',
+  'cash+upi':          'bg-amber-100 text-amber-700',
+  'cash+card':         'bg-amber-100 text-amber-700',
+  'upi+card':          'bg-amber-100 text-amber-700',
+  'advance+cash':      'bg-orange-100 text-orange-700',
+  'advance+upi':       'bg-orange-100 text-orange-700',
+  'advance+card':      'bg-orange-100 text-orange-700',
+  'advance:cash':      'bg-amber-100 text-amber-800',
+  'advance:upi':       'bg-amber-100 text-amber-800',
+  'advance:card':      'bg-amber-100 text-amber-800',
 };
+
+function methodColor(method: string | null): string {
+  if (!method) return 'bg-muted text-muted-foreground';
+  if (METHOD_COLORS[method]) return METHOD_COLORS[method];
+  if (method.startsWith('advance:')) return 'bg-amber-100 text-amber-800';
+  return 'bg-muted text-muted-foreground';
+}
 
 export function HistoryTab({ branchSales }: Props) {
   const [search, setSearch] = useState('');
@@ -57,11 +71,13 @@ export function HistoryTab({ branchSales }: Props) {
     return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   }, [filtered]);
 
-  const totalQty   = filtered.reduce((s, r) => s + r.quantitySold, 0);
+  const totalQty     = filtered.reduce((s, r) => s + r.quantitySold, 0);
+  // BUG #19 FIX: revenue was completely absent from history summary despite unitPrice existing on SaleRecord.
+  const totalRevenue = filtered.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0);
 
   return (
     <div className="space-y-3">
-      <div className="bg-card border rounded-xl overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
         <SectionHeader
           icon={<History className="size-4 text-blue-600" />}
           title="Sales History"
@@ -94,13 +110,21 @@ export function HistoryTab({ branchSales }: Props) {
             )}
           </div>
 
-          {/* Summary */}
+          {/* BUG #19 FIX: summary now shows revenue alongside qty */}
           {filtered.length > 0 && (
             <div className="flex gap-2">
               <div className="flex-1 bg-blue-50 rounded-xl px-3 py-2 flex items-center gap-2">
                 <TrendingUp className="size-3.5 text-blue-600" />
                 <span className="text-xs font-semibold text-blue-700">{totalQty} units sold</span>
               </div>
+              {totalRevenue > 0 && (
+                <div className="flex-1 bg-emerald-50 rounded-xl px-3 py-2 flex items-center gap-2">
+                  <IndianRupee className="size-3.5 text-emerald-600" />
+                  <span className="text-xs font-semibold text-emerald-700">
+                    ₹{totalRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -131,7 +155,7 @@ export function HistoryTab({ branchSales }: Props) {
                       {s.paymentMethod && (
                         <span className={cn(
                           'text-[10px] font-bold px-2 py-0.5 rounded-full capitalize',
-                          METHOD_COLORS[s.paymentMethod] ?? 'bg-muted text-muted-foreground',
+                          methodColor(s.paymentMethod),
                         )}>
                           {s.paymentMethod}
                         </span>

@@ -26,7 +26,7 @@ export function SettingsTab({ branch, branchStock }: Props) {
   );
 
   return (
-    <div className="bg-card border rounded-xl overflow-hidden">
+    <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
       <SectionHeader
         icon={<Settings className="size-4 text-primary" />}
         title="Low Stock Thresholds"

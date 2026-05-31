@@ -18,7 +18,12 @@ import { RECIPE_DEFINITIONS } from './recipeDefinitions';
  * Returns grams as a number, or null if no weight suffix is found.
  */
 export function parseWeightGrams(name: string): number | null {
-  const match = name.match(/\(\s*(\d+(?:\.\d+)?)\s*(g|gm|gms|kg|ml|l)\s*\)/i);
+  // BUG #12 FIX: match weight with OR without parentheses.
+  // Handles: (200g) (200 g) (200gm) (200 gms) (1kg) (0.5 kg) (250ml) AND "200g" bare.
+  // \s* between value and unit handles optional space e.g. "200 g" vs "200g".
+  const match =
+    name.match(/\(\s*(\d+(?:\.\d+)?)\s*(g|gm|gms|kg|ml|l)\s*\)/i) ??
+    name.match(/\b(\d+(?:\.\d+)?)\s*(g|gm|gms|kg|ml|l)\b/i);
   if (!match) return null;
   const value = parseFloat(match[1]);
   const unit  = match[2].toLowerCase();

@@ -54,12 +54,14 @@ export default function BranchRecentOrders({ branch }: Props) {
               </span>
             </div>
             <div className="flex flex-wrap gap-1 mt-1">
+              {/* BUG #20 FIX: show dispatchUnit (pcs/kg) alongside quantity.
+                  Previously "×5" was ambiguous — could be 5 kg or 5 pcs. */}
               {order.items.map((item, i) => (
                 <span
                   key={i}
                   className="text-[10px] font-body bg-muted px-2 py-0.5 rounded-full text-muted-foreground"
                 >
-                  {item.itemName} ×{item.quantity}
+                  {item.itemName} ×{item.quantity}{item.dispatchUnit ? ` ${item.dispatchUnit}` : ''}
                 </span>
               ))}
             </div>

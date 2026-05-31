@@ -8,15 +8,21 @@ import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
-  kitchen: 'Kitchen', order_receiver: 'Receiver', store: 'Store',
+  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', receiver_hosur: 'Hosur Receiver', store: 'Store',
   baker: 'Baker', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
   branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
+  // N-04: previously missing role labels
+  admin_vrsnb: 'VRSNB Admin', admin_snb: 'SNB Admin', owner: 'Owner',
 };
 const ROLE_COLORS: Record<string, string> = {
   admin: 'bg-amber-500/20 text-amber-700 border-amber-400/30',
   order_taker: 'bg-blue-500/20 text-blue-700 border-blue-400/30',
   billing: 'bg-emerald-500/20 text-emerald-700 border-emerald-400/30',
   kitchen: 'bg-orange-500/20 text-orange-700 border-orange-400/30',
+  // N-04: previously missing role colors
+  admin_vrsnb: 'bg-purple-500/20 text-purple-700 border-purple-400/30',
+  admin_snb: 'bg-indigo-500/20 text-indigo-700 border-indigo-400/30',
+  owner: 'bg-rose-500/20 text-rose-700 border-rose-400/30',
 };
 
 export default function Header() {
@@ -30,7 +36,11 @@ export default function Header() {
   const isTracking = location.pathname === '/order/track';
   if (isQROrder || isTracking) return null;
 
-  const headerName = activeVenue === 'bakery' ? 'SNB Bakery' : CAFE_CONFIG.name;
+  // N-12: venue-aware brand name — differentiate VRSNB vs SNB routes
+  const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');
+  const isSnbRoute = location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/branch/snb') || location.pathname.startsWith('/bakery');
+  const isBakeryRoute = isVrsnbRoute || isSnbRoute;
+  const headerName = isVrsnbRoute ? 'VRSNB' : (activeVenue === 'bakery' || isSnbRoute) ? 'SNB Bakery' : CAFE_CONFIG.name;
 
   /* ── Public header ── */
   if (isPublic) {
@@ -65,8 +75,8 @@ export default function Header() {
         <div className="flex items-center gap-2.5">
           <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/20" />
           <div className="leading-none">
-            <p className="font-display text-base font-semibold text-white/95">{CAFE_CONFIG.name}</p>
-            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">Staff Portal</p>
+            <p className="font-display text-base font-semibold text-white/95">{headerName}</p>
+            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">{isVrsnbRoute ? 'VRSNB Admin Portal' : 'Staff Portal'}</p>
           </div>
         </div>
 
@@ -81,7 +91,7 @@ export default function Header() {
                 'text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full border mt-0.5 uppercase tracking-wide',
                 roleColor
               )}>
-                {ROLE_LABELS[currentUser.role] || currentUser.role}
+                {ROLE_LABELS[currentUser.role] || currentUser.role.replace(/_/g, ' ')}
               </span>
             </div>
           )}

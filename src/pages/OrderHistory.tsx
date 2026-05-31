@@ -2,13 +2,23 @@ import { useState, useMemo, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn, formatCurrency } from '@/lib/utils';
-import { History, CalendarDays, IndianRupee } from 'lucide-react';
+import { History, CalendarDays, IndianRupee, ChevronDown } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
+import EmptyState from '@/components/ui/EmptyState';
+
+// U-09 FIX: number of orders per page to prevent loading thousands of rows into one scroll
+const PAGE_SIZE = 20;
 
 export default function OrderHistory() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { currentUser } = useAuthStore();
   const [filter, setFilter] = useState<'all' | 'today' | 'served' | 'cancelled'>('all');
+  // U-09 FIX: date search and pagination state
+  const [dateSearch, setDateSearch] = useState('');
+  const [page, setPage] = useState(1);
+
+  // Reset page when filter or date changes
+  useEffect(() => { setPage(1); }, [filter, dateSearch]);
 
   useEffect(() => {
     startPolling();
@@ -25,8 +35,16 @@ export default function OrderHistory() {
       case 'served':    list = list.filter(o => o.status === 'served'); break;
       case 'cancelled': list = list.filter(o => o.status === 'cancelled'); break;
     }
+    // U-09 FIX: filter by date if a date is typed
+    if (dateSearch) {
+      list = list.filter(o => new Date(o.createdAt).toISOString().slice(0, 10) === dateSearch);
+    }
     return list;
-  }, [orders, filter, currentUser]);
+  }, [orders, filter, currentUser, dateSearch]);
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginated  = filtered.slice(0, page * PAGE_SIZE);
+  const hasMore    = page * PAGE_SIZE < filtered.length;
 
   const todayTotal = orders
     .filter(o => isToday(o.createdAt) && o.status === 'served')
@@ -73,6 +91,30 @@ export default function OrderHistory() {
             </div>
           )}
         </div>
+
+        {/* U-09 FIX: date picker for searching a specific day */}
+        <div className="mt-3">
+          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1 block">
+            Search by date
+          </label>
+          <div className="flex gap-2 items-center">
+            <input
+              type="date"
+              value={dateSearch}
+              onChange={e => setDateSearch(e.target.value)}
+              max={new Date().toISOString().slice(0, 10)}
+              className="flex-1 px-3 py-2 bg-card border border-border rounded-xl text-sm font-body"
+            />
+            {dateSearch && (
+              <button
+                onClick={() => setDateSearch('')}
+                className="text-xs font-body font-semibold text-primary underline underline-offset-2 whitespace-nowrap active:opacity-70"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* ── Filter chips ── */}
@@ -97,17 +139,30 @@ export default function OrderHistory() {
       {/* ── List ── */}
       <div className="px-4 py-4 space-y-3">
         {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-4">
-            <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
-              <History className="size-10 text-muted-foreground/30" />
-            </div>
-            <div className="text-center">
-              <p className="font-body font-semibold text-foreground">No orders found</p>
-              <p className="text-sm font-body text-muted-foreground mt-1">Orders will appear here after they are placed.</p>
-            </div>
-          </div>
+          <EmptyState
+            icon="🕐"
+            message="No orders found"
+            sub={dateSearch ? `No orders on ${dateSearch}` : 'Orders will appear here after they are placed.'}
+          />
         ) : (
-          filtered.map(order => <OrderCard key={order.id} order={order} />)
+          <>
+            <p className="text-xs font-body text-muted-foreground">
+              Showing {paginated.length} of {filtered.length} order{filtered.length !== 1 ? 's' : ''}
+              {dateSearch ? ` on ${dateSearch}` : ''}
+            </p>
+            {paginated.map(order => <OrderCard key={order.id} order={order} />)}
+
+            {/* U-09 FIX: "Load more" pagination instead of one endless scroll */}
+            {hasMore && (
+              <button
+                onClick={() => setPage(p => p + 1)}
+                className="w-full py-3 rounded-xl border border-border text-sm font-body font-semibold text-foreground flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+              >
+                <ChevronDown className="size-4" />
+                Load more ({filtered.length - paginated.length} remaining)
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>

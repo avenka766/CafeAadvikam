@@ -21,6 +21,8 @@ export interface SaleRecord {
   soldBy: string;
   branch: Branch;
   paymentMethod: string | null;
+  unitPrice: number; // ₹ per unit — 0 for stock-based (non-priced) sales
+  billNo: string | null;
 }
 
 export interface BranchAdvanceItem {
@@ -46,6 +48,8 @@ export interface BranchAdvanceOrder {
   fullyPaidAt: string | null;
   balanceMethod: string | null;
   status: 'pending' | 'completed';
+  /** ISO date string (YYYY-MM-DD) — the date the customer wants delivery */
+  deliveryDate: string | null;
 }
 
 export interface IncomingStock {
@@ -69,19 +73,48 @@ export interface StockMismatch {
   soldBy:    string;
 }
 
+// ── Credit Sale ───────────────────────────────────────────────────────────────
+export interface CreditSaleItem {
+  itemName: string;
+  quantity: number;
+  sellUnit: 'kg' | 'pcs';
+  price: number;
+  lineTotal: number;
+}
+
+export interface CreditSale {
+  id: string;
+  branch: Branch;
+  customerName: string;
+  customerPhone: string | null;
+  items: CreditSaleItem[];
+  subtotal: number;
+  amountPaid: number;
+  creditAmount: number;
+  soldBy: string;
+  createdAt: string;
+  dueDate: string | null;
+  settledAt: string | null;
+  status: 'pending' | 'partial' | 'settled';
+  notes: string | null;
+  billNo: string;
+}
+
 interface BranchState {
   stock:           Record<Branch, StockItem[]>;
   sales:           Record<Branch, SaleRecord[]>;
   incoming:        Record<Branch, IncomingStock[]>;
   advanceOrders:   Record<Branch, BranchAdvanceOrder[]>;
+  creditSales:     Record<Branch, CreditSale[]>;
   thresholds:      Record<Branch, Record<string, number>>;
   stockMismatches: StockMismatch[];
   loading:         boolean;
   lastCleanedAt:   number | null;
-  lastSyncedAt:    number | null;
+  // B5-FIX: per-branch sync timestamps so one branch's sync doesn't block another.
+  lastSyncedAt:    Record<Branch, number | null>;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
-  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string) => Promise<string | null>;
+  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number) => Promise<string | null>;
   recordSnbSale: (
     branch: Branch,
     itemName: string,
@@ -94,25 +127,32 @@ interface BranchState {
   recordAdvanceOrder: (branch: Branch, order: Omit<BranchAdvanceOrder, 'id' | 'createdAt' | 'fullyPaidAt' | 'balanceMethod' | 'status'>) => Promise<string | null>;
   collectAdvanceBalance: (branch: Branch, orderId: string, balanceMethod: string) => Promise<string | null>;
   updateThreshold: (branch: Branch, itemName: string, threshold: number) => Promise<void>;
-  syncIncomingFromDispatches: (branch: Branch) => Promise<void>;
+  syncIncomingFromDispatches: (branch: Branch, force?: boolean) => Promise<void>;
   confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
   confirmAllIncoming: (branch: Branch) => Promise<string | null>;
   manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
   fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
+  // ── Credit sales ──────────────────────────────────────────────────────────
+  recordCreditSale: (branch: Branch, sale: Omit<CreditSale, 'id' | 'createdAt' | 'settledAt' | 'status'>) => Promise<string | null>;
+  settleCreditSale: (branch: Branch, saleId: string, amountCollected: number) => Promise<string | null>;
+  fetchCreditSales: (branch: Branch) => Promise<void>;
+  // ── Live stock ────────────────────────────────────────────────────────────
+  subscribeToStock:   (branch: Branch) => () => void; // returns unsubscribe fn
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
-  stock:           { VRSNB: [], SNB: [], Hosur: [] },
-  sales:           { VRSNB: [], SNB: [], Hosur: [] },
-  incoming:        { VRSNB: [], SNB: [], Hosur: [] },
-  advanceOrders:   { VRSNB: [], SNB: [], Hosur: [] },
-  thresholds:      { VRSNB: {}, SNB: {}, Hosur: {} },
+  stock:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  sales:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  incoming:        { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  advanceOrders:   { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  creditSales:     { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  thresholds:      { Cafe: {}, VRSNB: {}, SNB: {}, Hosur: {} },
   stockMismatches: [],
   loading:         false,
   lastCleanedAt:   null,
-  lastSyncedAt:    null as number | null,
+  lastSyncedAt:    { Cafe: null, VRSNB: null, SNB: null, Hosur: null } as Record<Branch, number | null>,
 
   fetchBranchData: async (branch) => {
     set({ loading: true });
@@ -132,6 +172,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: thresholdData },
         { data: priceData },
         { data: advanceData },
+        { data: creditData },
       ] = await Promise.all([
         supabase.from('branch_stock').select('*').eq('branch', branch),
         supabase.from('branch_sales').select('*').eq('branch', branch)
@@ -142,6 +183,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('branch_thresholds').select('*').eq('branch', branch),
         supabase.from('bakery_items').select('name, price'),
         supabase.from('branch_advance_orders').select('*')
+          .eq('branch', branch)
+          .order('created_at', { ascending: false }),
+        supabase.from('branch_credit_sales').select('*')
           .eq('branch', branch)
           .order('created_at', { ascending: false }),
       ]);
@@ -158,6 +202,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const incoming      = { ...s.incoming };
         const thresholds    = { ...s.thresholds };
         const advanceOrders = { ...s.advanceOrders };
+        const creditSales   = { ...s.creditSales };
 
         stock[branch] = (stockData || []).map((d) => ({
           itemName:     d.item_name,
@@ -176,6 +221,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           soldBy:        d.sold_by,
           branch:        d.branch as Branch,
           paymentMethod: d.payment_method ?? null,
+          unitPrice:     d.unit_price != null ? Number(d.unit_price) : 0,
+          billNo:        d.bill_no ?? null,
         }));
 
         incoming[branch] = (incomingData || []).map((d) => ({
@@ -202,13 +249,31 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           fullyPaidAt:    d.fully_paid_at ?? null,
           balanceMethod:  d.balance_method ?? null,
           status:         d.status as 'pending' | 'completed',
+          deliveryDate:   d.delivery_date ?? null,
         }));
 
         const tMap: Record<string, number> = {};
         (thresholdData || []).forEach((d) => { tMap[d.item_name] = d.threshold; });
         thresholds[branch] = tMap;
 
-        return { stock, sales, incoming, thresholds, advanceOrders };
+        creditSales[branch] = (creditData || []).map((d) => ({
+          id:            d.id,
+          branch:        d.branch as Branch,
+          customerName:  d.customer_name ?? 'Unknown',
+          customerPhone: d.customer_phone ?? null,
+          items:         (d.items || []) as CreditSaleItem[],
+          subtotal:      Number(d.subtotal),
+          amountPaid:    Number(d.amount_paid),
+          creditAmount:  Number(d.credit_amount),
+          soldBy:        d.sold_by ?? 'Staff',
+          createdAt:     d.created_at,
+          dueDate:       d.due_date ?? null,
+          settledAt:     d.settled_at ?? null,
+          status:        d.status as 'pending' | 'partial' | 'settled',
+          notes:         d.notes ?? null,
+          billNo:        d.bill_no ?? '',
+        }));
+        return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
     } catch (e) {
       console.error('fetchBranchData error:', e);
@@ -224,36 +289,57 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // B1 FIX: atomic stock decrement via stored procedure (see supabase/migrations/001_security.sql)
   // `decrement_branch_stock` does: UPDATE SET quantity = quantity - p_qty WHERE quantity >= p_qty
   // returning new quantity, or NULL if insufficient.  This is the only race-safe approach.
-  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo) => {
-    // Pre-flight UX check (authoritative guard is in the DB)
+  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice) => {
+    const now = new Date().toISOString();
     const localStock = get().stock[branch].find((s) => s.itemName === itemName);
     if (!localStock) return 'Item not found in stock';
-    if (localStock.quantity < qty) return 'Insufficient stock';
 
-    const { data: newQtyData, error: rpcErr } = await supabase
-      .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+    // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
+    const resolvedPrice = unitPrice ?? localStock.price ?? 0;
 
-    if (rpcErr) return `Failed to update stock: ${rpcErr.message}`;
-    // RPC returns NULL when quantity < p_qty (concurrent sale depleted stock)
-    if (newQtyData === null) return 'Insufficient stock (modified by another device — please refresh)';
+    // NEGATIVE-STOCK FIX: allow sales even when stock is 0 or insufficient.
+    // Uses the allow-negative RPC so stock can go below 0 — shortages are logged.
+    let newQty = Math.round((localStock.quantity - qty) * 1000) / 1000; // optimistic local fallback
 
-    const newQty = Math.round((newQtyData as number) * 1000) / 1000;
+    // Use the allow-negative RPC so stock can go below 0 when biller sells without stock.
+    // The old `decrement_branch_stock` returns NULL on insufficient stock; this one always succeeds.
+    {
+      const { data: newQtyRpc, error: rpcErr } = await supabase
+        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+      if (rpcErr) {
+        console.error('[recordSale] stock RPC error:', rpcErr.message);
+        // Non-fatal: continue recording sale with optimistic local qty
+      } else if (newQtyRpc !== null) {
+        newQty = Math.round((newQtyRpc as number) * 1000) / 1000;
+      }
+    }
 
+    // Record the sale
     const { data: saleData, error: saleErr } = await supabase
       .from('branch_sales')
       .insert({
         branch,
         item_name:      itemName,
         quantity_sold:  qty,
-        sold_at:        new Date().toISOString(),
+        sold_at:        now,
         sold_by:        soldBy,
         payment_method: paymentMethod,
+        unit_price:     resolvedPrice,
         bill_no:        billNo ?? null,
       })
       .select().single();
     if (saleErr) {
       console.error('[recordSale] sale insert error:', saleErr);
       return `Failed to record sale: ${saleErr.message}`;
+    }
+
+    // Log a mismatch if stock went negative so admin can track shortages
+    if (newQty < 0) {
+      const actualShortage = Math.abs(newQty);
+      await supabase.from('branch_stock_mismatches').insert({
+        branch, item_name: itemName, sold_qty: qty,
+        shortage: actualShortage, sold_at: now, sold_by: soldBy,
+      }).select().single();
     }
 
     const newSale: SaleRecord = {
@@ -263,13 +349,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       soldAt:        saleData.sold_at,
       soldBy:        saleData.sold_by,
       branch,
-      paymentMethod: saleData.payment_method ?? null, // FIX #9
+      paymentMethod: saleData.payment_method ?? null,
+      unitPrice:     saleData.unit_price != null ? Number(saleData.unit_price) : 0,
+      billNo:        saleData.bill_no ?? null,
     };
 
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      // FIX #1 — use pre-computed newQty instead of subtracting again
       stock[branch] = stock[branch].map((si) =>
         si.itemName === itemName ? { ...si, quantity: newQty } : si,
       );
@@ -284,6 +371,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   recordAdvanceOrder: async (branch, order) => {
     const now = new Date().toISOString();
     const balanceDue = Math.max(0, order.subtotal - order.advanceAmount);
+    // BUGFIX: if full amount collected upfront, mark as completed immediately
+    const status = balanceDue <= 0 ? 'completed' : 'pending';
 
     const { data, error } = await supabase
       .from('branch_advance_orders')
@@ -297,7 +386,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         balance_due:    balanceDue,
         sold_by:        order.soldBy,
         created_at:     now,
-        status:         'pending',
+        status,
+        delivery_date:  order.deliveryDate ?? null,
       })
       .select()
       .single();
@@ -315,10 +405,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       balanceDue,
       soldBy:        order.soldBy,
       createdAt:     now,
-      fullyPaidAt:   null,
+      fullyPaidAt:   status === 'completed' ? now : null,
       balanceMethod: null,
-      status:        'pending',
+      status,
+      deliveryDate:  order.deliveryDate ?? null,
     };
+
+    // ADVANCE-HISTORY FIX: record the advance payment itself into branch_sales so it
+    // appears in History and SalesTab immediately. payment_method='advance' marks it clearly.
+    // quantity_sold=0 for custom items (no inventory); for stock items we record qty so
+    // the admin sees what was ordered. Stock is NOT deducted here — that happens at delivery.
+    const advanceSalesRows = order.items.map(item => ({
+      branch,
+      item_name:      item.itemName ?? 'Custom item',
+      quantity_sold:  item.quantity ?? 0,
+      sold_at:        now,
+      sold_by:        order.soldBy,
+      payment_method: `advance:${order.advanceMethod}`,
+      unit_price:     item.price ?? 0,
+      bill_no:        null,
+    }));
+    if (advanceSalesRows.length > 0) {
+      await supabase.from('branch_sales').insert(advanceSalesRows);
+    }
 
     set((s) => {
       const advanceOrders = { ...s.advanceOrders };
@@ -337,26 +446,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const now = new Date().toISOString();
 
-    // 1. Check stock is sufficient for all non-custom items
-    for (const item of order.items) {
-      if (item.isCustom) continue;
-      const stock = get().stock[branch].find((s) => s.itemName === item.itemName);
-      if (!stock) return `"${item.itemName}" not found in stock`;
-      if (stock.quantity < item.quantity)
-        return `Insufficient stock for "${item.itemName}" (have ${stock.quantity}, need ${item.quantity})`;
-    }
+    // ADVANCE-STOCK FIX: removed pre-flight stock check. The advance was already
+    // committed at order time — blocking delivery because stock ran low is worse UX
+    // than a mismatch. The atomic RPC below will catch genuine DB-level issues and
+    // the mismatch log gives admin visibility. Custom items skip RPC entirely.
 
-    // 2. Mark advance order completed in DB (single atomic update)
-    const { error: updateErr } = await supabase
-      .from('branch_advance_orders')
-      .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
-      .eq('id', orderId);
-    if (updateErr) return `Failed to complete order: ${updateErr.message}`;
+    // M-10 FIX: deduct stock BEFORE marking order completed.
+    // Previously: mark completed → deduct stock → if deduction fails, order is
+    // completed but stock was never reduced (silent inventory corruption).
+    // Now: deduct all stock first, then mark completed atomically.
 
     // B3 FIX: each item uses the atomic RPC decrement instead of reading stale local state.
-    // If a stock deduction fails mid-loop, we attempt to roll back the order status and
-    // previously decremented items.  Full atomicity requires a Postgres stored procedure
-    // (see supabase/migrations/001_security.sql: complete_advance_order).
     const decremented: Array<{ itemName: string; qty: number }> = [];
 
     for (const item of order.items) {
@@ -366,24 +466,30 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const { data: newQtyRpc, error: stockRpcErr } = await supabase
         .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: item.itemName, p_qty: item.quantity });
 
-      if (stockRpcErr || newQtyRpc === null) {
-        const msg = newQtyRpc === null
-          ? `Insufficient stock for "${item.itemName}" — modified by another device`
-          : `Failed to deduct stock for "${item.itemName}": ${stockRpcErr!.message}`;
-
-        // Attempt rollback: revert order status
-        await supabase.from('branch_advance_orders')
-          .update({ status: 'pending', fully_paid_at: null, balance_method: null, balance_due: order.balanceDue })
-          .eq('id', orderId);
-
-        // Attempt rollback: restore decremented stock (best-effort, non-atomic)
+      if (stockRpcErr) {
+        // Hard DB error: roll back and surface to operator
+        const msg = `Failed to deduct stock for "${item.itemName}": ${stockRpcErr.message}`;
         for (const d of decremented) {
           await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
         }
-
-        // Refresh local state to match DB
         await get().fetchBranchData(branch);
         return msg;
+      }
+
+      // NEGATIVE-STOCK FIX: if RPC returns NULL (stock already at 0), force stock to negative
+      // so the DB reflects reality and admin can see the shortage.
+      if (newQtyRpc === null) {
+        const currentStock = get().stock[branch].find((s) => s.itemName === item.itemName);
+        const negQty = Math.round(((currentStock?.quantity ?? 0) - item.quantity) * 1000) / 1000;
+        await supabase.from('branch_stock')
+          .update({ quantity: negQty })
+          .eq('branch', branch)
+          .eq('item_name', item.itemName);
+        await supabase.from('branch_stock_mismatches').insert({
+          branch, item_name: item.itemName,
+          sold_qty: item.quantity, shortage: item.quantity - Math.max(0, currentStock?.quantity ?? 0),
+          sold_at: now, sold_by: order.soldBy,
+        }).select().single();
       }
 
       decremented.push({ itemName: item.itemName, qty: item.quantity });
@@ -396,6 +502,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         sold_by:        order.soldBy,
         payment_method: `advance+${balanceMethod}`,
       });
+    }
+
+    // All stock deductions succeeded — now mark the order as completed
+    const { error: updateErr } = await supabase
+      .from('branch_advance_orders')
+      .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
+      .eq('id', orderId);
+    if (updateErr) {
+      // Stock was deducted but order status update failed — surface this so operator can retry
+      await get().fetchBranchData(branch);
+      return `Stock deducted but failed to mark order complete: ${updateErr.message}. Please refresh and verify.`;
     }
 
     // B3 FIX: refresh from DB after all mutations instead of computing from stale local state
@@ -432,13 +549,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     });
   },
 
-  // B5 FIX: added lastSyncedAt session guard — runs at most once per 5 minutes.
-  // Previously ran on every BranchDashboard mount, triggering a full 6-month scan each time.
-  syncIncomingFromDispatches: async (branch) => {
+  // B5 FIX: per-branch lastSyncedAt guard — each branch runs at most once per 10 seconds on manual, 60s on auto.
+  syncIncomingFromDispatches: async (branch, force = false) => {
     const { lastSyncedAt } = get();
     const now = Date.now();
-    if (lastSyncedAt && now - lastSyncedAt < 5 * 60 * 1000) return;
-    set({ lastSyncedAt: now });
+    if (!force && lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 10 * 1000) return;
+    set((s) => ({ lastSyncedAt: { ...s.lastSyncedAt, [branch]: now } }));
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -448,11 +564,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .not('dispatch_log', 'is', null)
       .gte('created_at', sixMonthsAgo.toISOString());
 
-    if (!orders) return;
+    if (!orders) {
+      // Even if dispatch_log sync finds nothing, re-fetch branch_incoming directly
+      // to pick up any records written by submitDispatch that may have been missed
+      await get().fetchBranchData(branch);
+      return;
+    }
 
     // FIXED: use dispatch_id column (the dispatch_log entry id) as the dedup key.
-    // The old code used branch_incoming.id which is auto-generated by Supabase,
-    // so it never matched e.id from the dispatch_log — every 30s poll re-added stock.
     const { data: existingIncoming } = await supabase
       .from('branch_incoming')
       .select('dispatch_id')
@@ -462,13 +581,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     );
 
     const newEntries: {
-      dispatch_id: string; item_name: string; quantity: number;
+      dispatch_id: string; item_name: string; quantity: number; unit: string;
       received_at: string; dispatched_by: string; branch: Branch;
     }[] = [];
 
     for (const order of orders) {
       const log = (order.dispatch_log || []) as {
-        id: string; itemName: string; quantity: number;
+        id: string; itemName: string; quantity: number; unit?: string;
         branch: Branch; dispatchedAt: string; dispatchedBy: string;
       }[];
       log
@@ -478,6 +597,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             dispatch_id:   e.id,
             item_name:     e.itemName,
             quantity:      e.quantity,
+            unit:          e.unit ?? 'kg',
             received_at:   e.dispatchedAt,
             dispatched_by: e.dispatchedBy,
             branch,
@@ -485,13 +605,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         );
     }
 
-    if (newEntries.length === 0) return;
+    // SYNC-FIX: Don't use upsert onConflict:'dispatch_id' — requires a unique constraint
+    // that may not exist. Instead insert each new entry individually, skipping any that
+    // already exist (checked via the existingDispatchIds set built above).
+    for (const entry of newEntries) {
+      const { error: insertErr } = await supabase
+        .from('branch_incoming')
+        .insert(entry);
+      if (insertErr) {
+        // Duplicate key errors are expected and safe to ignore (race condition between
+        // two devices syncing simultaneously). Log everything else.
+        if (!insertErr.message?.includes('duplicate') && !insertErr.code?.includes('23505')) {
+          console.error('[syncIncoming] insert failed:', insertErr.message);
+        }
+      }
+    }
 
-    // Insert incoming records as unconfirmed — branch must confirm before stock is updated
-    await supabase
-      .from('branch_incoming')
-      .upsert(newEntries, { onConflict: 'dispatch_id', ignoreDuplicates: true });
-
+    // Always re-fetch branch data after sync to ensure UI reflects latest DB state
     await get().fetchBranchData(branch);
   },
 
@@ -514,21 +644,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return null;
     }
 
-    // Fallback: add stock FIRST, mark confirmed second (safer failure mode)
-    const { data: existing } = await supabase
-      .from('branch_stock').select('quantity')
-      .eq('branch', branch).eq('item_name', inc.itemName).single();
+    // BUG #8 FIX: Fallback two-step path.
+    // Re-read the incoming record to guard against a retry where stock was already
+    // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
+    const { data: freshInc } = await supabase
+      .from('branch_incoming').select('confirmed').eq('id', incomingId).single();
+    const alreadyConfirmedInDb = freshInc?.confirmed === true;
 
-    if (existing) {
-      const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-      const { error: stockErr } = await supabase.from('branch_stock')
-        .update({ quantity: newQty, unit: inc.unit })
-        .eq('branch', branch).eq('item_name', inc.itemName);
-      if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
-    } else {
-      const { error: insErr } = await supabase.from('branch_stock')
-        .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
-      if (insErr) return `Failed to create stock entry: ${insErr.message}`;
+    if (!alreadyConfirmedInDb) {
+      const { data: existing } = await supabase
+        .from('branch_stock').select('quantity')
+        .eq('branch', branch).eq('item_name', inc.itemName).single();
+
+      if (existing) {
+        const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
+        const { error: stockErr } = await supabase.from('branch_stock')
+          .update({ quantity: newQty, unit: inc.unit })
+          .eq('branch', branch).eq('item_name', inc.itemName);
+        if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
+      } else {
+        const { error: insErr } = await supabase.from('branch_stock')
+          .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
+        if (insErr) return `Failed to create stock entry: ${insErr.message}`;
+      }
     }
 
     const { error: confErr } = await supabase
@@ -556,12 +694,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     return null;
   },
 
-  // Confirm all today's unconfirmed incoming items at once
+  // Confirm all unconfirmed incoming items at once (not restricted to today)
   confirmAllIncoming: async (branch) => {
-    const today = new Date().toDateString();
-    const toConfirm = get().incoming[branch].filter(
-      (i) => !i.confirmed && new Date(i.receivedAt).toDateString() === today
-    );
+    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed);
     if (toConfirm.length === 0) return null;
 
     for (const inc of toConfirm) {
@@ -583,6 +718,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const newQty       = Math.round((availableQty - deductQty) * 1000) / 1000;
 
     // B2 FIX: use atomic RPC decrement instead of stale-local-state read
+    // BUG #9 FIX: actually use the authoritative qty returned by the RPC.
+    let rpcNewQty: number | null = null;
     if (deductQty > 0 && currentStock) {
       const { data: newQtyRpc, error: rpcErr } = await supabase
         .rpc('decrement_branch_stock', { p_branch: branch, p_item_name: itemName, p_qty: deductQty });
@@ -590,9 +727,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
         // Non-fatal for SNB: log mismatch, continue with sale
       } else if (newQtyRpc !== null) {
-        // Update local newQty from authoritative DB value
-        const _newQtyActual = Math.round((newQtyRpc as number) * 1000) / 1000;
-        void _newQtyActual; // used in local state update below
+        rpcNewQty = Math.round((newQtyRpc as number) * 1000) / 1000;
       }
     }
 
@@ -655,6 +790,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       soldBy:        saleData.sold_by,
       branch,
       paymentMethod: saleData.payment_method ?? null,
+      unitPrice:     saleData.unit_price != null ? Number(saleData.unit_price) : unitPrice,
+      billNo:        saleData.bill_no ?? null,
     };
 
     // B2 local state fix: use the RPC-returned quantity for local state
@@ -663,8 +800,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const stock = { ...s.stock };
       const sales = { ...s.sales };
       if (currentStock) {
+        // BUG #9 FIX: prefer authoritative DB value from RPC over stale local calculation
+        const finalQty = rpcNewQty !== null ? rpcNewQty : newQty;
         stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: newQty } : si,
+          si.itemName === itemName ? { ...si, quantity: finalQty } : si,
         );
       }
       sales[branch] = [newSale, ...sales[branch]];
@@ -747,6 +886,141 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await get().fetchBranchData(branch);
   },
 
+  // ── Credit sales ────────────────────────────────────────────────────────────
+
+  fetchCreditSales: async (branch) => {
+    const { data, error } = await supabase
+      .from('branch_credit_sales')
+      .select('*')
+      .eq('branch', branch)
+      .order('created_at', { ascending: false });
+    if (error) { console.error('[fetchCreditSales]', error.message); return; }
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = (data || []).map((d) => ({
+        id:            d.id,
+        branch:        d.branch as Branch,
+        customerName:  d.customer_name ?? 'Unknown',
+        customerPhone: d.customer_phone ?? null,
+        items:         (d.items || []) as CreditSaleItem[],
+        subtotal:      Number(d.subtotal),
+        amountPaid:    Number(d.amount_paid),
+        creditAmount:  Number(d.credit_amount),
+        soldBy:        d.sold_by ?? 'Staff',
+        createdAt:     d.created_at,
+        dueDate:       d.due_date ?? null,
+        settledAt:     d.settled_at ?? null,
+        status:        d.status as 'pending' | 'partial' | 'settled',
+        notes:         d.notes ?? null,
+        billNo:        d.bill_no ?? '',
+      }));
+      return { creditSales };
+    });
+  },
+
+  recordCreditSale: async (branch, sale) => {
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('branch_credit_sales')
+      .insert({
+        branch,
+        customer_name:  sale.customerName,
+        customer_phone: sale.customerPhone ?? null,
+        items:          sale.items,
+        subtotal:       sale.subtotal,
+        amount_paid:    sale.amountPaid,
+        credit_amount:  sale.creditAmount,
+        sold_by:        sale.soldBy,
+        created_at:     now,
+        due_date:       sale.dueDate ?? null,
+        status:         sale.amountPaid === 0 ? 'pending' : 'partial',
+        notes:          sale.notes ?? null,
+        bill_no:        sale.billNo,
+      })
+      .select()
+      .single();
+    if (error) return `Failed to record credit sale: ${error.message}`;
+
+    const newSale: CreditSale = {
+      id:            data.id,
+      branch,
+      customerName:  sale.customerName,
+      customerPhone: sale.customerPhone ?? null,
+      items:         sale.items,
+      subtotal:      sale.subtotal,
+      amountPaid:    sale.amountPaid,
+      creditAmount:  sale.creditAmount,
+      soldBy:        sale.soldBy,
+      createdAt:     now,
+      dueDate:       sale.dueDate ?? null,
+      settledAt:     null,
+      status:        sale.amountPaid === 0 ? 'pending' : 'partial',
+      notes:         sale.notes ?? null,
+      billNo:        sale.billNo,
+    };
+
+    // Also write each item as a branch_sales row so revenue reports include credit sales.
+    // payment_method='credit' marks these as credit-billed (goods delivered, payment pending).
+    // They must NOT be excluded from revenue — the earning happened at point of sale.
+    const salesRows = sale.items.map(item => ({
+      branch,
+      item_name:      item.itemName,
+      quantity_sold:  item.quantity,
+      sold_at:        now,
+      sold_by:        sale.soldBy,
+      payment_method: 'credit',
+      unit_price:     item.price,
+      bill_no:        sale.billNo,
+    }));
+    if (salesRows.length > 0) {
+      await supabase.from('branch_sales').insert(salesRows);
+    }
+
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = [newSale, ...creditSales[branch]];
+      return { creditSales };
+    });
+    return null;
+  },
+
+  settleCreditSale: async (branch, saleId, amountCollected) => {
+    const sale = get().creditSales[branch].find((s) => s.id === saleId);
+    if (!sale) return 'Credit sale not found';
+
+    const newAmountPaid = sale.amountPaid + amountCollected;
+    const isSettled = newAmountPaid >= sale.subtotal;
+    const now = new Date().toISOString();
+
+    const { error } = await supabase
+      .from('branch_credit_sales')
+      .update({
+        amount_paid:  newAmountPaid,
+        credit_amount: Math.max(0, sale.subtotal - newAmountPaid),
+        status:       isSettled ? 'settled' : 'partial',
+        settled_at:   isSettled ? now : null,
+      })
+      .eq('id', saleId);
+    if (error) return `Failed to settle: ${error.message}`;
+
+    // NOTE: We do NOT insert into branch_sales on settlement.
+    // Revenue was already recorded when the credit sale was billed (in recordCreditSale).
+    // Inserting here again would double-count the revenue.
+    // The credit_sales table tracks collection separately (amountPaid, creditAmount, status).
+
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = creditSales[branch].map((cs) =>
+        cs.id === saleId
+          ? { ...cs, amountPaid: newAmountPaid, creditAmount: Math.max(0, cs.subtotal - newAmountPaid),
+              status: isSettled ? 'settled' : 'partial', settledAt: isSettled ? now : null }
+          : cs
+      );
+      return { creditSales };
+    });
+    return null;
+  },
+
   // DATA-02 FIX: replaced hard DELETE with soft-delete via archive RPC.
   // Old records get is_archived=TRUE (see migration 001_security.sql).
   // They are invisible to the dashboard but preserved for audit/tax purposes.
@@ -759,5 +1033,39 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     await supabase.rpc('archive_old_branch_sales');
 
     set({ lastCleanedAt: now });
+  },
+
+  // ── Live stock subscription via Supabase Realtime ─────────────────────────
+  // Subscribes to branch_stock + branch_incoming for the given branch.
+  // Any INSERT/UPDATE/DELETE fires a full fetchBranchData() to keep state fresh.
+  // Also subscribes to branch_sales so the sales log updates instantly.
+  // Returns an unsubscribe function — call it in the component's cleanup.
+  subscribeToStock: (branch) => {
+    const channelName = `branch-live-${branch}`;
+
+    const channel = supabase
+      .channel(channelName)
+      // branch_stock changes (confirms, manual updates, sales deductions)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_stock', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      // branch_incoming changes (new dispatches from packing, confirmations)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_incoming', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      // branch_sales changes (new sales so today's log is always current)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'branch_sales', filter: `branch=eq.${branch}` },
+        () => { get().fetchBranchData(branch); },
+      )
+      .subscribe();
+
+    // Return cleanup function
+    return () => { supabase.removeChannel(channel); };
   },
 }));

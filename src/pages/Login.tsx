@@ -5,16 +5,33 @@ import { getRoleDefaultPath } from '@/lib/routing';
 import { Eye, EyeOff, Loader2, AlertCircle, Lock, User } from 'lucide-react';
 import cafeLogo from '@/assets/cafe-logo.png';
 
-const HERO = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=85';
+const HERO     = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=1200&q=85';
+// PERF-04: smaller variants so mobile doesn't download the full 1200px image
+const HERO_400 = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=400&q=75&fm=webp';
+const HERO_800 = 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?w=800&q=80&fm=webp';
 
 export default function Login() {
   const { login, currentUser } = useAuthStore();
   const navigate = useNavigate();
-  const [username, setUsername]       = useState('');
-  const [password, setPassword]       = useState('');
-  const [error, setError]             = useState('');
+  const [username, setUsername]         = useState('');
+  const [password, setPassword]         = useState('');
+  const [error, setError]               = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading]         = useState(false);
+  const [loading, setLoading]           = useState(false);
+
+  // C-03 FIX: client-side brute-force protection.
+  // After MAX_ATTEMPTS failures the form locks for LOCKOUT_MS (15 min).
+  // Between failures, an exponential back-off delay is applied so rapid
+  // retries are throttled even before full lockout.
+  const MAX_ATTEMPTS  = 5;
+  const LOCKOUT_MS    = 15 * 60 * 1000;
+  const [failCount,   setFailCount]   = useState(0);
+  const [lockUntil,   setLockUntil]   = useState<number | null>(null);
+  const [backoffMs,   setBackoffMs]   = useState(0);
+
+  const nowLocked         = lockUntil !== null && Date.now() < lockUntil;
+  const remainingSecs     = nowLocked ? Math.ceil((lockUntil! - Date.now()) / 1000) : 0;
+  const remainingMins     = Math.ceil(remainingSecs / 60);
 
   if (currentUser) {
     return <Navigate to={getRoleDefaultPath(currentUser.role)} replace />;
@@ -24,13 +41,39 @@ export default function Login() {
     e.preventDefault();
     setError('');
     if (!username.trim() || !password) { setError('Please enter both username and password'); return; }
+
+    // C-03: reject immediately if locked out
+    if (nowLocked) {
+      setError(`Too many failed attempts. Try again in ${remainingMins} minute${remainingMins !== 1 ? 's' : ''}.`);
+      return;
+    }
+
+    // C-03: apply exponential back-off delay between retries
+    if (backoffMs > 0) {
+      setLoading(true);
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+
     setLoading(true);
     const ok = await login(username.trim(), password);
     if (ok) {
+      // Reset all rate-limit counters on success
+      setFailCount(0); setLockUntil(null); setBackoffMs(0);
       const user = useAuthStore.getState().currentUser;
       navigate(user ? getRoleDefaultPath(user.role) : '/billing', { replace: true });
     } else {
-      setError('Invalid username or password');
+      const newCount = failCount + 1;
+      setFailCount(newCount);
+      if (newCount >= MAX_ATTEMPTS) {
+        setLockUntil(Date.now() + LOCKOUT_MS);
+        setError('Too many failed attempts. Account locked for 15 minutes.');
+      } else {
+        // 1 s → 2 s → 4 s → 8 s … capped at 30 s
+        const delay = Math.min(Math.pow(2, newCount - 1) * 1000, 30_000);
+        setBackoffMs(delay);
+        const left = MAX_ATTEMPTS - newCount;
+        setError(`Invalid username or password. ${left} attempt${left !== 1 ? 's' : ''} remaining.`);
+      }
       setLoading(false);
     }
   };
@@ -40,7 +83,13 @@ export default function Login() {
 
       {/* ── Full-screen hero background ── */}
       <div className="absolute inset-0">
-        <img src={HERO} alt="" className="w-full h-full object-cover" />
+        <img
+          src={HERO}
+          srcSet={`${HERO_400} 400w, ${HERO_800} 800w, ${HERO} 1200w`}
+          sizes="(max-width: 640px) 400px, (max-width: 1024px) 800px, 1200px"
+          alt=""
+          className="w-full h-full object-cover"
+        />
         <div className="absolute inset-0" style={{
           background: 'linear-gradient(160deg, rgba(6,20,14,0.85) 0%, rgba(20,10,4,0.78) 50%, rgba(6,20,14,0.92) 100%)'
         }} />
@@ -139,7 +188,7 @@ export default function Login() {
             {/* Submit */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || nowLocked}
               className="w-full py-4 rounded-xl font-body font-semibold text-sm flex items-center justify-center gap-2.5 transition-all duration-200 active:scale-[0.97] mt-2"
               style={{
                 background: loading

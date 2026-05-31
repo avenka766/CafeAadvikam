@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import {
   X, Minus, Plus, Trash2, ShoppingBag,
   MapPin, User as UserIcon, StickyNote,
-  ChevronDown, AlertCircle,
+  ChevronDown, AlertCircle, Undo2,
 } from 'lucide-react';
 import { formatCurrency } from '@/lib/utils';
 import { TABLE_NUMBERS } from '@/constants/config';
@@ -27,6 +27,48 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  // U-13 FIX: undo-toast instead of instant clear — holds snapshot of cart for 5s
+  const [undoSnapshot, setUndoSnapshot] = useState<typeof cart | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bug 5 fix — track success timeout so it can be cancelled if the component unmounts
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Bug 4 fix — clear stale error banner whenever the cart is opened
+  useEffect(() => {
+    if (isOpen) setSubmitError(null);
+  }, [isOpen]);
+
+  // Bug 4 fix — cancel pending undo timer on unmount to prevent state update on unmounted component
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      // Bug 5 fix — also cancel the success redirect timer on unmount
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
+  const handleClearAll = () => {
+    setUndoSnapshot([...cart]);
+    clearCart();
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => setUndoSnapshot(null), 5000);
+  };
+
+  const handleUndo = () => {
+    if (!undoSnapshot) return;
+    // Bug 1 fix — clear cart first so restored items replace rather than merge with any newly added items
+    useOrderStore.getState().clearCart();
+    undoSnapshot.forEach(item => {
+      useOrderStore.getState().addToCart(item.menuItem);
+      const diff = item.quantity - 1;
+      if (diff > 0) {
+        for (let i = 0; i < diff; i++) useOrderStore.getState().addToCart(item.menuItem);
+      }
+    });
+    setUndoSnapshot(null);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  };
 
   const total = getCartTotal();
 
@@ -36,6 +78,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
 
     setTableError(false);
+    setSubmitError(null);
     setSubmitting(true);
     try {
       await submitOrder({
@@ -50,10 +93,9 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
       setNotes('');
       setCustomerName('');
       setTableNumber(null);
-      setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
+      successTimerRef.current = setTimeout(() => { setShowSuccess(false); onClose(); }, 1800);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to place order. Please try again.';
-      alert(msg);
+      setSubmitError(err instanceof Error ? err.message : 'Failed to place order. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -62,7 +104,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="fixed inset-0 z-[60]">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="absolute bottom-0 left-0 right-0 bg-background rounded-t-2xl max-h-[90vh] flex flex-col animate-in slide-in-from-bottom duration-300">
         {showSuccess ? (
@@ -81,10 +123,20 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                 <p className="text-xs text-muted-foreground font-body">{cart.length} item{cart.length !== 1 ? 's' : ''} · {formatCurrency(total)}</p>
               </div>
               <div className="flex gap-2">
-                {cart.length > 0 && <button onClick={clearCart} className="px-3 py-1.5 text-xs font-body font-semibold text-destructive bg-destructive/10 rounded-lg active:scale-95">Clear All</button>}
+                {cart.length > 0 && <button onClick={handleClearAll} className="px-3 py-1.5 text-xs font-body font-semibold text-destructive bg-destructive/10 rounded-lg active:scale-95">Clear All</button>}
                 <button onClick={onClose} className="size-9 rounded-full bg-muted flex items-center justify-center" aria-label="Close cart"><X className="size-5" /></button>
               </div>
             </div>
+
+            {/* U-13 FIX: undo toast — appears for 5s after clearing */}
+            {undoSnapshot !== null && (
+              <div className="mx-4 mt-2 flex items-center justify-between bg-foreground text-background rounded-xl px-4 py-2.5">
+                <span className="text-xs font-body font-semibold">Cleared {undoSnapshot.length} item{undoSnapshot.length !== 1 ? 's' : ''}</span>
+                <button onClick={handleUndo} className="flex items-center gap-1.5 text-xs font-body font-bold text-primary-foreground/80 underline underline-offset-2 active:opacity-70">
+                  <Undo2 className="size-3.5" /> Undo
+                </button>
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
               {cart.length === 0 ? (
@@ -114,10 +166,10 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
 
             {cart.length > 0 && (
               <>
-                <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50">
+                <div className="px-4 py-3 border-t border-border space-y-3 bg-muted/50 overflow-y-auto max-h-[38vh]">
                   <div className="flex gap-2">
-                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
-                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
+                    <button onClick={() => { setOrderType('dine_in'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'dine_in' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>🍽️ Dine In</button>
+                    <button onClick={() => { setOrderType('takeaway'); setTableError(false); setShowTableSelect(false); setSubmitError(null); }} className={`flex-1 py-2.5 rounded-lg text-sm font-body font-semibold transition-all ${orderType === 'takeaway' ? 'cafe-gradient text-primary-foreground shadow-md' : 'bg-card text-foreground border border-border'}`}>📦 Takeaway</button>
                   </div>
 
                   {orderType === 'dine_in' ? (
@@ -129,11 +181,15 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                         </button>
                         <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                         {showTableSelect && (
-                          <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto">
-                            {TABLE_NUMBERS.map((num) => (
-                              <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }} className={`py-2 rounded-md text-sm font-body font-medium ${tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted'}`}>{num}</button>
-                            ))}
-                          </div>
+                          <>
+                            {/* Bug 3 fix — invisible overlay catches clicks outside the dropdown and closes it */}
+                            <div className="fixed inset-0 z-[5]" onClick={() => setShowTableSelect(false)} />
+                            <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-10 p-2 grid grid-cols-5 gap-1 max-h-40 overflow-y-auto">
+                              {TABLE_NUMBERS.map((num) => (
+                                <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }} className={`py-2 rounded-md text-sm font-body font-medium ${tableNumber === num ? 'cafe-gradient text-primary-foreground' : 'hover:bg-muted'}`}>{num}</button>
+                              ))}
+                            </div>
+                          </>
                         )}
                       </div>
                       {tableError && <div className="flex items-center gap-1 mt-1.5 text-destructive"><AlertCircle className="size-3" /><span className="text-xs font-body">Table number is required for Dine In orders</span></div>}
@@ -168,6 +224,12 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
                     <span className="font-body text-sm text-muted-foreground">Total</span>
                     <span className="font-display text-2xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
                   </div>
+                  {submitError && (
+                    <div className="flex items-start gap-2 mb-3 px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/30">
+                      <AlertCircle className="size-4 text-destructive shrink-0 mt-0.5" />
+                      <p className="text-xs font-body text-destructive leading-snug">{submitError}</p>
+                    </div>
+                  )}
                   <button onClick={handleSubmit} disabled={submitting} className="w-full py-3.5 rounded-xl cafe-gradient text-primary-foreground font-body font-bold text-base active:scale-[0.98] transition-transform shadow-lg disabled:opacity-60">
                     {submitting ? 'Sending...' : 'Send to Kitchen & Billing'}
                   </button>

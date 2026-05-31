@@ -59,7 +59,11 @@
 
   * { @apply border-border; }
 
+  /* A11Y-01: honour OS reduced-motion preference for smooth scroll */
   html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto !important; }
+  }
 
   body {
     @apply bg-background text-foreground antialiased;
@@ -282,8 +286,101 @@
     overflow-y: auto;
   }
 
-  /* ── Page wrapper ── */
-  .page-wrapper {
-    @apply min-h-screen bg-background pt-14 pb-24;
+  /* ── Layout spacing tokens ───────────────────────────────────────────────── */
+  /* Header is fixed h-14 (56px). BottomNav is fixed ~72px + mb-3 = ~84px.    */
+  /* Use these vars everywhere instead of hardcoding pt-14 / pb-24 per page.   */
+  :root {
+    --header-h: 3.5rem;        /* 56px — matches Header h-14 */
+    --nav-h:    5.25rem;       /* 84px — BottomNav pill + margin + safe-area  */
   }
+
+  /* ── Page wrapper ── */
+  /* Drop-in class for any page that sits under Header + above BottomNav.      */
+  /* Pages that manage their own layout (Landing, Login, QR) don't use this.  */
+  .page-wrapper {
+    @apply min-h-screen bg-background;
+    padding-top: var(--header-h);
+    padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ── A11Y-01: Global prefers-reduced-motion override ──────────────────────── */
+/* Disables ALL animations & transitions for users who request reduced motion. */
+/* This is the single source of truth — no need to add it to every component. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration:        0.01ms !important;
+    animation-iteration-count: 1      !important;
+    transition-duration:       0.01ms !important;
+  }
+}
+
+/* ── A11Y-04: Global focus-visible ring ───────────────────────────────────── */
+/* Ensures keyboard focus is always visible; mouse clicks stay ring-free.      */
+@layer base {
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+  /* suppress outline on mouse-click only — browsers with :focus-visible support */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* ── FIX: 100vh → 100dvh via utility class override ──────────────────────── */
+/* All pages use min-h-screen (Tailwind = min-height: 100vh).                  */
+/* On mobile browsers the URL bar causes layout jumps with 100vh.              */
+/* This single override fixes every occurrence project-wide without touching   */
+/* each page file.                                                              */
+@supports (height: 100dvh) {
+  .min-h-screen { min-height: 100dvh !important; }
+  .h-screen     { height: 100dvh     !important; }
+}
+
+/* ── FIX: iOS safe-area insets for fixed bottom elements ─────────────────── */
+/* Any element with [data-safe-bottom] gets env() bottom padding.              */
+/* Applied to BottomNav and the ChatBot floating button via the attribute.     */
+[data-safe-bottom] {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── FIX: Centralised z-index token layer ─────────────────────────────────  */
+/* Use these Tailwind-compatible custom-property classes instead of ad-hoc     */
+/* z-40 / z-50 / z-[100] values.                                               */
+/* Classes: z-layer-header z-layer-drawer z-layer-modal z-layer-toast z-layer-tooltip */
+.z-layer-header  { z-index: 20;  }
+.z-layer-drawer  { z-index: 40;  }
+.z-layer-modal   { z-index: 60;  }
+.z-layer-toast   { z-index: 80;  }
+.z-layer-tooltip { z-index: 100; }
+
+/* ── FIX: Offline banner ─────────────────────────────────────────────────── */
+#offline-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  background: #854F0B;
+  color: #fff;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  transform: translateY(-100%);
+  transition: transform 0.25s ease;
+}
+#offline-banner.visible {
+  transform: translateY(0);
+}
+
+/* ── FIX: table overflow containment ─────────────────────────────────────── */
+/* Wrap any <table> in .table-scroll-container to prevent full-page horizontal */
+/* scroll on mobile.                                                           */
+.table-scroll-container {
+  width: 100%;
+  overflow: hidden;
+}
+.table-scroll-container .table-inner-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }

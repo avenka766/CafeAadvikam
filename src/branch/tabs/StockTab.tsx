@@ -3,7 +3,7 @@ import { useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
-  PencilLine, Search, X, Plus,
+  PencilLine, Search, X, Plus, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
@@ -168,7 +168,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   };
 
   return (
-    <div className="bg-card border rounded-xl overflow-hidden">
+    <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
       <SectionHeader
         icon={<PencilLine className="size-4 text-violet-600" />}
         title="Manual Stock Update"
@@ -267,11 +267,12 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
 type StockSubTab = 'incoming' | 'current' | 'manual';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading }: Props) {
-  const { confirmIncoming, confirmAllIncoming } = useBranchStore();
+  const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [confirmAllError, setConfirmAllError] = useState('');
+  const [syncing, setSyncing]             = useState(false);
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -310,9 +311,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
 
   const today = new Date().toDateString();
-  const todayIncoming = branchIncoming.filter(
-    (inc) => !inc.confirmed && new Date(inc.receivedAt).toDateString() === today
-  );
+  // Show ALL unconfirmed incoming — no date cutoff.
+  // Items dispatched days ago that were never confirmed must still be actionable.
+  const todayIncoming = branchIncoming.filter((inc) => !inc.confirmed);
 
   const handleConfirmAll = async () => {
     setConfirmingAll(true);
@@ -322,6 +323,16 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     const err = await confirmAllIncoming(branch);
     setConfirmingAll(false);
     if (err) setConfirmAllError(err);
+  };
+
+  const handleRefreshIncoming = async () => {
+    setSyncing(true);
+    // Force sync from dispatch_log (catches any missed records)
+    await syncIncomingFromDispatches(branch, true);
+    // fetchBranchData is already called inside syncIncomingFromDispatches,
+    // but call again to ensure UI is refreshed even if sync was a no-op
+    await fetchBranchData(branch);
+    setSyncing(false);
   };
 
   const SUBTABS: { id: StockSubTab; label: string }[] = [
@@ -334,13 +345,13 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     <div className="space-y-3">
 
       {/* Sub-tab bar */}
-      <div className="flex gap-1.5 bg-muted/60 p-1 rounded-xl">
+      <div className="flex gap-2 rounded-[1.25rem] bg-white p-1.5 ring-1 ring-slate-200 shadow-sm">
         {SUBTABS.map((t) => (
           <button key={t.id} onClick={() => setSubTab(t.id)}
-            className={cn('flex-1 py-2 text-xs font-semibold rounded-lg transition',
+            className={cn('flex-1 py-2.5 text-xs font-black rounded-2xl transition active:scale-[0.98]',
               subTab === t.id
-                ? 'bg-card shadow text-foreground'
-                : 'text-muted-foreground hover:text-foreground')}>
+                ? 'bg-slate-950 shadow text-white'
+                : 'text-slate-500 hover:bg-slate-50')}>
             {t.label}
           </button>
         ))}
@@ -348,23 +359,28 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
       {/* ── Incoming ────────────────────────────────────────────────────────── */}
       {subTab === 'incoming' && (
-        <div className="bg-card border rounded-xl overflow-hidden">
+        <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
           <SectionHeader
             icon={<ArrowDownToLine className="size-4 text-emerald-600" />}
             title="Incoming Stock"
             right={
-              todayIncoming.length > 0 ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
-                  <button onClick={handleConfirmAll} disabled={confirmingAll}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
-                    {confirmingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
-                    {confirmingAll ? 'Adding…' : 'Confirm All'}
-                  </button>
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground">Today</span>
-              )
+              <div className="flex items-center gap-2">
+                <button onClick={handleRefreshIncoming} disabled={syncing}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
+                  <RefreshCw className={cn('size-3', syncing && 'animate-spin')} />
+                  {syncing ? 'Checking…' : 'Refresh'}
+                </button>
+                {todayIncoming.length > 0 && (
+                  <>
+                    <span className="text-xs text-muted-foreground">{todayIncoming.length} pending</span>
+                    <button onClick={handleConfirmAll} disabled={confirmingAll}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-full disabled:opacity-50 transition active:scale-95">
+                      {confirmingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
+                      {confirmingAll ? 'Adding…' : 'Confirm All'}
+                    </button>
+                  </>
+                )}
+              </div>
             }
           />
           {confirmAllError && (
@@ -404,7 +420,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       {/* ── Current stock ────────────────────────────────────────────────────── */}
       {subTab === 'current' && (
         <>
-          <div className="bg-card border rounded-xl overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-[1.75rem] overflow-hidden shadow-sm">
             <SectionHeader
               icon={<Package className="size-4 text-primary" />}
               title="Available Stock"
@@ -437,7 +453,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
           </div>
 
           {outOfStockItems.length > 0 && (
-            <div className="bg-card border border-red-100 rounded-xl overflow-hidden">
+            <div className="bg-white border border-red-200 rounded-[1.75rem] overflow-hidden shadow-sm">
               <button onClick={() => setOutOfStockExpanded((v) => !v)}
                 className="w-full flex items-center justify-between px-4 py-3 bg-red-50/50 hover:bg-red-50 transition">
                 <div className="flex items-center gap-2">

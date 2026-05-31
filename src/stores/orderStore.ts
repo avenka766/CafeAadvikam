@@ -9,6 +9,7 @@ interface OrderState {
   loading: boolean;
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
+  _pollBackoffTimer: ReturnType<typeof setTimeout> | null; // H-04 FIX: separate from pollTimer so clearInterval/clearTimeout hit the right handle
   _pollRefCount: number;
   _pollFailCount: number; // consecutive load failures — used for backoff
 
@@ -21,8 +22,8 @@ interface OrderState {
   getCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; }) => Promise<string>;
-  submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; }) => Promise<string>;
+  submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
@@ -59,9 +60,13 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     advanceAmount: row.advance_amount ? Number(row.advance_amount) : undefined,
     advancePaidBy: row.advance_paid_by as string | undefined,
     balanceDue: row.balance_due ? Number(row.balance_due) : undefined,
+    fullAmount: row.full_amount ? Number(row.full_amount) : undefined,
     fullyPaidAt: row.fully_paid_at as string | undefined,
     balancePaymentType: row.balance_payment_type as string | undefined,
     balancePaidBy: row.balance_paid_by as string | undefined,
+    balanceOrderId: row.balance_order_id as string | undefined,
+    parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0,
+    deliveryDate: row.delivery_date as string | undefined,
   };
 }
 
@@ -71,6 +76,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   loading: false,
   polling: false,
   pollTimer: null,
+  _pollBackoffTimer: null, // H-04 FIX: separate timer for backoff setTimeout
   _pollRefCount: 0,
   _pollFailCount: 0,
 
@@ -121,17 +127,24 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const backoffMs = Math.min(3000 * Math.pow(2, failCount - 1), 60_000);
       console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
 
-      // If we're in a polling loop, reschedule at the backoff interval
-      const { pollTimer } = get();
+      // H-04 FIX: clear the backoff timeout too before rescheduling, using its own slot.
+      // Previously the timeout ID was casted and stored in pollTimer (an interval slot),
+      // so clearInterval(pollTimer) silently no-op'd on the timeout ID — interval leaked.
+      const { pollTimer, _pollBackoffTimer } = get();
+      if (_pollBackoffTimer) {
+        clearTimeout(_pollBackoffTimer);
+        set({ _pollBackoffTimer: null });
+      }
       if (pollTimer) {
         clearInterval(pollTimer);
+        set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
+          set({ _pollBackoffTimer: null });
           const newTimer = setInterval(() => { get().loadOrders(days); }, 3000);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
-        // Store timeout id in pollTimer slot temporarily (same cleanup path)
-        set({ pollTimer: retryTimer as unknown as ReturnType<typeof setInterval> });
+        set({ _pollBackoffTimer: retryTimer });
       }
     } finally {
       set({ loading: false });
@@ -141,6 +154,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   submitOrder: async (params) => {
     const { cart } = get();
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
+    const parcelCharges = params.parcelCharges ?? 0;
+    const total = subtotal + parcelCharges;
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
@@ -154,27 +169,45 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total: subtotal,
+      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total,
       status: 'pending', createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType: 'unpaid', orderSource,
+      ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
-    // Optimistic update
+    // Optimistic update — snapshot cart *before* clearing so we can restore it on failure.
+    // Items added *after* this point (while the DB write is in flight) are captured via
+    // get().cart inside the error handler so they are never silently discarded.
+    const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cart, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total: subtotal, status: 'pending', created_by: params.createdBy,
+      order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
+      discount_value: 0, total, status: 'pending', created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
       payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
+      // parcel_charges column not in DB — charges are baked into `total` above
     };
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      // ARCH-04: rollback optimistic update
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart }));
-      throw new Error('Failed to submit order. Please try again.');
+      // ARCH-04: rollback optimistic update.
+      // Merge cartSnapshot with any items added while the request was in flight so
+      // nothing the staff member added during the async write is silently lost.
+      const inflightCart = get().cart;
+      const mergedCart = [...cartSnapshot];
+      for (const inflightItem of inflightCart) {
+        const existing = mergedCart.find((c) => c.menuItem.id === inflightItem.menuItem.id);
+        if (existing) {
+          existing.quantity += inflightItem.quantity;
+        } else {
+          mergedCart.push(inflightItem);
+        }
+      }
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: mergedCart }));
+      console.error('[submitOrder] Supabase insert failed:', error);
+      throw new Error(`Failed to submit order: ${error.message}`);
     }
 
     return orderId;
@@ -185,35 +218,63 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
-    const balanceDue = Math.max(0, subtotal - params.advanceAmount);
+    const isFullPayment = params.isFullPayment ?? false;
+    const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
+    // If full payment: total = subtotal (everything paid now).
+    // If advance: total = advanceAmount (only paid portion recorded in today's sales).
+    const total = isFullPayment ? subtotal : params.advanceAmount;
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
     const orderNumber = numData as number;
 
+    const cartSnapshot = [...cart];
+    set((state) => ({ orders: [], cart: [] })); // clear cart optimistically before building order
+
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
-      items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total: subtotal,
-      status: 'served', createdBy: params.createdBy, createdAt: now, updatedAt: now,
-      notes: params.notes, customerName: params.customerName, paymentType: 'advance',
-      orderSource: 'staff', advanceAmount: params.advanceAmount, advancePaidBy: params.advancePaidBy, balanceDue,
+      items: cartSnapshot, subtotal, discount: 0, discountType: 'flat', discountValue: 0,
+      total,
+      fullAmount: subtotal,
+      status: 'served',
+      createdBy: params.createdBy, billedBy: params.createdBy,
+      createdAt: now, updatedAt: now,
+      notes: params.notes, customerName: params.customerName,
+      paymentType: 'advance',
+      orderSource: 'staff',
+      advanceAmount: isFullPayment ? subtotal : params.advanceAmount,
+      advancePaidBy: params.advancePaidBy,
+      balanceDue,
+      deliveryDate: params.deliveryDate,
+      ...(isFullPayment ? { fullyPaidAt: now, balancePaymentType: params.advancePaidBy, balancePaidBy: params.createdBy } : {}),
     };
 
-    set((state) => ({ orders: [order, ...state.orders], cart: [] }));
+    set((state) => ({ orders: [order, ...state.orders] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
-      order_type: params.orderType, items: cart, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total: subtotal, status: 'served', created_by: params.createdBy,
+      order_type: params.orderType, items: cartSnapshot, subtotal,
+      discount: 0, discount_type: 'flat', discount_value: 0,
+      total,
+      full_amount: subtotal,
+      status: 'served',
+      created_by: params.createdBy, billed_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
-      payment_type: 'advance', order_source: 'staff', advance_amount: params.advanceAmount,
-      advance_paid_by: params.advancePaidBy, balance_due: balanceDue, created_at: now, updated_at: now,
+      payment_type: 'advance', order_source: 'staff',
+      advance_amount: isFullPayment ? subtotal : params.advanceAmount,
+      advance_paid_by: params.advancePaidBy,
+      balance_due: balanceDue,
+      delivery_date: params.deliveryDate,
+      created_at: now, updated_at: now,
+      ...(isFullPayment ? { fully_paid_at: now, balance_payment_type: params.advancePaidBy, balance_paid_by: params.createdBy } : {}),
     };
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart }));
-      throw new Error('Failed to submit advance order. Please try again.');
+      // Rollback optimistic update, restore cart
+      set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: cartSnapshot }));
+      console.error('[submitAdvanceOrder] Supabase insert failed:', error);
+      throw new Error(`Failed to submit advance order: ${error.message}`);
     }
     return orderId;
   },
@@ -251,7 +312,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const discount = discountType === 'percentage'
       ? Math.round(order.subtotal * (discountValue / 100))
       : discountValue;
-    const total = Math.max(0, order.subtotal - discount);
+    // H-03 FIX: preserve parcelCharges in total — previously dropped, causing underpayment on takeaway orders
+    const parcelCharges = order.parcelCharges ?? 0;
+    const total = Math.max(0, order.subtotal - discount) + parcelCharges;
     const now = new Date().toISOString();
 
     set((state) => ({
@@ -284,16 +347,17 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    // PROD-03: match on updated_at to detect concurrent modification
-    const { count, error } = await supabase.from('orders')
+    // PROD-03 / H-02 FIX: .select('id') so data is populated; check data.length instead
+    // of count (which is null without { count: 'exact' }) to detect concurrent edits.
+    const { data: lockData, error } = await supabase.from('orders')
       .update(updates)
       .eq('id', orderId)
       .eq('updated_at', order.updatedAt)
-      .select();
+      .select('id');
 
-    if (error || count === 0) {
+    if (error || !lockData || lockData.length === 0) {
       set({ orders: prev });
-      throw new Error(count === 0
+      throw new Error(!lockData || lockData.length === 0
         ? 'Order was modified by someone else. Please refresh.'
         : 'Failed to set payment type');
     }
@@ -325,30 +389,95 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (!order) return;
     const prev = get().orders;
     const now = new Date().toISOString();
-    const updates: Record<string, unknown> = {
-      payment_type: 'advance', billed_by: billedBy, balance_due: 0, fully_paid_at: now,
-      balance_payment_type: balancePaymentType, balance_paid_by: billedBy, status: 'served', updated_at: now,
-    };
-    if (breakdown) updates.payment_breakdown = breakdown;
+    const balanceAmount = order.balanceDue ?? 0;
 
+    // ADVANCE-02: Insert a NEW order row for the balance amount so it appears
+    // in today's (collection day) sales — separate from the advance-day sales.
+    const balanceOrderId = generateId();
+    const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
+    if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
+    const balanceOrderNumber = numData as number;
+
+    const balanceOrder: Order = {
+      id: balanceOrderId,
+      orderNumber: balanceOrderNumber,
+      tableNumber: order.tableNumber,
+      orderType: order.orderType,
+      items: order.items,          // same items for reference
+      subtotal: balanceAmount,
+      discount: 0, discountType: 'flat', discountValue: 0,
+      total: balanceAmount,        // balance amount recorded in today's sales
+      status: 'served',
+      createdBy: billedBy,
+      createdAt: now, updatedAt: now,
+      notes: order.notes,
+      customerName: order.customerName,
+      paymentType: balancePaymentType,
+      orderSource: 'staff',
+      ...(breakdown ? { paymentBreakdown: breakdown } : {}),
+    };
+
+    const balancePayload = {
+      id: balanceOrderId,
+      order_number: balanceOrderNumber,
+      table_number: order.tableNumber || null,
+      order_type: order.orderType,
+      items: order.items,
+      subtotal: balanceAmount,
+      discount: 0, discount_type: 'flat', discount_value: 0,
+      total: balanceAmount,
+      status: 'served',
+      created_by: billedBy,
+      notes: order.notes || null,
+      customer_name: order.customerName || null,
+      payment_type: balancePaymentType,
+      order_source: 'staff',
+      created_at: now, updated_at: now,
+      ...(breakdown ? { payment_breakdown: breakdown } : {}),
+    };
+
+    // Close the original advance order: balance_due = 0, fully_paid_at = now
+    const closeUpdates: Record<string, unknown> = {
+      balance_due: 0,
+      fully_paid_at: now,
+      balance_payment_type: balancePaymentType,
+      balance_paid_by: billedBy,
+      balance_order_id: balanceOrderId,
+      updated_at: now,
+    };
+
+    // Optimistic update — add balance order and close original
     set((state) => ({
-      orders: state.orders.map((o) =>
-        o.id === orderId
-          ? { ...o, paymentType: 'advance', billedBy, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, status: 'served', updatedAt: now, ...(breakdown ? { paymentBreakdown: breakdown } : {}) }
-          : o,
-      ),
+      orders: [
+        balanceOrder,
+        ...state.orders.map((o) =>
+          o.id === orderId
+            ? { ...o, balanceDue: 0, fullyPaidAt: now, balancePaymentType, balancePaidBy: billedBy, balanceOrderId, updatedAt: now }
+            : o,
+        ),
+      ],
     }));
 
-    // PROD-03: optimistic lock on collect balance
-    const { count, error } = await supabase.from('orders')
-      .update(updates)
-      .eq('id', orderId)
-      .eq('updated_at', order.updatedAt)
-      .select();
-
-    if (error || count === 0) {
+    // Insert balance order row first
+    const { error: insertError } = await supabase.from('orders').insert(balancePayload);
+    if (insertError) {
       set({ orders: prev });
-      throw new Error(count === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to collect balance');
+      console.error('[collectBalance] insert balance order failed:', insertError);
+      throw new Error(`Failed to record balance payment: ${insertError.message}`);
+    }
+
+    // Close original advance order
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update(closeUpdates)
+      .eq('id', orderId);
+
+    if (updateError) {
+      // Compensate: delete the balance order we just inserted so DB stays consistent
+      await supabase.from('orders').delete().eq('id', balanceOrderId);
+      set({ orders: prev });
+      console.error('[collectBalance] close advance order failed — compensated:', updateError);
+      throw new Error(`Failed to close advance order: ${updateError.message}`);
     }
   },
 
@@ -358,18 +487,28 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
-    get().loadOrders(days);
+    // Bug 3 fix — create the interval and store it atomically *before* any async work.
+    // Previously both concurrent callers could read pollTimer===null, each create an
+    // interval, and the second set() would overwrite the first, leaking timer1 forever.
     const timer = setInterval(() => { get().loadOrders(days); }, 3000);
     set({ polling: true, pollTimer: timer });
+    get().loadOrders(days);
   },
 
   stopPolling: () => {
     const state = get();
     const newCount = Math.max(0, (state._pollRefCount || 0) - 1);
     set({ _pollRefCount: newCount });
-    if (newCount === 0 && state.pollTimer) {
-      clearInterval(state.pollTimer);
-      set({ polling: false, pollTimer: null });
+    if (newCount === 0) {
+      // H-04 FIX: clear both the interval AND any pending backoff timeout
+      if (state._pollBackoffTimer) {
+        clearTimeout(state._pollBackoffTimer);
+        set({ _pollBackoffTimer: null });
+      }
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        set({ polling: false, pollTimer: null });
+      }
     }
   },
 }));

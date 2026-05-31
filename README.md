@@ -10,7 +10,7 @@ cp .env.example .env.local   # fill in your Supabase URL + anon key
 npm ci
 # In Supabase SQL Editor, run: supabase/migrations/001_security.sql
 npm run dev
-```
+```  
 
 ## Roles & Routes
 
