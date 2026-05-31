@@ -461,8 +461,8 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/50" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-4" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-24 space-y-4" onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-3" />
         <div className="flex items-center justify-between">
           <h3 className="font-display font-bold text-lg text-foreground">Add Stock Item</h3>
@@ -551,8 +551,8 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
     setSaving(true); await onSave({ quantity: q, minThreshold: m, unit }); setSaving(false); onClose();
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/50" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-4" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-24 space-y-4" onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-3" />
         <div className="flex items-center justify-between">
           <div><h3 className="font-display font-bold text-foreground">{item.name}</h3><p className="text-[10px] font-body text-muted-foreground">Update stock</p></div>
@@ -1010,8 +1010,8 @@ function SupplierModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/50" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-10 space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={onClose}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-24 space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <div className="flex items-center justify-between mb-1">
           <h3 className="font-display font-bold text-lg text-foreground">{initial ? 'Edit Supplier' : 'Add Supplier'}</h3>
