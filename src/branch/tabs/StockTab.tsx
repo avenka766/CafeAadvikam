@@ -438,9 +438,22 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       : { itemName: name, quantity: 0, minThreshold, price: null, unit };
   });
 
-  const availableItems  = completeStock.filter((s) => s.quantity > 0);
-  const outOfStockItems = completeStock.filter((s) => s.quantity <= 0);
-  const negativeItems   = completeStock.filter((s) => s.quantity < 0);
+  // NEGATIVE-ITEM FIX: also include any DB rows with negative quantity that aren't
+  // in the price list (e.g. newly added items sold before being seeded into stock).
+  // Without this, items sold from zero stock are invisible in the Negative tab.
+  const completeStockNames = new Set(allBranchItemNames);
+  const extraNegativeItems = branchStock.filter(
+    (s) => s.quantity < 0 && !completeStockNames.has(s.itemName)
+  ).map((s) => ({
+    ...s,
+    unit: s.unit ?? (detectSellUnit(s.itemName) as 'kg' | 'pcs'),
+    minThreshold: branchThresholds[s.itemName] ?? s.minThreshold ?? 0,
+  }));
+  const fullStock = [...completeStock, ...extraNegativeItems];
+
+  const availableItems  = fullStock.filter((s) => s.quantity > 0);
+  const outOfStockItems = fullStock.filter((s) => s.quantity <= 0);
+  const negativeItems   = fullStock.filter((s) => s.quantity < 0);
 
   const today = new Date().toDateString();
   // Show ALL unconfirmed incoming — no date cutoff.
