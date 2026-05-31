@@ -1,6 +1,6 @@
 // src/branch/BranchDashboard.tsx
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { Package, Settings, Receipt, History } from 'lucide-react';
+import { Package, Settings, Receipt, History, Bell, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import { StatCard, TabBar } from './components';
@@ -29,8 +29,6 @@ export default function BranchDashboard({ branch }: Props) {
     useBranchStore();
 
   const [tab, setTab] = useState<TabId>('stock');
-  // B10 FIX: these heavy operations must only run once per branch change,
-  // not on every React re-render / Strict Mode double-invoke.
   const initializedRef = useRef<Branch | null>(null);
 
   const branchStock      = stock[branch]           || [];
@@ -43,25 +41,15 @@ export default function BranchDashboard({ branch }: Props) {
   useEffect(() => {
     fetchBranchData(branch);
 
-    // B10 FIX: syncIncomingFromDispatches and seedBranchItems are expensive one-time
-    // operations.  Only run them when the branch actually changes, not on every re-render.
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
-      syncIncomingFromDispatches(branch, true); // force=true on first load
+      syncIncomingFromDispatches(branch, true);
       seedBranchItems(branch);
       cleanOldData();
     }
 
-    // ── Supabase Realtime: instant updates on stock/incoming/sales changes ──
-    // subscribeToStock returns an unsubscribe fn; store it for cleanup.
     const unsubscribe = subscribeToStock(branch);
-
-    // ── 3-second safety-net poll ────────────────────────────────────────────
-    // Realtime covers DB-triggered changes; the poll catches any edge cases
-    // (network hiccup, Realtime lag) so the UI is never more than 3s stale.
     const id = setInterval(() => fetchBranchData(branch), 3_000);
-
-    // ── Incoming sync: every 60s (guarded internally to 60s minimum) ────────
     const syncId = setInterval(() => syncIncomingFromDispatches(branch), 60 * 1000);
 
     return () => {
@@ -72,6 +60,12 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch]);
 
   const availableStock = branchStock.filter((s) => s.quantity > 0);
+  const lowStockCount = useMemo(
+    () => branchStock.filter((s) => s.quantity <= (branchThresholds[s.itemName] ?? s.minThreshold ?? 10)).length,
+    [branchStock, branchThresholds],
+  );
+  const pendingIncoming = branchIncoming.filter((i) => !i.confirmed).length;
+  const pendingAdvance = branchAdvance.filter((o) => o.status === 'pending').length;
 
   const [todayString, setTodayString] = useState(() => new Date().toDateString());
   useEffect(() => {
@@ -87,56 +81,79 @@ export default function BranchDashboard({ branch }: Props) {
     [branchSales, todayString],
   );
 
-  // STAT-FIX: show number of sales transactions today, not raw quantity sum.
-  const totalTodayQty = useMemo(
-    () => todaySalesLog.length,
-    [todaySalesLog],
-  );
+  const totalTodayQty = useMemo(() => todaySalesLog.length, [todaySalesLog]);
 
-  // Revenue today — sum of unitPrice × quantitySold for all today's sales
   const totalTodayRevenue = useMemo(
     () => todaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0),
     [todaySalesLog],
   );
 
   return (
-    // LAYOUT-FIX: Use flex-col + min-h-0 so BillTab (which uses flex-1) can fill
-    // the full viewport height. pb-28 only applies to non-bill tabs to clear the bottom nav.
-    <div className="bg-background flex flex-col" style={{ height: '100dvh', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
-      <div className={cn('px-4 pt-14 pb-3 border-b shrink-0', colors.bg)}>
-        <h1 className={cn('font-display text-2xl font-bold', colors.text)}>
-          {branch} Branch
-        </h1>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short' })}
-        </p>
+    <div className="min-h-0 bg-slate-100 flex flex-col" style={{ height: '100dvh', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
+      <div className="shrink-0 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+        <div className="px-4 pt-4 pb-3 md:px-6">
+          <div className="rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-5 text-white shadow-xl shadow-slate-300/70">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className={cn('inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wide', colors.badge)}>
+                    <Package className="size-3" /> {branch} Branch
+                  </span>
+                  {pendingIncoming > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-black text-emerald-700">
+                      <Package className="size-3" /> {pendingIncoming} incoming
+                    </span>
+                  )}
+                  {pendingAdvance > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-[11px] font-black text-amber-800">
+                      <Bell className="size-3" /> {pendingAdvance} advance
+                    </span>
+                  )}
+                </div>
+                <h1 className="font-display text-2xl font-black tracking-tight md:text-3xl">
+                  Billing & Stock Workspace
+                </h1>
+                <p className="mt-1 text-xs font-medium text-slate-300 md:text-sm">
+                  {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' })}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-white/10 px-4 py-3 text-right ring-1 ring-white/15">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-300">Today revenue</p>
+                <p className="text-2xl font-black tabular-nums text-emerald-300">
+                  ₹{totalTodayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-4 pb-3 md:px-6">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <StatCard label="In Stock" value={availableStock.length} sub={`${lowStockCount} low`} color="text-slate-950" icon={<Package className="size-4" />} />
+            <StatCard label="Sales Today" value={totalTodayQty} sub="transactions" color="text-blue-700" icon={<Receipt className="size-4" />} />
+            <StatCard label="Revenue" value={`₹${totalTodayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} sub="today" color="text-emerald-700" icon={<TrendingUp className="size-4" />} />
+            <StatCard label="Alerts" value={lowStockCount + pendingIncoming + pendingAdvance} sub="stock + orders" color="text-orange-700" icon={<Bell className="size-4" />} />
+          </div>
+        </div>
+
+        <div className="px-4 pb-3 md:px-6">
+          <TabBar tabs={TABS} active={tab} onChange={setTab} />
+        </div>
       </div>
 
-      <div className="px-4 py-3 grid grid-cols-3 gap-2">
-        <StatCard label="In Stock"      value={availableStock.length}                                                          color={colors.text} />
-        <StatCard label="Sales Today"   value={totalTodayQty}                                                                  color="text-blue-700" />
-        <StatCard label="Revenue Today" value={`₹${totalTodayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}  color="text-emerald-700" />
-      </div>
-
-      <div className="mx-4 mb-3">
-        <TabBar tabs={TABS} active={tab} onChange={setTab} />
-      </div>
-
-      {/* Tabs kept mounted so cart state survives tab switches */}
-      <div className={cn('flex-1 overflow-y-auto px-4 py-3 space-y-3', tab === 'bill' && 'hidden')}>
-        <div className={tab !== 'stock'    ? 'hidden' : undefined}>
+      <div className={cn('flex-1 overflow-y-auto px-4 py-4 md:px-6 space-y-4', tab === 'bill' && 'hidden')}>
+        <div className={tab !== 'stock' ? 'hidden' : undefined}>
           <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming}
             branchThresholds={branchThresholds} loading={loading} />
         </div>
-        <div className={tab !== 'history'  ? 'hidden' : undefined}>
+        <div className={tab !== 'history' ? 'hidden' : undefined}>
           <HistoryTab branchSales={branchSales} />
         </div>
         <div className={tab !== 'settings' ? 'hidden' : undefined}>
           <SettingsTab branch={branch} branchStock={branchStock} />
         </div>
       </div>
-      {/* BillTab outside padded wrapper — needs flex-1 to fill all remaining height */}
-      <div className={cn('flex flex-col flex-1 min-h-0', tab !== 'bill' && 'hidden')}>
+      <div className={cn('flex flex-col flex-1 min-h-0 px-4 pb-4 md:px-6', tab !== 'bill' && 'hidden')}>
         <BillTab branch={branch} branchStock={branchStock} advanceOrders={branchAdvance} />
       </div>
     </div>

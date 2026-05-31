@@ -1,6 +1,7 @@
 // src/branch/components.tsx
 import { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from './branchStore';
 import type { Branch } from './types';
@@ -10,7 +11,7 @@ export function StockBadge({ qty, threshold }: { qty: number; threshold: number 
   const low = qty <= threshold;
   return (
     <span className={cn(
-      'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold',
+      'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold',
       low ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700',
     )}>
       {low && <AlertTriangle className="size-3" />}
@@ -74,15 +75,20 @@ export function ThresholdEditor({
 
 // ─── StatCard ─────────────────────────────────────────────────────────────────
 export function StatCard({
-  label, value, sub, color,
-}: { label: string; value: string | number; sub?: string; color?: string }) {
+  label, value, sub, color, icon,
+}: { label: string; value: string | number; sub?: string; color?: string; icon?: ReactNode }) {
   return (
-    <div className="bg-card border border-border rounded-xl p-3.5">
-      <p className={cn('font-display text-2xl font-bold tabular-nums', color ?? 'text-foreground')}>
-        {value}
-      </p>
-      <p className="text-[10px] font-semibold text-muted-foreground uppercase mt-0.5">{label}</p>
-      {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className={cn('font-display text-2xl font-black tabular-nums truncate', color ?? 'text-foreground')}>
+            {value}
+          </p>
+          <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
+          {sub && <p className="mt-0.5 truncate text-xs font-medium text-slate-400">{sub}</p>}
+        </div>
+        {icon && <div className="shrink-0 rounded-2xl bg-slate-100 p-2.5 text-slate-600">{icon}</div>}
+      </div>
     </div>
   );
 }
@@ -92,9 +98,9 @@ export function SectionHeader({
   icon, title, right,
 }: { icon: React.ReactNode; title: string; right?: React.ReactNode }) {
   return (
-    <div className="px-4 py-3 border-b bg-muted/40 flex items-center gap-2">
+    <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/80 flex items-center gap-2">
       {icon}
-      <h2 className="font-semibold text-sm">{title}</h2>
+      <h2 className="font-black text-sm text-slate-900">{title}</h2>
       {right && <div className="ml-auto">{right}</div>}
     </div>
   );
@@ -109,13 +115,13 @@ export function TabBar<T extends string>({
   onChange: (id: T) => void;
 }) {
   return (
-    <div className="flex gap-1 bg-muted rounded-xl p-1">
+    <div className="flex gap-1.5 rounded-[1.25rem] bg-slate-100 p-1.5 ring-1 ring-slate-200">
       {tabs.map((t) => (
         <button
           key={t.id} onClick={() => onChange(t.id)}
           className={cn(
-            'flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium transition',
-            active === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground',
+            'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-xs font-black transition active:scale-[0.98]',
+            active === t.id ? 'bg-slate-950 text-white shadow-lg shadow-slate-200' : 'text-slate-500 hover:bg-white',
           )}
         >
           <t.icon className="size-3" />
@@ -128,7 +134,7 @@ export function TabBar<T extends string>({
 
 // ─── EmptyState ───────────────────────────────────────────────────────────────
 export function EmptyState({ message }: { message: string }) {
-  return <p className="text-center text-muted-foreground text-sm py-6">{message}</p>;
+  return <p className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-center text-muted-foreground text-sm py-8 mx-4 my-4">{message}</p>;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
