@@ -140,15 +140,17 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
       if (priceChanged) changes.push(`price: ₹${oldPrice} → ₹${price}`);
 
       // Determine recipient based on who changed what:
-      // VRSNB Admin or SNB Admin → notify 'admin'
-      // Admin changing SNB items → notify 'admin_snb'
-      // Admin changing VRSNB items → notify 'admin_vrsnb'
+      // VRSNB Admin or SNB Admin → notify 'admin' (super admin must be informed)
+      // Super Admin changing any branch items → notify 'admin' (self-audit log;
+      //   branch admins don't need to know when the super admin edits their own items)
       const changerRole = useAuthStore.getState().user?.role ?? 'admin';
       let recipientRole: string;
       if (changerRole === 'admin_vrsnb' || changerRole === 'admin_snb') {
         recipientRole = 'admin';
       } else {
-        recipientRole = branch === 'SNB' ? 'admin_snb' : 'admin_vrsnb';
+        // changerRole === 'admin' (super admin) — always notify 'admin' so the
+        // change appears in the super admin's own notification feed as an audit entry
+        recipientRole = 'admin';
       }
 
       const { error: notifError } = await supabase.from('admin_notifications').insert({
