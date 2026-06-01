@@ -228,6 +228,7 @@ export default function SnbItemsTab() {
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]   = useState(false);
   const [customItems, setCustomItems]     = useState<CustomSnbItem[]>([]);
+  const [saveError, setSaveError]         = useState<string | null>(null);
   const [editTarget, setEditTarget]       = useState<(typeof SNB_ITEMS[0]) | CustomSnbItem | null>(null);
   // priceOverrides are read from itemPriceStore (Supabase-backed) — not local state
 
@@ -271,7 +272,7 @@ export default function SnbItemsTab() {
   ], [customItems, snbOverrides]);
 
   const handleSaveEdit = async (barcode: number, updates: { name: string; price: number }) => {
-    // Find old values so the notification can show what changed
+    setSaveError(null);
     const existing = SNB_ITEMS.find(i => i.barcode === barcode);
     const oldPrice = snbOverrides[barcode]?.price ?? existing?.price ?? 0;
     const oldName  = snbOverrides[barcode]?.name  ?? existing?.name  ?? '';
@@ -279,10 +280,10 @@ export default function SnbItemsTab() {
 
     const err = await saveOverride('SNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
     if (err) {
-      console.error('[SnbItemsTab] saveOverride error:', err);
-      // Still update custom items locally so UI stays consistent
+      setSaveError(err);
+    } else {
+      setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
     }
-    setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
   };
 
   const filtered = useMemo(() => {
@@ -296,6 +297,14 @@ export default function SnbItemsTab() {
 
   return (
     <div className="space-y-4">
+
+      {saveError && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-300 rounded-xl text-sm text-red-700">
+          <AlertCircle className="size-4 shrink-0 text-red-500" />
+          <span className="flex-1">{saveError}</span>
+          <button onClick={() => setSaveError(null)} className="shrink-0"><X className="size-3.5" /></button>
+        </div>
+      )}
 
       {/* ── Mismatch alerts ─────────────────────────────────────────────────── */}
       {mismatchSummary.length > 0 && (

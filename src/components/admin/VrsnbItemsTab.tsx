@@ -229,6 +229,8 @@ export default function VrsnbItemsTab() {
   const [editTarget, setEditTarget]         = useState<(typeof VRSNB_ITEMS[0]) | CustomVrsnbItem | null>(null);
   // priceOverrides are read from itemPriceStore (Supabase-backed) — not local state
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchStockMismatches();
     fetchOverrides('VRSNB');
@@ -268,6 +270,7 @@ export default function VrsnbItemsTab() {
   ], [customItems, vrsnbOverrides]);
 
   const handleSaveEdit = async (barcode: number, updates: { name: string; price: number }) => {
+    setSaveError(null);
     const existing = VRSNB_ITEMS.find(i => i.barcode === barcode);
     const oldPrice = vrsnbOverrides[barcode]?.price ?? existing?.price ?? 0;
     const oldName  = vrsnbOverrides[barcode]?.name  ?? existing?.name  ?? '';
@@ -275,9 +278,10 @@ export default function VrsnbItemsTab() {
 
     const err = await saveOverride('VRSNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
     if (err) {
-      console.error('[VrsnbItemsTab] saveOverride error:', err);
+      setSaveError(err);
+    } else {
+      setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
     }
-    setCustomItems(prev => prev.map(c => c.barcode === barcode ? { ...c, ...updates } : c));
   };
 
   const filtered = useMemo(() => {
@@ -292,7 +296,13 @@ export default function VrsnbItemsTab() {
   return (
     <div className="space-y-4">
 
-      {mismatchSummary.length > 0 && (
+      {saveError && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-300 rounded-xl text-sm text-red-700">
+          <AlertCircle className="size-4 shrink-0 text-red-500" />
+          <span className="flex-1">{saveError}</span>
+          <button onClick={() => setSaveError(null)} className="shrink-0"><X className="size-3.5" /></button>
+        </div>
+      )}
         <div className="rounded-xl border border-red-200 overflow-hidden">
           <button
             onClick={() => setMismatchExpanded((v) => !v)}
