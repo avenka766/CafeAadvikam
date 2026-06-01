@@ -6,7 +6,6 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle,
-  Settings2, ChefHat,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
@@ -26,8 +25,6 @@ import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
 import StoreReportTab from './StoreReportTab';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
-import { BakeryItemsPanel } from './BakeryItemManagement';
-import RecipeManagement from './RecipeManagement';
 import { useAuthStore } from '@/stores/authStore';
 import type { DeductionContext } from './storeStockStore';
 
@@ -38,6 +35,17 @@ function matForItem(item: BakeryOrder['items'][number]) {
   if (!key) return [];
   const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
   return calculateMaterials(key, item.quantity, unit);
+}
+
+// ─── Rounding helper — rounds raw material quantities to nearest 0.05 ─────────
+// e.g. 2.23 kg → 2.25 kg, 0.06 g → 0.10 g (practical kitchen measures)
+function roundToNice(value: number): number {
+  return Math.round(value / 0.05) * 0.05;
+}
+
+function fmtMatQty(quantity: number): string {
+  const rounded = roundToNice(quantity);
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(2);
 }
 
 // ─── Print helper (per-item) ──────────────────────────────────────────────────
@@ -57,7 +65,7 @@ function printItemRecipe(
     <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;">${m.material}</td>
       <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
-        ${m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} ${m.unit}
+        ${fmtMatQty(m.quantity)} ${m.unit}
       </td>
     </tr>
   `).join('');
@@ -227,7 +235,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
                         "text-sm font-body font-bold tabular-nums ml-2 shrink-0",
                         s.status === 'out' ? "text-red-700" : "text-foreground"
                       )}>
-                        {m.quantity % 1 === 0 ? m.quantity : m.quantity.toFixed(2)} {m.unit}
+                        {fmtMatQty(m.quantity)} {m.unit}
                       </span>
                     </div>
                   );
@@ -1161,46 +1169,13 @@ function SuppliersTab() {
   );
 }
 
-// ─── Items tab (for store role): Items sub-tab + Recipe Management sub-tab ────
-function StoreItemsTab() {
-  const [subTab, setSubTab] = useState<'items' | 'recipes'>('items');
-  return (
-    <div>
-      {/* sub-tab toggle */}
-      <div className="flex gap-1.5 p-1 rounded-2xl mb-5" style={{ background: 'hsl(var(--muted))' }}>
-        <button
-          onClick={() => setSubTab('items')}
-          className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
-            subTab === 'items' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <Settings2 className="size-3.5" /> Items
-        </button>
-        <button
-          onClick={() => setSubTab('recipes')}
-          className={cn(
-            'flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1.5',
-            subTab === 'recipes' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <ChefHat className="size-3.5" /> Recipe Management
-        </button>
-      </div>
-
-      {subTab === 'items'   && <BakeryItemsPanel />}
-      {subTab === 'recipes' && <RecipeManagement />}
-    </div>
-  );
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function StoreDashboard() {
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report' | 'items'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -1223,9 +1198,8 @@ export default function StoreDashboard() {
             { id: 'suppliers', label: 'Suppliers', icon: Truck,        badge: null, badgeColor: '' },
             { id: 'invoices',  label: 'Invoices',  icon: FileText,     badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
             { id: 'analytics', label: 'Analytics', icon: Calculator,   badge: null, badgeColor: '' },
-            { id: 'custom',    label: 'Custom',    icon: ShoppingBag,  badge: null, badgeColor: '' },
-            { id: 'report',    label: 'Report',    icon: BarChart2,    badge: null, badgeColor: '' },
-            { id: 'items',     label: 'Items',     icon: Settings2,    badge: null, badgeColor: '' },
+            { id: 'custom',    label: 'Custom',    icon: ShoppingBag, badge: null, badgeColor: '' },
+            { id: 'report',    label: 'Report',    icon: BarChart2,   badge: null, badgeColor: '' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
@@ -1247,7 +1221,6 @@ export default function StoreDashboard() {
         {tab === 'analytics' && <StoreAnalyticsTab />}
         {tab === 'custom'    && <StoreCustomTab />}
         {tab === 'report'    && <StoreReportTab />}
-        {tab === 'items'     && <StoreItemsTab />}
       </div>
     </div>
   );
