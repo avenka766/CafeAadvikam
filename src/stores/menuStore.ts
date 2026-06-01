@@ -63,7 +63,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     }));
     const { error } = await supabase
       .from('menu_items')
-      .update({ enabled: newEnabled, updated_at: new Date().toISOString() })
+      .update({ enabled: newEnabled })
       .eq('id', id);
     if (error) {
       // Rollback on DB failure
@@ -81,18 +81,18 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     set((state) => ({
       items: state.items.map((i) => (i.id === id ? { ...i, ...updates } : i)),
     }));
-    const now = new Date().toISOString();
-    const dbUpdates: Record<string, unknown> = { updated_at: now };
+    const dbUpdates: Record<string, unknown> = {};
     if (updates.price !== undefined) dbUpdates.price = updates.price;
     if (updates.name !== undefined) dbUpdates.name = updates.name;
     if (updates.enabled !== undefined) dbUpdates.enabled = updates.enabled;
+    if (Object.keys(dbUpdates).length === 0) return;
     const { error } = await supabase.from('menu_items').update(dbUpdates).eq('id', id);
     if (error) {
       // Rollback on DB failure
       set((state) => ({
         items: state.items.map((i) => (i.id === id ? prevItem : i)),
       }));
-      throw error;
+      throw new Error('Failed to save — please check your connection and try again.');
     }
 
     // Fire admin notification for price or name changes
@@ -154,7 +154,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     }));
     const { error } = await supabase
       .from('menu_items')
-      .update({ image_url: imageUrl, updated_at: new Date().toISOString() })
+      .update({ image_url: imageUrl })
       .eq('id', id);
     if (error) {
       // Rollback on DB failure
