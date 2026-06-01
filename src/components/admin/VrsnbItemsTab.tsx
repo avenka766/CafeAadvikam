@@ -303,6 +303,8 @@ export default function VrsnbItemsTab() {
           <button onClick={() => setSaveError(null)} className="shrink-0"><X className="size-3.5" /></button>
         </div>
       )}
+
+      {mismatchSummary.length > 0 && (
         <div className="rounded-xl border border-red-200 overflow-hidden">
           <button
             onClick={() => setMismatchExpanded((v) => !v)}
