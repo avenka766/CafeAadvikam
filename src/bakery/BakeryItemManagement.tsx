@@ -293,7 +293,7 @@ function CategorySection({ category, items, onToggle, onEdit, onDelete }: {
 
 // ── Bakery Items inner panel ───────────────────────────────────────────────────
 
-function BakeryItemsPanel() {
+export function BakeryItemsPanel() {
   const { items, loading, loadAllItems, toggleItem, updateItem, updatePrice, deleteItem } = useBakeryItemsStore();
   const { orders, fetchOrders } = useBakeryStore();
   const [search,       setSearch]       = useState('');
