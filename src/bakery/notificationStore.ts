@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,11 +22,12 @@ export interface AdminNotification {
   type: NotificationType;
   title: string;
   body: string;
-  refId?: string;        // invoice id / order id
-  refLabel?: string;     // "INV-20250522-4321" / "Order #42"
-  meta?: Record<string, unknown>; // structured detail for the detail view
+  refId?: string;
+  refLabel?: string;
+  meta?: Record<string, unknown>;
   isRead: boolean;
   createdAt: string;
+  recipientRole?: string; // which role this notification is for
 }
 
 interface NotificationState {
@@ -60,6 +62,7 @@ function mapRow(r: Record<string, unknown>): AdminNotification {
     meta: (r.meta as Record<string, unknown>) ?? undefined,
     isRead: r.is_read as boolean,
     createdAt: r.created_at as string,
+    recipientRole: (r.recipient_role as string) ?? undefined,
   };
 }
 
@@ -76,9 +79,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
+      const role = useAuthStore.getState().user?.role ?? 'admin';
       const { data, error } = await supabase
         .from('admin_notifications')
         .select('*')
+        .eq('recipient_role', role)
         .order('created_at', { ascending: false })
         .limit(100);
       if (error) throw error;
@@ -103,9 +108,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markAllRead: async () => {
+    const role = useAuthStore.getState().user?.role ?? 'admin';
     await supabase
       .from('admin_notifications')
       .update({ is_read: true })
+      .eq('recipient_role', role)
       .eq('is_read', false);
     set(s => ({
       notifications: s.notifications.map(n => ({ ...n, isRead: true })),
