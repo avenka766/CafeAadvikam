@@ -103,7 +103,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
       const changes: string[] = [];
       if (nameChanged)  changes.push(`name: "${prevItem.name}" → "${updates.name}"`);
       if (priceChanged) changes.push(`price: ₹${prevItem.price} → ₹${updates.price}`);
-      await supabase.from('admin_notifications').insert({
+      const { error: notifError } = await supabase.from('admin_notifications').insert({
         type:      'price_change',
         title:     `Cafe Menu Updated — ${effectiveName}`,
         body:      `${changes.join(' · ')} · Cafe menu`,
@@ -117,6 +117,9 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
           oldPrice: prevItem.price,
         },
       });
+      if (notifError) {
+        console.error('[menuStore] notification insert failed:', notifError.message);
+      }
     }
   },
 

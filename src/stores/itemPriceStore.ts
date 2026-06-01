@@ -138,13 +138,18 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
       if (nameChanged)  changes.push(`name: "${oldName}" → "${name}"`);
       if (priceChanged) changes.push(`price: ₹${oldPrice} → ₹${price}`);
 
-      await supabase.from('admin_notifications').insert({
+      const { error: notifError } = await supabase.from('admin_notifications').insert({
         type:      'price_change',
         title:     `${branch} Price Updated — ${name}`,
         body:      `${changes.join(' · ')} · Changed by ${updatedBy}`,
         ref_label: `${branch} · Barcode #${barcode}`,
         meta:      { branch, barcode, name, oldName, price, oldPrice, updatedBy },
       });
+      if (notifError) {
+        console.error('[itemPriceStore] notification insert failed:', notifError.message);
+        // Return a warning — price was saved but notification failed
+        return `Price saved, but notification failed: ${notifError.message}`;
+      }
     }
 
     return null;
