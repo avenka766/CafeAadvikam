@@ -24,6 +24,7 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
 
 export type PriceBranch = 'SNB' | 'VRSNB';
 
@@ -138,16 +139,28 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
       if (nameChanged)  changes.push(`name: "${oldName}" → "${name}"`);
       if (priceChanged) changes.push(`price: ₹${oldPrice} → ₹${price}`);
 
+      // Determine recipient based on who changed what:
+      // VRSNB Admin or SNB Admin → notify 'admin'
+      // Admin changing SNB items → notify 'admin_snb'
+      // Admin changing VRSNB items → notify 'admin_vrsnb'
+      const changerRole = useAuthStore.getState().user?.role ?? 'admin';
+      let recipientRole: string;
+      if (changerRole === 'admin_vrsnb' || changerRole === 'admin_snb') {
+        recipientRole = 'admin';
+      } else {
+        recipientRole = branch === 'SNB' ? 'admin_snb' : 'admin_vrsnb';
+      }
+
       const { error: notifError } = await supabase.from('admin_notifications').insert({
-        type:      'price_change',
-        title:     `${branch} Price Updated — ${name}`,
-        body:      `${changes.join(' · ')} · Changed by ${updatedBy}`,
-        ref_label: `${branch} · Barcode #${barcode}`,
-        meta:      { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+        type:           'price_change',
+        title:          `${branch} Price Updated — ${name}`,
+        body:           `${changes.join(' · ')} · Changed by ${updatedBy}`,
+        ref_label:      `${branch} · Barcode #${barcode}`,
+        meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+        recipient_role: recipientRole,
       });
       if (notifError) {
         console.error('[itemPriceStore] notification insert failed:', notifError.message);
-        // Return a warning — price was saved but notification failed
         return `Price saved, but notification failed: ${notifError.message}`;
       }
     }

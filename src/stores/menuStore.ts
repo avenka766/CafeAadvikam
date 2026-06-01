@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { MenuItem } from '@/types';
+import { useAuthStore } from '@/stores/authStore';
 
 const MENU_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -103,12 +104,17 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
       const changes: string[] = [];
       if (nameChanged)  changes.push(`name: "${prevItem.name}" → "${updates.name}"`);
       if (priceChanged) changes.push(`price: ₹${prevItem.price} → ₹${updates.price}`);
+      // VRSNB Admin changing cafe items → notify 'admin'
+      // Admin changing cafe items → notify 'admin_vrsnb'
+      const changerRole = useAuthStore.getState().user?.role ?? 'admin';
+      const recipientRole = changerRole === 'admin_vrsnb' ? 'admin' : 'admin_vrsnb';
+
       const { error: notifError } = await supabase.from('admin_notifications').insert({
-        type:      'price_change',
-        title:     `Cafe Menu Updated — ${effectiveName}`,
-        body:      `${changes.join(' · ')} · Cafe menu`,
-        ref_label: `Cafe · Item ID ${id}`,
-        meta:      {
+        type:           'price_change',
+        title:          `Cafe Menu Updated — ${effectiveName}`,
+        body:           `${changes.join(' · ')} · Cafe menu`,
+        ref_label:      `Cafe · Item ID ${id}`,
+        meta:           {
           branch:   'CAFE',
           itemId:   id,
           name:     effectiveName,
@@ -116,6 +122,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
           price:    updates.price ?? prevItem.price,
           oldPrice: prevItem.price,
         },
+        recipient_role: recipientRole,
       });
       if (notifError) {
         console.error('[menuStore] notification insert failed:', notifError.message);
