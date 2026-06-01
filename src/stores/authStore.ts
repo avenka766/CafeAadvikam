@@ -99,10 +99,11 @@ export const useAuthStore = create<AuthState>()(
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
         // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
         const { error } = await supabase
-          .rpc('update_staff_password_hashed', {
-            p_user_id:      userId,
-            p_new_password: newPassword,
-          });
+          .from('staff_users')
+          .update({
+            password: newPassword
+         })
+          .eq('id', staffId);
         if (error) { console.error('Password update error:', error); return error.message; }
         return null;
       },
