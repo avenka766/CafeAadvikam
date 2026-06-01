@@ -4,6 +4,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
+import AdminNotificationsTab from '@/bakery/AdminNotificationsTab';
 import { useMemo, useEffect, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
 import { useOrderStore } from '@/stores/orderStore';
@@ -386,7 +387,7 @@ function SNBReportsTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function AdminSNBDashboard() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'credit' | 'advance'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'reports' | 'credit' | 'advance' | 'alerts'>('dashboard');
   const { startPolling, stopPolling } = useOrderStore();
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
@@ -401,17 +402,20 @@ export default function AdminSNBDashboard() {
           <span className="px-2 py-1 rounded-lg bg-amber-100 text-amber-700 text-[11px] font-bold">SNB Branch</span>
         </div>
       </div>
-      <div className="mx-4 my-4 grid grid-cols-2 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
+      <div className="mx-4 my-4 grid grid-cols-3 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
         {([
           { id: 'dashboard', label: '📊 Dashboard' },
           { id: 'reports',   label: '📋 Reports'   },
           { id: 'credit',    label: '💳 Credit'    },
           { id: 'advance',   label: '🏷️ Advance'   },
+          { id: 'alerts',    label: '🔔 Alerts'    },
         ] as const).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
               tab === t.id
-                ? t.id === 'advance' ? 'bg-amber-500 text-white shadow-soft' : 'bg-card shadow-soft text-foreground'
+                ? t.id === 'advance' ? 'bg-amber-500 text-white shadow-soft'
+                  : t.id === 'alerts' ? 'bg-red-500 text-white shadow-soft'
+                  : 'bg-card shadow-soft text-foreground'
                 : 'text-muted-foreground hover:text-foreground')}>
             {t.label}
           </button>
@@ -422,6 +426,7 @@ export default function AdminSNBDashboard() {
         {tab === 'reports'   && <SNBReportsTab />}
         {tab === 'credit'    && <AdminCreditTab branches={['SNB']} accentColor="text-amber-600" />}
         {tab === 'advance'   && <AdminAdvanceTab branches={['SNB']} />}
+        {tab === 'alerts'    && <AdminNotificationsTab />}
       </div>
     </div>
   );
