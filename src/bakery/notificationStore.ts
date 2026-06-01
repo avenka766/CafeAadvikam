@@ -134,6 +134,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id: invoiceId,
       ref_label: invoiceNumber,
       meta: { supplierName, grandTotal },
+      recipient_role: 'admin',
     });
     if (!error) await get().load();
   },
@@ -149,6 +150,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id: orderId,
       ref_label: `Order ${orderNumber}`,
       meta: { orderId, orderNumber, items },
+      recipient_role: 'admin',
     });
     if (!error) await get().load();
   },
@@ -200,6 +202,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id: orderId,
       ref_label: `Order ${orderNumber} → ${branch}`,
       meta: { orderId, orderNumber, branch, items: mergedItems },
+      recipient_role: 'admin',
     };
 
     if (existing && existing.length > 0) {
@@ -223,6 +226,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       .from('admin_notifications')
       .select('id')
       .eq('type', 'low_stock')
+      .eq('recipient_role', 'admin')
       .gte('created_at', sixHoursAgo)
       .limit(1);
     if (existing && existing.length > 0) return; // already alerted recently, skip
@@ -236,6 +240,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       body:      lines,
       ref_label: 'Store Stock',
       meta:      { items },
+      recipient_role: 'admin',
     });
     if (!error) await get().load();
   },
@@ -253,6 +258,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id:    billNo,
       ref_label: `Bill #${shortBill}`,
       meta:      { customerName, amount, billNo, branch, soldBy, dueDate: dueDate ?? null },
+      recipient_role: 'admin',
     });
     if (!error) await get().load();
   },
@@ -264,6 +270,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       .from('admin_notifications')
       .select('id')
       .eq('type', 'packing_remainder')
+      .eq('recipient_role', 'admin')
       .eq('ref_id', orderId)
       .limit(1);
     if (existing && existing.length > 0) return;
@@ -280,6 +287,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       ref_id:    orderId,
       ref_label: `Order ${orderNumber} → ${branch}`,
       meta:      { orderId, orderNumber, branch, items },
+      recipient_role: 'admin',
     });
     if (!error) await get().load();
   },
