@@ -1363,7 +1363,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
           </Field>
           {saveError && <p className="text-xs font-body text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{saveError}</p>}
           <button
-            disabled={!canSubmit || saving}
+            disabled={!canSubmit || saving || !tableReady}
             onClick={handleAdd}
             className="w-full h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
           >
