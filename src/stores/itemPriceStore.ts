@@ -111,18 +111,17 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
 
   // ── Save (upsert + notify) ─────────────────────────────────────────────────
   saveOverride: async (branch, barcode, name, price, updatedBy, oldPrice, oldName) => {
-    const now = new Date().toISOString();
-
-    // 1. Persist to DB
+    // 1. Persist to DB — do NOT include updated_at; let the DB default handle it
     const { error } = await supabase
       .from('branch_item_prices')
       .upsert(
-        { branch, barcode, name, price, updated_at: now, updated_by: updatedBy },
+        { branch, barcode, name, price, updated_by: updatedBy },
         { onConflict: 'branch,barcode' },
       );
-    if (error) return `Failed to save price: ${error.message}`;
+    if (error) return `Failed to save: ${error.message}`;
 
     // 2. Optimistic local update
+    const now = new Date().toISOString();
     const override: ItemPriceOverride = { branch, barcode, name, price, updatedAt: now, updatedBy };
     set((s) => ({
       overrides: {
