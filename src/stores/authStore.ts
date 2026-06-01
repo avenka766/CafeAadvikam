@@ -103,7 +103,7 @@ export const useAuthStore = create<AuthState>()(
             p_user_id:      userId,
             p_new_password: newPassword,
           });
-        if (error) return 'Failed to update password';
+        if (error) { console.error('Password update error:', error); return error.message; }
         return null;
       },
 
@@ -121,7 +121,7 @@ export const useAuthStore = create<AuthState>()(
         }
 
         const { error } = await supabase.from('staff_users').update(payload).eq('id', userId);
-        if (error) return error.code === '23505' ? 'Username already taken' : 'Failed to update. Please try again.';
+        if (error) { console.error('Staff update error:', error); return error.code === '23505' ? 'Username already taken' : error.message; }
 
         set((s) => {
           const updated = s.staffList.map((u) =>
@@ -137,7 +137,7 @@ export const useAuthStore = create<AuthState>()(
 
       removeStaff: async (userId) => {
         const { error } = await supabase.from('staff_users').update({ is_active: false }).eq('id', userId);
-        if (error) throw error;
+        if (error) { console.error('Staff delete error:', error); throw error; }
         set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
       },
     }),
