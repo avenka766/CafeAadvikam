@@ -3,7 +3,7 @@
 import { useMemo, useEffect, useState } from 'react';
 import {
   Wallet, Clock, CheckCircle2, ChevronRight, ChevronDown,
-  IndianRupee, AlertCircle, Calendar, Filter, Search, X,
+  IndianRupee, AlertCircle, Calendar, Filter, Search, X, Download,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
@@ -91,6 +91,36 @@ export default function AdminAdvanceTab({ branches }: Props) {
     };
   }), [allOrders, branches]);
 
+  const handleDownload = async () => {
+    const XLSX = await import('xlsx');
+    const rows = filtered.map((o, i) => ({
+      'S.No':           i + 1,
+      'Branch':         o.branch,
+      'Customer':       o.customerName ?? '-',
+      'Status':         o.status === 'completed' ? (o.balanceDue <= 0 ? 'Pre-Paid' : 'Settled') : 'Balance Pending',
+      'Order Date':     toLocalDate(o.createdAt),
+      'Order Time':     toLocalTime(o.createdAt),
+      'Delivery Date':  o.deliveryDate ? new Date(o.deliveryDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-',
+      'Items':          o.items.map(it => `${it.itemName} ×${it.quantity}`).join(', '),
+      'Total Bill (₹)': o.subtotal,
+      'Advance Paid (₹)': o.advanceAmount,
+      'Advance Method': o.advanceMethod.toUpperCase(),
+      'Balance Due (₹)': o.balanceDue > 0 ? o.balanceDue : 0,
+      'Balance Method': o.balanceMethod?.toUpperCase() ?? '-',
+      'Sold By':        o.soldBy,
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = rows.length > 0
+      ? XLSX.utils.json_to_sheet(rows)
+      : XLSX.utils.json_to_sheet([{ Note: 'No advance orders match selected filters' }]);
+    if (rows.length > 0) {
+      const keys = Object.keys(rows[0]);
+      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...rows.map(r => String(r[k as keyof typeof r] ?? '').length)) + 2 }));
+    }
+    XLSX.utils.book_append_sheet(wb, ws, 'Advance Orders');
+    XLSX.writeFile(wb, `AdvanceOrders_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   return (
     <div className="space-y-4 pb-6">
       {/* ── Cross-branch summary ────────────────────────────────────────── */}
@@ -160,6 +190,10 @@ export default function AdminAdvanceTab({ branches }: Props) {
         <div className="flex items-center gap-2">
           <Filter className="size-4 text-muted-foreground" />
           <span className="text-sm font-semibold">Filter</span>
+          <div className="flex-1" />
+          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
+            <Download className="size-3" />Excel
+          </button>
         </div>
         {/* Search */}
         <div className="relative">
