@@ -206,25 +206,29 @@ async function fetchAdvanceRecords(): Promise<{ records: SalaryAdvanceRecord[]; 
   return { records, tableReady: true };
 }
 
-async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>): Promise<SalaryAdvanceRecord | null> {
+async function insertAdvanceRecord(rec: Omit<SalaryAdvanceRecord, 'id' | 'cleared'>): Promise<{ ok: SalaryAdvanceRecord } | { err: string }> {
   const { data, error } = await supabase
     .from('salary_advances')
     .insert({ employee_id: rec.employeeId, amount: rec.amount, given_date: rec.givenDate, note: rec.note || null, cleared: false })
     .select()
     .single();
-  if (error || !data) { console.error('Insert advance failed:', error?.message); return null; }
+  if (error || !data) {
+    const msg = error?.message ?? 'No data returned';
+    console.error('Insert advance failed:', msg);
+    return { err: msg };
+  }
   // Also update the employee's salary_advance field to reflect total outstanding
   const { data: emp } = await supabase.from('employees').select('salary_advance').eq('id', rec.employeeId).single();
   const current = Number((emp as { salary_advance: number } | null)?.salary_advance ?? 0);
   await supabase.from('employees').update({ salary_advance: current + rec.amount }).eq('id', rec.employeeId);
-  return {
+  return { ok: {
     id: data.id as string,
     employeeId: data.employee_id as string,
     amount: Number(data.amount),
     givenDate: data.given_date as string,
     note: (data.note as string) || undefined,
     cleared: data.cleared as boolean,
-  };
+  }};
 }
 
 async function markAdvanceRecordCleared(advanceId: string, employeeId: string, amount: number): Promise<void> {
@@ -1232,11 +1236,11 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
     setSaving(true); setSaveError('');
     const result = await insertAdvanceRecord({ employeeId: empId, amount: Number(amount), givenDate, note });
     setSaving(false);
-    if (result) {
-      onAdd(result);
+    if ('ok' in result) {
+      onAdd(result.ok);
       setAmount(''); setNote('');
     } else {
-      setSaveError('Failed to save advance — please try again.');
+      setSaveError(`Failed to save advance — ${result.err}`);
     }
   };
 
@@ -1363,7 +1367,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
           </Field>
           {saveError && <p className="text-xs font-body text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{saveError}</p>}
           <button
-            disabled={!canSubmit || saving || !tableReady}
+            disabled={!canSubmit || saving}
             onClick={handleAdd}
             className="w-full h-11 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-semibold disabled:opacity-40 active:scale-95 transition-all flex items-center justify-center gap-2"
           >
