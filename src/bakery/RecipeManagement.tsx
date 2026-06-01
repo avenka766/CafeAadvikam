@@ -431,7 +431,7 @@ export default function RecipeManagement() {
       {/* Edit modal overlay */}
       {editingItem && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-end">
-          <div className="bg-background w-full rounded-t-3xl px-4 pb-8 pt-4 max-h-[85vh] overflow-y-auto">
+          <div className="bg-background w-full rounded-t-3xl px-4 pb-28 pt-4 max-h-[85vh] overflow-y-auto">
             <div className="w-12 h-1 bg-muted-foreground/20 rounded-full mx-auto mb-4" />
             <RecipeEditor
               itemId={editingItem.id}
@@ -448,7 +448,7 @@ export default function RecipeManagement() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 px-4 py-2 bg-foreground text-background text-sm font-body rounded-xl shadow-lg z-50">
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 px-4 py-2 bg-foreground text-background text-sm font-body rounded-xl shadow-lg z-50">
           {toast}
         </div>
       )}

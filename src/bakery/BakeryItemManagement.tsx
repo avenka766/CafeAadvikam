@@ -140,7 +140,7 @@ function EditSheet({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 pb-28 space-y-4 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-display font-bold text-foreground">Edit Item</h3>
           <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center" aria-label="Close"><X className="size-4" /></button>
@@ -226,7 +226,7 @@ function AddItemSheet({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 space-y-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="w-full bg-background rounded-t-2xl border-t border-border p-5 pb-28 space-y-4 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-display font-bold text-foreground">Add New Item</h3>
           <button onClick={onClose} className="size-8 rounded-full bg-muted flex items-center justify-center" aria-label="Close"><X className="size-4" /></button>
