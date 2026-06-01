@@ -143,8 +143,16 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     const { error } = await supabase.from('bakery_items').update(payload).eq('id', id);
     if (error) return 'Failed to update. Please try again.';
 
+    // Only update defined fields in local state to avoid overwriting with undefined
     set(s => ({
-      items: s.items.map(i => i.id === id ? { ...i, ...updates } : i),
+      items: s.items.map(i => {
+        if (i.id !== id) return i;
+        const patch: Partial<BakeryItem> = {};
+        if (updates.name !== undefined)     patch.name     = updates.name.trim();
+        if (updates.icon !== undefined)     patch.icon     = updates.icon.trim();
+        if (updates.category !== undefined) patch.category = updates.category;
+        return { ...i, ...patch };
+      }),
     }));
     return null;
   },
