@@ -97,14 +97,17 @@ export const useAuthStore = create<AuthState>()(
 
       updateStaffPassword: async (userId, newPassword) => {
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
-        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+
         const { error } = await supabase
           .from('staff_users')
-          .update({
-            password: newPassword
-         })
-          .eq('id', staffId);
-        if (error) { console.error('Password update error:', error); return error.message; }
+          .update({ password: newPassword })
+          .eq('id', userId);
+
+        if (error) {
+          console.error('Password update error:', error);
+          return error.message;
+        }
+
         return null;
       },
 
@@ -122,7 +125,7 @@ export const useAuthStore = create<AuthState>()(
         }
 
         const { error } = await supabase.from('staff_users').update(payload).eq('id', userId);
-        if (error) { console.error('Staff update error:', error); return error.code === '23505' ? 'Username already taken' : error.message; }
+        if (error) return error.code === '23505' ? 'Username already taken' : 'Failed to update. Please try again.';
 
         set((s) => {
           const updated = s.staffList.map((u) =>
@@ -138,7 +141,7 @@ export const useAuthStore = create<AuthState>()(
 
       removeStaff: async (userId) => {
         const { error } = await supabase.from('staff_users').update({ is_active: false }).eq('id', userId);
-        if (error) { console.error('Staff delete error:', error); throw error; }
+        if (error) throw error;
         set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
       },
     }),
