@@ -3,7 +3,7 @@
 A multi-role POS system for Cafe Aadvikam and associated bakery/branch outlets.
 Built with **React 18 + Vite + TypeScript + Zustand + Supabase**.
 
-## Quick Start
+## Quick Starts
 
 ```bash
 cp .env.example .env.local   # fill in your Supabase URL + anon key
