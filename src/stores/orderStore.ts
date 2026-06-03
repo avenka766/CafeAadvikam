@@ -22,7 +22,7 @@ interface OrderState {
   getCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
@@ -159,6 +159,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
+    const paymentType = params.paymentType || 'unpaid';
+    const orderStatus = params.status || 'pending';
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     // BUG-01: never fall back to timestamp — fail loudly so staff know to retry
@@ -170,8 +172,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
       items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total,
-      status: 'pending', createdBy: params.createdBy, createdAt: now, updatedAt: now,
-      notes: params.notes, customerName: params.customerName, paymentType: 'unpaid', orderSource,
+      status: orderStatus, createdBy: params.createdBy, createdAt: now, updatedAt: now,
+      notes: params.notes, customerName: params.customerName, paymentType, orderSource,
+      ...(params.billedBy ? { billedBy: params.billedBy } : {}),
       ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
@@ -184,9 +187,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
       order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total, status: 'pending', created_by: params.createdBy,
+      discount_value: 0, total, status: orderStatus, created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
-      payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
+      payment_type: paymentType, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
       // parcel_charges column not in DB — charges are baked into `total` above
     };
 
@@ -229,7 +232,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderNumber = numData as number;
 
     const cartSnapshot = [...cart];
-    set((state) => ({ orders: [], cart: [] })); // clear cart optimistically before building order
+    set({ cart: [] }); // clear cart optimistically before building order
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
