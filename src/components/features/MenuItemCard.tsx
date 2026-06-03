@@ -8,9 +8,10 @@ interface MenuItemCardProps {
   onAdd: () => void;
   onRemove: () => void;
   compact?: boolean;
+  hideImage?: boolean;
 }
 
-export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact }: MenuItemCardProps) {
+export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact, hideImage }: MenuItemCardProps) {
   if (compact) {
     return (
       <article className={cn('pos-menu-card pos-menu-card-compact', quantity > 0 && 'pos-menu-card-selected', !item.enabled && 'pos-menu-card-disabled')}>
@@ -45,7 +46,8 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact 
   }
 
   return (
-    <article className={cn('pos-menu-card', quantity > 0 && 'pos-menu-card-selected', !item.enabled && 'pos-menu-card-disabled')}>
+    <article className={cn('pos-menu-card', hideImage && 'pos-menu-card-no-image', quantity > 0 && 'pos-menu-card-selected', !item.enabled && 'pos-menu-card-disabled')}>
+      {!hideImage && (
       <div className="pos-menu-thumb">
         {item.imageUrl ? (
           <img src={item.imageUrl} alt={item.name} loading="lazy" />
@@ -65,6 +67,7 @@ export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact 
           </div>
         )}
       </div>
+      )}
 
       <div className="pos-menu-body">
         <h3>{item.name}</h3>
