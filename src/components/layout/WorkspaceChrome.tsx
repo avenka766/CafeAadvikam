@@ -48,7 +48,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/admin-dashboard/, meta: { title: 'Admin Command Center', eyebrow: 'Owner operations', description: 'Sales, cash, UPI, card, purchases, stock, staff activity and pending actions in one clean view.', accent: 'Sales • Stock • Reports' } },
   { match: /^\/billing/, meta: { title: 'Fast Billing Counter', eyebrow: 'POS desk', description: 'Rush-hour friendly billing workspace with visible orders, payments, totals, credit and quick settlement tools.', accent: 'Orders • Payments • Print' } },
   { match: /^\/order-pad/, meta: { title: 'Order Pad', eyebrow: 'Service counter', description: 'Take dine-in, takeaway and table orders quickly with cleaner order entry and dispatch tracking.', accent: 'Menu • Cart • Tables' } },
-  { match: /^\/kitchen/, meta: { title: 'Kitchen Live Board', eyebrow: 'Production screen', description: 'A high-contrast preparation board for chefs to see urgent, cooking and ready orders clearly.', accent: 'Prepare • Ready • Waste' } },
+  { match: /^\/kitchen/, meta: { title: 'Kitchen', eyebrow: 'Production screen', description: 'A high-contrast preparation board for chefs to see urgent, cooking and ready orders clearly.', accent: 'Prepare • Ready • Waste' } },
   { match: /^\/owner/, meta: { title: 'Owner Performance Hub', eyebrow: 'Business cockpit', description: 'Daily revenue, payment mix, branch cash, attendance, credit and waste summaries for ownership decisions.', accent: 'Cash • Credit • Staff' } },
   { match: /^\/menu-management/, meta: { title: 'Cafe Menu Studio', eyebrow: 'Menu control', description: 'Manage menu items, pricing, images and availability without clutter.', accent: 'Items • Prices • Availability' } },
   { match: /^\/sales-report/, meta: { title: 'Sales Reports', eyebrow: 'Analytics', description: 'Readable reports with date filters, branch totals, payment mix and export-ready tables.', accent: 'Filters • Totals • Export' } },
@@ -161,7 +161,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const isOrderPadRoute = /^\/order-pad/.test(location.pathname);
+  const hideWorkspaceHero = /^\/(order-pad|kitchen)/.test(location.pathname);
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
@@ -214,7 +214,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
       </aside>
 
       <div className="workspace-main-shell">
-        {!isOrderPadRoute && (
+        {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
