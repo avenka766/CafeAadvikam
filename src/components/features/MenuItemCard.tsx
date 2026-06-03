@@ -13,154 +13,77 @@ interface MenuItemCardProps {
 export default function MenuItemCard({ item, quantity, onAdd, onRemove, compact }: MenuItemCardProps) {
   if (compact) {
     return (
-      <div className={cn(
-        'relative bg-card rounded-xl overflow-hidden transition-all duration-200 flex flex-col',
-        quantity > 0
-          ? 'shadow-lifted ring-2 ring-primary/30'
-          : 'shadow-soft border border-border',
-        !item.enabled && 'opacity-50 pointer-events-none',
-      )}>
-        {/* Image */}
-        <div className="aspect-square bg-muted relative overflow-hidden">
+      <article className={cn('pos-menu-card pos-menu-card-compact', quantity > 0 && 'pos-menu-card-selected', !item.enabled && 'pos-menu-card-disabled')}>
+        <div className="pos-menu-thumb pos-menu-thumb-compact">
           {item.imageUrl ? (
-            <img src={item.imageUrl} alt={item.name}
-              className="size-full object-cover" />
+            <img src={item.imageUrl} alt={item.name} loading="lazy" />
           ) : (
-            <div className="size-full flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, hsl(36 30% 92%), hsl(36 25% 88%))' }}>
-              <span className="text-xl opacity-30">🍽️</span>
-            </div>
+            <span aria-hidden="true">🍽️</span>
           )}
-          {/* Qty badge */}
-          {quantity > 0 && (
-            <div className="absolute top-1 right-1 size-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white animate-scale-in"
-              style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))' }}>
-              {quantity}
-            </div>
-          )}
-          {/* Veg dot */}
-          <div className="absolute top-1 left-1 size-2 rounded-full bg-emerald-500 border border-white" />
+          <span className="pos-menu-veg-dot" aria-label="Vegetarian item" />
+          {quantity > 0 && <strong className="pos-menu-qty-badge">{quantity}</strong>}
         </div>
-        {/* Info */}
-        <div className="p-1.5 flex flex-col gap-1 flex-1">
-          <p className="text-[10px] font-body font-semibold text-foreground leading-tight line-clamp-2 min-h-[2rem]">
-            {item.name}
-          </p>
-          <div className="flex items-center justify-between gap-1 mt-auto">
-            <span className="text-[10px] font-bold tabular-nums" style={{ color: 'hsl(var(--accent))' }}>
-              {formatCurrency(item.price)}
-            </span>
+        <div className="pos-menu-body pos-menu-body-compact">
+          <h3>{item.name}</h3>
+          <div className="pos-menu-footer">
+            <span className="pos-menu-price">{formatCurrency(item.price)}</span>
             {quantity === 0 ? (
-              <button onClick={onAdd}
-                className="size-6 rounded-lg flex items-center justify-center text-white active:scale-75 transition-transform shrink-0"
-                style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))' }}
-                aria-label={`Add ${item.name}`}>
-                <Plus className="size-3" />
+              <button onClick={onAdd} className="pos-menu-add-small" aria-label={`Add ${item.name}`}>
+                <Plus className="size-4" />
               </button>
             ) : (
-              <div className="flex items-center gap-0.5 shrink-0">
-                <button onClick={onRemove}
-                  className="size-6 rounded-lg bg-muted flex items-center justify-center text-foreground active:scale-75 transition-transform border border-border"
-                  aria-label={`Remove ${item.name}`}>
-                  <Minus className="size-3" />
-                </button>
-                <span className="w-5 text-center text-[10px] font-bold tabular-nums">{quantity}</span>
-                <button onClick={onAdd}
-                  className="size-6 rounded-lg flex items-center justify-center text-white active:scale-75 transition-transform"
-                  style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))' }}
-                  aria-label={`Add more ${item.name}`}>
-                  <Plus className="size-3" />
-                </button>
+              <div className="pos-menu-stepper-small" aria-label={`${item.name} quantity ${quantity}`}>
+                <button onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-3.5" /></button>
+                <span>{quantity}</span>
+                <button onClick={onAdd} aria-label={`Add more ${item.name}`}><Plus className="size-3.5" /></button>
               </div>
             )}
           </div>
         </div>
-      </div>
+      </article>
     );
   }
 
   return (
-    <div className={cn(
-      'relative bg-card rounded-2xl overflow-hidden transition-all duration-200',
-      quantity > 0
-        ? 'shadow-lifted ring-2 ring-primary/30'
-        : 'shadow-soft border border-border',
-      !item.enabled && 'opacity-50 pointer-events-none',
-    )}>
-      {/* Image */}
-      <div className="aspect-[4/3] bg-muted relative overflow-hidden">
+    <article className={cn('pos-menu-card', quantity > 0 && 'pos-menu-card-selected', !item.enabled && 'pos-menu-card-disabled')}>
+      <div className="pos-menu-thumb">
         {item.imageUrl ? (
-          <img src={item.imageUrl} alt={item.name}
-            className="size-full object-cover transition-transform duration-500 hover:scale-105" />
+          <img src={item.imageUrl} alt={item.name} loading="lazy" />
         ) : (
-          <div className="size-full flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, hsl(36 30% 92%), hsl(36 25% 88%))' }}>
-            <span className="text-3xl opacity-30">🍽️</span>
-          </div>
+          <span aria-hidden="true">🍽️</span>
         )}
 
-        {/* Veg badge */}
-        <div className="absolute top-2 left-2">
-          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-body font-bold"
-            style={{ background: 'rgba(255,255,255,0.92)', color: '#1a7a50', border: '1px solid rgba(26,122,80,0.25)' }}>
-            <Leaf className="size-2.5" />VEG
-          </span>
+        <div className="pos-menu-badges">
+          <span><Leaf className="size-3" /> VEG</span>
         </div>
 
-        {/* Qty badge */}
-        {quantity > 0 && (
-          <div className="absolute top-2 right-2 size-6 rounded-full flex items-center justify-center text-xs font-bold text-white animate-scale-in"
-            style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))', boxShadow: '0 2px 8px rgba(0,0,0,0.25)' }}>
-            {quantity}
-          </div>
-        )}
+        {quantity > 0 && <strong className="pos-menu-qty-badge">{quantity}</strong>}
 
         {!item.enabled && (
-          <div className="absolute inset-0 flex items-center justify-center"
-            style={{ background: 'rgba(255,255,255,0.65)' }}>
-            <span className="text-xs font-body font-bold px-2.5 py-1 rounded-full"
-              style={{ background: 'rgba(220,38,38,0.12)', color: '#dc2626', border: '1px solid rgba(220,38,38,0.2)' }}>
-              Unavailable
-            </span>
+          <div className="pos-menu-unavailable">
+            <span>Unavailable</span>
           </div>
         )}
       </div>
 
-      {/* Info */}
-      <div className="p-3">
-        <h3 className="text-base font-body font-bold text-foreground leading-tight line-clamp-2 min-h-[2.75rem]">
-          {item.name}
-        </h3>
-        <div className="flex items-center justify-between mt-2.5 gap-2">
-          <span className="text-base font-body font-bold tabular-nums"
-            style={{ color: 'hsl(var(--accent))' }}>
-            {formatCurrency(item.price)}
-          </span>
+      <div className="pos-menu-body">
+        <h3>{item.name}</h3>
+        <div className="pos-menu-footer">
+          <span className="pos-menu-price">{formatCurrency(item.price)}</span>
           {quantity === 0 ? (
-            <button onClick={onAdd}
-              className="size-9 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
-              style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))', boxShadow: '0 2px 8px rgba(30,100,70,0.3)' }}
-              aria-label={`Add ${item.name}`}>
-              <Plus className="size-4" />
+            <button onClick={onAdd} className="pos-menu-add" aria-label={`Add ${item.name}`}>
+              <Plus className="size-5" />
+              <span>Add</span>
             </button>
           ) : (
-            <div className="flex items-center gap-1">
-              <button onClick={onRemove}
-                className="size-9 rounded-xl bg-muted flex items-center justify-center text-foreground active:scale-75 transition-transform border border-border"
-                aria-label={`Remove ${item.name}`}>
-                <Minus className="size-4" />
-              </button>
-              <span className="w-7 text-center text-lg font-bold tabular-nums">{quantity}</span>
-              <button onClick={onAdd}
-                className="size-9 rounded-xl flex items-center justify-center text-white active:scale-75 transition-transform"
-                style={{ background: 'linear-gradient(135deg, hsl(164 52% 32%), hsl(164 52% 22%))' }}
-                aria-label={`Add more ${item.name}`}>
-                <Plus className="size-4" />
-              </button>
+            <div className="pos-menu-stepper" aria-label={`${item.name} quantity ${quantity}`}>
+              <button onClick={onRemove} aria-label={`Remove ${item.name}`}><Minus className="size-4" /></button>
+              <span>{quantity}</span>
+              <button onClick={onAdd} aria-label={`Add more ${item.name}`}><Plus className="size-4" /></button>
             </div>
           )}
         </div>
       </div>
-    </div>
+    </article>
   );
 }
