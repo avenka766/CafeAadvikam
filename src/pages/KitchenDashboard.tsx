@@ -23,7 +23,6 @@ import {
   AlertTriangle,
   X,
   Flame,
-  Activity,
   ShieldAlert,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -33,7 +32,7 @@ import EmptyState from '@/components/ui/EmptyState';
 type KitchenTab = OrderStatus | 'active' | 'waste';
 
 const TABS: { key: KitchenTab; label: string; hint: string }[] = [
-  { key: 'active', label: 'Active', hint: 'All live KOTs' },
+  { key: 'active', label: 'Active', hint: 'New KOTs only' },
   { key: 'pending', label: 'New', hint: 'Start these first' },
   { key: 'preparing', label: 'Cooking', hint: 'In production' },
   { key: 'ready', label: 'Ready', hint: 'Pickup / serve' },
@@ -264,7 +263,6 @@ export default function KitchenDashboard() {
   const preparing = useMemo(() => todayOrders.filter(o => o.status === 'preparing'), [todayOrders]);
   const ready = useMemo(() => todayOrders.filter(o => o.status === 'ready'), [todayOrders]);
   const cancelled = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
-  const activeCount = pending.length + preparing.length + ready.length;
 
   useEffect(() => {
     if (seededRef.current) return;
@@ -322,15 +320,15 @@ export default function KitchenDashboard() {
   }, [pending.length, soundEnabled]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'active') return todayOrders.filter(o => ['pending','preparing','ready'].includes(o.status));
+    if (activeTab === 'active') return pending;
     if (activeTab === 'waste') return [];
     return todayOrders.filter(o => o.status === activeTab);
-  }, [todayOrders, activeTab]);
+  }, [todayOrders, pending, activeTab]);
 
   const elapsedMins = (t: string) => Math.floor((Date.now() - new Date(t).getTime()) / 60000);
 
   const tabCount = (key: KitchenTab) => {
-    if (key === 'active') return activeCount;
+    if (key === 'active') return pending.length;
     if (key === 'pending') return pending.length;
     if (key === 'preparing') return preparing.length;
     if (key === 'ready') return ready.length;
@@ -356,7 +354,6 @@ export default function KitchenDashboard() {
         <div className="kitchen-title-area">
           <span className="kitchen-eyebrow"><Flame className="size-4" /> Kitchen command</span>
           <h2>Live KOT Board</h2>
-          <p>Large readable order cards, loud status colors, one-tap production actions and clear cancellation alerts for rush-hour kitchen use.</p>
         </div>
 
         <div className="kitchen-live-tools">
@@ -380,12 +377,6 @@ export default function KitchenDashboard() {
         </div>
       </section>
 
-      <section className="kitchen-stats-grid" aria-label="Kitchen status summary">
-        <div className="kitchen-stat-card stat-new"><span>New</span><strong>{pending.length}</strong><small>Need start</small></div>
-        <div className="kitchen-stat-card stat-cooking"><span>Cooking</span><strong>{preparing.length}</strong><small>In progress</small></div>
-        <div className="kitchen-stat-card stat-ready"><span>Ready</span><strong>{ready.length}</strong><small>Serve / pickup</small></div>
-        <div className="kitchen-stat-card stat-active"><span>Total active</span><strong>{activeCount}</strong><small>Live tickets</small></div>
-      </section>
 
       {newlyCancelledIds.size > 0 && (
         <section className="kitchen-cancel-banner">
@@ -504,7 +495,6 @@ export default function KitchenDashboard() {
         </section>
       )}
 
-      <div className="kitchen-bottom-note"><Activity className="size-4" /> Kitchen board uses extra-large typography for distance readability.</div>
     </div>
   );
 }
