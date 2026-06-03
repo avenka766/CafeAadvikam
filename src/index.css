@@ -384,3 +384,1849 @@
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+@layer components {
+  /* =======================================================================
+     2026 Operations Workspace redesign
+     Scoped to authenticated app only through .workspace-redesign so Landing
+     remains visually untouched.
+     ======================================================================= */
+  .workspace-redesign {
+    --background: 38 46% 96%;
+    --foreground: 18 36% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 18 36% 9%;
+    --primary: 158 67% 22%;
+    --primary-foreground: 40 55% 98%;
+    --secondary: 38 38% 90%;
+    --secondary-foreground: 18 36% 12%;
+    --muted: 38 30% 92%;
+    --muted-foreground: 20 12% 42%;
+    --accent: 31 88% 52%;
+    --accent-foreground: 18 36% 8%;
+    --border: 33 28% 84%;
+    --input: 33 28% 84%;
+    --ring: 158 67% 22%;
+    --staff-header-h: 3.5rem;
+    --staff-bottom-nav-h: 6.85rem;
+    --staff-shell-gap: 1rem;
+    position: relative;
+    color: hsl(var(--foreground));
+    background:
+      radial-gradient(circle at top left, rgba(20, 115, 84, 0.16), transparent 30rem),
+      radial-gradient(circle at 78% 0%, rgba(247, 166, 57, 0.22), transparent 28rem),
+      linear-gradient(135deg, #fff8ed 0%, #f6efe3 38%, #f9f6f0 100%);
+    font-family: 'Source Sans 3', sans-serif;
+    padding-top: var(--staff-header-h);
+    padding-bottom: calc(var(--staff-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
+  }
+
+  @media (min-width: 1024px) {
+    .workspace-redesign {
+      padding-top: var(--staff-header-h);
+      padding-bottom: 0;
+    }
+  }
+
+  .workspace-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 288px;
+    z-index: 45;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.2rem;
+    background:
+      linear-gradient(180deg, rgba(33, 18, 7, 0.98), rgba(13, 35, 29, 0.96)),
+      radial-gradient(circle at top, rgba(244, 169, 66, 0.18), transparent 22rem);
+    border-right: 1px solid rgba(255,255,255,0.10);
+    box-shadow: 16px 0 50px rgba(31, 16, 6, 0.18);
+  }
+
+  .workspace-brand-card {
+    display: flex;
+    align-items: center;
+    gap: .85rem;
+    padding: .9rem;
+    border-radius: 1.4rem;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+
+  .workspace-brand-mark {
+    width: 2.9rem;
+    height: 2.9rem;
+    border-radius: 1.05rem;
+    display: grid;
+    place-items: center;
+    color: #2b1906;
+    background: linear-gradient(135deg, #fff4cf, #f0a436);
+    box-shadow: 0 14px 35px rgba(240, 164, 54, 0.28);
+  }
+
+  .workspace-search-pill {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    border-radius: 1rem;
+    padding: .85rem 1rem;
+    color: rgba(255,255,255,.56);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+    font-size: .86rem;
+    font-weight: 700;
+  }
+
+  .workspace-nav-scroll {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem;
+    padding-right: .25rem;
+  }
+
+  .workspace-nav-group {
+    color: rgba(255,255,255,.38);
+    font-size: .68rem;
+    font-weight: 900;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    padding: 0 .35rem;
+  }
+
+  .workspace-nav-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: .72rem;
+    padding: .78rem .9rem;
+    border-radius: 1rem;
+    color: rgba(255,255,255,.62);
+    font-size: .93rem;
+    font-weight: 800;
+    transition: transform .18s ease, background .18s ease, color .18s ease, border-color .18s ease;
+    border: 1px solid transparent;
+  }
+
+  .workspace-nav-item:hover {
+    color: white;
+    background: rgba(255,255,255,0.08);
+    transform: translateX(2px);
+  }
+
+  .workspace-nav-item-active {
+    color: #fff;
+    background: linear-gradient(135deg, rgba(27, 130, 98, 0.92), rgba(17, 91, 74, 0.92));
+    border-color: rgba(255,255,255,0.16);
+    box-shadow: 0 14px 38px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.10);
+  }
+
+  .workspace-nav-icon {
+    width: 2rem;
+    height: 2rem;
+    border-radius: .75rem;
+    display: grid;
+    place-items: center;
+    background: rgba(255,255,255,0.09);
+  }
+
+  .workspace-sidebar-footer {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+    padding: .85rem;
+    border-radius: 1rem;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+  }
+
+  .workspace-main-shell {
+    min-height: calc(100dvh - var(--staff-header-h));
+    padding: var(--staff-shell-gap) 1rem calc(var(--staff-bottom-nav-h) + 1rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  @media (min-width: 1024px) {
+    .workspace-main-shell {
+      margin-left: 288px;
+      padding: 1.15rem 1.5rem 2rem;
+    }
+  }
+
+  .workspace-hero {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: stretch;
+    border-radius: 2rem;
+    padding: 1.1rem;
+    margin-bottom: 1.05rem;
+    background:
+      linear-gradient(135deg, rgba(255,255,255,.94), rgba(255,251,244,.80)),
+      radial-gradient(circle at top right, rgba(243, 166, 60, .2), transparent 22rem);
+    border: 1px solid rgba(116, 82, 37, 0.12);
+    box-shadow: 0 18px 60px rgba(37, 22, 7, 0.10), 0 2px 8px rgba(37, 22, 7, 0.04);
+  }
+
+  .workspace-hero h1 {
+    margin: 0;
+    font-size: clamp(2rem, 3vw, 3.6rem);
+    line-height: .92;
+    color: #1a1008;
+    font-weight: 900;
+    letter-spacing: -0.045em;
+  }
+
+  .workspace-hero p {
+    max-width: 820px;
+    color: rgba(40, 24, 10, .66);
+    font-size: 1rem;
+    line-height: 1.55;
+    font-weight: 650;
+    margin-top: .45rem;
+  }
+
+  .workspace-eyebrow,
+  .workspace-live-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    border-radius: 999px;
+    padding: .38rem .7rem;
+    font-size: .72rem;
+    font-weight: 950;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .workspace-eyebrow {
+    color: hsl(var(--primary));
+    background: rgba(26, 123, 92, .10);
+    border: 1px solid rgba(26, 123, 92, .16);
+  }
+
+  .workspace-live-pill {
+    color: #87520d;
+    background: rgba(245, 168, 53, .16);
+    border: 1px solid rgba(245, 168, 53, .24);
+  }
+
+  .workspace-live-pill span {
+    width: .48rem;
+    height: .48rem;
+    border-radius: 999px;
+    background: #1fa66d;
+    box-shadow: 0 0 0 .24rem rgba(31,166,109,.12);
+  }
+
+  .workspace-hero-card {
+    min-width: 245px;
+    border-radius: 1.45rem;
+    padding: 1rem;
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    color: white;
+    background:
+      linear-gradient(135deg, rgba(28, 113, 88, .96), rgba(16, 57, 47, .98)),
+      radial-gradient(circle at top right, rgba(255,255,255,.22), transparent 15rem);
+    box-shadow: 0 16px 42px rgba(22, 95, 73, .22);
+  }
+
+  .workspace-hero-card div {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+  }
+
+  .workspace-hero-card span {
+    font-size: .76rem;
+    color: rgba(255,255,255,.68);
+    font-weight: 850;
+  }
+
+  .workspace-hero-card strong {
+    font-size: 1rem;
+    font-weight: 950;
+  }
+
+  .workspace-content-frame {
+    border-radius: 1.7rem;
+    overflow: clip;
+    min-height: 52dvh;
+    background: rgba(255,255,255,.38);
+    border: 1px solid rgba(116, 82, 37, 0.10);
+    box-shadow: 0 18px 60px rgba(37, 22, 7, 0.08);
+    scroll-margin-top: calc(var(--staff-header-h) + 1rem);
+  }
+
+  @media (max-width: 767px) {
+    .workspace-hero {
+      flex-direction: column;
+      border-radius: 1.4rem;
+    }
+    .workspace-hero-card { min-width: 0; }
+    .workspace-content-frame { border-radius: 1.25rem; }
+  }
+
+  /* Remove old page-level double padding/background inside the new shell. */
+  .workspace-redesign .workspace-content-frame > .min-h-screen,
+  .workspace-redesign .workspace-content-frame > .min-h-\[100dvh\],
+  .workspace-redesign .workspace-content-frame > div[class*="min-h-screen"],
+  .workspace-redesign .workspace-content-frame > div[class*="min-h-[100dvh]"] {
+    min-height: auto !important;
+    background: transparent !important;
+    padding-top: 1rem !important;
+    padding-bottom: calc(var(--staff-bottom-nav-h) + .75rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  @media (min-width: 1024px) {
+    .workspace-redesign .workspace-content-frame > .min-h-screen,
+    .workspace-redesign .workspace-content-frame > .min-h-\[100dvh\],
+    .workspace-redesign .workspace-content-frame > div[class*="min-h-screen"],
+    .workspace-redesign .workspace-content-frame > div[class*="min-h-[100dvh]"] {
+      padding-bottom: 1rem !important;
+    }
+  }
+
+  .workspace-redesign .workspace-content-frame > .bg-background,
+  .workspace-redesign .workspace-content-frame > div[class*="bg-background"] {
+    background: transparent !important;
+  }
+
+  .workspace-redesign .container,
+  .workspace-redesign [class*="max-w-7xl"],
+  .workspace-redesign [class*="max-w-6xl"],
+  .workspace-redesign [class*="max-w-5xl"] {
+    max-width: none !important;
+  }
+
+  /* Cards/KPI panels */
+  .workspace-redesign .bg-card,
+  .workspace-redesign [class*="bg-card"] {
+    background: rgba(255,255,255,.92) !important;
+    border-color: rgba(120, 82, 38, .14) !important;
+    box-shadow: 0 14px 45px rgba(45, 26, 8, .08), 0 1px 0 rgba(255,255,255,.70) inset !important;
+  }
+
+  .workspace-redesign [class*="rounded-xl"],
+  .workspace-redesign [class*="rounded-2xl"],
+  .workspace-redesign [class*="rounded-3xl"] {
+    border-radius: 1.25rem;
+  }
+
+  .workspace-redesign .shadow-soft,
+  .workspace-redesign .shadow-lifted,
+  .workspace-redesign [class*="shadow"] {
+    box-shadow: 0 18px 50px rgba(45, 26, 8, .08), 0 2px 8px rgba(45, 26, 8, .05) !important;
+  }
+
+  .workspace-redesign h1,
+  .workspace-redesign h2,
+  .workspace-redesign h3 {
+    letter-spacing: -0.035em;
+  }
+
+  .workspace-redesign h2,
+  .workspace-redesign h3 {
+    color: #1c1209;
+    font-weight: 900;
+  }
+
+  .workspace-redesign p,
+  .workspace-redesign span,
+  .workspace-redesign label,
+  .workspace-redesign div,
+  .workspace-redesign button,
+  .workspace-redesign input,
+  .workspace-redesign select,
+  .workspace-redesign textarea {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Tables/reports */
+  .workspace-redesign table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    overflow: hidden;
+  }
+
+  .workspace-redesign thead,
+  .workspace-redesign th {
+    background: #f6ead8 !important;
+    color: #3b2a17 !important;
+    font-size: .74rem !important;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-weight: 950 !important;
+  }
+
+  .workspace-redesign td {
+    background: rgba(255,255,255,.82);
+    font-size: .92rem;
+    font-weight: 650;
+  }
+
+  .workspace-redesign tr:hover td {
+    background: rgba(255, 249, 240, .96) !important;
+  }
+
+  /* Inputs/forms */
+  .workspace-redesign input,
+  .workspace-redesign select,
+  .workspace-redesign textarea {
+    border-radius: .95rem !important;
+    border-color: rgba(120, 82, 38, .18) !important;
+    background: rgba(255,255,255,.94) !important;
+    color: #1d1309 !important;
+    font-weight: 700;
+    box-shadow: 0 1px 0 rgba(255,255,255,.7) inset;
+  }
+
+  .workspace-redesign input:focus,
+  .workspace-redesign select:focus,
+  .workspace-redesign textarea:focus {
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(23, 119, 89, .18), 0 8px 22px rgba(45,26,8,.07) !important;
+  }
+
+  /* Buttons */
+  .workspace-redesign button {
+    font-weight: 850;
+  }
+
+  .workspace-redesign .btn-primary,
+  .workspace-redesign .cafe-gradient,
+  .workspace-redesign button[class*="bg-primary"],
+  .workspace-redesign button[class*="cafe-gradient"] {
+    background: linear-gradient(135deg, #157658, #0f4d40) !important;
+    color: white !important;
+    border-color: rgba(255,255,255,.12) !important;
+    box-shadow: 0 12px 28px rgba(15, 77, 64, .22) !important;
+  }
+
+  .workspace-redesign button[class*="border"],
+  .workspace-redesign a[class*="border"] {
+    border-color: rgba(120,82,38,.18) !important;
+  }
+
+  .workspace-redesign button:hover {
+    filter: saturate(1.05);
+  }
+
+  /* Tabs/nav inside pages */
+  .workspace-redesign [role="tablist"],
+  .workspace-redesign .tabular-tabs,
+  .workspace-redesign div[class*="overflow-x-auto"] > div[class*="flex"]:has(button) {
+    scrollbar-width: thin;
+  }
+
+  .workspace-redesign button[class*="rounded-full"],
+  .workspace-redesign button[class*="rounded-xl"] {
+    min-height: 2.45rem;
+  }
+
+  .workspace-redesign button[class*="bg-primary"] {
+    color: #fff !important;
+  }
+
+  /* Status highlights */
+  .workspace-redesign .text-muted-foreground {
+    color: rgba(49, 31, 14, .58) !important;
+  }
+
+  .workspace-redesign .text-foreground {
+    color: #1d1309 !important;
+  }
+
+  .workspace-redesign .text-primary {
+    color: #126d52 !important;
+  }
+
+  .workspace-redesign .bg-muted,
+  .workspace-redesign [class*="bg-muted"] {
+    background-color: rgba(246, 235, 218, .80) !important;
+  }
+
+  .workspace-redesign [class*="border-border"] {
+    border-color: rgba(120, 82, 38, .14) !important;
+  }
+
+  /* POS / billing pages: keep the cart and payment side readable on wide counters. */
+  @media (min-width: 1280px) {
+    .workspace-redesign:has(.workspace-content-frame [class*="OrderCard"]),
+    .workspace-redesign .workspace-content-frame [class*="grid"] {
+      --counter-gap: 1rem;
+    }
+  }
+
+  .workspace-redesign .workspace-content-frame [class*="sticky"] {
+    backdrop-filter: blur(18px);
+  }
+
+  /* Dark kitchen screen stays high contrast but receives the new card polish. */
+  .workspace-redesign .workspace-content-frame [style*="#0E0A06"] {
+    border-radius: 1.4rem;
+    background:
+      radial-gradient(circle at top left, rgba(252, 176, 69, .18), transparent 28rem),
+      linear-gradient(180deg, #120c07 0%, #080604 100%) !important;
+  }
+
+  /* Compact mobile improvements */
+  @media (max-width: 640px) {
+    .workspace-redesign .workspace-main-shell { padding-inline: .7rem; }
+    .workspace-redesign .workspace-content-frame > div { padding-inline: .75rem !important; }
+    .workspace-redesign .workspace-hero h1 { font-size: 2rem; }
+    .workspace-redesign table { font-size: .84rem; }
+  }
+}
+
+@layer components {
+  .workspace-redesign .dashboard-screen {
+    padding: 1rem !important;
+    border-radius: 1.45rem;
+  }
+
+  .workspace-redesign .dashboard-screen > .px-4,
+  .workspace-redesign .dashboard-screen > .container {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  @media (min-width: 1024px) {
+    .workspace-redesign .dashboard-screen {
+      padding: 1.15rem !important;
+    }
+  }
+}
+
+@layer components {
+  /* ======================================================================
+     Order taker dashboard redesign — real page/component changes
+     ====================================================================== */
+  .workspace-redesign .orderpad-screen {
+    --pos-green: #11684f;
+    --pos-green-dark: #0b4438;
+    --pos-amber: #f19a24;
+    --pos-ink: #191006;
+    --pos-soft: #fff7ec;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    background:
+      radial-gradient(circle at top left, rgba(17,104,79,.16), transparent 30rem),
+      linear-gradient(135deg, rgba(255,251,244,.92), rgba(248,239,225,.72));
+  }
+
+  .workspace-redesign .orderpad-command-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1rem;
+    align-items: stretch;
+    padding: 1rem;
+    border-radius: 1.75rem;
+    background:
+      linear-gradient(135deg, rgba(255,255,255,.96), rgba(255,244,228,.88)),
+      radial-gradient(circle at top right, rgba(241,154,36,.22), transparent 25rem);
+    border: 1px solid rgba(107,72,29,.12);
+    box-shadow: 0 18px 55px rgba(48,29,8,.08), inset 0 1px 0 rgba(255,255,255,.75);
+  }
+
+  .workspace-redesign .orderpad-title-block { display: flex; flex-direction: column; justify-content: center; }
+  .workspace-redesign .orderpad-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    width: max-content;
+    padding: .42rem .75rem;
+    border-radius: 999px;
+    font-size: .78rem;
+    line-height: 1;
+    font-weight: 950;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--pos-green);
+    background: rgba(17,104,79,.10);
+    border: 1px solid rgba(17,104,79,.16);
+  }
+  .workspace-redesign .orderpad-title-block h2 {
+    margin-top: .65rem;
+    font-size: clamp(2.2rem, 4vw, 4.8rem);
+    line-height: .86;
+    font-weight: 950;
+    color: var(--pos-ink);
+  }
+  .workspace-redesign .orderpad-title-block p {
+    max-width: 780px;
+    margin-top: .55rem;
+    color: rgba(25,16,6,.66) !important;
+    font-size: 1.05rem;
+    line-height: 1.45;
+    font-weight: 700;
+  }
+
+  .workspace-redesign .orderpad-metrics {
+    min-width: min(540px, 45vw);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .75rem;
+  }
+  .workspace-redesign .orderpad-metrics div {
+    min-height: 8.8rem;
+    padding: 1rem;
+    border-radius: 1.35rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: rgba(255,255,255,.86);
+    border: 1px solid rgba(107,72,29,.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+  }
+  .workspace-redesign .orderpad-metrics span {
+    color: rgba(25,16,6,.56) !important;
+    font-size: .78rem;
+    font-weight: 950;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+  .workspace-redesign .orderpad-metrics strong {
+    display: block;
+    color: var(--pos-ink);
+    font-size: clamp(2rem, 3.3vw, 3.3rem);
+    line-height: .9;
+    font-weight: 950;
+    font-variant-numeric: tabular-nums;
+  }
+  .workspace-redesign .orderpad-metrics small {
+    color: rgba(25,16,6,.52);
+    font-size: .92rem;
+    line-height: 1.1;
+    font-weight: 800;
+  }
+
+  .workspace-redesign .orderpad-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(330px, 405px);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .workspace-redesign .orderpad-catalog-panel,
+  .workspace-redesign .orderpad-ticket-panel {
+    border-radius: 1.75rem;
+    border: 1px solid rgba(107,72,29,.12);
+    background: rgba(255,255,255,.78);
+    box-shadow: 0 18px 55px rgba(48,29,8,.08);
+    overflow: hidden;
+  }
+
+  .workspace-redesign .orderpad-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 480px);
+    gap: 1rem;
+    align-items: center;
+    padding: 1rem;
+    background: rgba(255,255,255,.92);
+    border-bottom: 1px solid rgba(107,72,29,.10);
+    backdrop-filter: blur(18px);
+  }
+  .workspace-redesign .orderpad-toolbar-heading { display: flex; align-items: center; gap: .85rem; min-width: 0; }
+  .workspace-redesign .orderpad-toolbar-icon {
+    width: 3.1rem;
+    height: 3.1rem;
+    border-radius: 1.05rem;
+    display: grid;
+    place-items: center;
+    color: white;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark));
+    box-shadow: 0 14px 32px rgba(17,104,79,.20);
+  }
+  .workspace-redesign .orderpad-toolbar h3 {
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 1.35rem;
+    line-height: 1.05;
+    font-weight: 950;
+    letter-spacing: -.02em;
+    color: var(--pos-ink);
+  }
+  .workspace-redesign .orderpad-toolbar p {
+    color: rgba(25,16,6,.56) !important;
+    font-size: .95rem;
+    line-height: 1.2;
+    font-weight: 700;
+  }
+
+  .workspace-redesign .orderpad-search-box {
+    min-height: 3.55rem;
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+    padding: 0 .9rem 0 1rem;
+    border-radius: 1.15rem;
+    color: rgba(25,16,6,.52);
+    background: #fffaf2;
+    border: 1px solid rgba(107,72,29,.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 10px 26px rgba(48,29,8,.05);
+  }
+  .workspace-redesign .orderpad-search-box input {
+    flex: 1;
+    min-width: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    height: 3.2rem;
+    padding: 0 !important;
+    font-size: 1.13rem;
+    font-weight: 850;
+  }
+  .workspace-redesign .orderpad-search-box button {
+    width: 2.15rem;
+    height: 2.15rem;
+    border-radius: .75rem;
+    display: grid;
+    place-items: center;
+    background: rgba(25,16,6,.06);
+  }
+
+  .workspace-redesign .order-category-rail {
+    display: flex;
+    gap: .65rem;
+    padding: .95rem 1rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid rgba(107,72,29,.10);
+  }
+  .workspace-redesign .order-category-rail::-webkit-scrollbar { display: none; }
+  .workspace-redesign .order-category-chip {
+    min-height: 3rem;
+    display: inline-flex;
+    align-items: center;
+    gap: .55rem;
+    flex: 0 0 auto;
+    padding: .55rem .9rem .55rem .6rem;
+    border-radius: 999px;
+    color: rgba(25,16,6,.72);
+    background: rgba(255,255,255,.86);
+    border: 1px solid rgba(107,72,29,.14);
+    box-shadow: 0 8px 22px rgba(48,29,8,.05);
+    transition: transform .15s ease, background .15s ease, color .15s ease;
+  }
+  .workspace-redesign .order-category-chip:hover { transform: translateY(-1px); }
+  .workspace-redesign .order-category-chip-active {
+    color: white !important;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important;
+    border-color: rgba(255,255,255,.18) !important;
+    box-shadow: 0 14px 32px rgba(17,104,79,.22) !important;
+  }
+  .workspace-redesign .order-category-icon {
+    width: 2rem;
+    height: 2rem;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: rgba(25,16,6,.06);
+    font-size: 1rem;
+  }
+  .workspace-redesign .order-category-chip-active .order-category-icon { background: rgba(255,255,255,.18); }
+  .workspace-redesign .order-category-name { font-size: 1rem; font-weight: 950; white-space: nowrap; }
+
+  .workspace-redesign .orderpad-menu-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+    gap: .9rem;
+    padding: 1rem;
+  }
+  .workspace-redesign .orderpad-empty-wrap { padding: 3rem 1rem; }
+
+  .workspace-redesign .pos-menu-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.45rem;
+    background: rgba(255,255,255,.96);
+    border: 1px solid rgba(107,72,29,.14);
+    box-shadow: 0 14px 34px rgba(48,29,8,.08), inset 0 1px 0 rgba(255,255,255,.75);
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .workspace-redesign .pos-menu-card:hover { transform: translateY(-2px); box-shadow: 0 22px 48px rgba(48,29,8,.11); }
+  .workspace-redesign .pos-menu-card-selected { border-color: rgba(17,104,79,.42); box-shadow: 0 18px 42px rgba(17,104,79,.12), 0 0 0 3px rgba(17,104,79,.10); }
+  .workspace-redesign .pos-menu-card-disabled { opacity: .52; pointer-events: none; }
+  .workspace-redesign .pos-menu-thumb {
+    position: relative;
+    aspect-ratio: 5 / 3.25;
+    background: linear-gradient(135deg, #fff0d7, #ebdac0);
+    overflow: hidden;
+  }
+  .workspace-redesign .pos-menu-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .35s ease; }
+  .workspace-redesign .pos-menu-card:hover .pos-menu-thumb img { transform: scale(1.04); }
+  .workspace-redesign .pos-menu-thumb > span[aria-hidden="true"] {
+    width: 100%; height: 100%; display: grid; place-items: center; font-size: 3rem; opacity: .35;
+  }
+  .workspace-redesign .pos-menu-badges { position: absolute; top: .7rem; left: .7rem; }
+  .workspace-redesign .pos-menu-badges span {
+    display: inline-flex;
+    align-items: center;
+    gap: .25rem;
+    padding: .35rem .55rem;
+    border-radius: .65rem;
+    color: #11684f !important;
+    background: rgba(255,255,255,.94);
+    border: 1px solid rgba(17,104,79,.18);
+    font-size: .72rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .pos-menu-veg-dot {
+    position: absolute;
+    top: .5rem;
+    left: .5rem;
+    width: .7rem;
+    height: .7rem;
+    border-radius: 999px;
+    background: #16a568;
+    border: 2px solid white;
+  }
+  .workspace-redesign .pos-menu-qty-badge {
+    position: absolute;
+    top: .7rem;
+    right: .7rem;
+    min-width: 2.15rem;
+    height: 2.15rem;
+    display: grid;
+    place-items: center;
+    padding: 0 .45rem;
+    border-radius: 999px;
+    color: white;
+    font-size: 1rem;
+    font-weight: 950;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark));
+    box-shadow: 0 10px 24px rgba(0,0,0,.22);
+  }
+  .workspace-redesign .pos-menu-unavailable { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255,255,255,.74); }
+  .workspace-redesign .pos-menu-unavailable span { padding: .5rem .8rem; border-radius: 999px; color: #b91c1c !important; background: #fee2e2; font-weight: 950; }
+  .workspace-redesign .pos-menu-body { padding: .95rem; }
+  .workspace-redesign .pos-menu-body h3 {
+    min-height: 3.2rem;
+    color: var(--pos-ink);
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 1.14rem;
+    font-weight: 950;
+    line-height: 1.12;
+    letter-spacing: -.015em;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .workspace-redesign .pos-menu-footer { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .9rem; }
+  .workspace-redesign .pos-menu-price { color: #9a5b09 !important; font-size: 1.2rem; line-height: 1; font-weight: 950; font-variant-numeric: tabular-nums; }
+  .workspace-redesign .pos-menu-add,
+  .workspace-redesign .pos-menu-add-small {
+    border: 0 !important;
+    color: white !important;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important;
+    box-shadow: 0 12px 26px rgba(17,104,79,.22) !important;
+  }
+  .workspace-redesign .pos-menu-add { min-height: 2.75rem; padding: 0 1rem; display: inline-flex; align-items: center; gap: .45rem; border-radius: .95rem; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .pos-menu-add-small { width: 2.4rem; height: 2.4rem; border-radius: .8rem; display: grid; place-items: center; }
+  .workspace-redesign .pos-menu-stepper,
+  .workspace-redesign .pos-menu-stepper-small {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .2rem;
+    border-radius: 1rem;
+    background: #f7ead8;
+    border: 1px solid rgba(107,72,29,.15);
+  }
+  .workspace-redesign .pos-menu-stepper button,
+  .workspace-redesign .pos-menu-stepper-small button {
+    display: grid;
+    place-items: center;
+    border: 0 !important;
+    color: white !important;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important;
+  }
+  .workspace-redesign .pos-menu-stepper button { width: 2.45rem; height: 2.45rem; border-radius: .8rem; }
+  .workspace-redesign .pos-menu-stepper span { min-width: 2rem; text-align: center; color: var(--pos-ink) !important; font-size: 1.15rem; font-weight: 950; }
+  .workspace-redesign .pos-menu-card-compact .pos-menu-thumb { aspect-ratio: 1; }
+  .workspace-redesign .pos-menu-body-compact { padding: .65rem; }
+  .workspace-redesign .pos-menu-body-compact h3 { min-height: 2.35rem; font-size: .95rem; }
+  .workspace-redesign .pos-menu-stepper-small button { width: 2rem; height: 2rem; border-radius: .65rem; }
+  .workspace-redesign .pos-menu-stepper-small span { min-width: 1.6rem; text-align: center; font-size: .95rem; font-weight: 950; }
+
+  .workspace-redesign .orderpad-ticket-panel {
+    position: sticky;
+    top: 1rem;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 2rem);
+    background:
+      linear-gradient(180deg, rgba(36,22,9,.98), rgba(14,45,37,.96)),
+      radial-gradient(circle at top right, rgba(241,154,36,.24), transparent 22rem);
+    color: white;
+    border-color: rgba(255,255,255,.12);
+  }
+  .workspace-redesign .orderpad-ticket-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: start;
+    padding: 1.05rem;
+    border-bottom: 1px solid rgba(255,255,255,.10);
+  }
+  .workspace-redesign .orderpad-ticket-header span { color: rgba(255,255,255,.55) !important; font-size: .8rem; font-weight: 950; letter-spacing: .1em; text-transform: uppercase; }
+  .workspace-redesign .orderpad-ticket-header h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.45rem; font-weight: 950; letter-spacing: -.02em; }
+  .workspace-redesign .orderpad-ticket-header strong { color: #ffd789; font-size: 1.45rem; font-weight: 950; font-variant-numeric: tabular-nums; }
+  .workspace-redesign .orderpad-ticket-empty { flex: 1; display: grid; place-items: center; text-align: center; gap: .4rem; padding: 2rem; color: rgba(255,255,255,.55); }
+  .workspace-redesign .orderpad-ticket-empty h4 { color: white; font-size: 1.2rem; font-weight: 950; }
+  .workspace-redesign .orderpad-ticket-empty p { max-width: 260px; color: rgba(255,255,255,.52) !important; font-weight: 700; }
+  .workspace-redesign .orderpad-ticket-list { flex: 1; overflow-y: auto; padding: .9rem; display: flex; flex-direction: column; gap: .65rem; }
+  .workspace-redesign .orderpad-ticket-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .8rem;
+    padding: .85rem;
+    border-radius: 1rem;
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.10);
+  }
+  .workspace-redesign .orderpad-ticket-row h4 { color: white; font-size: 1rem; line-height: 1.15; font-weight: 900; }
+  .workspace-redesign .orderpad-ticket-row p { color: rgba(255,255,255,.56) !important; font-size: .9rem; font-weight: 800; }
+  .workspace-redesign .orderpad-ticket-stepper { display: inline-flex; align-items: center; gap: .3rem; padding: .18rem; border-radius: .8rem; background: rgba(255,255,255,.08); }
+  .workspace-redesign .orderpad-ticket-stepper button { width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: .65rem; color: white !important; background: rgba(255,255,255,.12) !important; border: 1px solid rgba(255,255,255,.12) !important; }
+  .workspace-redesign .orderpad-ticket-stepper span { min-width: 1.8rem; text-align: center; color: #ffd789 !important; font-weight: 950; }
+  .workspace-redesign .orderpad-ticket-footer { padding: 1rem; border-top: 1px solid rgba(255,255,255,.10); background: rgba(0,0,0,.14); }
+  .workspace-redesign .orderpad-total-line { display: flex; align-items: center; justify-content: space-between; margin-bottom: .8rem; }
+  .workspace-redesign .orderpad-total-line span { color: rgba(255,255,255,.56) !important; font-weight: 900; }
+  .workspace-redesign .orderpad-total-line strong { color: #ffd789; font-size: 2rem; line-height: 1; font-weight: 950; }
+  .workspace-redesign .orderpad-ticket-footer > button {
+    width: 100%;
+    min-height: 3.55rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .55rem;
+    border-radius: 1.05rem;
+    color: #1b1006 !important;
+    background: linear-gradient(135deg, #ffd789, #f19a24) !important;
+    border: 0 !important;
+    box-shadow: 0 16px 34px rgba(241,154,36,.25) !important;
+    font-size: 1.05rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .orderpad-ticket-footer > button:disabled { opacity: .45; cursor: not-allowed; }
+  .workspace-redesign .orderpad-ticket-footer p { display: flex; align-items: center; gap: .4rem; margin-top: .8rem; color: rgba(255,255,255,.52) !important; font-size: .88rem; line-height: 1.25; font-weight: 750; }
+
+  .workspace-redesign .orderpad-mobile-cart-bar { position: fixed; left: 0; right: 0; z-index: 50; bottom: calc(var(--staff-bottom-nav-h, 6.85rem) + .65rem + env(safe-area-inset-bottom, 0px)); padding: 0 .9rem; }
+  .workspace-redesign .orderpad-mobile-cart-bar button {
+    width: 100%;
+    min-height: 4.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .8rem 1rem;
+    border-radius: 1.35rem;
+    color: white !important;
+    background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important;
+    box-shadow: 0 18px 40px rgba(17,104,79,.35) !important;
+  }
+  .workspace-redesign .orderpad-mobile-cart-left { display: flex; align-items: center; gap: .8rem; text-align: left; }
+  .workspace-redesign .orderpad-mobile-cart-left > span { width: 2.7rem; height: 2.7rem; display: grid; place-items: center; border-radius: .9rem; background: rgba(255,255,255,.16); color: white !important; }
+  .workspace-redesign .orderpad-mobile-cart-left strong { display: block; font-size: 1.05rem; line-height: 1; font-weight: 950; }
+  .workspace-redesign .orderpad-mobile-cart-left small { color: rgba(255,255,255,.62); font-weight: 800; }
+  .workspace-redesign .orderpad-mobile-cart-bar b { font-size: 1.3rem; font-weight: 950; color: #ffd789; }
+
+  /* Order review drawer */
+  .workspace-redesign .order-cart-overlay { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: flex-end; align-items: stretch; }
+  .workspace-redesign .order-cart-backdrop { position: absolute; inset: 0; background: rgba(12,8,4,.58) !important; border: 0 !important; backdrop-filter: blur(8px); }
+  .workspace-redesign .order-cart-sheet {
+    position: relative;
+    width: min(100%, 560px);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: #fff9ef;
+    border-left: 1px solid rgba(107,72,29,.14);
+    box-shadow: -28px 0 80px rgba(0,0,0,.25);
+    animation: slideInRight .28s cubic-bezier(.22,1,.36,1) both;
+  }
+  .workspace-redesign .order-cart-header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; padding: 1.1rem; background: linear-gradient(135deg, #fff, #fff0da); border-bottom: 1px solid rgba(107,72,29,.12); }
+  .workspace-redesign .order-cart-header span { color: var(--pos-green) !important; font-size: .78rem; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
+  .workspace-redesign .order-cart-header h2 { color: var(--pos-ink); font-size: 2.25rem; line-height: .9; font-weight: 950; }
+  .workspace-redesign .order-cart-header p { color: rgba(25,16,6,.58) !important; font-size: 1rem; font-weight: 800; }
+  .workspace-redesign .order-cart-header-actions { display: flex; gap: .5rem; align-items: center; }
+  .workspace-redesign .order-cart-clear { min-height: 2.45rem; padding: 0 .8rem; border-radius: .8rem; color: #b91c1c !important; background: #fee2e2 !important; border: 1px solid rgba(185,28,28,.14) !important; }
+  .workspace-redesign .order-cart-close { width: 2.6rem; height: 2.6rem; display: grid; place-items: center; border-radius: .85rem; color: var(--pos-ink) !important; background: rgba(25,16,6,.07) !important; border: 1px solid rgba(107,72,29,.10) !important; }
+  .workspace-redesign .order-cart-undo { margin: .8rem 1rem 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem .85rem; border-radius: 1rem; color: white; background: #191006; }
+  .workspace-redesign .order-cart-undo span { color: white !important; font-weight: 850; }
+  .workspace-redesign .order-cart-undo button { display: inline-flex; align-items: center; gap: .35rem; color: #ffd789 !important; background: transparent !important; border: 0 !important; }
+  .workspace-redesign .order-cart-content { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+  .workspace-redesign .order-cart-empty { flex: 1; display: grid; place-items: center; text-align: center; color: rgba(25,16,6,.45); }
+  .workspace-redesign .order-cart-empty h3 { font-family: 'Source Sans 3', sans-serif; font-size: 1.25rem; font-weight: 950; color: var(--pos-ink); }
+  .workspace-redesign .order-cart-lines { display: flex; flex-direction: column; gap: .75rem; }
+  .workspace-redesign .order-cart-line { display: grid; grid-template-columns: 4.3rem minmax(0, 1fr) auto; gap: .8rem; align-items: center; padding: .75rem; border-radius: 1.25rem; background: white; border: 1px solid rgba(107,72,29,.12); box-shadow: 0 10px 24px rgba(48,29,8,.05); }
+  .workspace-redesign .order-cart-line img,
+  .workspace-redesign .order-cart-line-placeholder { width: 4.3rem; height: 4.3rem; border-radius: 1rem; object-fit: cover; background: #f4e2c8; display: grid; place-items: center; font-size: 1.7rem; }
+  .workspace-redesign .order-cart-line-main h3 { color: var(--pos-ink); font-family: 'Source Sans 3', sans-serif; font-size: 1.08rem; line-height: 1.12; font-weight: 950; }
+  .workspace-redesign .order-cart-line-main p { color: rgba(25,16,6,.5) !important; font-weight: 800; }
+  .workspace-redesign .order-cart-line-main strong { color: #9a5b09; font-size: 1.05rem; font-weight: 950; }
+  .workspace-redesign .order-cart-line-controls { display: grid; grid-template-columns: repeat(3, 2.35rem); gap: .3rem; align-items: center; }
+  .workspace-redesign .order-cart-line-controls button { width: 2.35rem; height: 2.35rem; border-radius: .8rem; display: grid; place-items: center; color: white !important; background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important; border: 0 !important; }
+  .workspace-redesign .order-cart-line-controls span { color: var(--pos-ink) !important; text-align: center; font-size: 1.15rem; font-weight: 950; }
+  .workspace-redesign .order-cart-line-controls .order-cart-delete { grid-column: 1 / -1; width: 100%; color: #b91c1c !important; background: #fee2e2 !important; }
+  .workspace-redesign .order-cart-details { padding: .9rem; border-radius: 1.3rem; background: #fff2df; border: 1px solid rgba(107,72,29,.12); }
+  .workspace-redesign .order-cart-toggle { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: .55rem; margin-bottom: .8rem; }
+  .workspace-redesign .order-cart-toggle button { min-height: 3rem; border-radius: .95rem; color: var(--pos-ink) !important; background: white !important; border: 1px solid rgba(107,72,29,.13) !important; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .order-cart-toggle button.active { color: white !important; background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important; }
+  .workspace-redesign .order-cart-field,
+  .workspace-redesign .order-cart-notes { position: relative; display: flex; align-items: center; gap: .7rem; margin-bottom: .7rem; padding: 0 .9rem; min-height: 3.15rem; border-radius: 1rem; background: white; border: 1px solid rgba(107,72,29,.13); color: rgba(25,16,6,.45); }
+  .workspace-redesign .order-cart-field input,
+  .workspace-redesign .order-cart-field > button,
+  .workspace-redesign .order-cart-notes textarea { flex: 1; border: 0 !important; background: transparent !important; box-shadow: none !important; color: var(--pos-ink) !important; font-size: 1rem; font-weight: 850; text-align: left; padding: 0 !important; }
+  .workspace-redesign .order-cart-notes { align-items: flex-start; padding-top: .8rem; padding-bottom: .8rem; }
+  .workspace-redesign .order-cart-notes textarea { min-height: 4.2rem; resize: none; }
+  .workspace-redesign .order-cart-select-field .has-error { color: #b91c1c !important; }
+  .workspace-redesign .order-cart-click-catcher { position: fixed; inset: 0; z-index: 1; background: transparent !important; border: 0 !important; }
+  .workspace-redesign .order-cart-table-grid { position: absolute; left: 0; right: 0; top: calc(100% + .4rem); z-index: 2; display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: .35rem; padding: .65rem; border-radius: 1rem; background: white; border: 1px solid rgba(107,72,29,.16); box-shadow: 0 18px 42px rgba(48,29,8,.16); }
+  .workspace-redesign .order-cart-table-grid button { min-height: 2.55rem; border-radius: .75rem; color: var(--pos-ink) !important; background: #fff7ec !important; border: 1px solid rgba(107,72,29,.10) !important; font-weight: 950; }
+  .workspace-redesign .order-cart-table-grid button.active { color: white !important; background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important; }
+  .workspace-redesign .order-cart-error { display: flex; align-items: flex-start; gap: .45rem; color: #b91c1c; background: #fee2e2; border: 1px solid rgba(185,28,28,.16); border-radius: .9rem; padding: .6rem .75rem; font-weight: 850; }
+  .workspace-redesign .order-cart-suggestions { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .workspace-redesign .order-cart-suggestions button { min-height: 2rem; padding: 0 .65rem; border-radius: 999px; color: rgba(25,16,6,.68) !important; background: white !important; border: 1px solid rgba(107,72,29,.12) !important; font-size: .82rem; font-weight: 900; }
+  .workspace-redesign .order-cart-footer { padding: 1rem; background: white; border-top: 1px solid rgba(107,72,29,.12); box-shadow: 0 -12px 34px rgba(48,29,8,.06); }
+  .workspace-redesign .order-cart-total { display: flex; justify-content: space-between; align-items: center; margin-bottom: .8rem; }
+  .workspace-redesign .order-cart-total span { color: rgba(25,16,6,.52) !important; font-size: 1rem; font-weight: 900; }
+  .workspace-redesign .order-cart-total strong { color: var(--pos-ink); font-size: 2.15rem; line-height: 1; font-weight: 950; }
+  .workspace-redesign .order-cart-submit-error { margin-bottom: .75rem; }
+  .workspace-redesign .order-cart-send { width: 100%; min-height: 3.65rem; display: flex; align-items: center; justify-content: center; gap: .6rem; border-radius: 1.1rem; color: white !important; background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important; border: 0 !important; box-shadow: 0 16px 36px rgba(17,104,79,.25) !important; font-size: 1.08rem; font-weight: 950; }
+  .workspace-redesign .order-cart-success { flex: 1; display: grid; place-items: center; align-content: center; gap: .8rem; padding: 2rem; text-align: center; }
+  .workspace-redesign .order-cart-success div { width: 5.4rem; height: 5.4rem; display: grid; place-items: center; border-radius: 999px; color: #11684f; background: #dff8ea; }
+  .workspace-redesign .order-cart-success h2 { color: var(--pos-ink); font-size: 2.5rem; font-weight: 950; }
+  .workspace-redesign .order-cart-success p { color: rgba(25,16,6,.58) !important; font-size: 1.05rem; font-weight: 800; }
+
+  /* ======================================================================
+     Kitchen dashboard redesign — extra-large, distance-readable KOT board
+     ====================================================================== */
+  .workspace-redesign .kitchen-screen {
+    --k-bg: #0a0705;
+    --k-panel: rgba(255,255,255,.075);
+    --k-line: rgba(255,255,255,.12);
+    --k-text: #fff7ed;
+    --k-muted: rgba(255,247,237,.58);
+    --k-amber: #f59e0b;
+    --k-blue: #3b82f6;
+    --k-green: #10b981;
+    --k-red: #ef4444;
+    color: var(--k-text);
+    min-height: 70dvh;
+    background:
+      radial-gradient(circle at 6% 0%, rgba(245,158,11,.20), transparent 27rem),
+      radial-gradient(circle at 90% 8%, rgba(16,185,129,.14), transparent 24rem),
+      linear-gradient(180deg, #15100c 0%, #070504 100%);
+  }
+  .workspace-redesign .kitchen-command-center {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) auto;
+    gap: 1rem;
+    align-items: stretch;
+    padding: 1rem;
+    border-radius: 1.65rem;
+    background: rgba(255,255,255,.07);
+    border: 1px solid var(--k-line);
+    box-shadow: 0 22px 70px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.08);
+  }
+  .workspace-redesign .kitchen-eyebrow { display: inline-flex; align-items: center; gap: .45rem; width: max-content; padding: .42rem .75rem; border-radius: 999px; color: #fed7aa !important; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.22); font-size: .78rem; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-title-area h2 { margin-top: .7rem; color: white; font-size: clamp(2.4rem, 4.8vw, 5.2rem); line-height: .82; font-weight: 950; letter-spacing: -.055em; }
+  .workspace-redesign .kitchen-title-area p { max-width: 880px; margin-top: .65rem; color: var(--k-muted) !important; font-size: 1.08rem; line-height: 1.42; font-weight: 760; }
+  .workspace-redesign .kitchen-live-tools { display: flex; flex-direction: column; gap: .75rem; min-width: min(390px, 34vw); }
+  .workspace-redesign .kitchen-live-pill,
+  .workspace-redesign .kitchen-new-alert,
+  .workspace-redesign .kitchen-sound-toggle { display: flex; align-items: center; gap: .75rem; min-height: 4.2rem; padding: .85rem 1rem; border-radius: 1.2rem; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; }
+  .workspace-redesign .kitchen-live-pill > span { width: .9rem; height: .9rem; border-radius: 999px; background: #6b7280; box-shadow: 0 0 0 .3rem rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-live-pill > span.is-live { background: var(--k-green); box-shadow: 0 0 0 .35rem rgba(16,185,129,.18); animation: pulseGlow 1.8s ease-in-out infinite; }
+  .workspace-redesign .kitchen-live-pill strong,
+  .workspace-redesign .kitchen-new-alert strong { display: block; color: white; font-size: 1rem; line-height: 1; font-weight: 950; }
+  .workspace-redesign .kitchen-live-pill small { color: var(--k-muted); font-size: .82rem; font-weight: 800; }
+  .workspace-redesign .kitchen-new-alert { color: #ffedd5 !important; background: rgba(245,158,11,.18) !important; border-color: rgba(245,158,11,.30) !important; }
+  .workspace-redesign .kitchen-sound-toggle { justify-content: center; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .kitchen-stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: .8rem; margin-top: 1rem; }
+  .workspace-redesign .kitchen-stat-card { min-height: 8.2rem; padding: 1rem; border-radius: 1.35rem; background: rgba(255,255,255,.075); border: 1px solid var(--k-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-stat-card span { display: block; color: var(--k-muted) !important; font-size: .78rem; font-weight: 950; letter-spacing: .13em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-stat-card strong { display: block; margin-top: .7rem; color: white; font-size: clamp(2.5rem, 4vw, 4.4rem); line-height: .82; font-weight: 950; font-variant-numeric: tabular-nums; }
+  .workspace-redesign .kitchen-stat-card small { display: block; margin-top: .65rem; color: var(--k-muted); font-size: .9rem; font-weight: 850; }
+  .workspace-redesign .kitchen-stat-card.stat-new { border-color: rgba(245,158,11,.34); background: rgba(245,158,11,.10); }
+  .workspace-redesign .kitchen-stat-card.stat-cooking { border-color: rgba(59,130,246,.34); background: rgba(59,130,246,.10); }
+  .workspace-redesign .kitchen-stat-card.stat-ready { border-color: rgba(16,185,129,.34); background: rgba(16,185,129,.10); }
+  .workspace-redesign .kitchen-cancel-banner { margin-top: 1rem; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 1rem; padding: 1rem; border-radius: 1.25rem; color: white; background: rgba(239,68,68,.22); border: 1px solid rgba(239,68,68,.44); box-shadow: 0 18px 42px rgba(239,68,68,.14); animation: pulseGlow 1.8s ease-in-out infinite; }
+  .workspace-redesign .kitchen-cancel-banner h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.25rem; font-weight: 950; text-transform: uppercase; }
+  .workspace-redesign .kitchen-cancel-banner p { color: #fecaca !important; font-size: 1rem; font-weight: 850; }
+  .workspace-redesign .kitchen-cancel-banner button { width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border-radius: .9rem; color: white !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.15) !important; }
+  .workspace-redesign .kitchen-tab-rail { display: flex; gap: .7rem; margin-top: 1rem; padding: .25rem; overflow-x: auto; scrollbar-width: none; }
+  .workspace-redesign .kitchen-tab-rail::-webkit-scrollbar { display: none; }
+  .workspace-redesign .kitchen-tab { position: relative; flex: 0 0 auto; min-width: 9.5rem; min-height: 4.2rem; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: .2rem; padding: .75rem .9rem; border-radius: 1.15rem; color: rgba(255,255,255,.74) !important; background: rgba(255,255,255,.075) !important; border: 1px solid var(--k-line) !important; }
+  .workspace-redesign .kitchen-tab.active { color: white !important; background: rgba(255,255,255,.14) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 16px 38px rgba(0,0,0,.18) !important; }
+  .workspace-redesign .kitchen-tab[data-tab="pending"].active { border-color: rgba(245,158,11,.55) !important; background: rgba(245,158,11,.20) !important; }
+  .workspace-redesign .kitchen-tab[data-tab="preparing"].active { border-color: rgba(59,130,246,.55) !important; background: rgba(59,130,246,.20) !important; }
+  .workspace-redesign .kitchen-tab[data-tab="ready"].active { border-color: rgba(16,185,129,.55) !important; background: rgba(16,185,129,.20) !important; }
+  .workspace-redesign .kitchen-tab[data-tab="cancelled"].active,
+  .workspace-redesign .kitchen-tab[data-tab="waste"].active { border-color: rgba(239,68,68,.55) !important; background: rgba(239,68,68,.18) !important; }
+  .workspace-redesign .kitchen-tab span { color: inherit !important; font-size: 1rem; line-height: 1; font-weight: 950; }
+  .workspace-redesign .kitchen-tab small { color: rgba(255,255,255,.48); font-size: .78rem; font-weight: 800; }
+  .workspace-redesign .kitchen-tab strong { position: absolute; top: .55rem; right: .6rem; min-width: 1.7rem; height: 1.7rem; display: grid; place-items: center; padding: 0 .4rem; border-radius: 999px; color: #140f0a; background: #fed7aa; font-size: .88rem; font-weight: 950; }
+  .workspace-redesign .kitchen-board,
+  .workspace-redesign .kitchen-waste-grid { margin-top: 1rem; }
+  .workspace-redesign .kitchen-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: .8rem; }
+  .workspace-redesign .kitchen-section-heading span { color: rgba(255,255,255,.52) !important; font-size: .82rem; font-weight: 950; letter-spacing: .13em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-section-heading strong { color: white; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .kitchen-empty-state { min-height: 22rem; display: grid; place-items: center; align-content: center; gap: .6rem; text-align: center; border-radius: 1.35rem; color: rgba(255,255,255,.42); background: rgba(255,255,255,.055); border: 1px dashed rgba(255,255,255,.16); }
+  .workspace-redesign .kitchen-empty-state h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.35rem; font-weight: 950; }
+  .workspace-redesign .kitchen-empty-state p { color: var(--k-muted) !important; font-size: 1rem; font-weight: 750; }
+  .workspace-redesign .kitchen-order-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(355px, 1fr)); gap: .9rem; }
+  .workspace-redesign .kitchen-order-card { overflow: hidden; border-radius: 1.4rem; background: rgba(255,255,255,.075); border: 2px solid rgba(255,255,255,.14); box-shadow: 0 22px 58px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-order-card.status-pending { border-color: rgba(245,158,11,.70); }
+  .workspace-redesign .kitchen-order-card.status-preparing { border-color: rgba(59,130,246,.72); }
+  .workspace-redesign .kitchen-order-card.status-ready { border-color: rgba(16,185,129,.72); }
+  .workspace-redesign .kitchen-order-card.status-cancelled { border-color: rgba(239,68,68,.78); background: rgba(239,68,68,.12); }
+  .workspace-redesign .kitchen-order-card.is-urgent { animation: pulseGlow 1.4s ease-in-out infinite; box-shadow: 0 0 0 4px rgba(239,68,68,.20), 0 22px 58px rgba(239,68,68,.12); }
+  .workspace-redesign .kitchen-order-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .9rem; padding: 1rem; border-bottom: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.06); }
+  .workspace-redesign .kitchen-order-head span { display: block; color: rgba(255,255,255,.46) !important; font-size: .72rem; font-weight: 950; letter-spacing: .14em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-order-head strong { display: block; color: white; font-size: clamp(2.3rem, 4.5vw, 4rem); line-height: .82; font-weight: 950; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+  .workspace-redesign .kitchen-order-status { min-width: 0; }
+  .workspace-redesign .kitchen-order-status b { display: inline-flex; align-items: center; border-radius: 999px; padding: .38rem .7rem; color: #140f0a; background: #fed7aa; font-size: .78rem; font-weight: 950; letter-spacing: .07em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-order-status small { display: flex; align-items: center; gap: .3rem; margin-top: .45rem; color: var(--k-muted); font-size: .95rem; font-weight: 850; }
+  .workspace-redesign .kitchen-order-head button { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: 1rem; color: white !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.14) !important; }
+  .workspace-redesign .kitchen-order-meta { display: flex; flex-wrap: wrap; gap: .45rem; padding: .8rem 1rem; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-order-meta span { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: .25rem .65rem; border-radius: 999px; color: rgba(255,255,255,.78) !important; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10); font-size: .88rem; font-weight: 850; }
+  .workspace-redesign .kitchen-order-items { padding: 1rem; display: flex; flex-direction: column; gap: .8rem; }
+  .workspace-redesign .kitchen-order-item { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: .9rem; align-items: start; }
+  .workspace-redesign .kitchen-order-item strong { color: #fed7aa; text-align: right; font-size: clamp(1.75rem, 3vw, 2.45rem); line-height: .92; font-weight: 950; font-variant-numeric: tabular-nums; }
+  .workspace-redesign .kitchen-order-item span { color: white !important; font-size: clamp(1.35rem, 2.6vw, 2rem); line-height: 1.02; font-weight: 950; letter-spacing: -.02em; }
+  .workspace-redesign .kitchen-order-notes,
+  .workspace-redesign .kitchen-order-cancel-reason { display: flex; align-items: flex-start; gap: .45rem; margin: 0 1rem 1rem; padding: .8rem .9rem; border-radius: .95rem; font-size: 1rem; line-height: 1.25; font-weight: 850; }
+  .workspace-redesign .kitchen-order-notes { color: #fde68a !important; background: rgba(245,158,11,.13); border: 1px solid rgba(245,158,11,.26); }
+  .workspace-redesign .kitchen-order-cancel-reason { color: #fecaca !important; background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.28); }
+  .workspace-redesign .kitchen-inline-error { display: flex; align-items: center; gap: .45rem; margin: .75rem 0; padding: .7rem .85rem; border-radius: .9rem; color: #fecaca !important; background: rgba(239,68,68,.16); border: 1px solid rgba(239,68,68,.32); font-weight: 850; }
+  .workspace-redesign .kitchen-order-card .kitchen-inline-error { margin: 0 1rem 1rem; }
+  .workspace-redesign .kitchen-order-actions { display: flex; gap: .55rem; padding: 0 1rem 1rem; }
+  .workspace-redesign .kitchen-order-actions button,
+  .workspace-redesign .kitchen-order-actions div { min-height: 3.35rem; display: inline-flex; align-items: center; justify-content: center; gap: .55rem; border-radius: 1rem; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .kitchen-order-actions .start { flex: 1; color: white !important; background: linear-gradient(135deg, #2563eb, #1d4ed8) !important; border: 0 !important; box-shadow: 0 14px 30px rgba(37,99,235,.24) !important; }
+  .workspace-redesign .kitchen-order-actions .ready { flex: 1; color: white !important; background: linear-gradient(135deg, #10b981, #047857) !important; border: 0 !important; box-shadow: 0 14px 30px rgba(16,185,129,.24) !important; }
+  .workspace-redesign .kitchen-order-actions .ready-state { flex: 1; color: #a7f3d0; background: rgba(16,185,129,.14); border: 1px solid rgba(16,185,129,.30); }
+  .workspace-redesign .kitchen-order-actions .cancel-state { flex: 1; color: #fecaca; background: rgba(239,68,68,.16); border: 1px solid rgba(239,68,68,.32); }
+  .workspace-redesign .kitchen-order-actions .print { min-width: 7rem; color: rgba(255,255,255,.82) !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.13) !important; }
+  .workspace-redesign .kitchen-waste-grid { display: grid; grid-template-columns: minmax(300px, 420px) minmax(0, 1fr); gap: 1rem; align-items: start; }
+  .workspace-redesign .kitchen-waste-form,
+  .workspace-redesign .kitchen-waste-list { border-radius: 1.35rem; padding: 1rem; background: rgba(255,255,255,.075); border: 1px solid var(--k-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-waste-head { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+  .workspace-redesign .kitchen-waste-head > span { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: 1rem; color: #fecaca !important; background: rgba(239,68,68,.16); }
+  .workspace-redesign .kitchen-waste-head h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.25rem; font-weight: 950; }
+  .workspace-redesign .kitchen-waste-head p { color: var(--k-muted) !important; font-weight: 800; }
+  .workspace-redesign .kitchen-waste-head strong { margin-left: auto; min-width: 2.2rem; height: 2.2rem; display: grid; place-items: center; border-radius: 999px; color: white; background: rgba(239,68,68,.35); }
+  .workspace-redesign .kitchen-waste-form label { display: block; margin-bottom: .8rem; }
+  .workspace-redesign .kitchen-waste-form label span { display: block; margin-bottom: .35rem; color: var(--k-muted) !important; font-size: .8rem; font-weight: 950; letter-spacing: .1em; text-transform: uppercase; }
+  .workspace-redesign .kitchen-waste-form input { width: 100%; min-height: 3.3rem; border-radius: 1rem !important; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; font-size: 1rem; font-weight: 850; padding: 0 .9rem !important; }
+  .workspace-redesign .kitchen-waste-form button { width: 100%; min-height: 3.35rem; display: flex; align-items: center; justify-content: center; gap: .55rem; border-radius: 1rem; color: white !important; background: linear-gradient(135deg, #ef4444, #b91c1c) !important; border: 0 !important; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .kitchen-waste-items { display: flex; flex-direction: column; gap: .65rem; }
+  .workspace-redesign .kitchen-waste-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem; border-radius: 1rem; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.10); }
+  .workspace-redesign .kitchen-waste-item h4 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.05rem; line-height: 1.1; font-weight: 950; }
+  .workspace-redesign .kitchen-waste-item p { color: var(--k-muted) !important; font-weight: 800; }
+  .workspace-redesign .kitchen-waste-item button { width: 2.35rem; height: 2.35rem; display: grid; place-items: center; border-radius: .8rem; color: #fecaca !important; background: rgba(239,68,68,.14) !important; border: 1px solid rgba(239,68,68,.26) !important; }
+  .workspace-redesign .kitchen-bottom-note { display: flex; align-items: center; gap: .45rem; margin-top: 1rem; color: var(--k-muted); font-size: .9rem; font-weight: 850; }
+
+  @media (min-width: 1024px) {
+    .workspace-redesign .orderpad-mobile-cart-bar { display: none; }
+  }
+
+  @media (max-width: 1180px) {
+    .workspace-redesign .orderpad-command-card,
+    .workspace-redesign .kitchen-command-center { grid-template-columns: 1fr; }
+    .workspace-redesign .orderpad-metrics,
+    .workspace-redesign .kitchen-live-tools { min-width: 0; }
+    .workspace-redesign .orderpad-layout { grid-template-columns: 1fr; }
+    .workspace-redesign .orderpad-ticket-panel { position: static; max-height: none; display: none; }
+    .workspace-redesign .orderpad-toolbar { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 820px) {
+    .workspace-redesign .orderpad-metrics,
+    .workspace-redesign .kitchen-stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .workspace-redesign .kitchen-waste-grid { grid-template-columns: 1fr; }
+    .workspace-redesign .kitchen-order-grid { grid-template-columns: 1fr; }
+    .workspace-redesign .order-cart-sheet { width: 100%; height: min(92dvh, 920px); margin-top: auto; border-radius: 1.6rem 1.6rem 0 0; border-left: 0; animation: slideInUp .28s cubic-bezier(.22,1,.36,1) both; }
+    .workspace-redesign .order-cart-overlay { align-items: flex-end; }
+  }
+
+  @media (max-width: 640px) {
+    .workspace-redesign .orderpad-screen,
+    .workspace-redesign .kitchen-screen { padding: .65rem !important; }
+    .workspace-redesign .orderpad-command-card,
+    .workspace-redesign .kitchen-command-center { border-radius: 1.25rem; padding: .85rem; }
+    .workspace-redesign .orderpad-title-block h2,
+    .workspace-redesign .kitchen-title-area h2 { font-size: 2.35rem; }
+    .workspace-redesign .orderpad-title-block p,
+    .workspace-redesign .kitchen-title-area p { font-size: .98rem; }
+    .workspace-redesign .orderpad-metrics { grid-template-columns: 1fr; }
+    .workspace-redesign .orderpad-metrics div { min-height: 6.5rem; }
+    .workspace-redesign .orderpad-menu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; padding: .75rem; }
+    .workspace-redesign .pos-menu-thumb { aspect-ratio: 1 / .82; }
+    .workspace-redesign .pos-menu-body { padding: .7rem; }
+    .workspace-redesign .pos-menu-body h3 { font-size: .96rem; min-height: 2.35rem; }
+    .workspace-redesign .pos-menu-price { font-size: 1rem; }
+    .workspace-redesign .pos-menu-add { min-height: 2.35rem; padding: 0 .7rem; font-size: .9rem; }
+    .workspace-redesign .pos-menu-add span { display: none; }
+    .workspace-redesign .pos-menu-stepper button { width: 2rem; height: 2rem; }
+    .workspace-redesign .pos-menu-stepper span { min-width: 1.55rem; font-size: .95rem; }
+    .workspace-redesign .order-cart-line { grid-template-columns: 3.6rem minmax(0,1fr); }
+    .workspace-redesign .order-cart-line-controls { grid-column: 1 / -1; grid-template-columns: 2.5rem 2.5rem 2.5rem minmax(0, 1fr); }
+    .workspace-redesign .order-cart-line-controls .order-cart-delete { grid-column: auto; width: 100%; }
+    .workspace-redesign .kitchen-stats-grid { grid-template-columns: 1fr 1fr; gap: .55rem; }
+    .workspace-redesign .kitchen-stat-card { min-height: 6.8rem; padding: .85rem; }
+    .workspace-redesign .kitchen-tab { min-width: 8.3rem; }
+    .workspace-redesign .kitchen-order-head { grid-template-columns: 1fr auto; }
+    .workspace-redesign .kitchen-order-status { grid-column: 1 / -1; grid-row: 2; }
+    .workspace-redesign .kitchen-order-head button { grid-column: 2; grid-row: 1; }
+    .workspace-redesign .kitchen-order-item { grid-template-columns: 3rem minmax(0,1fr); gap: .6rem; }
+    .workspace-redesign .kitchen-order-actions { flex-wrap: wrap; }
+    .workspace-redesign .kitchen-order-actions .print { width: 100%; }
+  }
+}
+
+@layer components {
+  /* ======================================================================
+     Owner dashboard premium redesign — Business Control Room
+     ====================================================================== */
+  .workspace-redesign .owner-dashboard-screen {
+    --owner-ink: #1c1208;
+    --owner-green: #126d52;
+    --owner-green-dark: #0d493d;
+    --owner-gold: #d4932f;
+    --owner-soft: #fff7ea;
+    --owner-card: rgba(255, 255, 255, .94);
+    --owner-border: rgba(116, 76, 31, .14);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    background:
+      radial-gradient(circle at top left, rgba(18,109,82,.16), transparent 34rem),
+      radial-gradient(circle at 88% 8%, rgba(212,147,47,.20), transparent 26rem),
+      linear-gradient(145deg, rgba(255,250,242,.96), rgba(247,235,217,.86));
+  }
+
+  .workspace-redesign .owner-dashboard-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1rem;
+    align-items: center;
+    padding: clamp(1.1rem, 2vw, 1.65rem);
+    border-radius: 1.7rem;
+    background:
+      linear-gradient(135deg, rgba(17,95,73,.98), rgba(11,61,51,.96)),
+      radial-gradient(circle at top right, rgba(255,194,92,.35), transparent 23rem);
+    color: #fff;
+    box-shadow: 0 22px 70px rgba(18, 78, 60, .22), inset 0 1px 0 rgba(255,255,255,.16);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .workspace-redesign .owner-dashboard-header::after {
+    content: '';
+    position: absolute;
+    width: 18rem;
+    height: 18rem;
+    border-radius: 999px;
+    right: -7rem;
+    top: -8rem;
+    background: rgba(255, 196, 91, .18);
+  }
+
+  .workspace-redesign .owner-dashboard-header > * { position: relative; z-index: 1; }
+  .workspace-redesign .owner-dashboard-header span {
+    display: inline-flex;
+    width: max-content;
+    padding: .48rem .78rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,.14);
+    border: 1px solid rgba(255,255,255,.18);
+    color: rgba(255,255,255,.86);
+    font-size: .78rem;
+    font-weight: 950;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+  .workspace-redesign .owner-dashboard-header h1 {
+    margin-top: .7rem;
+    font-size: clamp(2.45rem, 5vw, 5.25rem);
+    line-height: .88;
+    letter-spacing: -.07em;
+    font-weight: 950;
+    color: #fff !important;
+  }
+  .workspace-redesign .owner-dashboard-header p {
+    max-width: 940px;
+    margin-top: .72rem;
+    font-size: clamp(1rem, 1.2vw, 1.18rem);
+    line-height: 1.5;
+    color: rgba(255,255,255,.78) !important;
+    font-weight: 700;
+  }
+
+  .workspace-redesign .owner-header-actions {
+    display: grid;
+    gap: .7rem;
+    min-width: 11.5rem;
+  }
+  .workspace-redesign .owner-header-actions a {
+    min-height: 3.15rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: .85rem 1rem;
+    border-radius: 1rem;
+    color: #0d493d;
+    background: rgba(255,255,255,.94);
+    border: 1px solid rgba(255,255,255,.42);
+    font-weight: 950;
+    box-shadow: 0 12px 30px rgba(0,0,0,.13);
+  }
+  .workspace-redesign .owner-header-actions a:last-child {
+    background: rgba(255,255,255,.12);
+    color: #fff;
+  }
+
+  .workspace-redesign .owner-tabs {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: .75rem;
+  }
+  .workspace-redesign .owner-tabs button {
+    min-height: 4.6rem;
+    padding: .85rem 1rem;
+    border-radius: 1.25rem;
+    border: 1px solid var(--owner-border);
+    background: rgba(255,255,255,.78);
+    box-shadow: 0 12px 35px rgba(48,29,8,.06), inset 0 1px 0 rgba(255,255,255,.8);
+    color: rgba(28,18,8,.62);
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: .65rem;
+    align-items: center;
+    text-align: left;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .workspace-redesign .owner-tabs button svg {
+    grid-row: 1 / 3;
+    color: var(--owner-green);
+  }
+  .workspace-redesign .owner-tabs button span {
+    font-size: 1rem;
+    color: var(--owner-ink);
+    font-weight: 950;
+    line-height: 1;
+  }
+  .workspace-redesign .owner-tabs button em {
+    font-style: normal;
+    font-size: .78rem;
+    color: rgba(28,18,8,.54);
+    font-weight: 750;
+    margin-top: .25rem;
+  }
+  .workspace-redesign .owner-tabs button.is-active {
+    transform: translateY(-1px);
+    background: linear-gradient(135deg, #fff, #fff5e5);
+    border-color: rgba(18,109,82,.28);
+    box-shadow: 0 16px 44px rgba(18,109,82,.13), inset 0 1px 0 rgba(255,255,255,.86);
+  }
+
+  .workspace-redesign .owner-dashboard-body { min-height: 30rem; }
+  .workspace-redesign .owner-command-center { display: grid; gap: 1rem; }
+
+  .workspace-redesign .owner-date-switcher {
+    width: max-content;
+    max-width: 100%;
+    display: flex;
+    gap: .45rem;
+    padding: .45rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,.72);
+    border: 1px solid var(--owner-border);
+    box-shadow: 0 10px 30px rgba(48,29,8,.06);
+    overflow-x: auto;
+  }
+  .workspace-redesign .owner-date-switcher button {
+    min-height: 2.75rem;
+    padding: .75rem 1rem;
+    border-radius: 999px;
+    color: rgba(28,18,8,.62);
+    font-size: .92rem;
+    font-weight: 950;
+    white-space: nowrap;
+  }
+  .workspace-redesign .owner-date-switcher button.is-active {
+    background: var(--owner-green) !important;
+    color: #fff !important;
+    box-shadow: 0 12px 26px rgba(18,109,82,.22) !important;
+  }
+
+  .workspace-redesign .owner-command-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(18rem, .65fr);
+    gap: 1rem;
+    padding: clamp(1.15rem, 2vw, 1.65rem);
+    border-radius: 1.75rem;
+    border: 1px solid rgba(18,109,82,.16);
+    background:
+      radial-gradient(circle at top right, rgba(212,147,47,.22), transparent 23rem),
+      linear-gradient(135deg, rgba(255,255,255,.98), rgba(255,246,232,.9));
+    box-shadow: 0 20px 65px rgba(48,29,8,.08), inset 0 1px 0 rgba(255,255,255,.8);
+  }
+  .workspace-redesign .owner-kicker {
+    display: inline-flex;
+    padding: .5rem .78rem;
+    border-radius: 999px;
+    background: rgba(18,109,82,.10);
+    color: var(--owner-green);
+    border: 1px solid rgba(18,109,82,.16);
+    font-weight: 950;
+    font-size: .78rem;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+  .workspace-redesign .owner-command-hero h2 {
+    margin-top: .8rem;
+    font-size: clamp(2.6rem, 6vw, 6.4rem);
+    line-height: .82;
+    letter-spacing: -.08em;
+    font-weight: 950;
+    color: var(--owner-ink) !important;
+  }
+  .workspace-redesign .owner-command-hero p {
+    max-width: 850px;
+    margin-top: .9rem;
+    font-size: 1.08rem;
+    line-height: 1.55;
+    color: rgba(28,18,8,.62) !important;
+    font-weight: 750;
+  }
+
+  .workspace-redesign .owner-hero-ledger {
+    display: grid;
+    gap: .75rem;
+  }
+  .workspace-redesign .owner-hero-ledger div {
+    padding: 1rem;
+    border-radius: 1.25rem;
+    background: rgba(18,109,82,.075);
+    border: 1px solid rgba(18,109,82,.12);
+  }
+  .workspace-redesign .owner-hero-ledger span,
+  .workspace-redesign .owner-kpi-card span,
+  .workspace-redesign .owner-panel-head span {
+    display: block;
+    color: rgba(28,18,8,.55);
+    font-size: .78rem;
+    font-weight: 950;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .workspace-redesign .owner-hero-ledger strong {
+    display: block;
+    margin-top: .3rem;
+    color: var(--owner-ink);
+    font-size: clamp(1.55rem, 2.4vw, 2.35rem);
+    line-height: .95;
+    letter-spacing: -.045em;
+    font-weight: 950;
+  }
+
+  .workspace-redesign .owner-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: .9rem;
+  }
+  .workspace-redesign .owner-kpi-card,
+  .workspace-redesign .owner-panel {
+    border: 1px solid var(--owner-border);
+    background: var(--owner-card);
+    box-shadow: 0 18px 55px rgba(48,29,8,.07), inset 0 1px 0 rgba(255,255,255,.8);
+  }
+  .workspace-redesign .owner-kpi-card {
+    padding: 1.05rem;
+    border-radius: 1.45rem;
+    min-height: 12rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .workspace-redesign .owner-kpi-card.primary { background: linear-gradient(135deg, #126d52, #0d493d); color: #fff; }
+  .workspace-redesign .owner-kpi-card.warning { background: linear-gradient(135deg, #fff7e7, #fff); border-color: rgba(212,147,47,.22); }
+  .workspace-redesign .owner-kpi-card.primary span,
+  .workspace-redesign .owner-kpi-card.primary p { color: rgba(255,255,255,.74) !important; }
+  .workspace-redesign .owner-kpi-card.primary strong { color: #fff !important; }
+  .workspace-redesign .owner-kpi-icon {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(18,109,82,.10);
+    color: var(--owner-green);
+  }
+  .workspace-redesign .owner-kpi-card.primary .owner-kpi-icon { background: rgba(255,255,255,.14); color: #fff; }
+  .workspace-redesign .owner-kpi-card strong {
+    margin-top: .75rem;
+    display: block;
+    font-size: clamp(1.7rem, 2.6vw, 3.05rem);
+    line-height: .92;
+    letter-spacing: -.055em;
+    font-weight: 950;
+    color: var(--owner-ink);
+  }
+  .workspace-redesign .owner-kpi-card p {
+    margin-top: .45rem;
+    color: rgba(28,18,8,.56) !important;
+    font-size: .94rem;
+    font-weight: 750;
+  }
+
+  .workspace-redesign .owner-ops-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(21rem, .75fr);
+    gap: .9rem;
+  }
+  .workspace-redesign .owner-ops-grid.compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .workspace-redesign .owner-panel {
+    border-radius: 1.45rem;
+    padding: 1rem;
+    min-width: 0;
+  }
+  .workspace-redesign .owner-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .workspace-redesign .owner-panel-head h3 {
+    margin-top: .25rem;
+    font-size: clamp(1.25rem, 1.5vw, 1.7rem);
+    line-height: 1;
+    letter-spacing: -.035em;
+    font-weight: 950;
+    color: var(--owner-ink);
+  }
+  .workspace-redesign .owner-panel-head a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.55rem;
+    padding: .7rem .9rem;
+    border-radius: .9rem;
+    background: rgba(18,109,82,.10);
+    color: var(--owner-green);
+    font-size: .84rem;
+    font-weight: 950;
+    white-space: nowrap;
+  }
+
+  .workspace-redesign .owner-branch-board { display: grid; gap: .72rem; }
+  .workspace-redesign .owner-branch-row {
+    display: grid;
+    grid-template-columns: minmax(8rem, .7fr) minmax(8rem, 1fr) minmax(8rem, .55fr);
+    gap: .9rem;
+    align-items: center;
+    padding: .85rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.74);
+    border: 1px solid rgba(116,76,31,.10);
+  }
+  .workspace-redesign .owner-branch-name strong,
+  .workspace-redesign .owner-branch-money strong {
+    display: block;
+    color: var(--owner-ink);
+    font-size: 1.05rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-branch-name span,
+  .workspace-redesign .owner-branch-money span {
+    display: block;
+    margin-top: .18rem;
+    color: rgba(28,18,8,.55);
+    font-size: .82rem;
+    font-weight: 750;
+  }
+  .workspace-redesign .owner-branch-bar {
+    height: .8rem;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(18,109,82,.10);
+  }
+  .workspace-redesign .owner-branch-bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #126d52, #d4932f);
+  }
+  .workspace-redesign .owner-branch-money { text-align: right; }
+
+  .workspace-redesign .owner-alert-list,
+  .workspace-redesign .owner-payment-stack,
+  .workspace-redesign .owner-readiness-list,
+  .workspace-redesign .owner-top-items,
+  .workspace-redesign .owner-quick-actions { display: grid; gap: .72rem; }
+
+  .workspace-redesign .owner-alert-row {
+    display: grid;
+    grid-template-columns: 3.15rem 1fr;
+    gap: .75rem;
+    align-items: center;
+    padding: .78rem;
+    border-radius: 1rem;
+    border: 1px solid rgba(116,76,31,.10);
+    background: rgba(255,247,234,.74);
+  }
+  .workspace-redesign .owner-alert-row > strong {
+    width: 3.15rem;
+    height: 3.15rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 1rem;
+    font-size: 1.25rem;
+    font-weight: 950;
+    color: var(--owner-green);
+    background: rgba(18,109,82,.10);
+  }
+  .workspace-redesign .owner-alert-row.tone-danger > strong { color: #b91c1c; background: rgba(239,68,68,.12); }
+  .workspace-redesign .owner-alert-row.tone-warning > strong { color: #a16207; background: rgba(245,158,11,.14); }
+  .workspace-redesign .owner-alert-row p {
+    color: var(--owner-ink) !important;
+    font-size: .98rem;
+    font-weight: 950;
+    line-height: 1.15;
+  }
+  .workspace-redesign .owner-alert-row span {
+    display: block;
+    margin-top: .2rem;
+    color: rgba(28,18,8,.56);
+    font-size: .82rem;
+    font-weight: 750;
+  }
+
+  .workspace-redesign .owner-payment-row {
+    display: grid;
+    grid-template-columns: 2.85rem minmax(0, 1fr) auto;
+    gap: .75rem;
+    align-items: center;
+    padding: .72rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.72);
+  }
+  .workspace-redesign .owner-payment-icon {
+    width: 2.85rem;
+    height: 2.85rem;
+    border-radius: .95rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(18,109,82,.10);
+    color: var(--owner-green);
+  }
+  .workspace-redesign .owner-payment-meta span {
+    color: var(--owner-ink);
+    font-size: .95rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-payment-meta i {
+    display: block;
+    margin-top: .42rem;
+    height: .52rem;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(18,109,82,.10);
+  }
+  .workspace-redesign .owner-payment-meta b {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #126d52, #d4932f);
+  }
+  .workspace-redesign .owner-payment-row > strong {
+    color: var(--owner-ink);
+    font-size: 1rem;
+    font-weight: 950;
+    white-space: nowrap;
+  }
+
+  .workspace-redesign .owner-quick-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .workspace-redesign .owner-quick-actions a {
+    min-height: 4.1rem;
+    display: flex;
+    align-items: center;
+    gap: .72rem;
+    padding: .85rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.74);
+    color: var(--owner-ink);
+    border: 1px solid rgba(116,76,31,.10);
+    font-size: .92rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-quick-actions a svg { color: var(--owner-green); }
+
+  .workspace-redesign .owner-readiness-list > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: .75rem;
+    align-items: center;
+    padding: .78rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.72);
+  }
+  .workspace-redesign .owner-readiness-list strong,
+  .workspace-redesign .owner-top-items span {
+    display: block;
+    color: var(--owner-ink);
+    font-size: .98rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-readiness-list span,
+  .workspace-redesign .owner-footnote,
+  .workspace-redesign .owner-top-items em {
+    color: rgba(28,18,8,.56);
+    font-size: .8rem;
+    font-style: normal;
+    font-weight: 750;
+  }
+  .workspace-redesign .owner-readiness-list p {
+    min-width: 3.5rem;
+    margin: 0;
+    padding: .48rem .65rem;
+    border-radius: 999px;
+    text-align: center;
+    background: rgba(18,109,82,.09);
+    color: var(--owner-green) !important;
+    font-size: .82rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-footnote { display: block; margin-top: .85rem; }
+
+  .workspace-redesign .owner-top-items > div {
+    display: grid;
+    grid-template-columns: 2.25rem minmax(0, 1fr) auto;
+    gap: .65rem;
+    align-items: center;
+    padding: .72rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.72);
+  }
+  .workspace-redesign .owner-top-items b {
+    width: 2.25rem;
+    height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: .8rem;
+    background: rgba(18,109,82,.10);
+    color: var(--owner-green);
+    font-size: .9rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-top-items strong {
+    color: var(--owner-ink);
+    font-size: .96rem;
+    font-weight: 950;
+    white-space: nowrap;
+  }
+  .workspace-redesign .owner-top-items em { grid-column: 2 / 4; }
+
+  .workspace-redesign .owner-risk-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .72rem;
+  }
+  .workspace-redesign .owner-risk-grid div {
+    min-height: 6.3rem;
+    padding: .9rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.72);
+    border: 1px solid rgba(116,76,31,.10);
+  }
+  .workspace-redesign .owner-risk-grid strong {
+    display: block;
+    color: var(--owner-ink);
+    font-size: clamp(1.45rem, 2.2vw, 2.15rem);
+    line-height: .95;
+    letter-spacing: -.045em;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-risk-grid span {
+    display: block;
+    margin-top: .45rem;
+    color: rgba(28,18,8,.56);
+    font-size: .82rem;
+    font-weight: 850;
+  }
+
+  .workspace-redesign .owner-empty-state {
+    min-height: 11rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .55rem;
+    text-align: center;
+    padding: 1.2rem;
+    border-radius: 1rem;
+    background: rgba(255,247,234,.62);
+    color: rgba(28,18,8,.48);
+  }
+  .workspace-redesign .owner-empty-state p {
+    margin: 0;
+    color: var(--owner-ink) !important;
+    font-size: 1rem;
+    font-weight: 950;
+  }
+  .workspace-redesign .owner-empty-state span {
+    max-width: 21rem;
+    color: rgba(28,18,8,.56);
+    font-size: .88rem;
+    font-weight: 750;
+  }
+
+  @media (max-width: 1180px) {
+    .workspace-redesign .owner-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .workspace-redesign .owner-ops-grid,
+    .workspace-redesign .owner-ops-grid.compact { grid-template-columns: 1fr; }
+    .workspace-redesign .owner-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .workspace-redesign .owner-command-hero { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 720px) {
+    .workspace-redesign .owner-dashboard-screen { padding: .72rem !important; border-radius: 1.1rem; }
+    .workspace-redesign .owner-dashboard-header { grid-template-columns: 1fr; border-radius: 1.25rem; }
+    .workspace-redesign .owner-header-actions { grid-template-columns: 1fr 1fr; min-width: 0; }
+    .workspace-redesign .owner-header-actions a { min-height: 2.9rem; font-size: .82rem; }
+    .workspace-redesign .owner-tabs { display: flex; overflow-x: auto; padding-bottom: .1rem; }
+    .workspace-redesign .owner-tabs button { min-width: 9.7rem; min-height: 4.2rem; }
+    .workspace-redesign .owner-kpi-grid { grid-template-columns: 1fr; }
+    .workspace-redesign .owner-branch-row { grid-template-columns: 1fr; align-items: stretch; }
+    .workspace-redesign .owner-branch-money { text-align: left; }
+    .workspace-redesign .owner-quick-actions { grid-template-columns: 1fr; }
+    .workspace-redesign .owner-command-hero h2 { font-size: 3.15rem; }
+    .workspace-redesign .owner-payment-row { grid-template-columns: 2.85rem 1fr; }
+    .workspace-redesign .owner-payment-row > strong { grid-column: 2; }
+  }
+}

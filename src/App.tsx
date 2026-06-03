@@ -7,6 +7,7 @@ import BottomNav from '@/components/layout/BottomNav';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import ErrorBoundary from '@/components/layout/ErrorBoundary';
 import OfflineBanner from '@/components/layout/OfflineBanner';
+import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
@@ -49,6 +50,8 @@ import IncomingDebugPage   from '@/bakery/IncomingDebugPage';
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
+  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track'];
+  const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const [hydrated, setHydrated] = useState(
     () => useAuthStore.persist.hasHydrated()
@@ -76,16 +79,7 @@ function AppRoutes() {
   const getDefaultRoute = () =>
     currentUser ? getRoleDefaultPath(currentUser.role) : '/';
 
-  return (
-    <>
-      {!isLandingRoute && <Header />}
-      {/* 
-        Layout shell: pt-14 clears the fixed header (h-14 = 56px).
-        pb-24 clears the fixed bottom nav (~72px) + safe-area.
-        Pages that opt out (Landing, Login, QR, public) override via their own root div.
-        Pages that already set pt-14/pb-24 on their own root div will stack — so we
-        use a transparent wrapper that ONLY applies to authenticated/staff routes.
-      */}
+  const routes = (
       <Routes>
         {/* ── Public routes — manage their own padding ── */}
         <Route path="/"             element={<Landing />} />
@@ -132,6 +126,14 @@ function AppRoutes() {
         <Route path="/debug/incoming"      element={<IncomingDebugPage />} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
+  );
+
+  return (
+    <>
+      {!isLandingRoute && <Header />}
+      {currentUser && !isPublicRoute ? (
+        <WorkspaceChrome>{routes}</WorkspaceChrome>
+      ) : routes}
       {currentUser && <BottomNav />}
     </>
   );
