@@ -2,12 +2,9 @@ import { useState, useMemo, useEffect } from 'react';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOrderStore } from '@/stores/orderStore';
 import {
-  Search,
   ShoppingBag,
-  X,
   UtensilsCrossed,
   Sparkles,
-  Timer,
   ClipboardCheck,
   ArrowRight,
   Plus,
@@ -24,7 +21,6 @@ export default function OrderPad() {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, getCartTotal, getCartCount } = useOrderStore();
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [search, setSearch] = useState('');
   const [cartOpen, setCartOpen] = useState(false);
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
@@ -32,14 +28,9 @@ export default function OrderPad() {
   const enabledItems = useMemo(() => items.filter((item) => item.enabled), [items]);
 
   const filteredItems = useMemo(() => {
-    let f = enabledItems;
-    if (selectedCategory !== 'all') f = f.filter((item) => item.category === selectedCategory);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      f = f.filter((item) => item.name.toLowerCase().includes(q));
-    }
-    return f;
-  }, [enabledItems, selectedCategory, search]);
+    if (selectedCategory === 'all') return enabledItems;
+    return enabledItems.filter((item) => item.category === selectedCategory);
+  }, [enabledItems, selectedCategory]);
 
   const cartCount = getCartCount();
   const cartTotal = getCartTotal();
@@ -54,7 +45,6 @@ export default function OrderPad() {
         <div className="orderpad-title-block">
           <span className="orderpad-kicker"><Sparkles className="size-4" /> Rush-hour order taking</span>
           <h2>Fast Order Pad</h2>
-          <p>Select items quickly, keep the running ticket visible, then send the order to kitchen and billing in one clean flow.</p>
         </div>
         <div className="orderpad-metrics">
           <div>
@@ -82,28 +72,13 @@ export default function OrderPad() {
               <div className="orderpad-toolbar-icon"><UtensilsCrossed className="size-5" /></div>
               <div>
                 <h3>Menu catalogue</h3>
-                <p>Large cards, readable prices and single-tap add controls.</p>
               </div>
-            </div>
-            <div className="orderpad-search-box">
-              <Search className="size-5" />
-              <input
-                type="text"
-                placeholder="Search dosa, coffee, meals…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {search && (
-                <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
-                  <X className="size-4" />
-                </button>
-              )}
             </div>
           </div>
 
           <CategoryFilter
             selectedCategory={selectedCategory}
-            onSelect={(cat) => { setSelectedCategory(cat); setSearch(''); }}
+            onSelect={setSelectedCategory}
           />
 
           {filteredItems.length === 0 ? (
@@ -111,9 +86,9 @@ export default function OrderPad() {
               <EmptyState
                 icon="🍽️"
                 message="No items found"
-                sub="Try a different category or clear your search"
-                cta="Clear filters"
-                onCta={() => { setSearch(''); setSelectedCategory('all'); }}
+                sub="Try a different category"
+                cta="Show all items"
+                onCta={() => setSelectedCategory('all')}
               />
             </div>
           ) : (
@@ -125,6 +100,7 @@ export default function OrderPad() {
                   quantity={getQty(item.id)}
                   onAdd={() => addToCart(item)}
                   onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)}
+                  hideImage
                 />
               ))}
             </div>
@@ -144,7 +120,6 @@ export default function OrderPad() {
             <div className="orderpad-ticket-empty">
               <ShoppingBag className="size-12" />
               <h4>No items yet</h4>
-              <p>Add menu items from the left. The ticket stays visible for fast counter work.</p>
             </div>
           ) : (
             <div className="orderpad-ticket-list">
@@ -176,7 +151,6 @@ export default function OrderPad() {
             <button type="button" disabled={cartCount === 0} onClick={() => setCartOpen(true)}>
               <ClipboardCheck className="size-5" /> Review & send order <ArrowRight className="size-5" />
             </button>
-            <p><Timer className="size-4" /> Built for rush-hour counters with large fonts and minimum clicks.</p>
           </div>
         </aside>
       </div>
