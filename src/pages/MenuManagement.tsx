@@ -219,7 +219,7 @@ export default function MenuManagement({ embedded = false }: { embedded?: boolea
   const disabledCount = items.filter(i => !i.enabled).length;
 
   return (
-    <div className={cn(embedded ? 'pb-4' : 'min-h-screen bg-background pt-14 pb-24')}>
+    <div className={cn(embedded ? 'pb-4' : 'dashboard-screen min-h-screen bg-transparent pt-0 pb-6')}>
 
       {/* Stats row */}
       <div className="px-4 pt-4 pb-2 flex gap-3">

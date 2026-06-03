@@ -6,7 +6,7 @@ import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 
 export default function AdminInvoicesPage() {
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
         <div className="flex items-end justify-between">
           <div>

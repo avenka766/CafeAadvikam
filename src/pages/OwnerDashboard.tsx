@@ -13,10 +13,10 @@
 //   • Attendance tab: advance-to-salary ratio per employee + attendance rate
 
 import { useState, useMemo, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useMenuStore } from '@/stores/menuStore';
-import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -54,6 +54,415 @@ function KPI({
       <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
       <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1">{label}</p>
       {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+const OWNER_BRANCHES = ['VRSNB', 'SNB', 'Hosur'] as const;
+function isSameBusinessDay(isoDate: string | null | undefined, dayStart: Date) {
+  if (!isoDate) return false;
+  const d = new Date(isoDate);
+  return d >= dayStart;
+}
+
+function EmptyOwnerState({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="owner-empty-state">
+      <Layers className="size-8" />
+      <p>{title}</p>
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function OwnerCommandCenter() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
+  const { items: menuItems, loadMenu } = useMenuStore();
+  const [dateRange, setDateRange] = useState<'today' | '7d' | '30d'>('today');
+
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { OWNER_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+  const rangeStart = useMemo(() => {
+    const d = new Date();
+    if (dateRange === 'today') d.setHours(0, 0, 0, 0);
+    else if (dateRange === '7d') d.setDate(d.getDate() - 7);
+    else d.setDate(d.getDate() - 30);
+    return d;
+  }, [dateRange]);
+
+  const cafeServedInRange = useMemo(() =>
+    orders.filter(order => order.status === 'served' && new Date(order.createdAt) >= rangeStart),
+    [orders, rangeStart]);
+
+  const todayOrders = useMemo(() =>
+    orders.filter(order => isSameBusinessDay(order.createdAt, todayStart)),
+    [orders, todayStart]);
+
+  const todayServedCafe = todayOrders.filter(order => order.status === 'served');
+  const activeKitchenOrders = todayOrders.filter(order => ['pending', 'preparing', 'ready'].includes(order.status));
+  const cancelledToday = todayOrders.filter(order => order.status === 'cancelled');
+
+  const cafePayment = useMemo(() => {
+    const split = { cash: 0, upi: 0, card: 0, credit: 0, unpaid: 0 };
+    todayServedCafe.forEach(order => {
+      if (order.paymentType === 'cash') split.cash += order.total;
+      else if (order.paymentType === 'upi') split.upi += order.total;
+      else if (order.paymentType === 'card') split.card += order.total;
+      else if (order.paymentType === 'credit') split.credit += order.total;
+      else if (order.paymentType === 'part_payment' && order.paymentBreakdown) {
+        split.cash += order.paymentBreakdown.cash;
+        split.upi += order.paymentBreakdown.upi;
+        split.card += order.paymentBreakdown.card;
+      } else if (order.paymentType === 'unpaid') split.unpaid += order.total;
+    });
+    return split;
+  }, [todayServedCafe]);
+
+  const branchRows = useMemo(() => OWNER_BRANCHES.map((branch) => {
+    const todaySales = (sales[branch] || []).filter(sale => isSameBusinessDay(sale.soldAt, todayStart));
+    const rangeSales = (sales[branch] || []).filter(sale => new Date(sale.soldAt) >= rangeStart);
+    const revenue = todaySales.reduce((sum, sale) => sum + (sale.unitPrice || 0) * sale.quantitySold, 0);
+    const rangeRevenue = rangeSales.reduce((sum, sale) => sum + (sale.unitPrice || 0) * sale.quantitySold, 0);
+    const qty = todaySales.reduce((sum, sale) => sum + sale.quantitySold, 0);
+    const branchStock = stock[branch] || [];
+    const lowStock = branchStock.filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
+    const outStock = branchStock.filter(item => item.quantity <= 0).length;
+    const pendingIncoming = (incoming[branch] || []).filter(item => !item.confirmed).length;
+    const pendingAdvance = (advanceOrders[branch] || []).filter(order => order.status === 'pending').length;
+    const openCredits = (creditSales[branch] || []).filter(credit => credit.status !== 'settled');
+    const creditDue = openCredits.reduce((sum, credit) => sum + credit.creditAmount, 0);
+    const overdueCredit = openCredits.filter(credit => credit.dueDate && new Date(credit.dueDate) < todayStart).length;
+
+    const payment = { cash: 0, upi: 0, card: 0, advance: 0, credit: 0, other: 0 };
+    todaySales.forEach(sale => {
+      const amount = (sale.unitPrice || 0) * sale.quantitySold;
+      const method = (sale.paymentMethod || '').toLowerCase();
+      if (method.includes('cash')) payment.cash += amount;
+      else if (method.includes('upi')) payment.upi += amount;
+      else if (method.includes('card')) payment.card += amount;
+      else if (method.includes('advance')) payment.advance += amount;
+      else if (method.includes('credit')) payment.credit += amount;
+      else payment.other += amount;
+    });
+
+    return { branch, todaySales, rangeSales, revenue, rangeRevenue, qty, lowStock, outStock, pendingIncoming, pendingAdvance, creditDue, overdueCredit, payment };
+  }), [sales, stock, incoming, advanceOrders, creditSales, todayStart, rangeStart]);
+
+  const branchTodayRevenue = branchRows.reduce((sum, row) => sum + row.revenue, 0);
+  const branchRangeRevenue = branchRows.reduce((sum, row) => sum + row.rangeRevenue, 0);
+  const cafeRevenue = cafeServedInRange.reduce((sum, order) => sum + order.total, 0);
+  const todayCafeRevenue = todayServedCafe.reduce((sum, order) => sum + order.total, 0);
+  const ownerTotalToday = todayCafeRevenue + branchTodayRevenue;
+  const ownerRangeRevenue = cafeRevenue + branchRangeRevenue;
+  const ownerOrdersToday = todayServedCafe.length + branchRows.reduce((sum, row) => sum + row.todaySales.length, 0);
+  const avgTicketToday = ownerOrdersToday > 0 ? Math.round(ownerTotalToday / ownerOrdersToday) : 0;
+  const leadingBranch = branchRows.reduce((best, row) => row.revenue > best.revenue ? row : best, branchRows[0]);
+
+  const totalLowStock = branchRows.reduce((sum, row) => sum + row.lowStock, 0);
+  const totalOutStock = branchRows.reduce((sum, row) => sum + row.outStock, 0);
+  const pendingIncoming = branchRows.reduce((sum, row) => sum + row.pendingIncoming, 0);
+  const pendingAdvance = branchRows.reduce((sum, row) => sum + row.pendingAdvance, 0);
+  const overdueCreditCount = branchRows.reduce((sum, row) => sum + row.overdueCredit, 0);
+  const creditExposure = branchRows.reduce((sum, row) => sum + row.creditDue, 0);
+  const enabledMenu = menuItems.filter(item => item.enabled).length;
+  const disabledMenu = menuItems.length - enabledMenu;
+
+  const paymentRows = [
+    { label: 'Cash in hand', value: cafePayment.cash + branchRows.reduce((sum, row) => sum + row.payment.cash, 0), icon: <Banknote className="size-5" /> },
+    { label: 'UPI received', value: cafePayment.upi + branchRows.reduce((sum, row) => sum + row.payment.upi, 0), icon: <Smartphone className="size-5" /> },
+    { label: 'Card received', value: cafePayment.card + branchRows.reduce((sum, row) => sum + row.payment.card, 0), icon: <CreditCard className="size-5" /> },
+    { label: 'Credit / unpaid', value: cafePayment.credit + cafePayment.unpaid + branchRows.reduce((sum, row) => sum + row.payment.credit, 0), icon: <IndianRupee className="size-5" /> },
+  ];
+  const paymentTotal = Math.max(paymentRows.reduce((sum, row) => sum + row.value, 0), 1);
+
+  const dailyPulse = useMemo(() => {
+    const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
+    return Array.from({ length: days }, (_, index) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (days - 1 - index));
+      const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+      const dateText = d.toDateString();
+      const cafe = orders
+        .filter(order => order.status === 'served' && new Date(order.createdAt).toDateString() === dateText)
+        .reduce((sum, order) => sum + order.total, 0);
+      const bakery = OWNER_BRANCHES.reduce((sum, branch) => sum + (sales[branch] || [])
+        .filter(sale => new Date(sale.soldAt).toDateString() === dateText)
+        .reduce((branchSum, sale) => branchSum + (sale.unitPrice || 0) * sale.quantitySold, 0), 0);
+      return { date: label, cafe, bakery, total: cafe + bakery };
+    });
+  }, [dateRange, orders, sales]);
+
+  const topCafeItems = useMemo(() => {
+    const map = new Map<string, { qty: number; revenue: number }>();
+    todayServedCafe.forEach(order => order.items.forEach(item => {
+      const existing = map.get(item.menuItem.name) || { qty: 0, revenue: 0 };
+      existing.qty += item.quantity;
+      existing.revenue += item.menuItem.price * item.quantity;
+      map.set(item.menuItem.name, existing);
+    }));
+    return [...map.entries()]
+      .map(([name, value]) => ({ name, ...value }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+  }, [todayServedCafe]);
+
+  const alerts = [
+    totalOutStock > 0 ? { title: 'Out-of-stock items', value: String(totalOutStock), note: 'Needs purchase / production planning', tone: 'danger' } : null,
+    overdueCreditCount > 0 ? { title: 'Overdue credit bills', value: String(overdueCreditCount), note: `${formatCurrency(creditExposure)} open exposure`, tone: 'danger' } : null,
+    activeKitchenOrders.length > 0 ? { title: 'Live kitchen queue', value: String(activeKitchenOrders.length), note: 'Pending, cooking or ready orders', tone: 'warning' } : null,
+    pendingAdvance > 0 ? { title: 'Advance orders pending', value: String(pendingAdvance), note: 'Track delivery and balance collection', tone: 'warning' } : null,
+    totalLowStock > 0 ? { title: 'Low stock warnings', value: String(totalLowStock), note: 'Below branch threshold', tone: 'warning' } : null,
+    disabledMenu > 0 ? { title: 'Menu items disabled', value: String(disabledMenu), note: 'Review item availability', tone: 'neutral' } : null,
+  ].filter((alert): alert is { title: string; value: string; note: string; tone: string } => alert !== null);
+
+  return (
+    <div className="owner-command-center">
+      <div className="owner-date-switcher" aria-label="Owner dashboard date range">
+        {(['today', '7d', '30d'] as const).map(range => (
+          <button key={range} type="button" onClick={() => setDateRange(range)} className={cn(dateRange === range && 'is-active')}>
+            {range === 'today' ? 'Today' : range === '7d' ? 'Last 7 Days' : 'Last 30 Days'}
+          </button>
+        ))}
+      </div>
+
+      <section className="owner-command-hero">
+        <div>
+          <span className="owner-kicker">Owner Command Center</span>
+          <h2>{formatCurrency(dateRange === 'today' ? ownerTotalToday : ownerRangeRevenue)}</h2>
+          <p>
+            Complete business view across Cafe, VRSNB, SNB and Hosur with cash, UPI, card, credit, kitchen, branch stock and pending action visibility.
+          </p>
+        </div>
+        <div className="owner-hero-ledger">
+          <div>
+            <span>Today collection</span>
+            <strong>{formatCurrency(ownerTotalToday)}</strong>
+          </div>
+          <div>
+            <span>Orders / bills</span>
+            <strong>{ownerOrdersToday}</strong>
+          </div>
+          <div>
+            <span>Avg ticket</span>
+            <strong>{formatCurrency(avgTicketToday)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="owner-kpi-grid">
+        <div className="owner-kpi-card primary">
+          <div className="owner-kpi-icon"><IndianRupee className="size-6" /></div>
+          <span>Total Sales</span>
+          <strong>{formatCurrency(dateRange === 'today' ? ownerTotalToday : ownerRangeRevenue)}</strong>
+          <p>Cafe + all bakery branches</p>
+        </div>
+        <div className="owner-kpi-card">
+          <div className="owner-kpi-icon"><Store className="size-6" /></div>
+          <span>Top Branch Today</span>
+          <strong>{leadingBranch.revenue > 0 ? leadingBranch.branch : 'No sales'}</strong>
+          <p>{formatCurrency(leadingBranch.revenue)} revenue</p>
+        </div>
+        <div className="owner-kpi-card warning">
+          <div className="owner-kpi-icon"><AlertTriangle className="size-6" /></div>
+          <span>Action Alerts</span>
+          <strong>{alerts.length}</strong>
+          <p>{totalOutStock} out of stock · {overdueCreditCount} overdue credit</p>
+        </div>
+        <div className="owner-kpi-card">
+          <div className="owner-kpi-icon"><Utensils className="size-6" /></div>
+          <span>Menu Health</span>
+          <strong>{menuItems.length > 0 ? `${Math.round((enabledMenu / menuItems.length) * 100)}%` : '0%'}</strong>
+          <p>{enabledMenu} active · {disabledMenu} disabled</p>
+        </div>
+      </section>
+
+      <section className="owner-ops-grid">
+        <div className="owner-panel owner-panel-wide">
+          <div className="owner-panel-head">
+            <div>
+              <span>Branch Performance</span>
+              <h3>Today by outlet</h3>
+            </div>
+            <Link to="/sales-report">Open reports</Link>
+          </div>
+          <div className="owner-branch-board">
+            {[{ branch: 'Cafe' as const, revenue: todayCafeRevenue, qty: todayServedCafe.length, lowStock: 0, outStock: 0, pendingAdvance: activeKitchenOrders.length }, ...branchRows].map(row => {
+              const maxRevenue = Math.max(ownerTotalToday, 1);
+              const pct = Math.round((row.revenue / maxRevenue) * 100);
+              return (
+                <div key={row.branch} className="owner-branch-row">
+                  <div className="owner-branch-name">
+                    <strong>{row.branch}</strong>
+                    <span>{row.qty} {row.branch === 'Cafe' ? 'orders' : 'items sold'}</span>
+                  </div>
+                  <div className="owner-branch-bar"><i style={{ width: `${Math.max(pct, row.revenue > 0 ? 6 : 0)}%` }} /></div>
+                  <div className="owner-branch-money">
+                    <strong>{formatCurrency(row.revenue)}</strong>
+                    {'outStock' in row && row.outStock > 0 && <span>{row.outStock} stock issue</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="owner-panel owner-panel-alerts">
+          <div className="owner-panel-head">
+            <div>
+              <span>Owner attention</span>
+              <h3>Pending actions</h3>
+            </div>
+          </div>
+          {alerts.length > 0 ? (
+            <div className="owner-alert-list">
+              {alerts.slice(0, 6).map(alert => (
+                <div key={alert.title} className={cn('owner-alert-row', `tone-${alert.tone}`)}>
+                  <strong>{alert.value}</strong>
+                  <div>
+                    <p>{alert.title}</p>
+                    <span>{alert.note}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyOwnerState title="No critical alerts" message="Stock, credit and kitchen queues look clean right now." />
+          )}
+        </div>
+      </section>
+
+      <section className="owner-ops-grid compact">
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Payment Control</span>
+              <h3>Cash · UPI · Card</h3>
+            </div>
+          </div>
+          <div className="owner-payment-stack">
+            {paymentRows.map(row => {
+              const pct = Math.round((row.value / paymentTotal) * 100);
+              return (
+                <div key={row.label} className="owner-payment-row">
+                  <div className="owner-payment-icon">{row.icon}</div>
+                  <div className="owner-payment-meta">
+                    <span>{row.label}</span>
+                    <i><b style={{ width: `${pct}%` }} /></i>
+                  </div>
+                  <strong>{formatCurrency(row.value)}</strong>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Sales Pulse</span>
+              <h3>{dateRange === 'today' ? 'Today split' : 'Revenue trend'}</h3>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={dailyPulse}>
+              <defs>
+                <linearGradient id="ownerTotalGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#126d52" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="#126d52" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" />
+              <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `₹${Math.round(Number(v) / 1000)}k`} />
+              <Tooltip formatter={(v: number) => formatCurrency(v)} />
+              <Area type="monotone" dataKey="total" stroke="#126d52" strokeWidth={3} fill="url(#ownerTotalGrad)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Fast decisions</span>
+              <h3>Quick actions</h3>
+            </div>
+          </div>
+          <div className="owner-quick-actions">
+            <Link to="/billing"><Banknote className="size-5" />Billing Counter</Link>
+            <Link to="/kitchen"><Utensils className="size-5" />Kitchen Live Board</Link>
+            <Link to="/order-pad"><ShoppingBag className="size-5" />Order Taker</Link>
+            <Link to="/menu-management"><Layers className="size-5" />Menu Control</Link>
+            <Link to="/attendance-salary"><Users className="size-5" />Staff Payroll</Link>
+            <Link to="/owner"><BarChart3 className="size-5" />Owner Hub</Link>
+          </div>
+        </div>
+      </section>
+
+      <section className="owner-ops-grid compact">
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Stock & Production</span>
+              <h3>Branch readiness</h3>
+            </div>
+          </div>
+          <div className="owner-readiness-list">
+            {branchRows.map(row => (
+              <div key={row.branch}>
+                <div>
+                  <strong>{row.branch}</strong>
+                  <span>{row.pendingIncoming} incoming · {row.pendingAdvance} advance</span>
+                </div>
+                <p>{row.outStock} out</p>
+                <p>{row.lowStock} low</p>
+              </div>
+            ))}
+          </div>
+          {pendingIncoming > 0 && <p className="owner-footnote">{pendingIncoming} incoming stock entries are waiting for branch confirmation.</p>}
+        </div>
+
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Best sellers</span>
+              <h3>Cafe today</h3>
+            </div>
+          </div>
+          {topCafeItems.length > 0 ? (
+            <div className="owner-top-items">
+              {topCafeItems.map((item, index) => (
+                <div key={item.name}>
+                  <b>{index + 1}</b>
+                  <span>{item.name}</span>
+                  <strong>{formatCurrency(item.revenue)}</strong>
+                  <em>{item.qty} sold</em>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyOwnerState title="No served cafe orders yet" message="Top sellers will appear once billing is completed." />
+          )}
+        </div>
+
+        <div className="owner-panel">
+          <div className="owner-panel-head">
+            <div>
+              <span>Risk board</span>
+              <h3>Protect profit</h3>
+            </div>
+          </div>
+          <div className="owner-risk-grid">
+            <div><strong>{formatCurrency(creditExposure)}</strong><span>Open credit</span></div>
+            <div><strong>{pendingAdvance}</strong><span>Advance orders</span></div>
+            <div><strong>{cancelledToday.length}</strong><span>Cancelled today</span></div>
+            <div><strong>{totalLowStock + totalOutStock}</strong><span>Stock warnings</span></div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -753,19 +1162,15 @@ function WasteLogsTab() {
     return map;
   }, [menuItems]);
 
-  const estimateCost = (foodItem: string, quantity: string): number | null => {
-    const price = priceMap.get(foodItem.toLowerCase().trim());
-    if (!price) return null;
-    // Try to parse a numeric quantity (e.g. "2 plates", "3", "500g" → 0.5)
-    const num = parseFloat(quantity);
-    if (isNaN(num) || num <= 0) return null;
-    // If quantity string contains 'g' treat as grams → kg
-    if (/g\b/i.test(quantity) && !/kg/i.test(quantity)) return price * (num / 1000);
-    return price * num;
-  };
-
   const enriched = useMemo(() =>
-    entries.map(e => ({ ...e, estimatedCost: estimateCost(e.food_item, e.quantity) })),
+    entries.map(e => {
+      const price = priceMap.get(e.food_item.toLowerCase().trim());
+      if (!price) return { ...e, estimatedCost: null as number | null };
+      const num = parseFloat(e.quantity);
+      if (isNaN(num) || num <= 0) return { ...e, estimatedCost: null as number | null };
+      const estimatedCost = /g\b/i.test(e.quantity) && !/kg/i.test(e.quantity) ? price * (num / 1000) : price * num;
+      return { ...e, estimatedCost };
+    }),
     [entries, priceMap]);
 
   const totalEstimatedCost = enriched.reduce((s, e) => s + (e.estimatedCost ?? 0), 0);
@@ -908,39 +1313,47 @@ function WasteLogsTab() {
 
 // ── Main Export ───────────────────────────────────────────────────────────────
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<'sales' | 'attendance' | 'credit' | 'waste'>('sales');
+  const [tab, setTab] = useState<'command' | 'sales' | 'attendance' | 'credit' | 'waste'>('command');
 
   const tabs = [
-    { id: 'sales',      label: 'Sales',      icon: <BarChart3     className="size-3.5" /> },
-    { id: 'attendance', label: 'Attendance', icon: <CalendarCheck className="size-3.5" /> },
-    { id: 'credit',     label: 'Credit',     icon: <IndianRupee   className="size-3.5" /> },
-    { id: 'waste',      label: 'Waste',      icon: <Trash2        className="size-3.5" /> },
+    { id: 'command',    label: 'Command',    icon: <Building2     className="size-4" />, hint: 'Owner cockpit' },
+    { id: 'sales',      label: 'Sales',      icon: <BarChart3     className="size-4" />, hint: 'Revenue & payments' },
+    { id: 'attendance', label: 'Staff',      icon: <CalendarCheck className="size-4" />, hint: 'Payroll & advances' },
+    { id: 'credit',     label: 'Credit',     icon: <IndianRupee   className="size-4" />, hint: 'Receivables' },
+    { id: 'waste',      label: 'Waste',      icon: <Trash2        className="size-4" />, hint: 'Loss control' },
   ] as const;
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
-      <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-        <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Owner Portal</p>
-        <h1 className="font-display text-3xl font-bold text-foreground leading-none">Overview</h1>
-      </div>
+    <div className="owner-dashboard-screen dashboard-screen min-h-screen bg-transparent">
+      <header className="owner-dashboard-header">
+        <div>
+          <span>Owner Portal</span>
+          <h1>Business Control Room</h1>
+          <p>One premium dashboard for revenue, cash, UPI, card, branch stock, credit, staff, kitchen and daily decisions.</p>
+        </div>
+        <div className="owner-header-actions">
+          <Link to="/sales-report">Sales Report</Link>
+          <Link to="/admin-dashboard">Admin Center</Link>
+        </div>
+      </header>
 
-      {/* Tab bar */}
-      <div className="mx-4 my-4 flex gap-1 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
+      <nav className="owner-tabs" aria-label="Owner dashboard sections">
         {tabs.map(t => (
           <button
             key={t.id}
+            type="button"
             onClick={() => setTab(t.id)}
-            className={cn(
-              'flex-1 py-2 rounded-xl text-xs font-body font-semibold transition-all duration-200 flex items-center justify-center gap-1',
-              tab === t.id ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
+            className={cn(tab === t.id && 'is-active')}
           >
-            {t.icon}{t.label}
+            {t.icon}
+            <span>{t.label}</span>
+            <em>{t.hint}</em>
           </button>
         ))}
-      </div>
+      </nav>
 
-      <div className="px-4 space-y-4">
+      <div className="owner-dashboard-body">
+        {tab === 'command'    && <OwnerCommandCenter />}
         {tab === 'sales'      && <SalesOverviewTab />}
         {tab === 'attendance' && <AttendanceSalaryTab />}
         {tab === 'credit'     && <OwnerCreditTab />}

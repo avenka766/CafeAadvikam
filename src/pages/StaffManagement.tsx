@@ -202,7 +202,7 @@ export default function StaffManagement() {
 
   // ─────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       {/* ── Header ── */}
       <div className="px-4 pt-4 pb-4 border-b border-border flex items-center justify-between">
         <div>

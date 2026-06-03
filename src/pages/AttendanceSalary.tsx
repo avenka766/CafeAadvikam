@@ -1691,7 +1691,7 @@ export default function AttendanceSalary() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-6">
       {/* Header */}
       <div className="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div>

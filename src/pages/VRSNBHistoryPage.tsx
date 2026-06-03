@@ -48,7 +48,7 @@ export default function VRSNBHistoryPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       <div className="px-4 pt-4 pb-4 border-b border-border">
         <div className="flex items-center gap-2 mb-4">
           <History className="size-5 text-primary" />

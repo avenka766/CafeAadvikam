@@ -406,7 +406,7 @@ export default function SalesReport() {
   };
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
 
       {/* ── Page title ── */}
       <div className="px-4 pt-4 pb-3 border-b border-border flex items-center gap-2">
