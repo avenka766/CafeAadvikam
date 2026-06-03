@@ -1027,7 +1027,7 @@
     top: 0;
     z-index: 5;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 480px);
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
     align-items: center;
     padding: 1rem;
@@ -1096,12 +1096,17 @@
   .workspace-redesign .order-category-rail {
     display: flex;
     gap: .65rem;
+    max-width: 100%;
     padding: .95rem 1rem;
     overflow-x: auto;
-    scrollbar-width: none;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
     border-bottom: 1px solid rgba(107,72,29,.10);
   }
-  .workspace-redesign .order-category-rail::-webkit-scrollbar { display: none; }
+  .workspace-redesign .order-category-rail::-webkit-scrollbar { height: .45rem; }
+  .workspace-redesign .order-category-rail::-webkit-scrollbar-thumb { background: rgba(107,72,29,.25); border-radius: 999px; }
   .workspace-redesign .order-category-chip {
     min-height: 3rem;
     display: inline-flex;
@@ -1135,7 +1140,17 @@
   .workspace-redesign .order-category-chip-active .order-category-icon { background: rgba(255,255,255,.18); }
   .workspace-redesign .order-category-name { font-size: 1rem; font-weight: 950; white-space: nowrap; }
 
+  .workspace-redesign .orderpad-catalog-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 2rem);
+    min-height: 0;
+  }
+
   .workspace-redesign .orderpad-menu-grid {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
     gap: .9rem;
@@ -1154,6 +1169,9 @@
   }
   .workspace-redesign .pos-menu-card:hover { transform: translateY(-2px); box-shadow: 0 22px 48px rgba(48,29,8,.11); }
   .workspace-redesign .pos-menu-card-selected { border-color: rgba(17,104,79,.42); box-shadow: 0 18px 42px rgba(17,104,79,.12), 0 0 0 3px rgba(17,104,79,.10); }
+  .workspace-redesign .pos-menu-card-no-image { display: flex; min-height: 9rem; }
+  .workspace-redesign .pos-menu-card-no-image .pos-menu-body { flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
+  .workspace-redesign .pos-menu-card-no-image .pos-menu-body h3 { min-height: auto; -webkit-line-clamp: 3; }
   .workspace-redesign .pos-menu-card-disabled { opacity: .52; pointer-events: none; }
   .workspace-redesign .pos-menu-thumb {
     position: relative;
@@ -1550,6 +1568,8 @@
     .workspace-redesign .orderpad-metrics,
     .workspace-redesign .kitchen-live-tools { min-width: 0; }
     .workspace-redesign .orderpad-layout { grid-template-columns: 1fr; }
+    .workspace-redesign .orderpad-catalog-panel { max-height: none; }
+    .workspace-redesign .orderpad-menu-grid { overflow-y: visible; }
     .workspace-redesign .orderpad-ticket-panel { position: static; max-height: none; display: none; }
     .workspace-redesign .orderpad-toolbar { grid-template-columns: 1fr; }
   }
