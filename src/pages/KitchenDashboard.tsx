@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { formatTime, cn } from '@/lib/utils';
@@ -37,7 +38,6 @@ const TABS: { key: KitchenTab; label: string; hint: string }[] = [
   { key: 'preparing', label: 'Cooking', hint: 'In production' },
   { key: 'ready', label: 'Ready', hint: 'Pickup / serve' },
   { key: 'cancelled', label: 'Cancelled', hint: 'Stop / verify' },
-  { key: 'waste', label: 'Wastage', hint: 'Log today' },
 ];
 
 interface WasteEntry {
@@ -222,6 +222,8 @@ ${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6
 }
 
 export default function KitchenDashboard() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const wasteLogRequested = searchParams.get('tab') === 'waste';
   const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
@@ -231,7 +233,7 @@ export default function KitchenDashboard() {
       polling: s.polling,
     }))
   );
-  const [activeTab, setActiveTab] = useState<KitchenTab>('active');
+  const [activeTab, setActiveTab] = useState<KitchenTab>(() => wasteLogRequested ? 'waste' : 'active');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<Record<string, string>>({});
@@ -240,6 +242,14 @@ export default function KitchenDashboard() {
   const lastCancelledIdsRef = useRef<Set<string>>(new Set());
   const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
   const seededRef = useRef(false);
+
+  useEffect(() => {
+    if (wasteLogRequested) {
+      setActiveTab('waste');
+      return;
+    }
+    setActiveTab(prev => prev === 'waste' ? 'active' : prev);
+  }, [wasteLogRequested]);
 
   useEffect(() => {
     startPolling(1);
@@ -336,6 +346,11 @@ export default function KitchenDashboard() {
     return 0;
   };
 
+  const handleTabChange = (tab: KitchenTab) => {
+    setActiveTab(tab);
+    if (searchParams.get('tab') === 'waste') setSearchParams({}, { replace: true });
+  };
+
   const handleStatusUpdate = async (orderId: string, status: OrderStatus) => {
     setUpdatingId(orderId);
     setStatusError(prev => ({ ...prev, [orderId]: '' }));
@@ -398,7 +413,7 @@ export default function KitchenDashboard() {
           const isActive = activeTab === tab.key;
           const count = tabCount(tab.key);
           return (
-            <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key)} className={cn('kitchen-tab', isActive && 'active')} data-tab={tab.key}>
+            <button key={tab.key} type="button" onClick={() => handleTabChange(tab.key)} className={cn('kitchen-tab', isActive && 'active')} data-tab={tab.key}>
               <span>{tab.label}</span>
               <small>{tab.hint}</small>
               {count > 0 && <strong>{count}</strong>}

@@ -266,9 +266,6 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
 const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
   { key: 'all',        label: 'All',        dotColor: 'bg-foreground' },
   { key: 'pending',    label: 'New',        dotColor: 'bg-amber-500' },
-  { key: 'preparing',  label: 'Preparing',  dotColor: 'bg-blue-500' },
-  { key: 'ready',      label: 'Ready',      dotColor: 'bg-emerald-500' },
-  { key: 'served',     label: 'Served',     dotColor: 'bg-gray-400' },
   { key: 'cancelled',  label: 'Cancelled',  dotColor: 'bg-red-500' },
 ];
 
@@ -276,6 +273,134 @@ const QUICK_NOTES = [
   'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
   'Less oil', 'Extra chutney', 'Pack separately', 'Allergy – check ingredients',
 ];
+
+
+const PAYMENT_LABELS_PRINT: Record<string, string> = {
+  cash: 'Cash',
+  upi: 'UPI',
+  card: 'Card',
+  part_payment: 'Split Payment',
+  advance: 'Advance',
+  credit: 'Credit',
+  unpaid: 'Unpaid',
+};
+
+function safeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function printCounterSlip(title: string, bodyHtml: string) {
+  const win = window.open('', '_blank', 'width=420,height=720');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
+<style>
+@page{margin:5mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.25}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#555}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:1px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}table{width:100%;border-collapse:collapse}td,th{padding:2px 1px;vertical-align:top}th{text-align:left}.pill{border:1px solid #000;border-radius:999px;padding:2px 6px;display:inline-block;font-weight:900}.total{font-size:16px;font-weight:900}
+</style></head><body>${bodyHtml}</body></html>`);
+  win.document.close();
+  setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
+}
+
+function orderItemsRows(order: Pick<Order, 'items'>): string {
+  return order.items.map((ci) => `
+    <tr>
+      <td>${safeHtml(ci.menuItem.name)}</td>
+      <td class="c">${ci.quantity}</td>
+      <td class="r">${safeHtml(formatCurrency(ci.menuItem.price * ci.quantity))}</td>
+    </tr>
+  `).join('');
+}
+
+function dateTimeLabel(value?: string): string {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function printPaidBill(order: Order) {
+  const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
+  const parcelCharges = order.parcelCharges ?? 0;
+  printCounterSlip(`Bill ${order.orderNumber}`, `
+    <div class="c">
+      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="muted">PAID BILL</div>
+      <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
+    </div>
+    <div class="dash"></div>
+    <div class="row"><span>Date</span><span class="b">${safeHtml(dateTimeLabel(order.createdAt))}</span></div>
+    <div class="row"><span>Type</span><span class="b">${order.orderType === 'dine_in' ? `Table ${order.tableNumber ?? '-'}` : 'Takeaway'}</span></div>
+    <div class="row"><span>Cashier</span><span class="b">${safeHtml(order.billedBy || order.createdBy)}</span></div>
+    ${order.customerName ? `<div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName)}</span></div>` : ''}
+    <div class="dash"></div>
+    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
+    <div class="solid"></div>
+    ${parcelCharges > 0 ? `<div class="row"><span>Parcel</span><span class="b">${safeHtml(formatCurrency(parcelCharges))}</span></div>` : ''}
+    <div class="row total"><span>Total</span><span>${safeHtml(formatCurrency(order.total))}</span></div>
+    <div class="row"><span>Payment</span><span class="b">${safeHtml(paidBy)}</span></div>
+    <div class="dash"></div>
+    <div class="c b">Thank you, visit again</div>
+  `);
+}
+
+function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  printCounterSlip(`Sales Order ${order.orderNumber}`, `
+    <div class="c">
+      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="muted">SALES ORDER SLIP</div>
+      <div class="pill mt">SO #${String(order.orderNumber).padStart(4, '0')}</div>
+    </div>
+    <div class="dash"></div>
+    <div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile</span><span class="b">${safeHtml(mobile)}</span></div>
+    <div class="row"><span>Order Date</span><span class="b">${safeHtml(orderDate || new Date(order.createdAt).toLocaleDateString('en-IN'))}</span></div>
+    <div class="row"><span>Delivery</span><span class="b">${safeHtml(dateTimeLabel(order.deliveryDate))}</span></div>
+    <div class="row"><span>Bill Person</span><span class="b">${safeHtml(billPerson || order.billedBy || order.createdBy)}</span></div>
+    <div class="row"><span>Advance Mode</span><span class="b">${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</span></div>
+    <div class="dash"></div>
+    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
+    <div class="solid"></div>
+    <div class="row"><span>Order Value</span><span class="b">${safeHtml(formatCurrency(fullAmount))}</span></div>
+    <div class="row"><span>Advance Paid</span><span class="b">${safeHtml(formatCurrency(advance))}</span></div>
+    <div class="row total"><span>Balance</span><span>${safeHtml(formatCurrency(balance))}</span></div>
+    <div class="dash"></div>
+    <div class="c b">Carry this slip during delivery</div>
+  `);
+}
+
+function printAdvanceClosureBill(order: Order, balancePaymentType: string, balancePaidBy: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const paidNow = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  printCounterSlip(`Advance Closure ${order.orderNumber}`, `
+    <div class="c">
+      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="muted">ADVANCE CLOSURE BILL</div>
+      <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
+    </div>
+    <div class="dash"></div>
+    <div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Delivery</span><span class="b">${safeHtml(dateTimeLabel(order.deliveryDate))}</span></div>
+    <div class="row"><span>Billed By</span><span class="b">${safeHtml(balancePaidBy)}</span></div>
+    <div class="dash"></div>
+    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
+    <div class="solid"></div>
+    <div class="row"><span>Full Bill</span><span class="b">${safeHtml(formatCurrency(fullAmount))}</span></div>
+    <div class="row"><span>Advance Paid</span><span class="b">${safeHtml(formatCurrency(advance))}</span></div>
+    <div class="row total"><span>Paid Now</span><span>${safeHtml(formatCurrency(paidNow))}</span></div>
+    <div class="row"><span>Paid Now Mode</span><span class="b">${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</span></div>
+    <div class="row"><span>Balance</span><span class="b">${safeHtml(formatCurrency(0))}</span></div>
+    <div class="dash"></div>
+    <div class="c b">Paid in full</div>
+  `);
+}
 
 type SourceFilter = 'all' | 'staff' | 'qr';
 
@@ -301,6 +426,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
     setCollecting(true);
     try {
       await collectBalance(order.id, collectMethod, billedBy);
+      printAdvanceClosureBill(order, collectMethod, billedBy);
       setShowCollect(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to collect payment. Please try again.';
@@ -564,9 +690,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const [customError, setCustomError] = useState('');
 
   // Order meta
+  const todayInput = new Date().toISOString().split('T')[0];
+  const defaultBillPerson = currentUser?.displayName || currentUser?.username || '';
   const [customerName, setCustomerName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
+  const [orderDate, setOrderDate]       = useState(todayInput);
   const [notes, setNotes]               = useState('');
   const [deliveryDate, setDeliveryDate] = useState('');
+  const [billPerson, setBillPerson]     = useState(defaultBillPerson);
   const [advanceAmt, setAdvanceAmt]     = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [isFullPayment, setIsFullPayment] = useState(false);
@@ -621,7 +752,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!deliveryDate) { setAdvanceError('Delivery date is required'); return; }
+    if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
+    if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
+    if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
+    if (!billPerson.trim()) { setAdvanceError('Bill person is required'); return; }
     if (!isFullPayment) {
       const amt = parseFloat(advanceAmt);
       if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
@@ -641,18 +775,26 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     await new Promise(r => setTimeout(r, 50));
 
     try {
-      await submitAdvanceOrder({
+      const advanceNotes = [
+        `Mobile: ${mobileNumber.trim()}`,
+        `Order date: ${orderDate}`,
+        `Bill person: ${billPerson.trim()}`,
+        notes.trim() ? `Notes: ${notes.trim()}` : '',
+      ].filter(Boolean).join(' | ');
+      const orderId = await submitAdvanceOrder({
         orderType: 'takeaway',
-        notes: notes || undefined,
-        customerName: customerName || undefined,
-        createdBy: currentUser.username,
+        notes: advanceNotes || undefined,
+        customerName: customerName.trim(),
+        createdBy: billPerson.trim() || currentUser.username,
         advanceAmount: isFullPayment ? total : parseFloat(advanceAmt),
         advancePaidBy: advanceMethod,
         deliveryDate,
         isFullPayment,
       });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printAdvanceSalesSlip(savedOrder, mobileNumber.trim(), orderDate, billPerson.trim());
       setShowSuccess(true);
-      setNotes(''); setCustomerName(''); setDeliveryDate('');
+      setNotes(''); setCustomerName(''); setMobileNumber(''); setOrderDate(todayInput); setDeliveryDate(''); setBillPerson(defaultBillPerson);
       setAdvanceAmt(''); setAdvanceMethod(null); setIsFullPayment(false);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
@@ -672,7 +814,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
         <div>
           <h2 className="font-display text-2xl font-bold text-foreground">Advance Recorded!</h2>
-          <p className="text-muted-foreground font-body mt-1 text-sm">Order saved. Balance pending collection.</p>
+          <p className="text-muted-foreground font-body mt-1 text-sm">Sales order slip generated. Balance pending collection.</p>
         </div>
       </div>
     );
@@ -747,7 +889,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <div className="grid grid-cols-3 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
                   ))}
                 </div>
               )}
@@ -927,28 +1069,48 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         <div className="border-t border-border shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
-              <div className="relative">
-                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name *" value={customerName} onChange={e => { setCustomerName(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="tel" placeholder="Mobile number *" value={mobileNumber} onChange={e => { setMobileNumber(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
               </div>
 
-              {/* Delivery Date — MANDATORY */}
-              <div>
-                <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
-                  <Calendar className="size-3" /> Delivery Date *
-                </label>
-                <input
-                  type="date"
-                  value={deliveryDate}
-                  min={new Date().toISOString().split('T')[0]}
-                  onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
-                  className={cn(
-                    'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
-                    !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
-                  )}
-                />
-                {!deliveryDate && <p className="text-[10px] font-body text-red-500 mt-1 flex items-center gap-1"><AlertCircle className="size-3" />Required — when will the order be delivered?</p>}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Order Date
+                  </label>
+                  <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
+                    className="w-full px-3 py-3 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Delivery Date/Time *
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={deliveryDate}
+                    min={new Date().toISOString().slice(0, 16)}
+                    onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
+                    className={cn(
+                      'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
+                      !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div className="relative">
+                <UserCheck className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <input type="text" placeholder="Bill person *" value={billPerson} onChange={e => { setBillPerson(e.target.value); setAdvanceError(''); }}
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
 
               <div className="relative">
@@ -1091,6 +1253,8 @@ function NewBillPanel() {
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [showBillModal, setShowBillModal] = useState(false);
+  const [billMethod, setBillMethod] = useState<'cash' | 'upi' | 'card'>('cash');
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
@@ -1148,6 +1312,17 @@ function NewBillPanel() {
     else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
   };
 
+  const openBillModal = () => {
+    if (orderType === 'dine_in' && !tableNumber) {
+      setTableError(true);
+      setSubmitError('Select table before billing.');
+      return;
+    }
+    setTableError(false);
+    setSubmitError('');
+    setShowBillModal(true);
+  };
+
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
@@ -1184,11 +1359,6 @@ function NewBillPanel() {
           sellUnit: 'pc' as const,
           lineTotal: c.menuItem.price * c.quantity,
         }));
-        // Add custom items that aren't yet in cart
-        customItems.forEach(ci => {
-          creditItems.push({ itemName: ci.name, quantity: ci.qty, sellUnit: 'pc' as const, lineTotal: ci.price * ci.qty });
-        });
-
         const err = await recordCreditSale(branch, {
           billNo,
           customerName: creditCustomerName.trim(),
@@ -1241,7 +1411,8 @@ function NewBillPanel() {
 
     setSubmitError('');
     try {
-      await submitOrder({
+      const billedBy = currentUser.displayName || currentUser.username;
+      const orderId = await submitOrder({
         tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
         orderType,
         notes: notes || undefined,
@@ -1249,10 +1420,17 @@ function NewBillPanel() {
         createdBy: currentUser.username,
         orderSource: 'staff',
         parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+        paymentType: billMethod,
+        billedBy,
+        status: 'served',
       });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printPaidBill(savedOrder);
+      setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setBillMethod('cash');
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit order — please try again.';
@@ -1286,7 +1464,7 @@ function NewBillPanel() {
           <p className="text-muted-foreground font-body mt-1 text-sm">
             {paymentMode === 'credit'
               ? 'VRSNB Admin & Admin have been notified.'
-              : 'Order has been added to the queue.'
+              : 'Bill saved and print command opened.'
             }
           </p>
         </div>
@@ -1295,6 +1473,47 @@ function NewBillPanel() {
   }
 
   return (
+    <>
+    {showBillModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
+        <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="px-5 py-4 border-b border-border bg-emerald-50">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
+            <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
+            <p className="text-sm text-muted-foreground">Confirm payment mode. This saves the bill as paid and opens the print slip.</p>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
+              <div className="flex justify-between text-sm"><span>Items</span><span className="font-black">{totalItemQty}</span></div>
+              {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black">{formatCurrency(parcelCharges)}</span></div>}
+              <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
+              <div className="grid grid-cols-3 gap-2">
+                {(['cash', 'upi', 'card'] as const).map(m => (
+                  <button key={m} type="button" onClick={() => setBillMethod(m)}
+                    className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
+                      billMethod === m ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
+                    {m === 'cash' ? <Banknote className="size-5" /> : m === 'upi' ? <Smartphone className="size-5" /> : <CreditCard className="size-5" />}
+                    {m.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {submitError && <p className="text-xs text-destructive font-semibold">{submitError}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowBillModal(false)} disabled={submitting}
+                className="flex-1 py-3 rounded-xl border border-border text-sm font-bold active:scale-95 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleSubmit} disabled={submitting}
+                className="flex-[1.4] py-3 rounded-xl bg-emerald-600 text-white text-sm font-black active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2">
+                <Printer className="size-4" />{submitting ? 'Billing…' : 'Bill & Print'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
     <div className="flex flex-1 min-h-0 overflow-hidden">
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
@@ -1361,7 +1580,7 @@ function NewBillPanel() {
                 <div className="grid grid-cols-3 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
                   ))}
                 </div>
               )}
@@ -1500,44 +1719,55 @@ function NewBillPanel() {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
+        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-3">
           {allEmpty ? (
-            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2">
-              <ShoppingBag className="size-7 opacity-25" />
-              <p className="text-sm font-body">Add menu or custom items</p>
+            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
+              <ShoppingBag className="size-8 opacity-25" />
+              <p className="text-sm font-body font-bold">Cart is empty</p>
+              <p className="text-xs font-body text-muted-foreground/70">Tap any item to add it here.</p>
             </div>
           ) : (
             <>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Billing cart</p>
+                <p className="text-xs font-semibold text-emerald-800">Check quantity, amount, order type and payment before printing.</p>
+              </div>
               {cart.map(ci => (
-                <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-base font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
-                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                <div key={ci.menuItem.id} className="rounded-2xl border border-border bg-background p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-base font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
+                      <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} × {ci.quantity}</p>
+                    </div>
+                    <p className="text-base text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
-                    <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-10 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-4" /></button>
+                    <span className="flex-1 text-center rounded-xl bg-muted/60 py-2 text-lg font-black tabular-nums">{ci.quantity}</span>
+                    <button onClick={() => addToCart(ci.menuItem)} className="size-10 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-4" /></button>
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-10 rounded-xl bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-4" /></button>
                   </div>
                 </div>
               ))}
               {customItems.map(ci => (
-                <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-primary/40 pl-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1">
-                      <p className="text-base font-body font-semibold truncate leading-tight">{ci.name}</p>
-                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-primary/10 text-primary shrink-0">CUSTOM</span>
+                <div key={ci.id} className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-base font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(ci.price)} × {ci.qty}</p>
                     </div>
-                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <p className="text-base text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.qty}</span>
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
-                    <button onClick={() => updateCustomQty(ci.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-10 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-4" /></button>
+                    <span className="flex-1 text-center rounded-xl bg-muted/60 py-2 text-lg font-black tabular-nums">{ci.qty}</span>
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-10 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-4" /></button>
+                    <button onClick={() => updateCustomQty(ci.id, 0)} className="size-10 rounded-xl bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90" aria-label={`Remove ${ci.name}`}><Trash2 className="size-4" /></button>
                   </div>
                 </div>
               ))}
@@ -1687,7 +1917,7 @@ function NewBillPanel() {
                 <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
               </div>
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
-              <button onClick={handleSubmit} disabled={submitting}
+              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()} disabled={submitting}
                 className={cn(
                   'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
                   paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
@@ -1710,6 +1940,7 @@ function NewBillPanel() {
         )}
       </div>
     </div>
+    </>
   );
 }
 
@@ -1728,7 +1959,7 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('pending');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
   const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit' | null>(null);
 
