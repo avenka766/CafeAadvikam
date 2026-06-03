@@ -617,7 +617,7 @@ export default function PackingDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-28">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
 
       {/* ── Header ── */}
       <div className="px-4 pt-5 pb-4">

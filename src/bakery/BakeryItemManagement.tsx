@@ -488,7 +488,7 @@ export default function BakeryItemManagement() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24 px-4">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6 px-4">
       {/* page header */}
       <div className="pt-4 pb-3">
         <h1 className="font-display text-2xl font-bold text-foreground flex items-center gap-2">

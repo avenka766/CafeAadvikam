@@ -1184,7 +1184,7 @@ export default function StoreDashboard() {
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   return (
-    <div className="min-h-[100dvh] bg-background pt-14 pb-32">
+    <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-32">
       <div className="px-4 pt-5 pb-4">
         <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
         <h1 className="font-display text-2xl font-bold text-foreground">Store</h1>

@@ -842,14 +842,362 @@ function DeductionReportTab() {
   );
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── DAILY CLOSURE REPORT sub-tab ─────────────────────────────────────────────
+// Store day-end view: current raw stock left + items supplied today to branches.
+// Reads existing tables only: store_raw_stock and bakery_orders.dispatch_log.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface StoreClosureStockRow {
+  id: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  minThreshold: number;
+}
+
+interface StoreDispatchRow {
+  orderNumber: number;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  branch: string;
+  dispatchedAt: string;
+  dispatchedBy: string;
+}
+
+interface StoreDispatchOrderRow {
+  order_number: number;
+  dispatch_log: {
+    itemName: string;
+    quantity: number;
+    unit?: string;
+    branch: string;
+    dispatchedAt: string;
+    dispatchedBy: string;
+  }[] | null;
+}
+
+function toLocalISODate(iso: string) {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function fmtQty(n: number, unit: string) {
+  const safe = Number.isFinite(n) ? n : 0;
+  const value = Math.abs(safe % 1) < 0.001 ? String(Math.round(safe)) : safe.toFixed(2);
+  return `${value} ${unit}`;
+}
+
+async function fetchStoreClosureStock(): Promise<StoreClosureStockRow[]> {
+  const { data, error } = await supabase
+    .from('store_raw_stock')
+    .select('id, name, unit, quantity, min_threshold')
+    .order('name', { ascending: true });
+  if (error) { console.warn('StoreClosure – stock:', error.message); return []; }
+  return (data ?? []).map(r => ({
+    id: r.id as string,
+    name: r.name as string,
+    unit: r.unit as string,
+    quantity: Number(r.quantity ?? 0),
+    minThreshold: Number(r.min_threshold ?? 0),
+  }));
+}
+
+async function fetchStoreDispatches(date: string): Promise<StoreDispatchRow[]> {
+  const { data, error } = await supabase
+    .from('bakery_orders')
+    .select('order_number, dispatch_log')
+    .not('dispatch_log', 'is', null)
+    .order('created_at', { ascending: false });
+  if (error) { console.warn('StoreClosure – dispatches:', error.message); return []; }
+
+  const rows: StoreDispatchRow[] = [];
+  for (const order of (data ?? []) as StoreDispatchOrderRow[]) {
+    for (const d of order.dispatch_log ?? []) {
+      if (!d.dispatchedAt || toLocalISODate(d.dispatchedAt) !== date) continue;
+      rows.push({
+        orderNumber: order.order_number,
+        itemName: d.itemName,
+        quantity: Number(d.quantity ?? 0),
+        unit: d.unit ?? 'kg',
+        branch: d.branch ?? '—',
+        dispatchedAt: d.dispatchedAt,
+        dispatchedBy: d.dispatchedBy ?? '—',
+      });
+    }
+  }
+  return rows.sort((a, b) => new Date(b.dispatchedAt).getTime() - new Date(a.dispatchedAt).getTime());
+}
+
+function StoreDailyClosureReportTab() {
+  const today = toInputDate(new Date());
+  const [date, setDate] = useState(today);
+  const [stockRows, setStockRows] = useState<StoreClosureStockRow[]>([]);
+  const [dispatchRows, setDispatchRows] = useState<StoreDispatchRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const [stock, dispatches] = await Promise.all([
+        fetchStoreClosureStock(),
+        fetchStoreDispatches(date),
+      ]);
+      setStockRows(stock);
+      setDispatchRows(dispatches);
+      setLastLoaded(new Date());
+    } catch {
+      setError('Failed to load daily closure report. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const branchSummary = useMemo(() => {
+    const map = new Map<string, { branch: string; lines: number; totalQty: number }>();
+    for (const r of dispatchRows) {
+      const ex = map.get(r.branch) ?? { branch: r.branch, lines: 0, totalQty: 0 };
+      ex.lines += 1;
+      ex.totalQty += r.quantity;
+      map.set(r.branch, ex);
+    }
+    return Array.from(map.values()).sort((a, b) => b.lines - a.lines);
+  }, [dispatchRows]);
+
+  const itemSummary = useMemo(() => {
+    const map = new Map<string, { itemName: string; quantity: number; unit: string; branches: Set<string> }>();
+    for (const r of dispatchRows) {
+      const key = `${r.itemName}__${r.unit}`;
+      const ex = map.get(key) ?? { itemName: r.itemName, quantity: 0, unit: r.unit, branches: new Set<string>() };
+      ex.quantity += r.quantity;
+      ex.branches.add(r.branch);
+      map.set(key, ex);
+    }
+    return Array.from(map.values()).sort((a, b) => b.quantity - a.quantity);
+  }, [dispatchRows]);
+
+  const lowStock = stockRows.filter(r => r.quantity <= r.minThreshold);
+  const outOfStock = stockRows.filter(r => r.quantity <= 0);
+  const totalSuppliedQty = dispatchRows.reduce((s, r) => s + r.quantity, 0);
+
+  const handleDownload = () => {
+    exportExcel([
+      {
+        name: 'Closure Summary',
+        headers: ['Metric', 'Value'],
+        rows: [
+          ['Date', date],
+          ['Total stock items', stockRows.length],
+          ['Low stock items', lowStock.length],
+          ['Out of stock items', outOfStock.length],
+          ['Supplied line items', dispatchRows.length],
+          ['Total supplied quantity', totalSuppliedQty.toFixed(2)],
+          ['Branches supplied', branchSummary.map(b => b.branch).join(', ') || 'None'],
+        ],
+      },
+      {
+        name: 'Stock Left',
+        headers: ['Item', 'Stock Left', 'Unit', 'Minimum Threshold', 'Status'],
+        rows: stockRows.map(r => [
+          r.name,
+          r.quantity,
+          r.unit,
+          r.minThreshold,
+          r.quantity <= 0 ? 'Out of stock' : r.quantity <= r.minThreshold ? 'Low stock' : 'OK',
+        ]),
+      },
+      {
+        name: 'Supplied Today',
+        headers: ['Time', 'Order #', 'Branch / To Whom', 'Item', 'Quantity', 'Unit', 'Dispatched By'],
+        rows: dispatchRows.map(r => [fmtTime(r.dispatchedAt), r.orderNumber, r.branch, r.itemName, r.quantity, r.unit, r.dispatchedBy]),
+      },
+      {
+        name: 'Branch Summary',
+        headers: ['Branch / To Whom', 'Line Items', 'Total Quantity'],
+        rows: branchSummary.map(r => [r.branch, r.lines, r.totalQty.toFixed(2)]),
+      },
+    ], `store-daily-closure-${date}`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-[1.75rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-5 text-white shadow-lg shadow-slate-200">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[11px] font-black uppercase tracking-widest text-emerald-200 ring-1 ring-white/10">
+              <CheckCircle2 className="size-3.5" /> Daily Closure
+            </div>
+            <h3 className="font-display text-2xl font-black tracking-tight md:text-3xl">Store day-end stock and supply report</h3>
+            <p className="mt-1 max-w-2xl text-sm font-medium text-slate-300">
+              See what is left in raw stock and exactly what was supplied today, branch-wise and item-wise.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+            <input
+              type="date"
+              value={date}
+              max={today}
+              onChange={e => setDate(e.target.value)}
+              className="h-12 rounded-2xl border border-white/10 bg-white/10 px-3 text-sm font-black text-white outline-none ring-white/20 [color-scheme:dark] focus:ring-2"
+            />
+            <button onClick={load} className="h-12 rounded-2xl bg-white px-4 text-sm font-black text-slate-950 shadow active:scale-95">
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {loading && <LoadingState />}
+      {error && !loading && <ErrorState msg={error} onRetry={load} />}
+
+      {!loading && !error && (
+        <>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <SummaryCard icon={Package} label="Stock Items" value={stockRows.length} sub="live raw stock balance" color="bg-slate-800" />
+            <SummaryCard icon={AlertCircle} label="Low Stock" value={lowStock.length} sub={`${outOfStock.length} out of stock`} color="bg-red-500" />
+            <SummaryCard icon={ClipboardList} label="Supplied Today" value={dispatchRows.length} sub={`${branchSummary.length} branches`} color="bg-emerald-600" />
+            <SummaryCard icon={Calendar} label="Total Supplied" value={totalSuppliedQty.toFixed(2)} sub="all supplied rows" color="bg-indigo-500" />
+          </div>
+
+          <ActionBar onDownload={handleDownload} onRefresh={load} rowCount={stockRows.length + dispatchRows.length} lastLoaded={lastLoaded} loading={loading} />
+
+          <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
+                <div>
+                  <p className="text-base font-black text-slate-950">Stock left at day end</p>
+                  <p className="text-xs font-semibold text-slate-500">Live current balance from store stock.</p>
+                </div>
+                <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-black text-white">{stockRows.length} items</span>
+              </div>
+              {stockRows.length === 0 ? <EmptyState label="No raw stock rows found." /> : (
+                <div className="max-h-[32rem] overflow-auto">
+                  <table className="w-full text-left">
+                    <thead className="sticky top-0 z-10 bg-white text-[11px] font-black uppercase tracking-widest text-slate-500 shadow-sm">
+                      <tr>
+                        <th className="px-5 py-3">Item</th>
+                        <th className="px-5 py-3 text-right">Stock Left</th>
+                        <th className="px-5 py-3 text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {stockRows.map(r => {
+                        const status = r.quantity <= 0 ? 'Out' : r.quantity <= r.minThreshold ? 'Low' : 'OK';
+                        return (
+                          <tr key={r.id} className={cn('hover:bg-slate-50', status === 'Out' && 'bg-red-50/50', status === 'Low' && 'bg-amber-50/50')}>
+                            <td className="px-5 py-3 font-bold text-slate-900">{r.name}</td>
+                            <td className="px-5 py-3 text-right text-lg font-black tabular-nums text-slate-950">{fmtQty(r.quantity, r.unit)}</td>
+                            <td className="px-5 py-3 text-right">
+                              <span className={cn('rounded-full px-2.5 py-1 text-[11px] font-black',
+                                status === 'Out' ? 'bg-red-100 text-red-700' : status === 'Low' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700')}>{status}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-[1.5rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+                  <p className="text-base font-black text-slate-950">Supplied today — to whom</p>
+                  <p className="text-xs font-semibold text-slate-500">Dispatches grouped by branch/customer outlet.</p>
+                </div>
+                {branchSummary.length === 0 ? <EmptyState label="No supplies dispatched on this date." /> : (
+                  <div className="divide-y divide-slate-100">
+                    {branchSummary.map(b => (
+                      <div key={b.branch} className="flex items-center justify-between px-5 py-4">
+                        <div>
+                          <p className="text-lg font-black text-slate-950">{b.branch}</p>
+                          <p className="text-xs font-semibold text-slate-500">{b.lines} supplied line item{b.lines !== 1 ? 's' : ''}</p>
+                        </div>
+                        <p className="text-xl font-black tabular-nums text-emerald-600">{b.totalQty.toFixed(2)}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-[1.5rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+                  <p className="text-base font-black text-slate-950">Item-wise supply summary</p>
+                  <p className="text-xs font-semibold text-slate-500">What left the store today.</p>
+                </div>
+                {itemSummary.length === 0 ? <EmptyState label="No supplied items found for this date." /> : (
+                  <div className="divide-y divide-slate-100 max-h-80 overflow-auto">
+                    {itemSummary.map(r => (
+                      <div key={`${r.itemName}-${r.unit}`} className="flex items-center justify-between gap-3 px-5 py-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black text-slate-950">{r.itemName}</p>
+                          <p className="text-[11px] font-semibold text-slate-500">To: {Array.from(r.branches).join(', ')}</p>
+                        </div>
+                        <p className="shrink-0 text-base font-black tabular-nums text-slate-900">{fmtQty(r.quantity, r.unit)}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[1.5rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <p className="text-base font-black text-slate-950">Dispatch log</p>
+              <p className="text-xs font-semibold text-slate-500">Detailed supplied items for audit and closing verification.</p>
+            </div>
+            {dispatchRows.length === 0 ? <EmptyState label="No dispatch log rows for this date." /> : (
+              <div className="max-h-96 overflow-auto">
+                <table className="w-full text-left">
+                  <thead className="sticky top-0 bg-white text-[11px] font-black uppercase tracking-widest text-slate-500 shadow-sm">
+                    <tr>
+                      <th className="px-5 py-3">Time</th>
+                      <th className="px-5 py-3">To Whom</th>
+                      <th className="px-5 py-3">Item</th>
+                      <th className="px-5 py-3 text-right">Qty</th>
+                      <th className="px-5 py-3 text-right">Order</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm">
+                    {dispatchRows.map((r, i) => (
+                      <tr key={`${r.orderNumber}-${r.itemName}-${r.dispatchedAt}-${i}`} className="hover:bg-slate-50">
+                        <td className="px-5 py-3 text-xs font-bold text-slate-500">{fmtTime(r.dispatchedAt)}</td>
+                        <td className="px-5 py-3 font-black text-slate-950">{r.branch}</td>
+                        <td className="px-5 py-3 font-semibold text-slate-800">{r.itemName}</td>
+                        <td className="px-5 py-3 text-right text-base font-black tabular-nums text-slate-950">{fmtQty(r.quantity, r.unit)}</td>
+                        <td className="px-5 py-3 text-right text-xs font-bold text-slate-500">#{r.orderNumber}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── ROOT: StoreReportTab (sub-tab shell) ──────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type SubTab = 'inventory' | 'invoice' | 'deductions';
+type SubTab = 'inventory' | 'closure' | 'invoice' | 'deductions';
 
 export default function StoreReportTab() {
-  const [sub, setSub] = useState<SubTab>('inventory');
+  const [sub, setSub] = useState<SubTab>('closure');
 
   return (
     <div className="space-y-4 pb-8">
@@ -860,16 +1208,17 @@ export default function StoreReportTab() {
           <h2 className="font-display font-bold text-foreground">Reports</h2>
         </div>
         <p className="text-[11px] font-body text-muted-foreground">
-          Download Excel reports for inventory activity and supplier invoices.
+          Download Excel reports for day-end closure, inventory activity, raw-material deductions, and supplier invoices.
         </p>
       </div>
 
       {/* Sub-tab switcher */}
       <div className="flex gap-1.5 bg-muted/60 p-1.5 rounded-xl">
         {([
-          { key: 'inventory',  label: 'Inventory',  icon: Package    },
-          { key: 'deductions', label: 'Deductions', icon: MinusCircle },
-          { key: 'invoice',    label: 'Invoices',   icon: Receipt    },
+          { key: 'closure',   label: 'Daily Closure', icon: CheckCircle2 },
+          { key: 'inventory',  label: 'Inventory',     icon: Package     },
+          { key: 'deductions', label: 'Deductions',    icon: MinusCircle },
+          { key: 'invoice',    label: 'Invoices',      icon: Receipt     },
         ] as { key: SubTab; label: string; icon: React.ElementType }[]).map(t => (
           <button key={t.key} onClick={() => setSub(t.key)}
             className={cn(
@@ -883,6 +1232,7 @@ export default function StoreReportTab() {
       </div>
 
       {/* Sub-tab content */}
+      {sub === 'closure'   && <StoreDailyClosureReportTab />}
       {sub === 'inventory'  && <InventoryReportTab />}
       {sub === 'deductions' && <DeductionReportTab />}
       {sub === 'invoice'    && <InvoiceReportTab />}

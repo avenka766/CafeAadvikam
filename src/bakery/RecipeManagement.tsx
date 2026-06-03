@@ -313,8 +313,9 @@ export default function RecipeManagement() {
       setEditingId(null);
       setToast('Recipe saved!');
       setTimeout(() => setToast(''), 2500);
-    } catch (err: any) {
-      setToast(`Error: ${err.message ?? 'Failed to save'}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to save';
+      setToast(`Error: ${message}`);
       setTimeout(() => setToast(''), 4000);
     }
     setSaving(false);
@@ -329,7 +330,7 @@ export default function RecipeManagement() {
   };
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24 px-4">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6 px-4">
       {/* Header */}
       <div className="pt-4 pb-3">
         <div className="flex items-center justify-between mb-1">
