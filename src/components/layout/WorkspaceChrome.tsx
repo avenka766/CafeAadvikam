@@ -17,6 +17,7 @@ import {
   Settings2,
   ShoppingCart,
   Store,
+  Trash2,
   Users,
   UtensilsCrossed,
   WalletCards,
@@ -55,6 +56,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/staff-management/, meta: { title: 'Staff Management', eyebrow: 'People admin', description: 'Create, update and manage staff access with clear roles and clean account controls.', accent: 'Users • Roles • Access' } },
   { match: /^\/attendance-salary/, meta: { title: 'Attendance & Salary', eyebrow: 'HR operations', description: 'Attendance, salary, advances and payroll records organized for admin review.', accent: 'Attendance • Salary • Advance' } },
   { match: /^\/order-history/, meta: { title: 'Order History', eyebrow: 'Past orders', description: 'Search, inspect and audit completed orders from billing, kitchen and admin workflows.', accent: 'History • Search • Receipts' } },
+  { match: /^\/daily-closure/, meta: { title: 'Daily Closure', eyebrow: 'Counter handover', description: 'Close the day with payment-wise collection, total sales, credit, advance and cashier summaries.', accent: 'Cash • UPI • Card' } },
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
   { match: /^\/bakery\/store/, meta: { title: 'Bakery Store Control', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Production Board', eyebrow: 'Baking team', description: 'A production-first dashboard for accepted orders, recipe quantities and batch preparation.', accent: 'Recipes • Batches • Dispatch' } },
@@ -86,6 +88,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard', path: '/admin-dashboard', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Billing', path: '/billing', icon: <Receipt className="size-4" />, group: 'Operations' },
         { label: 'Orders', path: '/order-history', icon: <History className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure', path: '/daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Bakery Store', path: '/bakery/store', icon: <Store className="size-4" />, group: 'Operations' },
         { label: 'Packing', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
@@ -105,6 +108,7 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Billing', path: '/billing', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'History', path: '/order-history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Daily Closure', path: '/daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
       ];
     case 'order_taker':
       return [
@@ -115,6 +119,7 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Kitchen', path: '/kitchen', icon: <UtensilsCrossed className="size-4" />, group: 'Main' },
         { label: 'History', path: '/order-history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Waste Log', path: '/kitchen?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
       ];
     case 'store':
       return [{ label: 'Store', path: '/bakery/store', icon: <Store className="size-4" />, group: 'Main' }];
@@ -161,7 +166,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen)/.test(location.pathname);
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname);
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
@@ -186,7 +191,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
               <p className="workspace-nav-group">{group.name}</p>
               <div className="space-y-1.5">
                 {group.items.map((item) => {
-                  const active = location.pathname === item.path || location.pathname.startsWith(item.path + '/');
+                  const currentRoute = `${location.pathname}${location.search}`;
+                  const isQueryRoute = item.path.includes('?');
+                  const active = isQueryRoute
+                    ? currentRoute === item.path
+                    : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
                   return (
                     <button
                       key={item.path}

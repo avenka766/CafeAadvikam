@@ -4,7 +4,7 @@ import {
   ClipboardList, Receipt, UtensilsCrossed, History,
   LayoutDashboard, Users, QrCode, ChefHat, CalendarCheck,
   Inbox, Store, Flame, Package, ShoppingCart, Settings2, BarChart3,
-  FileText, Bell,
+  FileText, Bell, WalletCards,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useNotificationStore } from '@/bakery/notificationStore';
@@ -49,6 +49,7 @@ export default function BottomNav() {
     navItems.push(
       { label: 'Orders',  icon: <Receipt  className="size-5" />, path: '/billing' },
       { label: 'History', icon: <History  className="size-5" />, path: '/order-history' },
+      { label: 'Closure', icon: <WalletCards className="size-5" />, path: '/daily-closure' },
     );
   } else if (currentUser.role === 'kitchen') {
     navItems.push(
