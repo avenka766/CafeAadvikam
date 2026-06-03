@@ -20,7 +20,6 @@ import {
   Users,
   UtensilsCrossed,
   WalletCards,
-  Search,
   Sparkles,
   ShieldCheck,
 } from 'lucide-react';
@@ -162,6 +161,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
+  const isOrderPadRoute = /^\/order-pad/.test(location.pathname);
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
@@ -179,10 +179,6 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </div>
         </div>
 
-        <div className="workspace-search-pill">
-          <Search className="size-4" />
-          <span>Search screen / action</span>
-        </div>
 
         <nav className="workspace-nav-scroll">
           {groups.map((group) => (
@@ -218,25 +214,27 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
       </aside>
 
       <div className="workspace-main-shell">
-        <section className="workspace-hero">
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="workspace-eyebrow">{meta.eyebrow}</span>
-              <span className="workspace-live-pill"><span /> Live dashboard</span>
+        {!isOrderPadRoute && (
+          <section className="workspace-hero">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="workspace-eyebrow">{meta.eyebrow}</span>
+                <span className="workspace-live-pill"><span /> Live dashboard</span>
+              </div>
+              <div>
+                <h1>{meta.title}</h1>
+                <p>{meta.description}</p>
+              </div>
             </div>
-            <div>
-              <h1>{meta.title}</h1>
-              <p>{meta.description}</p>
+            <div className="workspace-hero-card">
+              <WalletCards className="size-5" />
+              <div>
+                <span>{meta.accent}</span>
+                <strong>{currentUser?.displayName || currentUser?.username || 'Staff'}</strong>
+              </div>
             </div>
-          </div>
-          <div className="workspace-hero-card">
-            <WalletCards className="size-5" />
-            <div>
-              <span>{meta.accent}</span>
-              <strong>{currentUser?.displayName || currentUser?.username || 'Staff'}</strong>
-            </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         <div className="workspace-content-frame">
           {children}
