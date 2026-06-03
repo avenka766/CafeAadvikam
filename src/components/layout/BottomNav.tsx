@@ -114,7 +114,8 @@ export default function BottomNav() {
     <>
       {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
-        className="fixed bottom-0 left-0 right-0 z-50"
+        className="app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] lg:hidden"
+        data-safe-bottom
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
         <div
