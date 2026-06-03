@@ -14,6 +14,7 @@ import Login from '@/pages/Login';
 import MenuPage from '@/pages/MenuPage';
 import OrderPad from '@/pages/OrderPad';
 import BillingDashboard from '@/pages/BillingDashboard';
+import DailyClosure from '@/pages/DailyClosure';
 import MenuManagement from '@/pages/MenuManagement';
 import OrderHistory from '@/pages/OrderHistory';
 import SalesReport from '@/pages/SalesReport';
@@ -92,6 +93,7 @@ function AppRoutes() {
         {/* ── Staff routes — all wrapped in layout shell ── */}
         <Route path="/order-pad"        element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
         <Route path="/billing"          element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
+        <Route path="/daily-closure"    element={<ProtectedRoute allowedRoles={['billing', 'admin']}><DailyClosure /></ProtectedRoute>} />
         <Route path="/kitchen"          element={<ProtectedRoute allowedRoles={['kitchen']}><KitchenDashboard /></ProtectedRoute>} />
         <Route path="/menu-management"  element={<ProtectedRoute allowedRoles={['admin']}><MenuManagement /></ProtectedRoute>} />
         <Route path="/sales-report"     element={<ProtectedRoute allowedRoles={['admin']}><SalesReport /></ProtectedRoute>} />
