@@ -1,10 +1,10 @@
 // src/branch/tabs/ReportsTab.tsx
 import { useState, useMemo, useEffect } from 'react';
-import { Download, Filter, Wallet } from 'lucide-react';
+import { Download, Filter, Wallet, ClipboardCheck, Package, Truck, ShoppingCart, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { downloadCSV, fmtDate, EmptyState } from '../components';
 import { useBranchStore } from '../branchStore';
-import type { CreditSale, BranchAdvanceOrder } from '../branchStore';
+import type { BranchAdvanceOrder, IncomingStock, StockItem } from '../branchStore';
 import type { Branch } from '../types';
 import type { SaleRecord } from '../branchStore';
 import { formatCurrency } from '@/lib/utils';
@@ -27,14 +27,327 @@ function toLocalDateString(isoString: string): string {
   return `${y}-${m}-${day}`;
 }
 
+
+function formatQty(value: number, unit?: string) {
+  const safe = Number.isFinite(value) ? value : 0;
+  const rounded = Math.abs(safe % 1) < 0.001 ? String(Math.round(safe)) : safe.toFixed(2);
+  return `${rounded} ${unit ?? 'kg'}`;
+}
+
+function BranchDailyClosureTab({
+  branch,
+  branchSales,
+  branchStock,
+  branchIncoming,
+}: {
+  branch: Branch;
+  branchSales: SaleRecord[];
+  branchStock: StockItem[];
+  branchIncoming: IncomingStock[];
+}) {
+  const todayISO = toLocalDateString(new Date().toISOString());
+  const [date, setDate] = useState(todayISO);
+
+  const salesToday = useMemo(() => branchSales.filter(s => {
+    if (toLocalDateString(s.soldAt) !== date) return false;
+    return (s.paymentMethod ?? '') !== 'credit_collection';
+  }), [branchSales, date]);
+
+  const suppliesToday = useMemo(() => branchIncoming.filter(i => toLocalDateString(i.receivedAt) === date), [branchIncoming, date]);
+
+  const stockMap = useMemo(() => {
+    const map = new Map<string, StockItem>();
+    for (const item of branchStock) map.set(item.itemName, item);
+    return map;
+  }, [branchStock]);
+
+  const soldByItem = useMemo(() => {
+    const map = new Map<string, { itemName: string; quantity: number; revenue: number; payments: Record<string, number> }>();
+    for (const sale of salesToday) {
+      const ex = map.get(sale.itemName) ?? { itemName: sale.itemName, quantity: 0, revenue: 0, payments: {} };
+      const revenue = (sale.unitPrice ?? 0) * sale.quantitySold;
+      const method = (sale.paymentMethod ?? 'cash').toLowerCase();
+      ex.quantity += sale.quantitySold;
+      ex.revenue += revenue;
+      ex.payments[method] = (ex.payments[method] ?? 0) + revenue;
+      map.set(sale.itemName, ex);
+    }
+    return map;
+  }, [salesToday]);
+
+  const suppliedByItem = useMemo(() => {
+    const map = new Map<string, { itemName: string; quantity: number; unit: 'kg' | 'pcs'; confirmed: number; pending: number }>();
+    for (const inc of suppliesToday) {
+      const ex = map.get(inc.itemName) ?? { itemName: inc.itemName, quantity: 0, unit: inc.unit ?? 'kg', confirmed: 0, pending: 0 };
+      ex.quantity += inc.quantity;
+      if (inc.confirmed) ex.confirmed += 1; else ex.pending += 1;
+      map.set(inc.itemName, ex);
+    }
+    return map;
+  }, [suppliesToday]);
+
+  const closureRows = useMemo(() => {
+    const names = new Set<string>();
+    branchStock.forEach(s => names.add(s.itemName));
+    salesToday.forEach(s => names.add(s.itemName));
+    suppliesToday.forEach(i => names.add(i.itemName));
+    return Array.from(names).map(itemName => {
+      const stockItem = stockMap.get(itemName);
+      const sold = soldByItem.get(itemName);
+      const supplied = suppliedByItem.get(itemName);
+      const unit = stockItem?.unit ?? supplied?.unit ?? 'kg';
+      return {
+        itemName,
+        unit,
+        suppliedQty: supplied?.quantity ?? 0,
+        soldQty: sold?.quantity ?? 0,
+        salesValue: sold?.revenue ?? 0,
+        remaining: stockItem?.quantity ?? 0,
+        threshold: stockItem?.minThreshold ?? 0,
+        confirmation: supplied ? `${supplied.confirmed} confirmed · ${supplied.pending} pending` : '—',
+      };
+    }).sort((a, b) => (b.soldQty + b.suppliedQty) - (a.soldQty + a.suppliedQty) || a.itemName.localeCompare(b.itemName));
+  }, [branchStock, salesToday, suppliesToday, stockMap, soldByItem, suppliedByItem]);
+
+  const totalSoldQty = salesToday.reduce((s, r) => s + r.quantitySold, 0);
+  const totalRevenue = salesToday.reduce((s, r) => s + ((r.unitPrice ?? 0) * r.quantitySold), 0);
+  const totalSuppliedQty = suppliesToday.reduce((s, r) => s + r.quantity, 0);
+  const lowStock = branchStock.filter(s => s.quantity <= s.minThreshold).length;
+  const outOfStock = branchStock.filter(s => s.quantity <= 0).length;
+
+  const paymentBreakdown = useMemo(() => {
+    const b: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0 };
+    for (const s of salesToday) {
+      const method = (s.paymentMethod ?? 'cash').toLowerCase();
+      const revenue = (s.unitPrice ?? 0) * s.quantitySold;
+      if (method in b) b[method] += revenue;
+      else b.cash += revenue;
+    }
+    return b;
+  }, [salesToday]);
+
+  const handleDownload = async () => {
+    const XLSX = await import('xlsx');
+    const wb = XLSX.utils.book_new();
+    const addSheet = (rows: Record<string, unknown>[], name: string) => {
+      const data = rows.length ? rows : [{ Note: 'No data' }];
+      const ws = XLSX.utils.json_to_sheet(data);
+      if (rows.length) ws['!cols'] = Object.keys(rows[0]).map(k => ({ wch: Math.max(k.length, ...rows.map(r => String(r[k] ?? '').length)) + 2 }));
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    };
+
+    addSheet([
+      { Metric: 'Date', Value: date },
+      { Metric: 'Branch', Value: branch },
+      { Metric: 'Sold Quantity', Value: totalSoldQty },
+      { Metric: 'Sales Value', Value: totalRevenue },
+      { Metric: 'Supplied Quantity', Value: totalSuppliedQty },
+      { Metric: 'Stock Items', Value: branchStock.length },
+      { Metric: 'Low Stock Items', Value: lowStock },
+      { Metric: 'Out of Stock Items', Value: outOfStock },
+      { Metric: 'Cash Sales', Value: paymentBreakdown.cash },
+      { Metric: 'UPI Sales', Value: paymentBreakdown.upi },
+      { Metric: 'Card Sales', Value: paymentBreakdown.card },
+      { Metric: 'Credit Sales', Value: paymentBreakdown.credit },
+    ], 'Closure Summary');
+
+    addSheet(closureRows.map(r => ({
+      Item: r.itemName,
+      Supplied: r.suppliedQty,
+      Sold: r.soldQty,
+      'Sales Value': r.salesValue,
+      'Remaining Stock': r.remaining,
+      Unit: r.unit,
+      Threshold: r.threshold,
+      'Supply Confirmation': r.confirmation,
+    })), 'Sold vs Remaining');
+
+    addSheet(suppliesToday.map((r, i) => ({
+      'S.No': i + 1,
+      Time: new Date(r.receivedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      Item: r.itemName,
+      Quantity: r.quantity,
+      Unit: r.unit,
+      Confirmed: r.confirmed ? 'Yes' : 'No',
+      'Dispatched By': r.dispatchedBy,
+    })), 'Supplied Today');
+
+    addSheet(salesToday.map((r, i) => ({
+      'S.No': i + 1,
+      Time: new Date(r.soldAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      Item: r.itemName,
+      Sold: r.quantitySold,
+      'Unit Price': r.unitPrice ?? 0,
+      Revenue: (r.unitPrice ?? 0) * r.quantitySold,
+      Payment: r.paymentMethod ?? '',
+      'Bill No': r.billNo ?? '',
+      'Sold By': r.soldBy,
+    })), 'Sales Transactions');
+
+    XLSX.writeFile(wb, `${branch}_Daily_Closure_${date}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-5 text-white">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[11px] font-black uppercase tracking-widest text-emerald-200 ring-1 ring-white/10">
+                <ClipboardCheck className="size-3.5" /> Daily Closure · {branch}
+              </div>
+              <h3 className="font-display text-2xl font-black md:text-3xl">Sold today vs remaining stock</h3>
+              <p className="mt-1 max-w-2xl text-sm font-semibold text-slate-300">
+                Day-end report for branch staff: how much was supplied, how much was sold, and what is remaining now.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+              <input
+                type="date"
+                value={date}
+                max={todayISO}
+                onChange={e => setDate(e.target.value)}
+                className="h-12 rounded-2xl border border-white/10 bg-white/10 px-3 text-sm font-black text-white outline-none [color-scheme:dark] focus:ring-2 focus:ring-white/20"
+              />
+              <button onClick={handleDownload} className="h-12 rounded-2xl bg-white px-4 text-sm font-black text-slate-950 shadow active:scale-95">
+                Export Excel
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 p-4 lg:grid-cols-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <ShoppingCart className="mb-2 size-5 text-emerald-600" />
+            <p className="text-2xl font-black tabular-nums text-slate-950">{formatQty(totalSoldQty)}</p>
+            <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Sold Today</p>
+            <p className="mt-1 text-xs font-semibold text-emerald-700">{formatCurrency(totalRevenue)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <Truck className="mb-2 size-5 text-blue-600" />
+            <p className="text-2xl font-black tabular-nums text-slate-950">{formatQty(totalSuppliedQty)}</p>
+            <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Supplied Today</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">{suppliesToday.length} received lines</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <Package className="mb-2 size-5 text-slate-700" />
+            <p className="text-2xl font-black tabular-nums text-slate-950">{branchStock.length}</p>
+            <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Stock Items</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">live remaining balance</p>
+          </div>
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+            <AlertTriangle className="mb-2 size-5 text-red-600" />
+            <p className="text-2xl font-black tabular-nums text-red-700">{lowStock}</p>
+            <p className="text-[11px] font-black uppercase tracking-widest text-red-500">Low Stock</p>
+            <p className="mt-1 text-xs font-semibold text-red-600">{outOfStock} out of stock</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+        <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
+            <div>
+              <p className="text-base font-black text-slate-950">Daily closure item sheet</p>
+              <p className="text-xs font-semibold text-slate-500">Remaining stock is the current live balance.</p>
+            </div>
+            <button onClick={handleDownload} className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-800 shadow-sm active:scale-95">
+              <Download className="size-3.5" /> Excel
+            </button>
+          </div>
+          {closureRows.length === 0 ? <EmptyState message="No stock or sales data found for this closure date." /> : (
+            <div className="max-h-[34rem] overflow-auto">
+              <table className="w-full text-left">
+                <thead className="sticky top-0 z-10 bg-white text-[11px] font-black uppercase tracking-widest text-slate-500 shadow-sm">
+                  <tr>
+                    <th className="px-5 py-3">Item</th>
+                    <th className="px-5 py-3 text-right">Supplied</th>
+                    <th className="px-5 py-3 text-right">Sold</th>
+                    <th className="px-5 py-3 text-right">Remaining</th>
+                    <th className="px-5 py-3 text-right">Sales</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {closureRows.map(r => {
+                    const low = r.remaining <= r.threshold;
+                    return (
+                      <tr key={r.itemName} className={cn('hover:bg-slate-50', low && 'bg-amber-50/50')}>
+                        <td className="px-5 py-3 font-black text-slate-950">{r.itemName}</td>
+                        <td className="px-5 py-3 text-right font-bold tabular-nums text-blue-700">{formatQty(r.suppliedQty, r.unit)}</td>
+                        <td className="px-5 py-3 text-right font-bold tabular-nums text-emerald-700">{formatQty(r.soldQty, r.unit)}</td>
+                        <td className={cn('px-5 py-3 text-right text-lg font-black tabular-nums', low ? 'text-red-700' : 'text-slate-950')}>{formatQty(r.remaining, r.unit)}</td>
+                        <td className="px-5 py-3 text-right font-black tabular-nums text-slate-950">{formatCurrency(r.salesValue)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <p className="text-base font-black text-slate-950">Payment split</p>
+              <p className="text-xs font-semibold text-slate-500">Sales collected today.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 p-4">
+              {[
+                ['Cash', paymentBreakdown.cash],
+                ['UPI', paymentBreakdown.upi],
+                ['Card', paymentBreakdown.card],
+                ['Credit', paymentBreakdown.credit],
+              ].map(([label, amount]) => (
+                <div key={label as string} className="rounded-2xl bg-slate-50 p-3">
+                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">{label as string}</p>
+                  <p className="text-lg font-black tabular-nums text-slate-950">{formatCurrency(amount as number)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <p className="text-base font-black text-slate-950">Supplied from store</p>
+              <p className="text-xs font-semibold text-slate-500">What reached this branch today.</p>
+            </div>
+            {suppliesToday.length === 0 ? <EmptyState message="No supplies received on this date." /> : (
+              <div className="divide-y divide-slate-100 max-h-80 overflow-auto">
+                {suppliesToday.map(s => (
+                  <div key={s.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-black text-slate-950">{s.itemName}</p>
+                      <p className="text-[11px] font-semibold text-slate-500">
+                        {new Date(s.receivedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} · {s.dispatchedBy}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-base font-black tabular-nums text-blue-700">{formatQty(s.quantity, s.unit)}</p>
+                      <p className={cn('text-[10px] font-black', s.confirmed ? 'text-emerald-700' : 'text-amber-700')}>{s.confirmed ? 'Confirmed' : 'Pending'}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
-  const { creditSales, fetchCreditSales } = useBranchStore();
-  const [reportView, setReportView] = useState<'sales' | 'advance'>('sales');
+  const { creditSales, fetchCreditSales, stock, incoming } = useBranchStore();
+  const [reportView, setReportView] = useState<'sales' | 'closure' | 'advance'>('sales');
   const [reportType, setReportType] = useState<'item' | 'branch'>('item');
 
   const todayISO = toLocalDateString(new Date().toISOString());
   const [dateFrom, setDateFrom] = useState(todayISO);
   const [dateTo,   setDateTo]   = useState(todayISO);
+
+  const branchStock = stock[branch] || [];
+  const branchIncoming = incoming[branch] || [];
 
   // Fetch credit sales on mount
   useEffect(() => { fetchCreditSales(branch); }, [branch]);
@@ -168,16 +481,21 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
   return (
     <div className="space-y-4">
       {/* ── Top-level tab: Sales / Advance Payments ─────────────────────── */}
-      <div className="flex gap-1 p-1 rounded-2xl bg-muted">
+      <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-muted">
         <button onClick={() => setReportView('sales')}
-          className={cn('flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
+          className={cn('py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
             reportView === 'sales' ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-          📊 Sales Reports
+          📊 Sales
+        </button>
+        <button onClick={() => setReportView('closure')}
+          className={cn('py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
+            reportView === 'closure' ? 'bg-slate-950 text-white shadow' : 'text-muted-foreground')}>
+          <ClipboardCheck className="size-4" /> Daily Closure
         </button>
         <button onClick={() => setReportView('advance')}
-          className={cn('flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
+          className={cn('py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 transition',
             reportView === 'advance' ? 'bg-amber-500 text-white shadow' : 'text-muted-foreground')}>
-          <Wallet className="size-4" /> Advance Payments
+          <Wallet className="size-4" /> Advance
           {advanceOrders.filter(o => o.status === 'pending').length > 0 && (
             <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full',
               reportView === 'advance' ? 'bg-amber-300 text-amber-900' : 'bg-amber-200 text-amber-800')}>
@@ -190,6 +508,11 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
       {/* ── Advance Payments view ────────────────────────────────────────── */}
       {reportView === 'advance' && (
         <AdvancePaymentsTab branch={branch} advanceOrders={advanceOrders} />
+      )}
+
+      {/* ── Daily Closure view ─────────────────────────────────────────── */}
+      {reportView === 'closure' && (
+        <BranchDailyClosureTab branch={branch} branchSales={branchSales} branchStock={branchStock} branchIncoming={branchIncoming} />
       )}
 
       {/* ── Sales view ──────────────────────────────────────────────────── */}
