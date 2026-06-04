@@ -1,868 +1,3227 @@
 // src/pages/AdminVRSNBDashboard.tsx
-// Admin Dashboard 1 – VRSNB Admin: Cafe + VRSNB branch only
-import EmptyState from '@/components/ui/EmptyState';
-import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
-import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
-import AdminCreditTab from '@/components/admin/AdminCreditTab';
-import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
-import { useMemo, useEffect, useState } from 'react';
-import { useOrderStore } from '@/stores/orderStore';
-import { useBranchStore } from '@/branch/branchStore';
-import { formatCurrency } from '@/lib/utils';
-import { cn } from '@/lib/utils';
+// VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, AreaChart, Area, Legend,
-} from 'recharts';
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
+import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/authStore";
+import { useBranchStore } from "@/branch/branchStore";
 import {
-  IndianRupee, ShoppingBag, TrendingUp, Clock,
-  RefreshCw, Wifi, Download, Filter,
-  LayoutDashboard, FileText, Trash2, BarChart3, Package,
-  ArrowUpRight,
-} from 'lucide-react';
+  money,
+  useBranchOpsStore,
+  type PurchaseRecord,
+  type SalespersonProfile,
+} from "@/branch/branchOpsStore";
+import { VRSNB_ITEMS } from "@/branch/vrsnbItems";
+import type { Branch } from "@/branch/types";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
+  Activity,
+  AlertTriangle,
+  Banknote,
+  BarChart3,
+  Bell,
+  BookOpenCheck,
+  CalendarClock,
+  CheckCircle2,
+  ChevronDown,
+  ClipboardCheck,
+  CreditCard,
+  Database,
+  Download,
+  FileSpreadsheet,
+  Filter,
+  History,
+  IndianRupee,
+  Landmark,
+  LayoutDashboard,
+  Menu,
+  Package,
+  PackageCheck,
+  Printer,
+  Receipt,
+  RefreshCcw,
+  RotateCcw,
+  Search,
+  ShieldCheck,
+  ShoppingCart,
+  Smartphone,
+  Store,
+  Truck,
+  UserRound,
+  WalletCards,
+  X,
+} from "lucide-react";
 
-const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B'];
+const BRANCH: Branch = "VRSNB";
+const CHART_COLORS = [
+  "#C5973E",
+  "#10B981",
+  "#EF4444",
+  "#3B82F6",
+  "#8B5CF6",
+  "#F59E0B",
+];
 
-function KPI({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: string; sub?: string; color: string }) {
+type TabId =
+  | "overview"
+  | "sales"
+  | "stock"
+  | "po"
+  | "invoices"
+  | "payments"
+  | "bank"
+  | "salespersons"
+  | "salesperson-report"
+  | "closure"
+  | "reports"
+  | "notifications"
+  | "audit";
+
+const TABS: Array<{
+  id: TabId;
+  label: string;
+  icon: ElementType;
+  adminOnly?: boolean;
+}> = [
+  { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
+  { id: "sales", label: "Sales & Returns", icon: Receipt },
+  { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "po", label: "Purchase Orders", icon: ClipboardCheck, adminOnly: true },
+  {
+    id: "invoices",
+    label: "Purchase Invoices",
+    icon: ShoppingCart,
+    adminOnly: true,
+  },
+  {
+    id: "payments",
+    label: "Supplier Payments",
+    icon: WalletCards,
+    adminOnly: true,
+  },
+  { id: "bank", label: "Bank Deposits", icon: Landmark, adminOnly: true },
+  {
+    id: "salespersons",
+    label: "Salesperson Management",
+    icon: UserRound,
+    adminOnly: true,
+  },
+  {
+    id: "salesperson-report",
+    label: "Salesperson Report",
+    icon: BarChart3,
+    adminOnly: true,
+  },
+  {
+    id: "closure",
+    label: "Daily Closure Report",
+    icon: CalendarClock,
+    adminOnly: true,
+  },
+  {
+    id: "reports",
+    label: "Branch Reports",
+    icon: FileSpreadsheet,
+    adminOnly: true,
+  },
+  {
+    id: "notifications",
+    label: "Admin Notifications",
+    icon: Bell,
+    adminOnly: true,
+  },
+  { id: "audit", label: "Audit Logs", icon: ShieldCheck, adminOnly: true },
+];
+
+function dateInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function startOfDay(value: string) {
+  const d = value ? new Date(`${value}T00:00:00`) : new Date(0);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(value: string) {
+  const d = value
+    ? new Date(`${value}T23:59:59`)
+    : new Date("2999-12-31T23:59:59");
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function inRange(iso: string, fromDate: string, toDate: string) {
+  const time = new Date(iso).getTime();
   return (
-    <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6" style={{ background: 'hsl(var(--primary))' }} />
-      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
-      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
-      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
-      {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
-    </div>
+    time >= startOfDay(fromDate).getTime() && time <= endOfDay(toDate).getTime()
   );
 }
 
-function StatusBadge({ label, count, color }: { label: string; count: number; color: string }) {
-  return (
-    <div className={cn('rounded-xl p-3 text-center', color)}>
-      <p className="font-display text-2xl font-bold tabular-nums">{count}</p>
-      <p className="text-[10px] font-body font-bold uppercase tracking-wide mt-0.5">{label}</p>
-    </div>
-  );
+function localDateKey(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function PaymentRow({ label, amount, total }: { label: string; amount: number; total: number }) {
-  const pct = total > 0 ? Math.round((amount / total) * 100) : 0;
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function fmtDateTime(iso: string) {
+  return new Date(iso).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function normal(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function csvDownload(
+  filename: string,
+  rows: Array<Record<string, string | number | null | undefined>>,
+) {
+  const safeRows = rows.length
+    ? rows
+    : [{ Note: "No data for selected filters" }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [
+    headers.join(","),
+    ...safeRows.map((row) =>
+      headers
+        .map((h) => `"${String(row[h] ?? "").replace(/"/g, '""')}"`)
+        .join(","),
+    ),
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function amountForLegacyPayment(
+  method: string | null,
+  mode: "cash" | "upi" | "card" | "credit",
+) {
+  const m = (method || "").toLowerCase();
+  if (mode === "cash") return m === "cash" || m.includes("cash");
+  if (mode === "upi") return m === "upi" || m.includes("upi");
+  if (mode === "card") return m === "card" || m.includes("card");
+  return m === "credit";
+}
+
+function Kpi({
+  label,
+  value,
+  sub,
+  icon,
+  tone = "slate",
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  icon: ReactNode;
+  tone?: "slate" | "green" | "amber" | "red" | "blue" | "purple";
+}) {
+  const tones = {
+    slate: "bg-slate-50 text-slate-700 ring-slate-200",
+    green: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    amber: "bg-amber-50 text-amber-700 ring-amber-200",
+    red: "bg-red-50 text-red-700 ring-red-200",
+    blue: "bg-blue-50 text-blue-700 ring-blue-200",
+    purple: "bg-purple-50 text-purple-700 ring-purple-200",
+  }[tone];
   return (
-    <div className="flex items-center gap-3">
-      <span className="text-sm font-body w-20 shrink-0">{label}</span>
-      <div className="flex-1 bg-muted rounded-full h-2">
-        <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
+    <div className="relative overflow-hidden rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div className="absolute -right-6 -top-6 size-20 rounded-full bg-slate-950/5" />
+      <div
+        className={cn(
+          "mb-3 flex size-10 items-center justify-center rounded-2xl ring-1",
+          tones,
+        )}
+      >
+        {icon}
       </div>
-      <span className="text-sm font-body font-bold tabular-nums shrink-0 w-20 text-right">{formatCurrency(amount)}</span>
+      <p className="text-2xl font-black tracking-tight text-slate-950 tabular-nums">
+        {value}
+      </p>
+      <p className="mt-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+        {label}
+      </p>
+      {sub && (
+        <p className="mt-1 text-xs font-semibold text-slate-500">{sub}</p>
+      )}
     </div>
   );
 }
 
-// ── Cafe Dashboard Tab ─────────────────────────────────────────────────────────
-function CafeDashboardTab() {
-  const { orders, polling } = useOrderStore();
-  const [dateRange, setDateRange] = useState<'today' | '7d' | '30d'>('today');
-
-  const cutoff = useMemo(() => {
-    const d = new Date();
-    if (dateRange === 'today') { d.setHours(0, 0, 0, 0); return d; }
-    if (dateRange === '7d') { d.setDate(d.getDate() - 7); return d; }
-    d.setDate(d.getDate() - 30); return d;
-  }, [dateRange]);
-
-  const filteredOrders = useMemo(() => orders.filter(o => new Date(o.createdAt) >= cutoff), [orders, cutoff]);
-  const served = filteredOrders.filter(o => o.status === 'served');
-  const todayStr = new Date().toDateString();
-  const todayOrders = orders.filter(o => new Date(o.createdAt).toDateString() === todayStr);
-
-  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
-  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
-
-  const peakHour = useMemo(() => {
-    const hours: Record<number, number> = {};
-    served.forEach(o => { const h = new Date(o.createdAt).getHours(); hours[h] = (hours[h] || 0) + 1; });
-    let max = 0, maxH = 0;
-    Object.entries(hours).forEach(([h, c]) => { if (Number(c) > max) { max = Number(c); maxH = Number(h); } });
-    return max === 0 ? 'N/A' : `${maxH > 12 ? maxH - 12 : maxH || 12}${maxH >= 12 ? 'PM' : 'AM'}`;
-  }, [served]);
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    served.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      const rev = ci.menuItem.price * ci.quantity;
-      if (ex) { ex.qty += ci.quantity; ex.revenue += rev; }
-      else map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: rev });
-    }));
-    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
-      .map(i => ({ ...i, name: i.name.length > 14 ? i.name.slice(0, 14) + '…' : i.name }));
-  }, [served]);
-
-  const pay = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') cash += o.total;
-      else if (o.paymentType === 'upi') upi += o.total;
-      else if (o.paymentType === 'card') card += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
-      }
-    });
-    return { cash, upi, card };
-  }, [served]);
-
-  const payPieData = [
-    { name: 'Cash', value: pay.cash, color: COLORS[0] },
-    { name: 'UPI', value: pay.upi, color: COLORS[1] },
-    { name: 'Card', value: pay.card, color: COLORS[2] },
-  ].filter(p => p.value > 0);
-
-  // Hourly orders chart
-  const hourlyData = useMemo(() => {
-    const map: Record<number, number> = {};
-    served.forEach(o => {
-      const h = new Date(o.createdAt).getHours();
-      map[h] = (map[h] || 0) + 1;
-    });
-    return Array.from({ length: 24 }, (_, h) => ({
-      hour: `${h === 0 ? 12 : h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}`,
-      orders: map[h] || 0,
-    })).filter((_, h) => h >= 6 && h <= 22);
-  }, [served]);
-
-  // Daily revenue trend
-  const dailyData = useMemo(() => {
-    const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
-    return Array.from({ length: days }, (_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (days - 1 - i));
-      const dateStr = d.toDateString();
-      const rev = orders.filter(o => new Date(o.createdAt).toDateString() === dateStr && o.status === 'served').reduce((s, o) => s + o.total, 0);
-      return { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), revenue: rev };
-    });
-  }, [orders, dateRange]);
-
-  // Order type split
-  const dineIn = served.filter(o => o.orderType === 'dine_in').length;
-  const takeaway = served.filter(o => o.orderType !== 'dine_in').length;
-  const orderTypePie = [
-    { name: 'Dine In', value: dineIn, color: COLORS[0] },
-    { name: 'Takeaway', value: takeaway, color: COLORS[2] },
-  ].filter(d => d.value > 0);
-
-  const pending = todayOrders.filter(o => o.status === 'pending').length;
-  const preparing = todayOrders.filter(o => o.status === 'preparing').length;
-  const ready = todayOrders.filter(o => o.status === 'ready').length;
-  const cancelled = todayOrders.filter(o => o.status === 'cancelled').length;
-
+function Panel({
+  title,
+  icon,
+  action,
+  children,
+  className,
+}: {
+  title: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="space-y-4">
-      {/* Live indicator + date toggle */}
-      <div className="flex items-center justify-between">
+    <section
+      className={cn(
+        "rounded-[1.75rem] border border-slate-200 bg-white shadow-sm",
+        className,
+      )}
+    >
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
-          <span className="text-xs text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
-        </div>
-        <div className="flex gap-1 p-1 rounded-xl bg-muted">
-          {(['today', '7d', '30d'] as const).map(r => (
-            <button key={r} onClick={() => setDateRange(r)} className={cn('px-3 py-1.5 rounded-lg text-xs font-semibold transition-all', dateRange === r ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-              {r === 'today' ? 'Today' : r === '7d' ? '7D' : '30D'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Revenue" value={formatCurrency(totalRevenue)} sub={`${served.length} orders`} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Orders" value={String(served.length)} sub={`avg ${formatCurrency(avgOrderValue)}`} color="bg-accent/20 text-accent-foreground" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<Clock className="size-4" />} label="Peak Hour" value={peakHour} color="bg-amber-50 text-amber-700" />
-      </div>
-
-      {/* Live order status */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3 flex items-center gap-2">
-          <RefreshCw className="size-4 text-primary" />Live Order Status
-        </h3>
-        <div className="grid grid-cols-4 gap-2">
-          <StatusBadge label="Pending" count={pending} color="bg-amber-100 text-amber-800" />
-          <StatusBadge label="Preparing" count={preparing} color="bg-blue-100 text-blue-800" />
-          <StatusBadge label="Ready" count={ready} color="bg-emerald-100 text-emerald-800" />
-          <StatusBadge label="Cancelled" count={cancelled} color="bg-red-100 text-red-800" />
-        </div>
-      </div>
-
-      {/* Revenue Trend */}
-      {dateRange !== 'today' && dailyData.some(d => d.revenue > 0) && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
-            <TrendingUp className="size-4 text-primary" />Revenue Trend
-          </h3>
-          <p className="text-[10px] text-muted-foreground mb-3">Cafe sales over time</p>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={dailyData}>
-              <defs>
-                <linearGradient id="cafeGradVRSNB" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#cafeGradVRSNB)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Hourly order heatmap */}
-      {hourlyData.some(d => d.orders > 0) && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
-            <BarChart3 className="size-4 text-primary" />Orders by Hour
-          </h3>
-          <p className="text-[10px] text-muted-foreground mb-3">When customers order most</p>
-          <ResponsiveContainer width="100%" height={150}>
-            <BarChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-              <XAxis dataKey="hour" tick={{ fontSize: 8 }} interval={1} />
-              <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="orders" name="Orders" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Payment Breakdown */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3">Payment Breakdown</h3>
-        {totalRevenue === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">No payment data</p>
-        ) : (
-          <div className="space-y-2">
-            <PaymentRow label="💵 Cash" amount={pay.cash} total={totalRevenue} />
-            <PaymentRow label="📱 UPI" amount={pay.upi} total={totalRevenue} />
-            <PaymentRow label="💳 Card" amount={pay.card} total={totalRevenue} />
-          </div>
-        )}
-      </div>
-
-      {/* Order type split pie */}
-      {orderTypePie.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Order Type Split</h3>
-          <div className="flex items-center gap-4">
-            <ResponsiveContainer width="50%" height={140}>
-              <PieChart>
-                <Pie data={orderTypePie} dataKey="value" cx="50%" cy="50%" innerRadius={35} outerRadius={55} label={({ percent }) => `${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-                  {orderTypePie.map((d, i) => <Cell key={i} fill={d.color} />)}
-                </Pie>
-                <Tooltip formatter={(v: number) => [`${v} orders`, '']} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="space-y-3">
-              {orderTypePie.map(d => (
-                <div key={d.name} className="flex items-center gap-2">
-                  <div className="size-3 rounded-full shrink-0" style={{ background: d.color }} />
-                  <div>
-                    <p className="text-xs font-semibold">{d.name}</p>
-                    <p className="text-xs text-muted-foreground">{d.value} orders</p>
-                  </div>
-                </div>
-              ))}
+          {icon && (
+            <div className="flex size-9 items-center justify-center rounded-2xl bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+              {icon}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Top items by revenue — bar chart */}
-      {topItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
-          <p className="text-[10px] text-muted-foreground mb-3">Cafe · {dateRange === 'today' ? 'Today' : dateRange === '7d' ? 'Last 7 days' : 'Last 30 days'}</p>
-          <ResponsiveContainer width="100%" height={Math.max(topItems.length * 32, 160)}>
-            <BarChart data={topItems} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-              <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Top items by qty list */}
-      {topItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Top Selling (by Quantity)</h3>
-          <div className="space-y-2">
-            {[...topItems].sort((a, b) => b.qty - a.qty).map((item, i) => (
-              <div key={item.name} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                <p className="flex-1 text-sm font-medium truncate">{item.name}</p>
-                <div className="text-right">
-                  <p className="text-sm font-bold tabular-nums">{item.qty} sold</p>
-                  <p className="text-[10px] text-muted-foreground">{formatCurrency(item.revenue)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Cafe Reports Tab ───────────────────────────────────────────────────────────
-function CafeReportsTab() {
-  const { orders } = useOrderStore();
-  const [mode, setMode] = useState<'today' | 'custom'>('today');
-  const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const filtered = useMemo(() => {
-    if (mode === 'today') {
-      const today = new Date().toDateString();
-      return orders.filter(o => new Date(o.createdAt).toDateString() === today && o.status === 'served');
-    }
-    const s = new Date(startDate); s.setHours(0, 0, 0, 0);
-    const e = new Date(endDate); e.setHours(23, 59, 59, 999);
-    return orders.filter(o => {
-      const d = new Date(o.createdAt);
-      return d >= s && d <= e && o.status === 'served';
-    });
-  }, [orders, mode, startDate, endDate]);
-
-  const totalRevenue = filtered.reduce((s, o) => s + o.total, 0);
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    filtered.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
-      else map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity });
-    }));
-    return [...map.values()].sort((a, b) => b.qty - a.qty);
-  }, [filtered]);
-
-  // Category revenue breakdown
-  const categoryData = useMemo(() => {
-    const map = new Map<string, number>();
-    filtered.forEach(o => o.items.forEach(ci => {
-      const cat = (ci.menuItem as typeof ci.menuItem & { category?: string }).category ?? 'Other';
-      map.set(cat, (map.get(cat) ?? 0) + ci.menuItem.price * ci.quantity);
-    }));
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: COLORS[i % COLORS.length] }));
-  }, [filtered]);
-
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const rows = filtered.map((o, i) => ({
-      'S.No': i + 1, 'Order#': o.orderNumber,
-      'Type': o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-      'Total': o.total, 'Payment': o.paymentType,
-      'Date': new Date(o.createdAt).toLocaleDateString('en-IN'),
-      'Items': o.items.map(ci => `${ci.menuItem.name}×${ci.quantity}`).join(', '),
-    }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Cafe Sales');
-    XLSX.writeFile(wb, `CafeSales_VRSNB_Admin_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  };
-
-  const chartItems = topItems.slice(0, 10).map(i => ({ ...i, name: i.name.length > 14 ? i.name.slice(0, 14) + '…' : i.name }));
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex gap-2">
-          {(['today', 'custom'] as const).map(m => (
-            <button key={m} onClick={() => setMode(m)} className={cn('flex-1 py-2 rounded-xl text-sm font-semibold transition-all', mode === m ? 'bg-primary text-white' : 'bg-muted text-muted-foreground')}>
-              {m === 'today' ? 'Today' : 'Custom'}
-            </button>
-          ))}
-        </div>
-        {mode === 'custom' && (
-          <div className="grid grid-cols-2 gap-2">
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
-            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-        )}
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">{filtered.length} orders · {formatCurrency(totalRevenue)}</p>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
-            <Download className="size-3" />Excel
-          </button>
-        </div>
-      </div>
-
-      {/* Summary KPIs */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 text-center">
-          <p className="font-display text-xl font-bold text-primary tabular-nums">{filtered.length}</p>
-          <p className="text-[9px] font-semibold uppercase text-muted-foreground mt-0.5">Orders</p>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-3 text-center">
-          <p className="font-display text-xl font-bold tabular-nums">{topItems.reduce((a, i) => a + i.qty, 0)}</p>
-          <p className="text-[9px] font-semibold uppercase text-muted-foreground mt-0.5">Items Sold</p>
-        </div>
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
-          <p className="font-display text-xl font-bold text-emerald-700 tabular-nums">{formatCurrency(filtered.length > 0 ? Math.round(totalRevenue / filtered.length) : 0)}</p>
-          <p className="text-[9px] font-semibold uppercase text-emerald-600 mt-0.5">Avg Order</p>
-        </div>
-      </div>
-
-      {/* Category revenue pie */}
-      {categoryData.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Revenue by Category</h3>
-          <div className="flex gap-3 items-center">
-            <ResponsiveContainer width="50%" height={160}>
-              <PieChart>
-                <Pie data={categoryData} dataKey="value" cx="50%" cy="50%" outerRadius={65} label={({ percent }) => `${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={10}>
-                  {categoryData.map((d, i) => <Cell key={i} fill={d.color} />)}
-                </Pie>
-                <Tooltip formatter={(v: number) => [formatCurrency(v), '']} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="flex-1 space-y-1.5">
-              {categoryData.slice(0, 6).map(d => (
-                <div key={d.name} className="flex items-center gap-2">
-                  <div className="size-2.5 rounded-full shrink-0" style={{ background: d.color }} />
-                  <p className="text-xs font-medium truncate flex-1">{d.name}</p>
-                  <p className="text-xs font-bold tabular-nums">{formatCurrency(d.value)}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Top items bar chart */}
-      {chartItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Top Items by Quantity</h3>
-          <ResponsiveContainer width="100%" height={Math.max(chartItems.length * 30, 160)}>
-            <BarChart data={chartItems} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-              <XAxis type="number" tick={{ fontSize: 9 }} allowDecimals={false} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
-              <Tooltip />
-              <Bar dataKey="qty" name="Qty Sold" fill={COLORS[2]} radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Item revenue table */}
-      {topItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Item Revenue Breakdown</h3>
-          <div className="space-y-2">
-            {topItems.slice(0, 10).map((item, i) => {
-              const pct = totalRevenue > 0 ? Math.round((item.revenue / totalRevenue) * 100) : 0;
-              return (
-                <div key={item.name}>
-                  <div className="flex justify-between mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                      <span className="text-sm font-medium truncate">{item.name}</span>
-                    </div>
-                    <div className="text-right ml-2 shrink-0">
-                      <span className="text-sm font-bold">{formatCurrency(item.revenue)}</span>
-                      <span className="text-[10px] text-muted-foreground ml-1">({pct}%)</span>
-                    </div>
-                  </div>
-                  <div className="h-1.5 bg-muted rounded-full">
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: COLORS[i % COLORS.length] }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── VRSNB Bakery Dashboard ────────────────────────────────────────────────────
-function VRSNBBakeryDashboardTab() {
-  const { stock, sales, fetchBranchData } = useBranchStore();
-  const [dateRange, setDateRange] = useState<'today' | '7d' | '30d'>('today');
-  useEffect(() => { fetchBranchData('VRSNB'); }, [fetchBranchData]);
-
-  const cutoff = useMemo(() => {
-    const d = new Date();
-    if (dateRange === 'today') { d.setHours(0, 0, 0, 0); return d; }
-    if (dateRange === '7d') { d.setDate(d.getDate() - 7); return d; }
-    d.setDate(d.getDate() - 30); return d;
-  }, [dateRange]);
-
-  const allSales = useMemo(() => (sales['VRSNB'] || []).map(s => ({
-    ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-  })), [sales]);
-
-  const filteredSales = useMemo(() => allSales.filter(s => new Date(s.soldAt) >= cutoff), [allSales, cutoff]);
-  const totalQty = filteredSales.reduce((a, s) => a + s.quantitySold, 0);
-  const totalRevenue = filteredSales.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
-  const stockItems = stock['VRSNB'] || [];
-  const lowStock = stockItems.filter(s => s.quantity <= s.minThreshold).length;
-  const avgTxnValue = filteredSales.length > 0 ? Math.round(totalRevenue / filteredSales.length) : 0;
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number }>();
-    filteredSales.forEach(s => {
-      const ex = map.get(s.itemName);
-      const rev = s.unitPrice * s.quantitySold;
-      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
-      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8)
-      .map(([name, v]) => ({ name: name.length > 16 ? name.slice(0, 16) + '…' : name, ...v }));
-  }, [filteredSales]);
-
-  // Daily revenue trend
-  const dailyData = useMemo(() => {
-    const days = dateRange === 'today' ? 1 : dateRange === '7d' ? 7 : 30;
-    return Array.from({ length: days }, (_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (days - 1 - i));
-      const dateStr = d.toDateString();
-      const rev = allSales.filter(s => new Date(s.soldAt).toDateString() === dateStr).reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
-      const qty = allSales.filter(s => new Date(s.soldAt).toDateString() === dateStr).reduce((a, s) => a + s.quantitySold, 0);
-      return { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), revenue: rev, qty };
-    });
-  }, [allSales, dateRange]);
-
-  // Stock health pie
-  const inStock = stockItems.filter(s => s.quantity > s.minThreshold).length;
-  const stockPie = [
-    { name: 'OK', value: inStock, color: COLORS[0] },
-    { name: 'Low', value: lowStock, color: '#ef4444' },
-  ].filter(d => d.value > 0);
-
-  return (
-    <div className="space-y-4">
-      {/* Date range */}
-      <div className="flex gap-1 p-1 rounded-xl bg-muted">
-        {(['today', '7d', '30d'] as const).map(r => (
-          <button key={r} onClick={() => setDateRange(r)} className={cn('flex-1 py-2 rounded-lg text-xs font-semibold transition-all', dateRange === r ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-            {r === 'today' ? 'Today' : r === '7d' ? '7 Days' : '30 Days'}
-          </button>
-        ))}
-      </div>
-
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Revenue" value={formatCurrency(totalRevenue)} sub="VRSNB branch" color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Items Sold" value={String(totalQty)} sub={`${filteredSales.length} txns`} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Txn" value={formatCurrency(avgTxnValue)} color="bg-emerald-50 text-emerald-700" />
-        <KPI icon={<Package className="size-4" />} label="Low Stock" value={String(lowStock)} sub={`of ${stockItems.length} items`} color={lowStock > 0 ? 'bg-red-50 text-red-700' : 'bg-muted text-muted-foreground'} />
-      </div>
-
-      {/* Revenue trend */}
-      {dateRange !== 'today' && dailyData.some(d => d.revenue > 0) && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
-            <TrendingUp className="size-4 text-primary" />Revenue Trend – VRSNB
-          </h3>
-          <p className="text-[10px] text-muted-foreground mb-3">Daily revenue over selected period</p>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={dailyData}>
-              <defs>
-                <linearGradient id="vrsnbGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={COLORS[2]} stopOpacity={0.35} />
-                  <stop offset="95%" stopColor={COLORS[2]} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Area type="monotone" dataKey="revenue" stroke={COLORS[2]} strokeWidth={2} fill="url(#vrsnbGrad)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Daily qty trend */}
-      {dateRange !== 'today' && dailyData.some(d => d.qty > 0) && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1 flex items-center gap-2">
-            <BarChart3 className="size-4 text-primary" />Items Sold per Day
-          </h3>
-          <ResponsiveContainer width="100%" height={150}>
-            <BarChart data={dailyData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="qty" name="Qty Sold" fill={COLORS[1]} radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Top items bar chart */}
-      {topItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
-          <p className="text-[10px] text-muted-foreground mb-3">VRSNB branch · {dateRange === 'today' ? 'Today' : dateRange === '7d' ? 'Last 7 days' : 'Last 30 days'}</p>
-          <ResponsiveContainer width="100%" height={Math.max(topItems.length * 32, 160)}>
-            <BarChart data={topItems} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-              <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={100} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Bar dataKey="revenue" fill={COLORS[2]} radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Revenue vs Qty dual view */}
-      {topItems.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Revenue vs Quantity</h3>
-          <div className="space-y-2.5">
-            {topItems.map((item, i) => {
-              const maxRev = Math.max(...topItems.map(t => t.revenue), 1);
-              return (
-                <div key={item.name}>
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0', i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                      <p className="text-sm font-medium truncate">{item.name}</p>
-                    </div>
-                    <div className="text-right ml-2 shrink-0">
-                      <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(item.revenue)}</p>
-                      <p className="text-[10px] text-muted-foreground">{item.qty} sold</p>
-                    </div>
-                  </div>
-                  <div className="h-1.5 bg-muted rounded-full">
-                    <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${Math.round((item.revenue / maxRev) * 100)}%` }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Stock health */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-3 flex items-center gap-2">
-          <Package className="size-4 text-primary" />Stock Health
-        </h3>
-        <div className="flex items-center gap-4">
-          {stockPie.length > 0 && (
-            <ResponsiveContainer width="45%" height={120}>
-              <PieChart>
-                <Pie data={stockPie} dataKey="value" cx="50%" cy="50%" outerRadius={50} label={({ name, value }) => `${name}: ${value}`} labelLine={false} fontSize={10}>
-                  {stockPie.map((d, i) => <Cell key={i} fill={d.color} />)}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
           )}
-          <div className="flex-1 space-y-2">
-            <div className="flex justify-between text-sm"><span className="text-muted-foreground">Total Items</span><span className="font-bold">{stockItems.length}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-emerald-600">In Stock</span><span className="font-bold text-emerald-700">{inStock}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-red-600">Low / Out</span><span className="font-bold text-red-700">{lowStock}</span></div>
-          </div>
+          <h2 className="text-base font-black text-slate-950">{title}</h2>
         </div>
+        {action}
       </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
 
-      {/* Low stock alerts */}
-      {lowStock > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <h3 className="font-display text-base font-bold text-red-700 mb-2">⚠ Low Stock Alerts</h3>
-          <div className="space-y-1">
-            {stockItems.filter(s => s.quantity <= s.minThreshold).map(s => (
-              <div key={s.id} className="flex justify-between text-sm">
-                <span className="text-red-700">{s.itemName}</span>
-                <span className="font-bold text-red-800 tabular-nums">{s.quantity} left</span>
-              </div>
-            ))}
-          </div>
-        </div>
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="space-y-1 text-xs font-black uppercase tracking-wide text-slate-500">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const inputCls =
+  "w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100";
+const btnCls =
+  "inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition active:scale-[0.98]";
+
+function StatusBadge({
+  children,
+  tone = "slate",
+}: {
+  children: ReactNode;
+  tone?: "green" | "amber" | "red" | "blue" | "purple" | "slate";
+}) {
+  const cls = {
+    green: "bg-emerald-100 text-emerald-700",
+    amber: "bg-amber-100 text-amber-800",
+    red: "bg-red-100 text-red-700",
+    blue: "bg-blue-100 text-blue-700",
+    purple: "bg-purple-100 text-purple-700",
+    slate: "bg-slate-100 text-slate-700",
+  }[tone];
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wide",
+        cls,
       )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function PaymentSplitCard({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: ReactNode;
+  tone: "green" | "blue" | "purple" | "amber";
+}) {
+  const cls = {
+    green: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+    blue: "bg-blue-50 text-blue-700 ring-blue-100",
+    purple: "bg-purple-50 text-purple-700 ring-purple-100",
+    amber: "bg-amber-50 text-amber-700 ring-amber-100",
+  }[tone];
+  return (
+    <div className={cn("rounded-3xl p-4 ring-1", cls)}>
+      <div className="flex items-center justify-between text-xs font-black uppercase tracking-wide opacity-80">
+        {label}
+        {icon}
+      </div>
+      <p className="mt-2 text-xl font-black tabular-nums">{money(value)}</p>
     </div>
   );
 }
 
-// ── VRSNB Bakery Sales Tab ────────────────────────────────────────────────────
-function VRSNBBakerySalesTab() {
-  const { sales, fetchBranchData } = useBranchStore();
-  const [filterItem, setFilterItem] = useState('');
-  const [filterDate, setFilterDate] = useState('');
-  useEffect(() => { fetchBranchData('VRSNB'); }, [fetchBranchData]);
-  const vrsnbSales = useMemo(() => (sales['VRSNB'] || [])
-    .map(s => ({ ...s, unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0 }))
-    .sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime()), [sales]);
-  const allItems = useMemo(() => [...new Set(vrsnbSales.map(s => s.itemName))].sort(), [vrsnbSales]);
-  const filtered = useMemo(() => vrsnbSales.filter(s => {
-    if (filterItem && s.itemName !== filterItem) return false;
-    if (filterDate && new Date(s.soldAt).toDateString() !== new Date(filterDate).toDateString()) return false;
-    return true;
-  }), [vrsnbSales, filterItem, filterDate]);
+export default function AdminVRSNBDashboard() {
+  const { currentUser } = useAuthStore();
+  const { stock, sales, fetchBranchData, manualUpdateStock } = useBranchStore();
+  const {
+    bills,
+    returns,
+    creditSales,
+    salespeople,
+    purchases,
+    purchasePayments,
+    purchaseOrders,
+    cashMovements,
+    bankDeposits,
+    cashierClosures,
+    notifications,
+    auditLogs,
+    addSalesperson,
+    updateSalesperson,
+    removeSalesperson,
+    addPurchase,
+    addPurchasePayment,
+    addPurchaseOrder,
+    updatePoStatus,
+    markPurchaseSynced,
+    addBankDeposit,
+    addCashierClosure,
+    updateNotificationStatus,
+    addAuditLog,
+  } = useBranchOpsStore();
 
-  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
-  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+  const today = dateInput();
+  const [tab, setTab] = useState<TabId>("overview");
+  const [fromDate, setFromDate] = useState(today);
+  const [toDate, setToDate] = useState(today);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [lowStockOpen, setLowStockOpen] = useState(true);
+  const [lowSearch, setLowSearch] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const rows = filtered.map((s, i) => ({
-      'S.No': i + 1, 'Item': s.itemName, 'Qty Sold': s.quantitySold,
-      'Unit Price': s.unitPrice, 'Revenue': s.unitPrice * s.quantitySold,
-      'Sold At': new Date(s.soldAt).toLocaleString('en-IN'), 'Sold By': s.soldBy,
-    }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Note: 'No data' }]), 'VRSNB Sales');
-    XLSX.writeFile(wb, `VRSNB_Sales_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const userName =
+    currentUser?.displayName || currentUser?.username || "VRSNB Admin";
+  const role = currentUser?.role || "";
+  const canManage = ["admin_vrsnb", "admin", "owner"].includes(role);
+
+  useEffect(() => {
+    fetchBranchData(BRANCH);
+  }, [fetchBranchData]);
+
+  const branchStock = stock[BRANCH] || [];
+  const branchSalesRows = sales[BRANCH] || [];
+  const branchBills = useMemo(
+    () =>
+      bills.filter(
+        (b) => b.branch === BRANCH && inRange(b.createdAt, fromDate, toDate),
+      ),
+    [bills, fromDate, toDate],
+  );
+  const branchReturns = useMemo(
+    () =>
+      returns.filter(
+        (r) => r.branch === BRANCH && inRange(r.createdAt, fromDate, toDate),
+      ),
+    [returns, fromDate, toDate],
+  );
+  const billedBillNos = useMemo(
+    () =>
+      new Set(bills.filter((b) => b.branch === BRANCH).map((b) => b.billNo)),
+    [bills],
+  );
+  const legacySalesRows = useMemo(
+    () =>
+      branchSalesRows.filter(
+        (s) =>
+          inRange(s.soldAt, fromDate, toDate) &&
+          (!s.billNo || !billedBillNos.has(s.billNo)),
+      ),
+    [branchSalesRows, fromDate, toDate, billedBillNos],
+  );
+
+  const grossFromBills = branchBills.reduce((sum, bill) => sum + bill.total, 0);
+  const grossFromLegacy = legacySalesRows.reduce(
+    (sum, row) => sum + (row.unitPrice ?? 0) * row.quantitySold,
+    0,
+  );
+  const grossSales = grossFromBills + grossFromLegacy;
+  const returnAmount = branchReturns.reduce((sum, ret) => sum + ret.total, 0);
+  const netSales = Math.max(0, grossSales - returnAmount);
+  const billsCount =
+    branchBills.length +
+    new Set(legacySalesRows.map((s) => s.billNo || s.id)).size;
+  const avgBillValue = billsCount > 0 ? netSales / billsCount : 0;
+
+  const cashSales =
+    branchBills.reduce(
+      (sum, b) =>
+        sum +
+        (b.paymentMode === "cash"
+          ? b.total
+          : b.paymentMode === "split"
+            ? (b.split?.cash ?? 0)
+            : 0),
+      0,
+    ) +
+    legacySalesRows
+      .filter((s) => amountForLegacyPayment(s.paymentMethod, "cash"))
+      .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
+  const upiSales =
+    branchBills.reduce(
+      (sum, b) =>
+        sum +
+        (b.paymentMode === "upi"
+          ? b.total
+          : b.paymentMode === "split"
+            ? (b.split?.upi ?? 0)
+            : 0),
+      0,
+    ) +
+    legacySalesRows
+      .filter((s) => amountForLegacyPayment(s.paymentMethod, "upi"))
+      .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
+  const cardSales =
+    branchBills.reduce(
+      (sum, b) =>
+        sum +
+        (b.paymentMode === "card"
+          ? b.total
+          : b.paymentMode === "split"
+            ? (b.split?.card ?? 0)
+            : 0),
+      0,
+    ) +
+    legacySalesRows
+      .filter((s) => amountForLegacyPayment(s.paymentMethod, "card"))
+      .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
+  const creditBillAmount =
+    branchBills
+      .filter((b) => b.paymentMode === "credit")
+      .reduce((sum, b) => sum + b.total, 0) +
+    legacySalesRows
+      .filter((s) => amountForLegacyPayment(s.paymentMethod, "credit"))
+      .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
+
+  const lowStockRows = useMemo(() => {
+    const query = lowSearch.trim().toLowerCase();
+    return branchStock
+      .filter((item) => item.quantity <= (item.minThreshold ?? 10))
+      .filter((item) => !query || item.itemName.toLowerCase().includes(query))
+      .sort(
+        (a, b) =>
+          a.quantity -
+          (a.minThreshold ?? 10) -
+          (b.quantity - (b.minThreshold ?? 10)),
+      );
+  }, [branchStock, lowSearch]);
+
+  const movementRows = useMemo(
+    () => cashMovements.filter((m) => m.branch === BRANCH),
+    [cashMovements],
+  );
+  const movementInRange = useMemo(
+    () => movementRows.filter((m) => inRange(m.dateTime, fromDate, toDate)),
+    [movementRows, fromDate, toDate],
+  );
+  const balanceByMode = (mode: "cash" | "upi" | "card" | "bank") =>
+    movementRows
+      .filter((m) => m.paymentMode === mode)
+      .reduce(
+        (sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount),
+        0,
+      );
+  const bankBalance =
+    bankDeposits
+      .filter((d) => d.branch === BRANCH)
+      .reduce((sum, d) => sum + d.amount, 0) + balanceByMode("bank");
+  const cashBalance = balanceByMode("cash");
+  const upiBalance = balanceByMode("upi");
+  const cardBalance = balanceByMode("card");
+
+  const pendingCredit = creditSales
+    .filter(
+      (c) =>
+        c.branch === BRANCH &&
+        c.status !== "Paid" &&
+        c.status !== "Written Off",
+    )
+    .reduce((sum, c) => sum + c.balanceDue, 0);
+  const clearedCredit = creditSales
+    .filter(
+      (c) => c.branch === BRANCH && inRange(c.updatedAt, fromDate, toDate),
+    )
+    .reduce(
+      (sum, c) =>
+        sum +
+        c.payments
+          .filter((p) => inRange(p.createdAt, fromDate, toDate))
+          .reduce((x, p) => x + p.amount, 0),
+      0,
+    );
+  const purchasePaid = purchasePayments
+    .filter(
+      (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
+    )
+    .reduce((sum, p) => sum + p.amount, 0);
+  const depositsInRange = bankDeposits.filter(
+    (d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate),
+  );
+  const depositAmount = depositsInRange.reduce((sum, d) => sum + d.amount, 0);
+
+  const chartData = useMemo(() => {
+    const start = startOfDay(fromDate);
+    const end = endOfDay(toDate);
+    const days: Array<{
+      key: string;
+      date: string;
+      grossSales: number;
+      returnAmount: number;
+      netSales: number;
+    }> = [];
+    const cursor = new Date(start);
+    while (cursor.getTime() <= end.getTime() && days.length < 45) {
+      const key = dateInput(cursor);
+      days.push({
+        key,
+        date: cursor.toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+        }),
+        grossSales: 0,
+        returnAmount: 0,
+        netSales: 0,
+      });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    const byKey = new Map(days.map((d) => [d.key, d]));
+    branchBills.forEach((b) => {
+      const row = byKey.get(localDateKey(b.createdAt));
+      if (row) row.grossSales += b.total;
+    });
+    legacySalesRows.forEach((s) => {
+      const row = byKey.get(localDateKey(s.soldAt));
+      if (row) row.grossSales += (s.unitPrice ?? 0) * s.quantitySold;
+    });
+    branchReturns.forEach((r) => {
+      const row = byKey.get(localDateKey(r.createdAt));
+      if (row) row.returnAmount += r.total;
+    });
+    days.forEach((d) => {
+      d.netSales = Math.max(0, d.grossSales - d.returnAmount);
+    });
+    return days;
+  }, [fromDate, toDate, branchBills, legacySalesRows, branchReturns]);
+
+  const topItems = useMemo(() => {
+    const map = new Map<
+      string,
+      { gross: number; qty: number; returns: number; net: number }
+    >();
+    branchBills.forEach((bill) =>
+      bill.items.forEach((item) => {
+        const row = map.get(item.itemName) ?? {
+          gross: 0,
+          qty: 0,
+          returns: 0,
+          net: 0,
+        };
+        row.gross += item.lineTotal;
+        row.qty += item.quantity;
+        map.set(item.itemName, row);
+      }),
+    );
+    legacySalesRows.forEach((sale) => {
+      const row = map.get(sale.itemName) ?? {
+        gross: 0,
+        qty: 0,
+        returns: 0,
+        net: 0,
+      };
+      row.gross += (sale.unitPrice ?? 0) * sale.quantitySold;
+      row.qty += sale.quantitySold;
+      map.set(sale.itemName, row);
+    });
+    branchReturns.forEach((ret) =>
+      ret.items.forEach((item) => {
+        const row = map.get(item.itemName) ?? {
+          gross: 0,
+          qty: 0,
+          returns: 0,
+          net: 0,
+        };
+        row.returns += item.lineTotal;
+        map.set(item.itemName, row);
+      }),
+    );
+    return [...map.entries()]
+      .map(([name, value]) => ({
+        name: name.length > 24 ? `${name.slice(0, 24)}…` : name,
+        ...value,
+        net: Math.max(0, value.gross - value.returns),
+      }))
+      .sort((a, b) => b.net - a.net)
+      .slice(0, 10);
+  }, [branchBills, legacySalesRows, branchReturns]);
+
+  const salespersonRows = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        name: string;
+        grossSales: number;
+        returns: number;
+        netSales: number;
+        bills: number;
+        cash: number;
+        upi: number;
+        card: number;
+      }
+    >();
+    branchBills.forEach((bill) => {
+      const row = map.get(bill.salesperson) ?? {
+        name: bill.salesperson,
+        grossSales: 0,
+        returns: 0,
+        netSales: 0,
+        bills: 0,
+        cash: 0,
+        upi: 0,
+        card: 0,
+      };
+      row.grossSales += bill.total;
+      row.bills += 1;
+      row.cash +=
+        bill.paymentMode === "cash"
+          ? bill.total
+          : bill.paymentMode === "split"
+            ? (bill.split?.cash ?? 0)
+            : 0;
+      row.upi +=
+        bill.paymentMode === "upi"
+          ? bill.total
+          : bill.paymentMode === "split"
+            ? (bill.split?.upi ?? 0)
+            : 0;
+      row.card +=
+        bill.paymentMode === "card"
+          ? bill.total
+          : bill.paymentMode === "split"
+            ? (bill.split?.card ?? 0)
+            : 0;
+      map.set(bill.salesperson, row);
+    });
+    legacySalesRows.forEach((sale) => {
+      const row = map.get(sale.soldBy) ?? {
+        name: sale.soldBy,
+        grossSales: 0,
+        returns: 0,
+        netSales: 0,
+        bills: 0,
+        cash: 0,
+        upi: 0,
+        card: 0,
+      };
+      const line = (sale.unitPrice ?? 0) * sale.quantitySold;
+      row.grossSales += line;
+      row.bills += 1;
+      if (amountForLegacyPayment(sale.paymentMethod, "cash")) row.cash += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "upi")) row.upi += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "card")) row.card += line;
+      map.set(sale.soldBy, row);
+    });
+    branchReturns.forEach((ret) => {
+      const original = bills.find(
+        (b) => b.billNo === ret.originalBillNo && b.branch === BRANCH,
+      );
+      const person = original?.salesperson || ret.returnedBy;
+      const row = map.get(person) ?? {
+        name: person,
+        grossSales: 0,
+        returns: 0,
+        netSales: 0,
+        bills: 0,
+        cash: 0,
+        upi: 0,
+        card: 0,
+      };
+      row.returns += ret.total;
+      map.set(person, row);
+    });
+    return [...map.values()]
+      .map((row) => ({
+        ...row,
+        netSales: Math.max(0, row.grossSales - row.returns),
+        avgBillValue:
+          row.bills > 0
+            ? Math.max(0, row.grossSales - row.returns) / row.bills
+            : 0,
+      }))
+      .sort((a, b) => b.netSales - a.netSales);
+  }, [branchBills, legacySalesRows, branchReturns, bills]);
+
+  const paymentPie = [
+    { name: "Cash", value: cashSales, color: CHART_COLORS[1] },
+    { name: "UPI", value: upiSales, color: CHART_COLORS[3] },
+    { name: "Card", value: cardSales, color: CHART_COLORS[4] },
+    { name: "Credit", value: creditBillAmount, color: CHART_COLORS[0] },
+  ].filter((row) => row.value > 0);
+
+  const scopedTabs = TABS.filter((item) => !item.adminOnly || canManage);
+  const unreadNotifications = notifications.filter(
+    (n) => n.branch === BRANCH && n.status === "Unread",
+  ).length;
+  const pendingSync = purchases.filter(
+    (p) =>
+      p.branch === BRANCH && !(p.syncedToStock || p.syncStatus === "Synced"),
+  ).length;
+  const pendingPO = purchaseOrders.filter(
+    (p) =>
+      p.branch === BRANCH &&
+      !["Received", "Closed", "Cancelled", "Rejected"].includes(p.status),
+  ).length;
+
+  const commonProps = {
+    fromDate,
+    toDate,
+    setFromDate,
+    setToDate,
+    canManage,
+    userName,
+    branchStock,
+    grossSales,
+    returnAmount,
+    netSales,
+    billsCount,
+    avgBillValue,
+    cashSales,
+    upiSales,
+    cardSales,
+    creditBillAmount,
+    lowStockRows,
+    branchBills,
+    branchReturns,
+    legacySalesRows,
+    topItems,
+    chartData,
+    paymentPie,
+    salespersonRows,
+    cashBalance,
+    upiBalance,
+    cardBalance,
+    bankBalance,
+    pendingCredit,
+    clearedCredit,
+    purchasePaid,
+    depositAmount,
+    movementInRange,
+    notice,
+    setNotice,
   };
 
+  if (!canManage) {
+    return (
+      <div className="p-4">
+        <Panel
+          title="Access restricted"
+          icon={<ShieldCheck className="size-4" />}
+        >
+          <p className="font-semibold text-slate-600">
+            VRSNB Admin Dashboard is restricted to VRSNB Admin, Admin, and Owner
+            roles.
+          </p>
+        </Panel>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
-          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
-          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
+    <div className="min-h-screen bg-slate-50/70 pb-6">
+      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-3 py-3 backdrop-blur lg:hidden">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            onClick={() => setMobileOpen(true)}
+            className="rounded-2xl bg-slate-950 p-3 text-white"
+          >
+            <Menu className="size-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700">
+              VRSNB Branch
+            </p>
+            <h1 className="truncate text-lg font-black text-slate-950">
+              Admin Control Center
+            </h1>
+          </div>
+          <StatusBadge tone="amber">Net {money(netSales)}</StatusBadge>
         </div>
       </div>
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2"><Filter className="size-4 text-muted-foreground" /><h3 className="font-semibold text-sm">Filters – VRSNB</h3></div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted"><Download className="size-3" />Excel</button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <select value={filterItem} onChange={e => setFilterItem(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
-            <option value="">All Items</option>
-            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
-          </select>
-          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2" />
-        </div>
-        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
-      </div>
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {filtered.length === 0 ? (
-          <EmptyState icon="📊" message="No sales found" sub="Sales will appear here once items are billed." />
-        ) : (
-          <div className="divide-y">
-            {filtered.slice(0, 50).map(s => {
-              const lineRev = s.unitPrice * s.quantitySold;
+
+      {mobileOpen && (
+        <button
+          className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-label="Close menu backdrop"
+        />
+      )}
+
+      <div className="grid gap-4 px-3 py-4 lg:grid-cols-[300px_minmax(0,1fr)] lg:px-5">
+        <aside
+          className={cn(
+            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-200 bg-white p-3 shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
+            mobileOpen && "translate-x-0",
+          )}
+        >
+          <div className="mb-3 rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white">
+            <div className="flex items-center justify-between gap-2">
+              <StatusBadge tone="amber">
+                <Store className="size-3" /> VRSNB Admin
+              </StatusBadge>
+              <button
+                onClick={() => setMobileOpen(false)}
+                className="rounded-xl p-2 text-white/70 lg:hidden"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <h2 className="mt-4 text-2xl font-black leading-tight">
+              Branch Control Center
+            </h2>
+            <p className="mt-2 text-xs font-semibold text-white/60">
+              Sales, returns, purchases, stock, balances and closure.
+            </p>
+          </div>
+          <nav className="space-y-2">
+            {scopedTabs.map((item) => {
+              const Icon = item.icon;
+              const count =
+                item.id === "stock"
+                  ? lowStockRows.length
+                  : item.id === "invoices"
+                    ? pendingSync
+                    : item.id === "po"
+                      ? pendingPO
+                      : item.id === "notifications"
+                        ? unreadNotifications
+                        : 0;
               return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
-                    <p className="text-sm font-medium">{s.itemName}</p>
-                    <p className="text-[10px] text-muted-foreground">{new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setTab(item.id);
+                    setMobileOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-black transition",
+                    tab === item.id
+                      ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
+                      : "bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-white",
+                  )}
+                >
+                  <Icon className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1">{item.label}</span>
+                  {count > 0 && (
+                    <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] text-white">
+                      {count}
+                    </span>
+                  )}
+                </button>
               );
             })}
+          </nav>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-2xl bg-amber-50 p-3 ring-1 ring-amber-100">
+              <p className="text-[10px] font-black uppercase text-amber-700">
+                Low Stock
+              </p>
+              <p className="text-xl font-black text-amber-800">
+                {lowStockRows.length}
+              </p>
+            </div>
+            <div className="rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
+              <p className="text-[10px] font-black uppercase text-emerald-700">
+                Net Sales
+              </p>
+              <p className="text-xl font-black text-emerald-800">
+                {money(netSales)}
+              </p>
+            </div>
           </div>
-        )}
+        </aside>
+
+        <main className="min-w-0 space-y-4">
+          <header className="hidden rounded-[2rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-5 text-white shadow-sm lg:block">
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-300">
+                  VRSNB Branch Management
+                </p>
+                <h1 className="mt-2 text-4xl font-black tracking-tight">
+                  Admin Control Center
+                </h1>
+                <p className="mt-2 max-w-3xl text-sm font-semibold text-white/60">
+                  Net sales always deduct return amount. Purchase sync is
+                  protected against duplicate stock updates.
+                </p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-4 xl:min-w-[780px]">
+                <HeroPill label="Gross Sales" value={money(grossSales)} />
+                <HeroPill
+                  label="Return Amount"
+                  value={money(returnAmount)}
+                  tone="red"
+                />
+                <HeroPill
+                  label="Net Sales"
+                  value={money(netSales)}
+                  tone="green"
+                />
+                <HeroPill
+                  label="Available Balance"
+                  value={money(
+                    cashBalance + upiBalance + cardBalance + bankBalance,
+                  )}
+                  tone="blue"
+                />
+              </div>
+            </div>
+          </header>
+
+          <DateFilters
+            fromDate={fromDate}
+            toDate={toDate}
+            setFromDate={setFromDate}
+            setToDate={setToDate}
+          />
+          {notice && (
+            <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
+              <span>{notice}</span>
+              <button onClick={() => setNotice("")}>
+                <X className="size-4" />
+              </button>
+            </div>
+          )}
+
+          {tab === "overview" && <OverviewTab {...commonProps} />}
+          {tab === "sales" && <SalesReturnsTab {...commonProps} />}
+          {tab === "stock" && (
+            <StockTab
+              lowStockOpen={lowStockOpen}
+              setLowStockOpen={setLowStockOpen}
+              lowSearch={lowSearch}
+              setLowSearch={setLowSearch}
+              {...commonProps}
+            />
+          )}
+          {tab === "po" && <PurchaseOrdersTab userName={userName} />}
+          {tab === "invoices" && (
+            <PurchaseInvoicesTab
+              userName={userName}
+              branchStock={branchStock}
+              manualUpdateStock={manualUpdateStock}
+              fetchBranchData={fetchBranchData}
+              setNotice={setNotice}
+            />
+          )}
+          {tab === "payments" && <SupplierPaymentsTab userName={userName} />}
+          {tab === "bank" && (
+            <BankDepositsTab
+              userName={userName}
+              cashBalance={cashBalance}
+              upiBalance={upiBalance}
+              cardBalance={cardBalance}
+              bankBalance={bankBalance}
+            />
+          )}
+          {tab === "salespersons" && (
+            <SalespersonManagementTab userName={userName} />
+          )}
+          {tab === "salesperson-report" && (
+            <SalespersonReportTab {...commonProps} />
+          )}
+          {tab === "closure" && (
+            <DailyClosureTab userName={userName} {...commonProps} />
+          )}
+          {tab === "reports" && <ReportsTab {...commonProps} />}
+          {tab === "notifications" && <NotificationsTab userName={userName} />}
+          {tab === "audit" && <AuditTab />}
+        </main>
       </div>
     </div>
   );
 }
 
-// ── Cafe Sub-View ─────────────────────────────────────────────────────────────
-function CafeView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'waste'>('dashboard');
-  const tabs = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
-    { id: 'waste'     as const, label: 'Waste Log', icon: Trash2 },
-  ];
+function HeroPill({
+  label,
+  value,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  tone?: "slate" | "red" | "green" | "blue";
+}) {
+  const cls =
+    tone === "red"
+      ? "text-red-200"
+      : tone === "green"
+        ? "text-emerald-200"
+        : tone === "blue"
+          ? "text-blue-200"
+          : "text-white";
+  return (
+    <div className="rounded-3xl bg-white/10 p-4 ring-1 ring-white/10">
+      <p className="text-[10px] font-black uppercase tracking-wide text-white/50">
+        {label}
+      </p>
+      <p className={cn("mt-1 text-xl font-black tabular-nums", cls)}>{value}</p>
+    </div>
+  );
+}
+
+function DateFilters({
+  fromDate,
+  toDate,
+  setFromDate,
+  setToDate,
+}: {
+  fromDate: string;
+  toDate: string;
+  setFromDate: (v: string) => void;
+  setToDate: (v: string) => void;
+}) {
+  return (
+    <Panel title="Filters" icon={<Filter className="size-4" />}>
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto_auto]">
+        <Field label="From Date">
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className={inputCls}
+          />
+        </Field>
+        <Field label="To Date">
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className={inputCls}
+          />
+        </Field>
+        <button
+          className={cn(btnCls, "self-end bg-slate-950 text-white")}
+          onClick={() => {
+            const t = dateInput();
+            setFromDate(t);
+            setToDate(t);
+          }}
+        >
+          Today
+        </button>
+        <button
+          className={cn(
+            btnCls,
+            "self-end bg-white text-slate-700 ring-1 ring-slate-200",
+          )}
+          onClick={() => {
+            const d = new Date();
+            d.setDate(d.getDate() - 6);
+            setFromDate(dateInput(d));
+            setToDate(dateInput());
+          }}
+        >
+          7 Days
+        </button>
+        <button
+          className={cn(
+            btnCls,
+            "self-end bg-white text-slate-700 ring-1 ring-slate-200",
+          )}
+          onClick={() => {
+            const d = new Date();
+            d.setDate(d.getDate() - 29);
+            setFromDate(dateInput(d));
+            setToDate(dateInput());
+          }}
+        >
+          30 Days
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
+function OverviewTab(props: any) {
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 p-1 rounded-xl bg-muted overflow-x-auto">
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={cn('shrink-0 whitespace-nowrap flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all',
-              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground')}>
-            <t.icon className="size-3" />{t.label}
-          </button>
-        ))}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi
+          label="Gross Sales"
+          value={money(props.grossSales)}
+          sub="Before returns"
+          icon={<IndianRupee className="size-5" />}
+          tone="amber"
+        />
+        <Kpi
+          label="Return Amount"
+          value={money(props.returnAmount)}
+          sub="Deducted from sales"
+          icon={<RotateCcw className="size-5" />}
+          tone="red"
+        />
+        <Kpi
+          label="Net Sales"
+          value={money(props.netSales)}
+          sub="Gross Sales - Total Returns"
+          icon={<IndianRupee className="size-5" />}
+          tone="green"
+        />
+        <Kpi
+          label="Average Bill"
+          value={money(props.avgBillValue)}
+          sub={`${props.billsCount} bill entries`}
+          icon={<Receipt className="size-5" />}
+          tone="blue"
+        />
       </div>
-      {tab === 'dashboard' && <CafeDashboardTab />}
-      {tab === 'reports'   && <CafeReportsTab />}
-      {tab === 'waste'     && <KitchenWasteLogTab />}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(340px,0.6fr)]">
+        <Panel
+          title="Gross / Returns / Net Sales Trend"
+          icon={<Activity className="size-4" />}
+        >
+          <div className="h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={props.chartData}>
+                <defs>
+                  <linearGradient id="netSalesFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10B981" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v) => `₹${Number(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip
+                  formatter={(v: number, name: string) => [
+                    money(Number(v)),
+                    name === "grossSales"
+                      ? "Gross Sales"
+                      : name === "returnAmount"
+                        ? "Return Amount"
+                        : "Net Sales",
+                  ]}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="grossSales"
+                  stroke="#C5973E"
+                  fill="transparent"
+                  strokeWidth={2}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="returnAmount"
+                  stroke="#EF4444"
+                  fill="transparent"
+                  strokeWidth={2}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="netSales"
+                  stroke="#10B981"
+                  fill="url(#netSalesFill)"
+                  strokeWidth={3}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel title="Payment Split" icon={<CreditCard className="size-4" />}>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <PaymentSplitCard
+              label="Cash Sales"
+              value={props.cashSales}
+              icon={<Banknote className="size-4" />}
+              tone="green"
+            />
+            <PaymentSplitCard
+              label="UPI Sales"
+              value={props.upiSales}
+              icon={<Smartphone className="size-4" />}
+              tone="blue"
+            />
+            <PaymentSplitCard
+              label="Card Sales"
+              value={props.cardSales}
+              icon={<CreditCard className="size-4" />}
+              tone="purple"
+            />
+            <PaymentSplitCard
+              label="Credit Sales"
+              value={props.creditBillAmount}
+              icon={<WalletCards className="size-4" />}
+              tone="amber"
+            />
+          </div>
+        </Panel>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel
+          title="Top Items by Net Sales"
+          icon={<PackageCheck className="size-4" />}
+        >
+          <div className="h-[320px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={props.topItems} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis
+                  type="number"
+                  tickFormatter={(v) => `₹${Number(v / 1000).toFixed(0)}k`}
+                  tick={{ fontSize: 11 }}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={130}
+                  tick={{ fontSize: 11 }}
+                />
+                <Tooltip formatter={(v: number) => money(Number(v))} />
+                <Bar dataKey="net" fill="#C5973E" radius={[0, 8, 8, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel
+          title="Balance Snapshot"
+          icon={<WalletCards className="size-4" />}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Kpi
+              label="Cash Available"
+              value={money(props.cashBalance)}
+              icon={<Banknote className="size-5" />}
+              tone="green"
+            />
+            <Kpi
+              label="UPI Available"
+              value={money(props.upiBalance)}
+              icon={<Smartphone className="size-5" />}
+              tone="blue"
+            />
+            <Kpi
+              label="Card Available"
+              value={money(props.cardBalance)}
+              icon={<CreditCard className="size-5" />}
+              tone="purple"
+            />
+            <Kpi
+              label="Bank Balance"
+              value={money(props.bankBalance)}
+              icon={<Landmark className="size-5" />}
+              tone="amber"
+            />
+          </div>
+        </Panel>
+      </div>
     </div>
   );
 }
 
-// ── VRSNB Bakery Sub-View ────────────────────────────────────────────────────
-function VRSNBBakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'sales' | 'reports'>('dashboard');
+function SalesReturnsTab(props: any) {
+  const salesRows = [
+    ...props.branchBills.map((b: any) => ({
+      type: "Sale",
+      no: b.billNo,
+      date: b.createdAt,
+      customer: b.creditCustomerName || "-",
+      person: b.salesperson,
+      gross: b.total,
+      returns: 0,
+      net: b.total,
+      payment: b.paymentMode,
+    })),
+    ...props.legacySalesRows.map((s: any) => ({
+      type: "Sale",
+      no: s.billNo || s.id,
+      date: s.soldAt,
+      customer: "-",
+      person: s.soldBy,
+      gross: (s.unitPrice ?? 0) * s.quantitySold,
+      returns: 0,
+      net: (s.unitPrice ?? 0) * s.quantitySold,
+      payment: s.paymentMethod || "-",
+    })),
+    ...props.branchReturns.map((r: any) => ({
+      type: "Return",
+      no: r.returnNo,
+      date: r.createdAt,
+      customer: r.originalBillNo,
+      person: r.returnedBy,
+      gross: 0,
+      returns: r.total,
+      net: -r.total,
+      payment: "refund",
+    })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 p-1 rounded-xl bg-muted overflow-x-auto">
-        {([
-          { id: 'dashboard', label: '📊 Dashboard' },
-          { id: 'sales',     label: '🧾 Sales'     },
-          { id: 'reports',   label: '📋 Reports'   },
-        ] as const).map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={cn('shrink-0 flex-1 py-2 rounded-lg text-xs font-semibold transition-all', tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground')}>
-            {t.label}
-          </button>
-        ))}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi
+          label="Gross Sales"
+          value={money(props.grossSales)}
+          icon={<Receipt className="size-5" />}
+          tone="amber"
+        />
+        <Kpi
+          label="Return Amount"
+          value={money(props.returnAmount)}
+          icon={<RotateCcw className="size-5" />}
+          tone="red"
+        />
+        <Kpi
+          label="Net Sales"
+          value={money(props.netSales)}
+          icon={<IndianRupee className="size-5" />}
+          tone="green"
+        />
       </div>
-      {tab === 'dashboard' && <VRSNBBakeryDashboardTab />}
-      {tab === 'sales'     && <VRSNBBakerySalesTab />}
-      {tab === 'reports'   && <BakeryReportsMerged branch="VRSNB" />}
+      <Panel
+        title="Sales and Returns Log"
+        icon={<History className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload(
+                `VRSNB_Sales_Returns_${dateInput()}.csv`,
+                salesRows.map((r) => ({
+                  Type: r.type,
+                  Number: r.no,
+                  Date: fmtDateTime(r.date),
+                  Person: r.person,
+                  GrossSales: r.gross,
+                  ReturnAmount: r.returns,
+                  NetSales: r.net,
+                  Payment: r.payment,
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
+        <DataTable
+          headers={[
+            "Type",
+            "No",
+            "Date",
+            "Person",
+            "Gross Sales",
+            "Return Amount",
+            "Net Sales",
+            "Payment",
+          ]}
+          rows={salesRows.map((r) => [
+            <StatusBadge key="t" tone={r.type === "Return" ? "red" : "green"}>
+              {r.type}
+            </StatusBadge>,
+            r.no,
+            fmtDateTime(r.date),
+            r.person,
+            money(r.gross),
+            money(r.returns),
+            <span
+              key="n"
+              className={cn(
+                "font-black",
+                r.net < 0 ? "text-red-600" : "text-emerald-700",
+              )}
+            >
+              {money(r.net)}
+            </span>,
+            String(r.payment).toUpperCase(),
+          ])}
+          empty="No sales or return records for selected date range."
+        />
+      </Panel>
     </div>
   );
 }
 
-// ── Main Export ───────────────────────────────────────────────────────────────
-export default function AdminVRSNBDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit' | 'advance'>('cafe');
-  const { startPolling, stopPolling } = useOrderStore();
-  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
-
+function StockTab(props: any) {
   return (
-    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
-      <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">VRSNB Admin</p>
-            <h1 className="font-display text-3xl font-bold text-foreground leading-none">Dashboard</h1>
-          </div>
-          <p className="text-xs font-body text-muted-foreground pb-0.5">
-            {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi
+          label="Total Stock Items"
+          value={props.branchStock.length}
+          icon={<Package className="size-5" />}
+        />
+        <Kpi
+          label="Low Stock Alerts"
+          value={props.lowStockRows.length}
+          icon={<AlertTriangle className="size-5" />}
+          tone={props.lowStockRows.length ? "red" : "green"}
+        />
+        <Kpi
+          label="Stock Value"
+          value={money(
+            props.branchStock.reduce(
+              (s: number, i: any) =>
+                s + Math.max(0, i.quantity) * (i.price ?? 0),
+              0,
+            ),
+          )}
+          icon={<Database className="size-5" />}
+          tone="blue"
+        />
+      </div>
+      <Panel
+        title="Low Stock Alerts"
+        icon={<AlertTriangle className="size-4" />}
+        action={
+          <button
+            className={cn(
+              btnCls,
+              "bg-white text-slate-700 ring-1 ring-slate-200",
+            )}
+            onClick={() => props.setLowStockOpen((v: boolean) => !v)}
+          >
+            <ChevronDown
+              className={cn(
+                "size-4 transition",
+                !props.lowStockOpen && "-rotate-90",
+              )}
+            />
+            Dropdown
+          </button>
+        }
+      >
+        <div className="mb-3 flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
+          <Search className="size-4 text-slate-400" />
+          <input
+            value={props.lowSearch}
+            onChange={(e) => props.setLowSearch(e.target.value)}
+            placeholder="Search low stock item"
+            className="w-full bg-transparent text-sm font-semibold outline-none"
+          />
         </div>
+        {props.lowStockOpen && (
+          <DataTable
+            headers={[
+              "Item Name",
+              "Current Stock",
+              "Minimum Stock",
+              "Unit",
+              "Category",
+              "Branch",
+            ]}
+            rows={props.lowStockRows.map((s: any) => [
+              s.itemName,
+              <span key="q" className="font-black text-red-600">
+                {s.quantity}
+              </span>,
+              s.minThreshold ?? 10,
+              s.unit ?? "-",
+              VRSNB_ITEMS.find((i) => i.name === s.itemName)?.category ?? "-",
+              BRANCH,
+            ])}
+            empty="No low stock items found."
+          />
+        )}
+      </Panel>
+      <Panel
+        title="Stock Management View"
+        icon={<Package className="size-4" />}
+      >
+        <DataTable
+          headers={[
+            "Item",
+            "Current Stock",
+            "Unit",
+            "Minimum",
+            "Price",
+            "Status",
+          ]}
+          rows={props.branchStock.map((s: any) => [
+            s.itemName,
+            s.quantity,
+            s.unit ?? "-",
+            s.minThreshold ?? 10,
+            money(s.price ?? 0),
+            <StatusBadge
+              key="status"
+              tone={s.quantity <= (s.minThreshold ?? 10) ? "red" : "green"}
+            >
+              {s.quantity <= (s.minThreshold ?? 10) ? "Low" : "OK"}
+            </StatusBadge>,
+          ])}
+          empty="No stock records found."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function PurchaseOrdersTab({ userName }: { userName: string }) {
+  const { purchaseOrders, addPurchaseOrder, updatePoStatus } =
+    useBranchOpsStore();
+  const [form, setForm] = useState({
+    supplier: "",
+    itemName: VRSNB_ITEMS[0]?.name || "",
+    quantity: "",
+    expectedRate: "",
+    expectedDeliveryDate: dateInput(),
+    remarks: "",
+  });
+  const rows = purchaseOrders.filter((p) => p.branch === BRANCH);
+  const create = () => {
+    const qty = Number(form.quantity);
+    const rate = Number(form.expectedRate);
+    if (!form.supplier.trim() || !qty || !rate) return;
+    addPurchaseOrder({
+      branch: BRANCH,
+      supplier: form.supplier,
+      itemName: form.itemName,
+      quantity: qty,
+      expectedRate: rate,
+      totalAmount: qty * rate,
+      expectedDeliveryDate: form.expectedDeliveryDate,
+      remarks: form.remarks,
+      createdBy: userName,
+    });
+    setForm({
+      ...form,
+      supplier: "",
+      quantity: "",
+      expectedRate: "",
+      remarks: "",
+    });
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
+      <Panel
+        title="Create Purchase Order"
+        icon={<ClipboardCheck className="size-4" />}
+      >
+        <div className="space-y-3">
+          <Field label="Supplier">
+            <input
+              className={inputCls}
+              value={form.supplier}
+              onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+            />
+          </Field>
+          <Field label="Item">
+            <select
+              className={inputCls}
+              value={form.itemName}
+              onChange={(e) => setForm({ ...form, itemName: e.target.value })}
+            >
+              {VRSNB_ITEMS.map((item) => (
+                <option key={item.name}>{item.name}</option>
+              ))}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantity">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.quantity}
+                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              />
+            </Field>
+            <Field label="Purchase Price">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.expectedRate}
+                onChange={(e) =>
+                  setForm({ ...form, expectedRate: e.target.value })
+                }
+              />
+            </Field>
+          </div>
+          <Field label="Expected Delivery">
+            <input
+              type="date"
+              className={inputCls}
+              value={form.expectedDeliveryDate}
+              onChange={(e) =>
+                setForm({ ...form, expectedDeliveryDate: e.target.value })
+              }
+            />
+          </Field>
+          <Field label="Remarks">
+            <textarea
+              className={inputCls}
+              value={form.remarks}
+              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+            />
+          </Field>
+          <button
+            onClick={create}
+            className={cn(btnCls, "w-full bg-slate-950 text-white")}
+          >
+            <ClipboardCheck className="size-4" />
+            Create PO
+          </button>
+        </div>
+      </Panel>
+      <Panel
+        title="PO Management"
+        icon={<Truck className="size-4" />}
+        action={
+          <button
+            className={cn(
+              btnCls,
+              "bg-white text-slate-700 ring-1 ring-slate-200",
+            )}
+            onClick={() =>
+              csvDownload(
+                "VRSNB_Purchase_Orders.csv",
+                rows.map((p) => ({
+                  PONumber: p.poNo,
+                  Supplier: p.supplier,
+                  Item: p.itemName,
+                  Quantity: p.quantity,
+                  Rate: p.expectedRate,
+                  Total: p.totalAmount,
+                  Status: p.status,
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
+        <div className="space-y-3">
+          {rows.map((p) => (
+            <div key={p.id} className="rounded-3xl border border-slate-200 p-4">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="font-black text-slate-950">
+                    {p.poNo} · {p.supplier}
+                  </p>
+                  <p className="text-sm font-semibold text-slate-500">
+                    {p.itemName} · {p.quantity} × {money(p.expectedRate)} ·{" "}
+                    {money(p.totalAmount)}
+                  </p>
+                  <p className="text-xs font-semibold text-slate-400">
+                    Expected {p.expectedDeliveryDate || "-"} ·{" "}
+                    {p.remarks || "No remarks"}
+                  </p>
+                </div>
+                <StatusBadge
+                  tone={
+                    p.status === "Received" || p.status === "Closed"
+                      ? "green"
+                      : p.status === "Rejected" || p.status === "Cancelled"
+                        ? "red"
+                        : "amber"
+                  }
+                >
+                  {p.status}
+                </StatusBadge>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(
+                  [
+                    "Draft",
+                    "Ordered",
+                    "Partially Received",
+                    "Received",
+                    "Cancelled",
+                  ] as const
+                ).map((status) => (
+                  <button
+                    key={status}
+                    className={cn(
+                      btnCls,
+                      "bg-slate-50 text-slate-700 ring-1 ring-slate-200",
+                    )}
+                    onClick={() => updatePoStatus(p.id, status, userName)}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function PurchaseInvoicesTab({
+  userName,
+  branchStock,
+  manualUpdateStock,
+  fetchBranchData,
+  setNotice,
+}: {
+  userName: string;
+  branchStock: any[];
+  manualUpdateStock: any;
+  fetchBranchData: any;
+  setNotice: (v: string) => void;
+}) {
+  const {
+    purchases,
+    addPurchase,
+    addPurchasePayment,
+    markPurchaseSynced,
+    addAuditLog,
+  } = useBranchOpsStore();
+  const [form, setForm] = useState({
+    supplier: "",
+    invoiceNo: "",
+    invoiceDate: dateInput(),
+    itemName: VRSNB_ITEMS[0]?.name || "",
+    quantity: "",
+    unit: "pcs",
+    rate: "",
+    tax: "0",
+    discount: "0",
+    paidAmount: "0",
+    paymentMethod: "cash",
+    remarks: "",
+  });
+  const rows = purchases.filter((p) => p.branch === BRANCH);
+  const create = () => {
+    const qty = Number(form.quantity);
+    const rate = Number(form.rate);
+    const tax = Number(form.tax || 0);
+    const discount = Number(form.discount || 0);
+    const total = Math.max(0, qty * rate + tax - discount);
+    const paid = Math.min(Number(form.paidAmount || 0), total);
+    if (!form.supplier.trim() || !form.invoiceNo.trim() || !qty || !rate)
+      return;
+    const purchase = addPurchase({
+      branch: BRANCH,
+      supplier: form.supplier,
+      invoiceNo: form.invoiceNo,
+      invoiceDate: form.invoiceDate,
+      itemName: form.itemName,
+      quantity: qty,
+      unit: form.unit as any,
+      cost: rate,
+      tax,
+      discount,
+      total,
+      enteredBy: userName,
+      paymentMethod: paid > 0 ? (form.paymentMethod as any) : "credit",
+      remarks: form.remarks,
+    });
+    if (paid > 0)
+      addPurchasePayment({
+        branch: BRANCH,
+        purchaseId: purchase.id,
+        supplier: form.supplier,
+        amount: paid,
+        mode: form.paymentMethod as any,
+        reference: form.invoiceNo,
+        remarks: "Payment during invoice creation",
+        paidBy: userName,
+      });
+    setForm({
+      ...form,
+      invoiceNo: "",
+      invoiceDate: dateInput(),
+      quantity: "",
+      rate: "",
+      tax: "0",
+      discount: "0",
+      paidAmount: "0",
+      remarks: "",
+    });
+  };
+  const sync = async (p: PurchaseRecord) => {
+    if (p.syncedToStock || p.syncStatus === "Synced") {
+      setNotice(
+        "This purchase invoice is already synced to stock. Duplicate sync prevented.",
+      );
+      return;
+    }
+    const existing = branchStock.find(
+      (s) => normal(s.itemName) === normal(p.itemName),
+    );
+    const currentQty = Number(existing?.quantity ?? 0);
+    const err = await manualUpdateStock(
+      BRANCH,
+      existing?.itemName || p.itemName,
+      currentQty + Number(p.quantity),
+      userName,
+    );
+    if (err) {
+      setNotice(err);
+      return;
+    }
+    markPurchaseSynced(p.id, userName, "Synced");
+    addAuditLog({
+      branch: BRANCH,
+      user: userName,
+      action: "VRSNB Purchase Sync To Stock",
+      previousValue: `${p.itemName}: ${currentQty}`,
+      newValue: `${p.itemName}: ${currentQty + Number(p.quantity)} from ${p.invoiceNo}`,
+    });
+    await fetchBranchData(BRANCH);
+    setNotice(`${p.invoiceNo} synced to VRSNB stock successfully.`);
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel
+        title="Create Purchase Invoice"
+        icon={<Receipt className="size-4" />}
+      >
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Supplier">
+              <input
+                className={inputCls}
+                value={form.supplier}
+                onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+              />
+            </Field>
+            <Field label="Invoice No">
+              <input
+                className={inputCls}
+                value={form.invoiceNo}
+                onChange={(e) =>
+                  setForm({ ...form, invoiceNo: e.target.value })
+                }
+              />
+            </Field>
+          </div>
+          <Field label="Invoice Date">
+            <input
+              type="date"
+              className={inputCls}
+              value={form.invoiceDate}
+              onChange={(e) => setForm({ ...form, invoiceDate: e.target.value })}
+            />
+          </Field>
+          <Field label="Item">
+            <select
+              className={inputCls}
+              value={form.itemName}
+              onChange={(e) => setForm({ ...form, itemName: e.target.value })}
+            >
+              {VRSNB_ITEMS.map((item) => (
+                <option key={item.name}>{item.name}</option>
+              ))}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantity">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.quantity}
+                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              />
+            </Field>
+            <Field label="Unit">
+              <select
+                className={inputCls}
+                value={form.unit}
+                onChange={(e) => setForm({ ...form, unit: e.target.value })}
+              >
+                <option value="pcs">Pcs</option>
+                <option value="kg">KG</option>
+                <option value="ltr">Ltr</option>
+                <option value="nos">Nos</option>
+                <option value="bunch">Bunch</option>
+              </select>
+            </Field>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Rate">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.rate}
+                onChange={(e) => setForm({ ...form, rate: e.target.value })}
+              />
+            </Field>
+            <Field label="Tax">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.tax}
+                onChange={(e) => setForm({ ...form, tax: e.target.value })}
+              />
+            </Field>
+            <Field label="Discount">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.discount}
+                onChange={(e) => setForm({ ...form, discount: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Paid Amount">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.paidAmount}
+                onChange={(e) =>
+                  setForm({ ...form, paidAmount: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="Payment Method">
+              <select
+                className={inputCls}
+                value={form.paymentMethod}
+                onChange={(e) =>
+                  setForm({ ...form, paymentMethod: e.target.value })
+                }
+              >
+                <option value="cash">Cash</option>
+                <option value="upi">UPI</option>
+                <option value="card">Card</option>
+                <option value="bank">Bank</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Remarks">
+            <input
+              className={inputCls}
+              value={form.remarks}
+              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+            />
+          </Field>
+          <button
+            onClick={create}
+            className={cn(btnCls, "w-full bg-slate-950 text-white")}
+          >
+            <Receipt className="size-4" />
+            Save Invoice
+          </button>
+        </div>
+      </Panel>
+      <Panel
+        title="Purchase Invoice Management & Stock Sync"
+        icon={<PackageCheck className="size-4" />}
+        action={
+          <StatusBadge tone="amber">
+            {
+              rows.filter(
+                (r) => !(r.syncedToStock || r.syncStatus === "Synced"),
+              ).length
+            }{" "}
+            Not Synced
+          </StatusBadge>
+        }
+      >
+        <DataTable
+          headers={[
+            "Invoice",
+            "Supplier",
+            "Date",
+            "Item",
+            "Qty",
+            "Total",
+            "Paid",
+            "Balance",
+            "Sync Status",
+            "Action",
+          ]}
+          rows={rows.map((p) => [
+            p.invoiceNo,
+            p.supplier,
+            p.invoiceDate ? new Date(p.invoiceDate).toLocaleDateString("en-IN") : "-",
+            p.itemName,
+            `${p.quantity} ${p.unit ?? ""}`,
+            money(p.total),
+            money(p.paidAmount),
+            money(Math.max(0, p.total - p.paidAmount)),
+            <StatusBadge
+              key="s"
+              tone={
+                p.syncedToStock || p.syncStatus === "Synced" ? "green" : "amber"
+              }
+            >
+              {p.syncStatus ?? "Not Synced"}
+            </StatusBadge>,
+            <button
+              key="a"
+              onClick={() => sync(p)}
+              disabled={p.syncedToStock || p.syncStatus === "Synced"}
+              className={cn(
+                btnCls,
+                p.syncedToStock || p.syncStatus === "Synced"
+                  ? "bg-slate-100 text-slate-400"
+                  : "bg-emerald-600 text-white",
+              )}
+            >
+              <RefreshCcw className="size-4" />
+              Sync to Stock
+            </button>,
+          ])}
+          empty="No purchase invoices created."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function SupplierPaymentsTab({ userName }: { userName: string }) {
+  const { purchases, purchasePayments, addPurchasePayment } =
+    useBranchOpsStore();
+  const pendingPurchases = purchases.filter(
+    (p) => p.branch === BRANCH && p.total > p.paidAmount,
+  );
+  const [form, setForm] = useState({
+    purchaseId: "",
+    supplier: "",
+    amount: "",
+    mode: "cash",
+    reference: "",
+    remarks: "",
+  });
+  const selected = pendingPurchases.find((p) => p.id === form.purchaseId);
+  const save = () => {
+    const amount = Number(form.amount);
+    const supplier = selected?.supplier || form.supplier;
+    if (!supplier.trim() || !amount) return;
+    addPurchasePayment({
+      branch: BRANCH,
+      purchaseId: selected?.id,
+      supplier,
+      amount,
+      mode: form.mode as any,
+      reference: form.reference,
+      remarks: form.remarks || "Supplier payment",
+      paidBy: userName,
+    });
+    setForm({
+      purchaseId: "",
+      supplier: "",
+      amount: "",
+      mode: "cash",
+      reference: "",
+      remarks: "",
+    });
+  };
+  const rows = purchasePayments.filter((p) => p.branch === BRANCH);
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title="Pay Supplier" icon={<WalletCards className="size-4" />}>
+        <div className="space-y-3">
+          <Field label="Pending Invoice">
+            <select
+              className={inputCls}
+              value={form.purchaseId}
+              onChange={(e) => {
+                const p = pendingPurchases.find((x) => x.id === e.target.value);
+                setForm({
+                  ...form,
+                  purchaseId: e.target.value,
+                  supplier: p?.supplier || "",
+                  amount: p ? String(Math.max(0, p.total - p.paidAmount)) : "",
+                });
+              }}
+            >
+              <option value="">Manual / Select invoice</option>
+              {pendingPurchases.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.invoiceNo} · {p.supplier} · Due{" "}
+                  {money(Math.max(0, p.total - p.paidAmount))}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Supplier">
+            <input
+              className={inputCls}
+              value={form.supplier}
+              onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.amount}
+                onChange={(e) => setForm({ ...form, amount: e.target.value })}
+              />
+            </Field>
+            <Field label="Mode">
+              <select
+                className={inputCls}
+                value={form.mode}
+                onChange={(e) => setForm({ ...form, mode: e.target.value })}
+              >
+                <option value="cash">Cash</option>
+                <option value="upi">UPI</option>
+                <option value="card">Card</option>
+                <option value="bank">Bank</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Reference">
+            <input
+              className={inputCls}
+              value={form.reference}
+              onChange={(e) => setForm({ ...form, reference: e.target.value })}
+            />
+          </Field>
+          <Field label="Remarks">
+            <input
+              className={inputCls}
+              value={form.remarks}
+              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+            />
+          </Field>
+          <button
+            onClick={save}
+            className={cn(btnCls, "w-full bg-slate-950 text-white")}
+          >
+            <WalletCards className="size-4" />
+            Save Payment
+          </button>
+        </div>
+      </Panel>
+      <Panel title="Payment History" icon={<History className="size-4" />}>
+        <DataTable
+          headers={[
+            "Date",
+            "Supplier",
+            "Amount",
+            "Mode",
+            "Reference",
+            "Paid By",
+            "Remarks",
+          ]}
+          rows={rows.map((p) => [
+            fmtDateTime(p.createdAt),
+            p.supplier,
+            money(p.amount),
+            p.mode.toUpperCase(),
+            p.reference,
+            p.paidBy,
+            p.remarks,
+          ])}
+          empty="No supplier payments yet."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function BankDepositsTab({
+  userName,
+  cashBalance,
+  upiBalance,
+  cardBalance,
+  bankBalance,
+}: {
+  userName: string;
+  cashBalance: number;
+  upiBalance: number;
+  cardBalance: number;
+  bankBalance: number;
+}) {
+  const { bankDeposits, addBankDeposit } = useBranchOpsStore();
+  const [form, setForm] = useState({
+    depositDate: dateInput(),
+    amount: "",
+    bankAccount: "VRSNB Main Bank Account",
+    paymentMode: "Cash Deposit",
+    slipNo: "",
+    transactionRef: "",
+    remarks: "",
+  });
+  const save = () => {
+    const amount = Number(form.amount);
+    if (!amount) return;
+    addBankDeposit({
+      branch: BRANCH,
+      depositDate: form.depositDate,
+      amount,
+      bankAccount: form.bankAccount,
+      paymentMode: form.paymentMode as any,
+      slipNo: form.slipNo,
+      transactionRef: form.transactionRef,
+      remarks: form.remarks,
+      enteredBy: userName,
+    });
+    setForm({
+      ...form,
+      amount: "",
+      slipNo: "",
+      transactionRef: "",
+      remarks: "",
+    });
+  };
+  const rows = bankDeposits.filter((d) => d.branch === BRANCH);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Kpi
+          label="Cash Balance"
+          value={money(cashBalance)}
+          icon={<Banknote className="size-5" />}
+          tone="green"
+        />
+        <Kpi
+          label="UPI Balance"
+          value={money(upiBalance)}
+          icon={<Smartphone className="size-5" />}
+          tone="blue"
+        />
+        <Kpi
+          label="Card Balance"
+          value={money(cardBalance)}
+          icon={<CreditCard className="size-5" />}
+          tone="purple"
+        />
+        <Kpi
+          label="Bank Balance"
+          value={money(bankBalance)}
+          icon={<Landmark className="size-5" />}
+          tone="amber"
+        />
       </div>
-      <div className="mx-4 my-4 grid grid-cols-2 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        <button onClick={() => setMode('cafe')} className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          ☕ Cafe
-        </button>
-        <button onClick={() => setMode('bakery')} className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          🥐 Bakery
-        </button>
-        <button onClick={() => setMode('credit')} className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          💳 Credit
-        </button>
-        <button onClick={() => setMode('advance')} className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200', mode === 'advance' ? 'bg-amber-500 text-white shadow-soft' : 'text-muted-foreground hover:text-foreground')}>
-          🏷️ Advance
-        </button>
+      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <Panel
+          title="Bank Deposit Entry"
+          icon={<Landmark className="size-4" />}
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Deposit Date">
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={form.depositDate}
+                  onChange={(e) =>
+                    setForm({ ...form, depositDate: e.target.value })
+                  }
+                />
+              </Field>
+              <Field label="Amount">
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={form.amount}
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                />
+              </Field>
+            </div>
+            <Field label="Bank Account">
+              <input
+                className={inputCls}
+                value={form.bankAccount}
+                onChange={(e) =>
+                  setForm({ ...form, bankAccount: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="Deposit Method">
+              <select
+                className={inputCls}
+                value={form.paymentMode}
+                onChange={(e) =>
+                  setForm({ ...form, paymentMode: e.target.value })
+                }
+              >
+                <option>Cash Deposit</option>
+                <option>UPI Transfer</option>
+                <option>Card Settlement</option>
+                <option>Bank Transfer</option>
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Slip No">
+                <input
+                  className={inputCls}
+                  value={form.slipNo}
+                  onChange={(e) => setForm({ ...form, slipNo: e.target.value })}
+                />
+              </Field>
+              <Field label="Transaction Ref">
+                <input
+                  className={inputCls}
+                  value={form.transactionRef}
+                  onChange={(e) =>
+                    setForm({ ...form, transactionRef: e.target.value })
+                  }
+                />
+              </Field>
+            </div>
+            <Field label="Remarks">
+              <input
+                className={inputCls}
+                value={form.remarks}
+                onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+              />
+            </Field>
+            <button
+              onClick={save}
+              className={cn(btnCls, "w-full bg-slate-950 text-white")}
+            >
+              <Landmark className="size-4" />
+              Save Deposit
+            </button>
+          </div>
+        </Panel>
+        <Panel
+          title="Bank Deposit History"
+          icon={<History className="size-4" />}
+        >
+          <DataTable
+            headers={[
+              "Date",
+              "Amount",
+              "Method",
+              "Bank",
+              "Slip",
+              "Ref",
+              "Entered By",
+              "Remarks",
+            ]}
+            rows={rows.map((d) => [
+              fmtDate(d.depositDate),
+              money(d.amount),
+              d.paymentMode,
+              d.bankAccount,
+              d.slipNo,
+              d.transactionRef,
+              d.enteredBy,
+              d.remarks,
+            ])}
+            empty="No bank deposits saved."
+          />
+        </Panel>
       </div>
-      <div className="px-4 space-y-4">
-        {mode === 'cafe'    && <CafeView />}
-        {mode === 'bakery'  && <VRSNBBakeryView />}
-        {mode === 'credit'  && <AdminCreditTab branches={['Cafe', 'VRSNB']} accentColor="text-blue-700" />}
-        {mode === 'advance' && <AdminAdvanceTab branches={['Cafe', 'VRSNB']} />}
+    </div>
+  );
+}
+
+function SalespersonManagementTab({ userName }: { userName: string }) {
+  const { salespeople, addSalesperson, updateSalesperson, removeSalesperson } =
+    useBranchOpsStore();
+  const [editId, setEditId] = useState("");
+  const [form, setForm] = useState({
+    name: "",
+    mobile: "",
+    address: "",
+    role: "Salesperson",
+    joiningDate: dateInput(),
+    status: "Active",
+    remarks: "",
+  });
+  const rows = salespeople.filter((p) => p.branch === BRANCH);
+  const reset = () => {
+    setEditId("");
+    setForm({
+      name: "",
+      mobile: "",
+      address: "",
+      role: "Salesperson",
+      joiningDate: dateInput(),
+      status: "Active",
+      remarks: "",
+    });
+  };
+  const save = () => {
+    if (!form.name.trim()) return;
+    const details: Partial<SalespersonProfile> = {
+      mobile: form.mobile,
+      address: form.address,
+      role: form.role,
+      joiningDate: form.joiningDate,
+      status: form.status as any,
+      active: form.status === "Active",
+      assignedBranch: BRANCH,
+      remarks: form.remarks,
+    };
+    if (editId)
+      updateSalesperson(
+        editId,
+        form.name,
+        form.status === "Active",
+        userName,
+        details,
+      );
+    else addSalesperson(BRANCH, form.name, userName, details);
+    reset();
+  };
+  const edit = (p: SalespersonProfile) => {
+    setEditId(p.id);
+    setForm({
+      name: p.name,
+      mobile: p.mobile || "",
+      address: p.address || "",
+      role: p.role || "Salesperson",
+      joiningDate: p.joiningDate || dateInput(),
+      status: p.active ? "Active" : "Inactive",
+      remarks: p.remarks || "",
+    });
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel
+        title={editId ? "Edit Salesperson" : "Add Salesperson"}
+        icon={<UserRound className="size-4" />}
+      >
+        <div className="space-y-3">
+          <Field label="Name">
+            <input
+              className={inputCls}
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Mobile">
+              <input
+                className={inputCls}
+                value={form.mobile}
+                onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+              />
+            </Field>
+            <Field label="Joining Date">
+              <input
+                type="date"
+                className={inputCls}
+                value={form.joiningDate}
+                onChange={(e) =>
+                  setForm({ ...form, joiningDate: e.target.value })
+                }
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Role">
+              <input
+                className={inputCls}
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value })}
+              />
+            </Field>
+            <Field label="Status">
+              <select
+                className={inputCls}
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value })}
+              >
+                <option>Active</option>
+                <option>Inactive</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Address">
+            <textarea
+              className={inputCls}
+              value={form.address}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
+            />
+          </Field>
+          <Field label="Remarks">
+            <input
+              className={inputCls}
+              value={form.remarks}
+              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+            />
+          </Field>
+          <div className="flex gap-2">
+            <button
+              onClick={save}
+              className={cn(btnCls, "flex-1 bg-slate-950 text-white")}
+            >
+              {editId ? "Update" : "Add"} Salesperson
+            </button>
+            {editId && (
+              <button
+                onClick={reset}
+                className={cn(
+                  btnCls,
+                  "bg-white text-slate-700 ring-1 ring-slate-200",
+                )}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      </Panel>
+      <Panel
+        title="Salesperson Master"
+        icon={<BookOpenCheck className="size-4" />}
+      >
+        <DataTable
+          headers={[
+            "Name",
+            "Mobile",
+            "Role",
+            "Joining",
+            "Status",
+            "Address",
+            "Remarks",
+            "Action",
+          ]}
+          rows={rows.map((p) => [
+            p.name,
+            p.mobile || "-",
+            p.role || "Salesperson",
+            p.joiningDate || "-",
+            <StatusBadge key="s" tone={p.active ? "green" : "red"}>
+              {p.active ? "Active" : "Inactive"}
+            </StatusBadge>,
+            p.address || "-",
+            p.remarks || "-",
+            <div key="a" className="flex gap-2">
+              <button
+                className={cn(btnCls, "bg-amber-50 text-amber-700")}
+                onClick={() => edit(p)}
+              >
+                Edit
+              </button>
+              <button
+                className={cn(btnCls, "bg-red-50 text-red-600")}
+                onClick={() => removeSalesperson(p.id, userName)}
+              >
+                Delete
+              </button>
+            </div>,
+          ])}
+          empty="No salesperson profiles added."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function SalespersonReportTab(props: any) {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi
+          label="Active Salespersons"
+          value={props.salespersonRows.length}
+          icon={<UserRound className="size-5" />}
+        />
+        <Kpi
+          label="Net Sales"
+          value={money(props.netSales)}
+          icon={<IndianRupee className="size-5" />}
+          tone="green"
+        />
+        <Kpi
+          label="Return Amount"
+          value={money(props.returnAmount)}
+          icon={<RotateCcw className="size-5" />}
+          tone="red"
+        />
       </div>
+      <Panel
+        title="Salesperson Performance"
+        icon={<BarChart3 className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload(
+                "VRSNB_Salesperson_Report.csv",
+                props.salespersonRows.map((r: any) => ({
+                  Salesperson: r.name,
+                  GrossSales: r.grossSales,
+                  ReturnAmount: r.returns,
+                  NetSales: r.netSales,
+                  Bills: r.bills,
+                  AvgBill: r.avgBillValue,
+                  Cash: r.cash,
+                  UPI: r.upi,
+                  Card: r.card,
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
+        <DataTable
+          headers={[
+            "Salesperson",
+            "Gross Sales",
+            "Return Amount",
+            "Net Sales",
+            "Bills",
+            "Avg Bill",
+            "Cash",
+            "UPI",
+            "Card",
+          ]}
+          rows={props.salespersonRows.map((r: any) => [
+            r.name,
+            money(r.grossSales),
+            money(r.returns),
+            <span key="n" className="font-black text-emerald-700">
+              {money(r.netSales)}
+            </span>,
+            r.bills,
+            money(r.avgBillValue),
+            money(r.cash),
+            money(r.upi),
+            money(r.card),
+          ])}
+          empty="No salesperson sales data for selected period."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function DailyClosureTab({ userName, ...props }: any) {
+  const { cashierClosures, addCashierClosure } = useBranchOpsStore();
+  const [form, setForm] = useState({
+    openingCash: "0",
+    closingCash: "",
+    remarks: "",
+  });
+  const cashMovementsNet = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash")
+    .reduce(
+      (s: number, m: any) => s + (m.direction === "in" ? m.amount : -m.amount),
+      0,
+    );
+  const expectedCash = Number(form.openingCash || 0) + cashMovementsNet;
+  const diff = Number(form.closingCash || 0) - expectedCash;
+  const save = () => {
+    addCashierClosure({
+      branch: BRANCH,
+      cashier: userName,
+      openingCash: Number(form.openingCash || 0),
+      closingCash: Number(form.closingCash || 0),
+      expectedCash,
+      difference: diff,
+      cash: props.cashSales,
+      upi: props.upiSales,
+      card: props.cardSales,
+      returns: props.returnAmount,
+      discounts: 0,
+      billsCount: props.billsCount,
+      duplicateBills: 0,
+      creditSales: props.creditBillAmount,
+      creditCollections: props.clearedCredit,
+      notes: form.remarks,
+    });
+    setForm({ openingCash: "0", closingCash: "", remarks: "" });
+  };
+  const rows = cashierClosures.filter((c) => c.branch === BRANCH);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Kpi
+          label="Gross Sales"
+          value={money(props.grossSales)}
+          icon={<Receipt className="size-5" />}
+          tone="amber"
+        />
+        <Kpi
+          label="Return Amount"
+          value={money(props.returnAmount)}
+          icon={<RotateCcw className="size-5" />}
+          tone="red"
+        />
+        <Kpi
+          label="Net Sales"
+          value={money(props.netSales)}
+          icon={<IndianRupee className="size-5" />}
+          tone="green"
+        />
+        <Kpi
+          label="Pending Credit"
+          value={money(props.pendingCredit)}
+          icon={<WalletCards className="size-5" />}
+          tone="purple"
+        />
+      </div>
+      <Panel
+        title="Daily Closure Summary"
+        icon={<CalendarClock className="size-4" />}
+        action={
+          <div className="flex gap-2">
+            <button
+              onClick={() => window.print()}
+              className={cn(
+                btnCls,
+                "bg-white text-slate-700 ring-1 ring-slate-200",
+              )}
+            >
+              <Printer className="size-4" />
+              Print
+            </button>
+            <button
+              onClick={() =>
+                csvDownload("VRSNB_Daily_Closure.csv", [
+                  {
+                    OpeningBalance: form.openingCash,
+                    GrossSales: props.grossSales,
+                    ReturnAmount: props.returnAmount,
+                    NetSales: props.netSales,
+                    CashSales: props.cashSales,
+                    UPISales: props.upiSales,
+                    CardSales: props.cardSales,
+                    CreditSales: props.creditBillAmount,
+                    PurchasePayments: props.purchasePaid,
+                    BankDeposits: props.depositAmount,
+                    ClosingBalance: form.closingCash,
+                    Difference: diff,
+                    Remarks: form.remarks,
+                  },
+                ])
+              }
+              className={cn(btnCls, "bg-slate-950 text-white")}
+            >
+              <Download className="size-4" />
+              Export
+            </button>
+          </div>
+        }
+      >
+        <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <Field label="Opening Balance">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.openingCash}
+                onChange={(e) =>
+                  setForm({ ...form, openingCash: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="Closing Cash Counted">
+              <input
+                type="number"
+                className={inputCls}
+                value={form.closingCash}
+                onChange={(e) =>
+                  setForm({ ...form, closingCash: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="Remarks">
+              <textarea
+                className={inputCls}
+                value={form.remarks}
+                onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+              />
+            </Field>
+            <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
+              <p className="text-xs font-black uppercase text-slate-500">
+                Expected Cash
+              </p>
+              <p className="text-2xl font-black">{money(expectedCash)}</p>
+              <p
+                className={cn(
+                  "text-sm font-black",
+                  diff === 0 ? "text-emerald-700" : "text-red-600",
+                )}
+              >
+                Difference {money(diff)}
+              </p>
+            </div>
+            <button
+              className={cn(btnCls, "w-full bg-slate-950 text-white")}
+              onClick={save}
+            >
+              Save Closure
+            </button>
+          </div>
+          <DataTable
+            headers={["Field", "Amount"]}
+            rows={[
+              ["Opening balance", money(Number(form.openingCash || 0))],
+              ["Total gross sales", money(props.grossSales)],
+              ["Return amount", money(props.returnAmount)],
+              ["Net sales", money(props.netSales)],
+              ["Cash sales", money(props.cashSales)],
+              ["UPI sales", money(props.upiSales)],
+              ["Card sales", money(props.cardSales)],
+              ["Credit sales", money(props.creditBillAmount)],
+              ["Purchase payments", money(props.purchasePaid)],
+              ["Bank deposits", money(props.depositAmount)],
+              ["Cleared credit", money(props.clearedCredit)],
+              ["Pending credit", money(props.pendingCredit)],
+              ["Closing balance", money(Number(form.closingCash || 0))],
+              ["Difference", money(diff)],
+            ]}
+          />
+        </div>
+      </Panel>
+      <Panel title="Closure History" icon={<History className="size-4" />}>
+        <DataTable
+          headers={[
+            "Date",
+            "Cashier",
+            "Opening",
+            "Expected",
+            "Closing",
+            "Difference",
+            "Bills",
+            "Cash",
+            "UPI",
+            "Card",
+            "Returns",
+            "Remarks",
+          ]}
+          rows={rows.map((c) => [
+            fmtDateTime(c.createdAt),
+            c.cashier,
+            money(c.openingCash),
+            money(c.expectedCash),
+            money(c.closingCash),
+            money(c.difference),
+            c.billsCount,
+            money(c.cash),
+            money(c.upi),
+            money(c.card),
+            money(c.returns),
+            c.notes,
+          ])}
+          empty="No daily closures saved."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function ReportsTab(props: any) {
+  const dueCredits = useBranchOpsStore
+    .getState()
+    .creditSales.filter(
+      (c) =>
+        c.branch === BRANCH &&
+        c.status !== "Paid" &&
+        c.status !== "Written Off",
+    );
+  const whatsappRows: any[] = [];
+  const reminderRows: any[] = [];
+  const disputeRows = useBranchOpsStore
+    .getState()
+    .notifications.filter(
+      (n) => n.branch === BRANCH && n.type === "Stock Dispute",
+    );
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Kpi
+          label="Shop-wise/Customer Sales"
+          value={
+            props.branchBills.filter((b: any) => b.creditCustomerName).length
+          }
+          icon={<Store className="size-5" />}
+        />
+        <Kpi
+          label="Due Credits"
+          value={dueCredits.length}
+          icon={<WalletCards className="size-5" />}
+          tone="red"
+        />
+        <Kpi
+          label="Item Reports"
+          value={props.topItems.length}
+          icon={<Package className="size-5" />}
+          tone="blue"
+        />
+        <Kpi
+          label="Disputes"
+          value={disputeRows.length}
+          icon={<AlertTriangle className="size-5" />}
+          tone="amber"
+        />
+      </div>
+      <Panel
+        title="Branch Reports"
+        icon={<FileSpreadsheet className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload("VRSNB_Branch_Report.csv", [
+                {
+                  GrossSales: props.grossSales,
+                  ReturnAmount: props.returnAmount,
+                  NetSales: props.netSales,
+                  CashSales: props.cashSales,
+                  UPISales: props.upiSales,
+                  CardSales: props.cardSales,
+                  CreditSales: props.creditBillAmount,
+                  PendingCredit: props.pendingCredit,
+                },
+              ])
+            }
+          >
+            <Download className="size-4" />
+            Export Summary
+          </button>
+        }
+      >
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div>
+            <h3 className="mb-2 font-black">Item-wise Sales</h3>
+            <DataTable
+              headers={["Item", "Qty", "Gross", "Returns", "Net"]}
+              rows={props.topItems.map((i: any) => [
+                i.name,
+                i.qty,
+                money(i.gross),
+                money(i.returns),
+                money(i.net),
+              ])}
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Due Payment Report</h3>
+            <DataTable
+              headers={[
+                "Customer",
+                "Bill",
+                "Total",
+                "Paid",
+                "Balance",
+                "Due Date",
+                "Status",
+              ]}
+              rows={dueCredits.map((c) => [
+                c.customerName,
+                c.billNo,
+                money(c.total),
+                money(c.paidAmount),
+                money(c.balanceDue),
+                c.dueDate,
+                c.status,
+              ])}
+              empty="No due credit records."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">
+              WhatsApp Bill Sent/Failed Report
+            </h3>
+            <DataTable
+              headers={["Bill", "Customer", "Status", "Date"]}
+              rows={whatsappRows}
+              empty="No WhatsApp log table is connected yet. Supabase migration includes vrsnb_whatsapp_logs."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Payment Reminder Report</h3>
+            <DataTable
+              headers={["Bill", "Customer", "Pending", "Last Reminder"]}
+              rows={reminderRows}
+              empty="No reminder history yet. Supabase migration includes vrsnb_payment_reminders."
+            />
+          </div>
+          <div className="xl:col-span-2">
+            <h3 className="mb-2 font-black">Dispute Report</h3>
+            <DataTable
+              headers={["Date", "Title", "Details", "Raised By", "Status"]}
+              rows={disputeRows.map((d) => [
+                fmtDateTime(d.createdAt),
+                d.title,
+                d.details,
+                d.raisedBy,
+                d.status,
+              ])}
+              empty="No disputes."
+            />
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function NotificationsTab({ userName }: { userName: string }) {
+  const { notifications, updateNotificationStatus } = useBranchOpsStore();
+  const rows = notifications.filter((n) => n.branch === BRANCH);
+  return (
+    <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
+      <DataTable
+        headers={[
+          "Date",
+          "Type",
+          "Title",
+          "Details",
+          "Raised By",
+          "Status",
+          "Action",
+        ]}
+        rows={rows.map((n) => [
+          fmtDateTime(n.createdAt),
+          n.type,
+          n.title,
+          n.details,
+          n.raisedBy,
+          <StatusBadge
+            key="s"
+            tone={
+              n.status === "Resolved"
+                ? "green"
+                : n.status === "Seen"
+                  ? "blue"
+                  : "amber"
+            }
+          >
+            {n.status}
+          </StatusBadge>,
+          <div key="a" className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-blue-50 text-blue-700")}
+              onClick={() => updateNotificationStatus(n.id, "Seen", userName)}
+            >
+              Review
+            </button>
+            <button
+              className={cn(btnCls, "bg-emerald-50 text-emerald-700")}
+              onClick={() =>
+                updateNotificationStatus(n.id, "Resolved", userName)
+              }
+            >
+              Clear / Resolve
+            </button>
+          </div>,
+        ])}
+        empty="No notifications for VRSNB."
+      />
+    </Panel>
+  );
+}
+
+function AuditTab() {
+  const { auditLogs } = useBranchOpsStore();
+  const rows = auditLogs.filter((a) => a.branch === BRANCH);
+  return (
+    <Panel
+      title="Audit Logs"
+      icon={<ShieldCheck className="size-4" />}
+      action={
+        <button
+          className={cn(btnCls, "bg-slate-950 text-white")}
+          onClick={() =>
+            csvDownload(
+              "VRSNB_Audit_Logs.csv",
+              rows.map((r) => ({
+                Date: fmtDateTime(r.createdAt),
+                User: r.user,
+                Action: r.action,
+                Previous: r.previousValue,
+                New: r.newValue,
+              })),
+            )
+          }
+        >
+          <Download className="size-4" />
+          Export
+        </button>
+      }
+    >
+      <DataTable
+        headers={["Date", "User", "Action", "Previous", "New"]}
+        rows={rows.map((r) => [
+          fmtDateTime(r.createdAt),
+          r.user,
+          r.action,
+          r.previousValue,
+          r.newValue,
+        ])}
+        empty="No audit logs found."
+      />
+    </Panel>
+  );
+}
+
+function DataTable({
+  headers,
+  rows,
+  empty = "No records found.",
+}: {
+  headers: string[];
+  rows?: ReactNode[][];
+  empty?: string;
+}) {
+  const safeRows = rows || [];
+  if (!safeRows.length)
+    return (
+      <div className="rounded-3xl bg-slate-50 p-8 text-center text-sm font-black text-slate-400 ring-1 ring-slate-100">
+        {empty}
+      </div>
+    );
+  return (
+    <div className="overflow-x-auto rounded-3xl border border-slate-200">
+      <table className="w-full min-w-[850px] text-sm">
+        <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
+          <tr>
+            {headers.map((h) => (
+              <th key={h} className="px-4 py-3">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 bg-white">
+          {safeRows.map((row, i) => (
+            <tr key={i} className="align-top hover:bg-slate-50/70">
+              {row.map((cell, j) => (
+                <td key={j} className="px-4 py-3 font-semibold text-slate-700">
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
