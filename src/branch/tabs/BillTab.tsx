@@ -88,6 +88,10 @@ function detectSellUnit(name: string): SellUnit {
   return kws.some((k) => lower.includes(k)) ? 'kg' : 'pcs';
 }
 
+function normalizeItemName(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 // Fetch a shared sequential bill number from the DB so all branches
 // (VRSNB, SNB, Hosur) share the same incrementing counter.
 async function fetchNextBillNo(): Promise<string> {
@@ -540,8 +544,8 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
       {unit === 'kg' && inCart ? (
         <KgInput value={cartQty} onChange={onKgChange} max={item.quantity} />
       ) : unit === 'kg' ? (
-        <button onClick={onAdd}
-          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
+        <button onClick={onAdd} disabled={noStock}
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed', noStock ? 'bg-slate-100 text-slate-400' : colors.bg, !noStock && colors.text)}>
           <Scale className="size-3.5" /> Weigh & Add
         </button>
       ) : inCart ? (
@@ -552,8 +556,8 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
             className="size-9 rounded-lg cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 transition"><Plus className="size-4" /></button>
         </div>
       ) : (
-        <button onClick={onAdd}
-          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
+        <button onClick={onAdd} disabled={noStock}
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed', noStock ? 'bg-slate-100 text-slate-400' : colors.bg, !noStock && colors.text)}>
           <Plus className="size-3.5" /> Add
         </button>
       )}
@@ -595,23 +599,23 @@ function SnbItemCard({ item, inCart, cartQty, stockQty, onAdd, onRemove, onKgCha
         )}
       </div>
       {unit === 'kg' && inCart ? (
-        <KgInput value={cartQty} onChange={onKgChange} max={999} />
+        <KgInput value={cartQty} onChange={onKgChange} max={stockQty} />
       ) : unit === 'kg' ? (
-        <button onClick={onAdd}
-          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95', colors.bg, colors.text)}>
+        <button onClick={onAdd} disabled={noStock}
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 border transition active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed', noStock ? 'bg-slate-100 text-slate-400' : colors.bg, !noStock && colors.text)}>
           <Scale className="size-3.5" /> Weigh & Add
         </button>
       ) : inCart ? (
         <div className="flex items-center gap-2 justify-between">
           <button onClick={onRemove} className="size-9 rounded-lg bg-muted flex items-center justify-center active:scale-90 transition border border-border"><Minus className="size-4" /></button>
           <span className={cn('text-lg font-bold tabular-nums', overStock && 'text-amber-600')}>{cartQty}</span>
-          <button onClick={onAdd}
-            className={cn('size-9 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90 transition',
+          <button onClick={onAdd} disabled={noStock || cartQty >= stockQty}
+            className={cn('size-9 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90 transition disabled:opacity-40 disabled:cursor-not-allowed',
               overStock ? 'bg-amber-500' : 'cafe-gradient')}><Plus className="size-4" /></button>
         </div>
       ) : (
-        <button onClick={onAdd}
-          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95', colors.bg, colors.text)}>
+        <button onClick={onAdd} disabled={noStock}
+          className={cn('w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-1 border transition active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed', noStock ? 'bg-slate-100 text-slate-400' : colors.bg, !noStock && colors.text)}>
           <Plus className="size-3.5" /> Add
         </button>
       )}
@@ -648,9 +652,8 @@ function CartLineItem({ item, stockQty, onAdd, onRemove, onDelete, onPriceChange
           <>
             <button onClick={onRemove} className="size-7 rounded-lg bg-muted flex items-center justify-center active:scale-90 transition"><Minus className="size-3" /></button>
             <span className="w-5 text-center text-xs font-bold tabular-nums">{item.quantity}</span>
-            {/* SNB: no stock cap — can sell any quantity */}
-            <button onClick={onAdd} disabled={!isSNB && item.quantity >= stockQty}
-              className="size-7 rounded-lg cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 transition"><Plus className="size-3" /></button>
+            <button onClick={onAdd} disabled={item.quantity >= stockQty}
+              className="size-7 rounded-lg cafe-gradient text-primary-foreground flex items-center justify-center active:scale-90 disabled:opacity-40 disabled:cursor-not-allowed transition"><Plus className="size-3" /></button>
           </>
         )}
         {item.sellUnit === 'kg' && (
@@ -1745,23 +1748,31 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   // ── Cart helpers ─────────────────────────────────────────────────────────────
 
   const getCartItem = (name: string) => cart.find((c) => c.itemName === name);
-  const getStockQty = (name: string) => branchStock.find((s) => s.itemName === name)?.quantity ?? 0;
+  const getStockQty = (name: string) => branchStock.find((s) => normalizeItemName(s.itemName) === normalizeItemName(name))?.quantity ?? 0;
   const calcLine    = (price: number|null, qty: number) =>
     price != null ? Math.round(price * qty * 100) / 100 : null;
 
   // Add from SNB price list
   const addSnbItemToCart = (item: SnbItem) => {
     const unit: SellUnit = item.uom === 'Kgs' ? 'kg' : 'pcs';
+    const available = getStockQty(item.name);
+    const step = unit === 'kg' ? 0.5 : 1;
+    if (available <= 0) {
+      setError(`${item.name} is out of stock and cannot be billed.`);
+      return;
+    }
+    setError('');
     setCart((prev) => {
       const ex = prev.find((c) => c.itemName === item.name);
       if (ex) {
-        if (unit === 'pcs') {
-          const nq = ex.quantity + 1;
-          return prev.map((c) => c.itemName === item.name ? { ...c, quantity: nq, lineTotal: calcLine(c.price, nq) } : c);
+        const nq = Number((ex.quantity + step).toFixed(3));
+        if (nq > available) {
+          setError(`Only ${available} ${unit} available for ${item.name}.`);
+          return prev;
         }
-        return prev;
+        return prev.map((c) => c.itemName === item.name ? { ...c, quantity: nq, lineTotal: calcLine(c.price, nq) } : c);
       }
-      const qty = unit === 'kg' ? 0.5 : 1;
+      const qty = Math.min(step, available);
       return [...prev, { itemName: item.name, quantity: qty, sellUnit: unit, price: item.price, lineTotal: calcLine(item.price, qty) }];
     });
   };
@@ -1902,17 +1913,18 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       });
       if (creditErr) { setError(creditErr); return; }
       // Still record each sale for history/stock
-      if (isSNB && !isVRSNB) {
+      if (isSNB) {
         for (const item of cart) {
-          await recordSnbSale(branch, item.itemName, item.quantity, soldBy, 'credit', item.price ?? 0, billNo.current);
+          const { error: stockErr } = await recordSnbSale(branch, item.itemName, item.quantity, soldBy, 'credit', item.price ?? 0, billNo.current);
+          if (stockErr) throw new Error(stockErr);
         }
       } else {
         for (const item of cart) {
           await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current, item.price ?? 0);
         }
       }
-    } else if (isSNB && !isVRSNB) {
-      // SNB / Hosur — price-list sale, uses recordSnbSale
+    } else if (isSNB) {
+      // SNB / Hosur / VRSNB — price-list sale with strict stock validation
       // C-04 NOTE: items are committed one-by-one (no DB-level rollback).
       // TODO: replace with a single atomic complete_checkout() RPC once backend is ready.
       const snbSucceeded: string[] = [];
@@ -1930,8 +1942,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         snbSucceeded.push(item.itemName);
       }
     } else {
-      // VRSNB — uses recordSale (allow-negative RPC) so stock goes negative in DB
-      // and appears in the Negative tab
+      // Cafe / stock-based sale with strict stock validation
       const succeeded: string[] = [];
       for (const item of cart) {
         const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current, item.price ?? 0);
