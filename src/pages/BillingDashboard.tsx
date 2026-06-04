@@ -18,7 +18,7 @@ import {
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
-import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
+import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 
@@ -69,7 +69,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
     branches.flatMap(b =>
       (allCreditSales?.[b] || []).map(cs => ({ ...cs, branch: b }))
     ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [allCreditSales]
+    [allCreditSales, branches]
   );
 
   const filtered = useMemo(() => {
@@ -263,8 +263,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
   );
 }
 
-const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
-  { key: 'all',        label: 'All',        dotColor: 'bg-foreground' },
+const STATUS_TABS: { key: OrderStatus; label: string; dotColor: string }[] = [
   { key: 'pending',    label: 'New',        dotColor: 'bg-amber-500' },
   { key: 'cancelled',  label: 'Cancelled',  dotColor: 'bg-red-500' },
 ];
@@ -322,13 +321,18 @@ function dateTimeLabel(value?: string): string {
   return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function printPaidBill(order: Order) {
+function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
   const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
   const parcelCharges = order.parcelCharges ?? 0;
+  const breakdownRows = order.paymentBreakdown ? `
+    <div class="row"><span>Cash</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.cash || 0))}</span></div>
+    <div class="row"><span>UPI</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.upi || 0))}</span></div>
+    <div class="row"><span>Card</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.card || 0))}</span></div>
+  ` : '';
   printCounterSlip(`Bill ${order.orderNumber}`, `
     <div class="c">
       <div class="b" style="font-size:15px">Café Aadvikam</div>
-      <div class="muted">PAID BILL</div>
+      <div class="muted">${copyType === 'duplicate' ? 'DUPLICATE BILL' : 'ORIGINAL BILL'}</div>
       <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
     </div>
     <div class="dash"></div>
@@ -342,6 +346,7 @@ function printPaidBill(order: Order) {
     ${parcelCharges > 0 ? `<div class="row"><span>Parcel</span><span class="b">${safeHtml(formatCurrency(parcelCharges))}</span></div>` : ''}
     <div class="row total"><span>Total</span><span>${safeHtml(formatCurrency(order.total))}</span></div>
     <div class="row"><span>Payment</span><span class="b">${safeHtml(paidBy)}</span></div>
+    ${breakdownRows}
     <div class="dash"></div>
     <div class="c b">Thank you, visit again</div>
   `);
@@ -403,6 +408,9 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
 }
 
 type SourceFilter = 'all' | 'staff' | 'qr';
+type DirectPaymentMethod = 'cash' | 'upi' | 'card';
+type BillPaymentMethod = DirectPaymentMethod | 'part_payment';
+type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
 
 // ── Advance Order Card ────────────────────────────────────────────────────────
 function AdvanceOrderCard({ order }: { order: Order }) {
@@ -823,11 +831,11 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
-        <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -861,7 +869,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       )}
 
       {/* ═══ COL 2: Search + Items ═══════════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
@@ -886,7 +894,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -1004,7 +1012,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       </div>
 
       {/* ═══ COL 3: Cart + Advance form ═════════════════════════════════════════ */}
-      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
@@ -1020,7 +1028,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
 
         {/* Cart items */}
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
           {allEmpty ? (
             <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2">
               <ShoppingBag className="size-7 opacity-25" />
@@ -1066,7 +1074,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
 
         {/* Advance form + pending — fixed bottom */}
-        <div className="border-t border-border shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
+        <div className="biller-cart-footer border-t border-border shrink-0 overflow-y-auto">
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
               <div className="grid grid-cols-2 gap-2">
@@ -1181,7 +1189,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
                         className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
@@ -1254,7 +1262,8 @@ function NewBillPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
-  const [billMethod, setBillMethod] = useState<'cash' | 'upi' | 'card'>('cash');
+  const [billMethod, setBillMethod] = useState<BillPaymentMethod>('cash');
+  const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
@@ -1291,6 +1300,13 @@ function NewBillPanel() {
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
+  const splitBreakdown: PaymentBreakdown = {
+    cash: Number(splitPayment.cash || 0),
+    upi: Number(splitPayment.upi || 0),
+    card: Number(splitPayment.card || 0),
+  };
+  const splitTotal = splitBreakdown.cash + splitBreakdown.upi + splitBreakdown.card;
+  const splitRemaining = total - splitTotal;
 
   const handleAddCustomItem = () => {
     const n = customName.trim();
@@ -1400,6 +1416,22 @@ function NewBillPanel() {
     }
 
     // ── Regular order path ────────────────────────────────────────────────────
+    const paymentBreakdown = billMethod === 'part_payment' ? splitBreakdown : undefined;
+    if (paymentBreakdown) {
+      const values = Object.values(paymentBreakdown);
+      if (values.some(value => Number.isNaN(value) || value < 0)) {
+        setSubmitError('Enter valid split payment amounts.');
+        return;
+      }
+      if (splitTotal <= 0) {
+        setSubmitError('Enter at least one split payment amount.');
+        return;
+      }
+      if (Math.abs(splitRemaining) > 0.01) {
+        setSubmitError(`Split payment must match bill total. Remaining: ${formatCurrency(splitRemaining)}`);
+        return;
+      }
+    }
     setSubmitting(true);
 
     // Inject custom items as synthetic menu items
@@ -1421,16 +1453,18 @@ function NewBillPanel() {
         orderSource: 'staff',
         parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
         paymentType: billMethod,
+        paymentBreakdown,
         billedBy,
         status: 'served',
       });
       const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
-      if (savedOrder) printPaidBill(savedOrder);
+      if (savedOrder) printPaidBill(savedOrder, 'original');
       setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setBillMethod('cash');
+      setSplitPayment({ cash: '', upi: '', card: '' });
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit order — please try again.';
@@ -1490,17 +1524,51 @@ function NewBillPanel() {
             </div>
             <div>
               <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['cash', 'upi', 'card'] as const).map(m => (
-                  <button key={m} type="button" onClick={() => setBillMethod(m)}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  { key: 'cash' as const, label: 'Cash', icon: <Banknote className="size-5" /> },
+                  { key: 'upi' as const, label: 'UPI', icon: <Smartphone className="size-5" /> },
+                  { key: 'card' as const, label: 'Card', icon: <CreditCard className="size-5" /> },
+                  { key: 'part_payment' as const, label: 'Part', icon: <Wallet className="size-5" /> },
+                ]).map(m => (
+                  <button key={m.key} type="button" onClick={() => { setBillMethod(m.key); setSubmitError(''); }}
                     className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
-                      billMethod === m ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
-                    {m === 'cash' ? <Banknote className="size-5" /> : m === 'upi' ? <Smartphone className="size-5" /> : <CreditCard className="size-5" />}
-                    {m.toUpperCase()}
+                      billMethod === m.key ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
+                    {m.icon}
+                    {m.label}
                   </button>
                 ))}
               </div>
             </div>
+            {billMethod === 'part_payment' && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-emerald-700">Part Payment</p>
+                  <p className={cn('text-xs font-black tabular-nums', Math.abs(splitRemaining) <= 0.01 ? 'text-emerald-700' : splitRemaining > 0 ? 'text-amber-700' : 'text-red-600')}>
+                    {Math.abs(splitRemaining) <= 0.01 ? 'Matched' : splitRemaining > 0 ? `Remaining ${formatCurrency(splitRemaining)}` : `Extra ${formatCurrency(Math.abs(splitRemaining))}`}
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['cash', 'upi', 'card'] as const).map(method => (
+                    <label key={method} className="block">
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-widest text-muted-foreground">{method.toUpperCase()}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={splitPayment[method]}
+                        onChange={e => { setSplitPayment(prev => ({ ...prev, [method]: e.target.value })); setSubmitError(''); }}
+                        placeholder="0"
+                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between rounded-xl bg-card/80 px-3 py-2 text-xs font-black">
+                  <span>Split total</span>
+                  <span className="tabular-nums">{formatCurrency(splitTotal)} / {formatCurrency(total)}</span>
+                </div>
+              </div>
+            )}
             {submitError && <p className="text-xs text-destructive font-semibold">{submitError}</p>}
             <div className="flex gap-2">
               <button type="button" onClick={() => setShowBillModal(false)} disabled={submitting}
@@ -1514,11 +1582,11 @@ function NewBillPanel() {
         </div>
       </div>
     )}
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
       {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
       {itemMode === 'menu' && (
-        <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -1552,7 +1620,7 @@ function NewBillPanel() {
       )}
 
       {/* ═══ COL 2: Search + Item picker ════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
@@ -1577,7 +1645,7 @@ function NewBillPanel() {
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -1699,7 +1767,7 @@ function NewBillPanel() {
       </div>
 
       {/* ═══ COL 3: Bill summary ════════════════════════════════════════════════ */}
-      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
@@ -1719,7 +1787,7 @@ function NewBillPanel() {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-3">
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
           {allEmpty ? (
             <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
               <ShoppingBag className="size-8 opacity-25" />
@@ -1728,46 +1796,42 @@ function NewBillPanel() {
             </div>
           ) : (
             <>
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-3 py-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Billing cart</p>
-                <p className="text-xs font-semibold text-emerald-800">Check quantity, amount, order type and payment before printing.</p>
-              </div>
               {cart.map(ci => (
-                <div key={ci.menuItem.id} className="rounded-2xl border border-border bg-background p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-base font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
-                      <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} × {ci.quantity}</p>
-                    </div>
-                    <p className="text-base text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                <div key={ci.menuItem.id} className="biller-cart-line rounded-2xl border border-border bg-background p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} each</p>
                   </div>
-                  <div className="mt-3 flex items-center justify-between gap-2">
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-10 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-4" /></button>
-                    <span className="flex-1 text-center rounded-xl bg-muted/60 py-2 text-lg font-black tabular-nums">{ci.quantity}</span>
-                    <button onClick={() => addToCart(ci.menuItem)} className="size-10 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-4" /></button>
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-10 rounded-xl bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-4" /></button>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.quantity}</span>
+                    <button onClick={() => addToCart(ci.menuItem)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
                   </div>
                 </div>
               ))}
               {customItems.map(ci => (
-                <div key={ci.id} className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-base font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
-                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(ci.price)} × {ci.qty}</p>
+                <div key={ci.id} className="biller-cart-line rounded-2xl border border-amber-200 bg-amber-50/45 p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
                     </div>
-                    <p className="text-base text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.price)} each</p>
                   </div>
-                  <div className="mt-3 flex items-center justify-between gap-2">
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-10 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-4" /></button>
-                    <span className="flex-1 text-center rounded-xl bg-muted/60 py-2 text-lg font-black tabular-nums">{ci.qty}</span>
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-10 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-4" /></button>
-                    <button onClick={() => updateCustomQty(ci.id, 0)} className="size-10 rounded-xl bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90" aria-label={`Remove ${ci.name}`}><Trash2 className="size-4" /></button>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.qty}</span>
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <button onClick={() => updateCustomQty(ci.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
                   </div>
                 </div>
               ))}
@@ -1776,7 +1840,7 @@ function NewBillPanel() {
         </div>
 
         {!allEmpty && (
-          <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
+          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
             <div className="flex gap-2">
               <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
                 className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
@@ -1959,12 +2023,12 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('new_bill');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit' | null>(null);
 
   // U-01 FIX: guard against accidental cart wipe — show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit') => {
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'credit') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -2019,8 +2083,7 @@ export default function BillingDashboard() {
 
   const filtered = useMemo(() => {
     if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
-    let result = regularOrders;
-    if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
+    let result = regularOrders.filter(o => o.status === activeTab);
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
   }, [regularOrders, activeTab, sourceFilter]);
@@ -2076,7 +2139,7 @@ export default function BillingDashboard() {
       )}
 
       {/* ── Status bar ── */}
-      <div className="px-4 pt-3 pb-2 flex items-center justify-between border-b border-border">
+      <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
           <span className="text-xs font-body font-medium text-muted-foreground">
@@ -2085,7 +2148,7 @@ export default function BillingDashboard() {
         </div>
         <div className="flex items-center gap-1.5">
           {([
-            { key: 'all' as SourceFilter, label: `All · ${regularOrders.length}`, icon: null },
+            { key: 'all' as SourceFilter, label: `Total · ${regularOrders.length}`, icon: null },
             { key: 'staff' as SourceFilter, label: `Staff · ${staffCount}`, icon: <UserCheck className="size-3" /> },
             { key: 'qr' as SourceFilter, label: `QR · ${qrCount}`, icon: <QrCode className="size-3" /> },
           ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
@@ -2100,7 +2163,7 @@ export default function BillingDashboard() {
 
       {/* ── Tab rail ── */}
       <div className="border-b border-border bg-background shrink-0">
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
+        <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
 
           <button onClick={() => switchTab('new_bill')}
             className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
@@ -2144,11 +2207,9 @@ export default function BillingDashboard() {
 
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const count = tab.key === 'all'
-              ? (sourceFilter === 'all' ? regularOrders.length : regularOrders.filter(o => o.orderSource === sourceFilter).length)
-              : (sourceFilter === 'all'
-                  ? regularOrders.filter(o => o.status === tab.key).length
-                  : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
+            const count = sourceFilter === 'all'
+              ? regularOrders.filter(o => o.status === tab.key).length
+              : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length;
             return (
               <button key={tab.key} onClick={() => switchTab(tab.key)}
                 className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
@@ -2186,8 +2247,8 @@ export default function BillingDashboard() {
                 <p className="font-body font-semibold text-foreground">No orders here</p>
                 <p className="text-sm font-body text-muted-foreground mt-1">
                   {sourceFilter !== 'all'
-                    ? `No ${activeTab === 'all' ? '' : activeTab + ' '}orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
-                    : activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
+                    ? `No ${activeTab} orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
+                    : activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab} orders right now`}
                 </p>
                 {/* U-11 FIX: offer one-tap clear when a source filter is hiding results */}
                 {sourceFilter !== 'all' && (

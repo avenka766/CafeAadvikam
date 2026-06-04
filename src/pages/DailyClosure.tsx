@@ -54,6 +54,15 @@ function safeNumber(value: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function safeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function paymentTotalForOrder(order: Order) {
   if (order.paymentBreakdown) {
     return safeNumber(order.paymentBreakdown.cash) + safeNumber(order.paymentBreakdown.upi) + safeNumber(order.paymentBreakdown.card);
@@ -257,7 +266,121 @@ export default function DailyClosure() {
   const printableTitle = `Daily Closure - ${printableDate(selectedDate)}`;
 
   const handlePrint = () => {
-    window.print();
+    const printedAt = new Date().toLocaleString('en-IN');
+    const closedBy = currentUser?.displayName || currentUser?.username || 'Biller';
+    const paymentRowsHtml = paymentRows.map(key => `
+      <tr><td>${paymentLabels[key]}</td><td class="right">${safeHtml(formatCurrency(closure.payments[key]))}</td></tr>
+    `).join('');
+    const billerRowsHtml = closure.billers.length === 0
+      ? '<tr><td colspan="4" class="muted center">No closed bills for this date.</td></tr>'
+      : closure.billers.map(biller => `
+        <tr>
+          <td>${safeHtml(biller.name)}</td>
+          <td class="center">${biller.bills}</td>
+          <td class="right">${safeHtml(formatCurrency(biller.collected))}</td>
+          <td class="right">${safeHtml(formatCurrency(biller.credit))}</td>
+        </tr>
+      `).join('');
+    const billRowsHtml = closure.billable.length === 0
+      ? '<tr><td colspan="7" class="muted center">No bills closed for this date.</td></tr>'
+      : closure.billable.map(order => {
+        const paymentLabel = order.paymentType === 'advance'
+          ? `Advance ${order.advancePaidBy || ''}`
+          : order.paymentType === 'part_payment'
+            ? 'Split Payment'
+            : order.paymentType.replace('_', ' ');
+        const paidAmount = order.paymentType === 'advance' ? safeNumber(order.total || order.advanceAmount) : safeNumber(order.total);
+        return `
+          <tr>
+            <td>#${String(order.orderNumber).padStart(4, '0')}</td>
+            <td>${safeHtml(timeLabel(order.createdAt))}</td>
+            <td>${safeHtml(order.customerName || (order.orderType === 'dine_in' ? `Table ${order.tableNumber || '-'}` : 'Walk-in'))}</td>
+            <td>${safeHtml(order.orderType.replace('_', ' '))}</td>
+            <td>${safeHtml(paymentLabel)}</td>
+            <td class="right">${safeHtml(formatCurrency(paidAmount))}</td>
+            <td>${safeHtml(order.billedBy || order.createdBy || '-')}</td>
+          </tr>
+        `;
+      }).join('');
+    const notesHtml = notes.trim() ? `<div class="notes"><b>Closure Notes</b><p>${safeHtml(notes)}</p></div>` : '';
+
+    const win = window.open('', '_blank', 'width=920,height=900');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(printableTitle)}</title>
+      <style>
+        @page { size: A4; margin: 7mm; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; background: #fff; color: #111827; font-family: Arial, Helvetica, sans-serif; }
+        body { font-size: 11px; line-height: 1.35; }
+        .closure-print { width: 100%; }
+        .header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 12px; }
+        h1 { margin: 0; font-size: 22px; line-height: 1; }
+        h2 { margin: 0 0 7px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #374151; }
+        .muted { color: #6b7280; } .right { text-align: right; } .center { text-align: center; } .strong { font-weight: 800; }
+        .badge { display: inline-block; margin-top: 5px; padding: 3px 8px; border: 1px solid #111827; border-radius: 999px; font-weight: 800; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+        .card { border: 1px solid #d1d5db; border-radius: 10px; padding: 9px; break-inside: avoid; }
+        .label { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; font-weight: 800; }
+        .value { margin-top: 4px; font-size: 16px; font-weight: 900; }
+        .section { border: 1px solid #d1d5db; border-radius: 12px; padding: 10px; margin-bottom: 10px; break-inside: avoid; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border-bottom: 1px solid #e5e7eb; padding: 5px 4px; vertical-align: top; }
+        th { background: #f3f4f6; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
+        tr:last-child td { border-bottom: 0; }
+        .totals { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .notes { border: 1px dashed #9ca3af; border-radius: 10px; padding: 8px; margin-bottom: 10px; }
+        .notes p { margin: 4px 0 0; white-space: pre-wrap; }
+        .footer { margin-top: 14px; display: flex; justify-content: space-between; gap: 20px; }
+        .sign { width: 34%; border-top: 1px solid #111827; padding-top: 5px; text-align: center; color: #374151; }
+        @media print {
+          html, body { width: 210mm; min-height: 297mm; }
+          body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          .section, .card { break-inside: avoid; page-break-inside: avoid; }
+        }
+      </style></head><body>
+      <main class="closure-print">
+        <div class="header">
+          <div>
+            <h1>Café Aadvikam Daily Closure</h1>
+            <div class="badge">${safeHtml(printableDate(selectedDate))}</div>
+          </div>
+          <div class="right muted">
+            <div><b>Closed by:</b> ${safeHtml(closedBy)}</div>
+            <div><b>Printed:</b> ${safeHtml(printedAt)}</div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card"><div class="label">Total Sales</div><div class="value">${safeHtml(formatCurrency(closure.totalSales))}</div></div>
+          <div class="card"><div class="label">Collection</div><div class="value">${safeHtml(formatCurrency(closure.collectionTotal))}</div></div>
+          <div class="card"><div class="label">Bills Closed</div><div class="value">${closure.billable.length}</div></div>
+          <div class="card"><div class="label">Cancelled</div><div class="value">${closure.cancelled.length}</div></div>
+        </div>
+
+        <div class="totals">
+          <section class="section"><h2>Payment Collection</h2><table><tbody>${paymentRowsHtml}<tr><td class="strong">Total Collection</td><td class="right strong">${safeHtml(formatCurrency(closure.collectionTotal))}</td></tr></tbody></table></section>
+          <section class="section"><h2>Cash Counter</h2><table><tbody>
+            <tr><td>System Cash</td><td class="right">${safeHtml(formatCurrency(closure.payments.cash))}</td></tr>
+            <tr><td>Physical Cash</td><td class="right">${safeHtml(formatCurrency(closingCashValue || 0))}</td></tr>
+            <tr><td class="strong">Difference</td><td class="right strong">${safeHtml(formatCurrency(cashDifference))}</td></tr>
+          </tbody></table></section>
+        </div>
+
+        <div class="grid">
+          <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(formatCurrency(closure.creditSales))}</div></div>
+          <div class="card"><div class="label">Advance Received</div><div class="value">${safeHtml(formatCurrency(closure.advanceReceived))}</div></div>
+          <div class="card"><div class="label">Advance Balance</div><div class="value">${safeHtml(formatCurrency(closure.advanceBalanceOpen))}</div></div>
+          <div class="card"><div class="label">Average Bill</div><div class="value">${safeHtml(formatCurrency(closure.averageBill))}</div></div>
+        </div>
+
+        ${notesHtml}
+        <section class="section"><h2>Biller Wise Summary</h2><table><thead><tr><th>Biller</th><th class="center">Bills</th><th class="right">Collected</th><th class="right">Credit</th></tr></thead><tbody>${billerRowsHtml}</tbody></table></section>
+        <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Type</th><th>Payment</th><th class="right">Paid</th><th>Biller</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>
+        <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
+      </main>
+    </body></html>`);
+    win.document.close();
+    setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
   };
 
   const refresh = () => {
@@ -275,7 +398,7 @@ export default function DailyClosure() {
               <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400')} />
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">Biller daily closure</p>
             </div>
-            <h1 className="font-display text-2xl font-black text-foreground">Daily Closure</h1>
+            <p className="mt-1 text-sm font-black text-foreground">{printableTitle}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <label className="relative">
