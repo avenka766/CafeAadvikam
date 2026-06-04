@@ -14,6 +14,8 @@ import type { SnbCategory } from '@/branch/snbItems';
 const fmt = (n: number) =>
   `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
+const normal = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CustomSnbItem {
   barcode: number;
@@ -220,7 +222,7 @@ function EditItemModal({
 
 
 export default function SnbItemsTab() {
-  const { stockMismatches, fetchStockMismatches } = useBranchStore();
+  const { stockMismatches, fetchStockMismatches, stock, fetchBranchData } = useBranchStore();
   const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
   const { user } = useAuthStore();
   const [search, setSearch]               = useState('');
@@ -235,6 +237,8 @@ export default function SnbItemsTab() {
   useEffect(() => {
     fetchStockMismatches();
     fetchOverrides('SNB');
+    fetchBranchData('SNB');
+    fetchBranchData('Hosur');
   }, []);
 
   const nextBarcode = useMemo(() => {
@@ -270,6 +274,56 @@ export default function SnbItemsTab() {
     })),
     ...customItems,
   ], [customItems, snbOverrides]);
+
+  const stockStatus = useMemo(() => {
+    const branches = ['SNB', 'Hosur'] as const;
+    const map = new Map<string, {
+      totalQty: number;
+      minLevel: number;
+      missingBranches: string[];
+      lowBranches: string[];
+      outBranches: string[];
+      unit: string;
+      lastUpdated: string;
+    }>();
+
+    allItems.forEach((item) => {
+      const rows = branches.map((branch) => ({
+        branch,
+        row: stock[branch]?.find((s) => normal(s.itemName) === normal(item.name)),
+      }));
+      const totalQty = rows.reduce((sum, entry) => sum + Number(entry.row?.quantity ?? 0), 0);
+      const minLevel = rows.reduce((sum, entry) => sum + Number(entry.row?.minThreshold ?? 0), 0);
+      const missingBranches = rows.filter((entry) => !entry.row).map((entry) => entry.branch);
+      const outBranches = rows.filter((entry) => entry.row && Number(entry.row.quantity) <= 0).map((entry) => entry.branch);
+      const lowBranches = rows.filter((entry) => {
+        const qty = Number(entry.row?.quantity ?? 0);
+        const min = Number(entry.row?.minThreshold ?? 0);
+        return entry.row && qty > 0 && min > 0 && qty <= min;
+      }).map((entry) => entry.branch);
+      map.set(item.name, {
+        totalQty,
+        minLevel,
+        missingBranches,
+        lowBranches,
+        outBranches,
+        unit: item.uom === 'Kgs' ? 'kg' : 'pcs',
+        lastUpdated: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      });
+    });
+    return map;
+  }, [allItems, stock]);
+
+  const alertCounts = useMemo(() => {
+    let missing = 0, out = 0, low = 0, available = 0;
+    stockStatus.forEach((s) => {
+      if (s.missingBranches.length) missing += 1;
+      else if (s.totalQty <= 0 || s.outBranches.length) out += 1;
+      else if (s.lowBranches.length || (s.minLevel > 0 && s.totalQty <= s.minLevel)) low += 1;
+      else available += 1;
+    });
+    return { missing, out, low, available };
+  }, [stockStatus]);
 
   const handleSaveEdit = async (barcode: number, updates: { name: string; price: number }) => {
     setSaveError(null);
@@ -351,6 +405,25 @@ export default function SnbItemsTab() {
         </div>
       )}
 
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-emerald-700">Available</p>
+          <p className="text-xl font-bold text-emerald-800 tabular-nums">{alertCounts.available}</p>
+        </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-amber-700">Low Stock</p>
+          <p className="text-xl font-bold text-amber-800 tabular-nums">{alertCounts.low}</p>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-red-700">Out of Stock</p>
+          <p className="text-xl font-bold text-red-800 tabular-nums">{alertCounts.out}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-slate-600">Stock Missing</p>
+          <p className="text-xl font-bold text-slate-800 tabular-nums">{alertCounts.missing}</p>
+        </div>
+      </div>
+
       {/* ── Header row ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-3">
         <div>
@@ -423,16 +496,35 @@ export default function SnbItemsTab() {
               const hasMismatch = mismatchSummary.some(
                 (m) => m.itemName.toLowerCase() === item.name.toLowerCase(),
               );
+              const status = stockStatus.get(item.name);
+              const isMissing = Boolean(status?.missingBranches.length);
+              const isOut = !isMissing && Boolean((status?.totalQty ?? 0) <= 0 || status?.outBranches.length);
+              const isLow = !isMissing && !isOut && Boolean(status?.lowBranches.length || ((status?.minLevel ?? 0) > 0 && (status?.totalQty ?? 0) <= (status?.minLevel ?? 0)));
               const isCustom = 'isCustom' in item;
               return (
                 <div key={item.barcode}
-                  className={cn('flex items-center gap-3 px-4 py-3', hasMismatch && 'bg-red-50/40', isCustom && 'bg-blue-50/30')}>
+                  className={cn('flex items-center gap-3 px-4 py-3', (hasMismatch || isOut || isMissing) && 'bg-red-50/40', isLow && 'bg-amber-50/40', isCustom && 'bg-blue-50/30')}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium">{item.name}</p>
                       {hasMismatch && (
                         <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
                           <AlertTriangle className="size-2.5" /> Stock alert
+                        </span>
+                      )}
+                      {isMissing && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded-full">
+                          Stock Not Available
+                        </span>
+                      )}
+                      {isOut && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">
+                          Out of Stock
+                        </span>
+                      )}
+                      {isLow && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">
+                          Low Stock
                         </span>
                       )}
                       {isCustom && (
@@ -449,6 +541,13 @@ export default function SnbItemsTab() {
                           : <><Hash className="size-2.5" /> per pc</>}
                       </span>
                       <span className="text-[10px] text-muted-foreground">{item.category}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+                      <span>Stock: <b className={cn(isOut || isMissing ? 'text-red-600' : isLow ? 'text-amber-600' : 'text-emerald-700')}>{status ? `${status.totalQty} ${status.unit}` : 'Not available'}</b></span>
+                      {status && status.minLevel > 0 && <span>Min: {status.minLevel} {status.unit}</span>}
+                      {status?.missingBranches.length ? <span>Missing: {status.missingBranches.join(', ')}</span> : null}
+                      {status?.lowBranches.length ? <span>Low: {status.lowBranches.join(', ')}</span> : null}
+                      {status?.outBranches.length ? <span>Out: {status.outBranches.join(', ')}</span> : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
