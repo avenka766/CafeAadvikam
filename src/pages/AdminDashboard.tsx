@@ -1,1402 +1,1182 @@
-import { useMemo, useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
-import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency } from '@/lib/utils';
-import {
-  TrendingUp, ShoppingBag, IndianRupee, Clock,
-  Package, XCircle, RefreshCw, Wifi, Download,
-  LayoutDashboard, Store, Filter, FileText, Bell,
-  ClipboardList, Calendar, Trash2,
-} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
-import { BRANCHES } from '@/branch/types';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
-} from 'recharts';
-import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
-import StaffActivityLog from '@/bakery/StaffActivityLog';
-import DayEndReport from '@/bakery/DayEndReport';
+import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
+import { SNB_ITEMS } from '@/branch/snbItems';
+import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
+import SnbItemsTab from '@/components/admin/SnbItemsTab';
+import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
-import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  Activity,
+  AlertTriangle,
+  Banknote,
+  BarChart3,
+  Bell,
+  CalendarClock,
+  CheckCircle2,
+  ChevronDown,
+  ClipboardList,
+  CreditCard,
+  Database,
+  Download,
+  FileSpreadsheet,
+  Filter,
+  History,
+  IndianRupee,
+  Landmark,
+  LayoutDashboard,
+  Lock,
+  Menu,
+  Package,
+  PackageSearch,
+  Printer,
+  Receipt,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  ShoppingBag,
+  Smartphone,
+  Store,
+  TrendingDown,
+  TrendingUp,
+  WalletCards,
+  X,
+  XCircle,
+} from 'lucide-react';
 
-const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
+const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
+const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
+const STOCK_ALERT_STATUSES = ['Stock Not Available', 'Out of Stock', 'Low Stock'] as const;
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-function downloadCSV(rows: string[][], filename: string) {
-  const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'stock-alerts' | 'daily-closure' | 'credits' | 'advance' | 'audit';
+type StockAlertStatus = (typeof STOCK_ALERT_STATUSES)[number];
+
+type StockAlertRow = {
+  itemName: string;
+  category: string;
+  branch: Branch;
+  currentStock: number;
+  minimumStock: number;
+  unit: string;
+  lastUpdated: string;
+  status: StockAlertStatus;
+};
+
+type SalesTxn = {
+  id: string;
+  branch: Branch;
+  itemName: string;
+  qty: number;
+  revenue: number;
+  payment: string;
+  soldAt: string;
+  soldBy: string;
+};
+
+type ClosureRow = {
+  branch: Branch;
+  openingBalance: number;
+  totalSales: number;
+  cashSales: number;
+  upiSales: number;
+  cardSales: number;
+  creditSales: number;
+  returns: number;
+  netSales: number;
+  expenses: number;
+  purchasePayments: number;
+  bankDeposits: number;
+  closingBalance: number;
+  differenceAmount: number;
+  remarks: string;
+  status: 'Closed' | 'Pending' | 'Review';
+  closedBy: string;
+  closedAt: string;
+};
+
+const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
+  { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
+  { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
+  { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
+  { id: 'items', label: 'Items', description: 'Bakery SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
+  { id: 'stock-alerts', label: 'Stock Alerts', description: 'Missing, low and out-of-stock items', icon: Bell },
+  { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
+  { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
+  { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
+  { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
+];
+
+function todayInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function lastWeekInput() {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return todayInput(d);
+}
+
+function startOfDay(value: string) {
+  const d = value ? new Date(`${value}T00:00:00`) : new Date(0);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(value: string) {
+  const d = value ? new Date(`${value}T23:59:59`) : new Date('2999-12-31T23:59:59');
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function inRange(iso: string, fromDate: string, toDate: string) {
+  const time = new Date(iso).getTime();
+  return time >= startOfDay(fromDate).getTime() && time <= endOfDay(toDate).getTime();
+}
+
+function localDateKey(iso: string) {
+  const d = new Date(iso);
+  return todayInput(d);
+}
+
+function normal(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function fmtDateTime(iso: string) {
+  return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function csvDownload(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
+  const safeRows = rows.length ? rows : [{ Note: 'No records for selected filters' }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [
+    headers.join(','),
+    ...safeRows.map((row) => headers.map((h) => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(',')),
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
   a.click();
+  URL.revokeObjectURL(a.href);
 }
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
-function KPI({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
-  return (
-    <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6"
-        style={{ background: 'hsl(var(--primary))' }} />
-      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
-      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
-      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
-    </div>
-  );
+function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  const m = (payment || '').toLowerCase();
+  if (key === 'cash') return m === 'cash' || m.includes('cash');
+  if (key === 'upi') return m === 'upi' || m.includes('upi');
+  if (key === 'card') return m === 'card' || m.includes('card');
+  return m === 'credit' || m.includes('credit');
 }
 
-function StatusBadge({ label, count, color }: { label: string; count: number; color: string }) {
-  return (
-    <div className={cn('rounded-xl p-3 text-center', color)}>
-      <p className="font-display text-2xl font-bold tabular-nums">{count}</p>
-      <p className="text-[10px] font-body font-bold uppercase tracking-wide mt-0.5">{label}</p>
-    </div>
-  );
+function paymentAmount(revenue: number, payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  return paymentIncludes(payment, key) ? revenue : 0;
 }
 
-function PaymentRow({ label, amount, total }: { label: string; amount: number; total: number }) {
-  const pct = total > 0 ? Math.round((amount / total) * 100) : 0;
+function Panel({ title, subtitle, action, children, className }: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <div className="flex items-center gap-3">
-      <span className="text-sm font-body w-20 shrink-0">{label}</span>
-      <div className="flex-1 bg-muted rounded-full h-2">
-        <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-sm font-body font-bold tabular-nums shrink-0 w-20 text-right">{formatCurrency(amount)}</span>
-    </div>
-  );
-}
-
-function Row({ label, value, bold, highlight }: { label: string; value: string; bold?: boolean; highlight?: boolean }) {
-  return (
-    <div className={cn('flex justify-between py-0.5', highlight && 'pl-3')}>
-      <span className={cn('text-sm font-body', bold ? 'font-bold text-foreground' : 'text-muted-foreground')}>{label}</span>
-      <span className={cn('text-sm font-body tabular-nums', bold ? 'font-bold text-foreground' : highlight ? 'font-semibold text-primary' : 'text-foreground')}>{value}</span>
-    </div>
-  );
-}
-
-// ─── CAFE DASHBOARD TAB (today only) ─────────────────────────────────────────
-function CafeDashboardTab() {
-  // STORE-01 FIX: granular selector — only re-renders when orders or polling changes
-  const { orders, polling } = useOrderStore(
-    useShallow(s => ({ orders: s.orders, polling: s.polling }))
-  );
-
-  const todayStr = useMemo(() => new Date().toDateString(), []);
-  const todayOrders = useMemo(() => orders.filter(o => new Date(o.createdAt).toDateString() === todayStr), [orders, todayStr]);
-
-  const served = todayOrders.filter(o => o.status === 'served');
-  const pending = todayOrders.filter(o => o.status === 'pending');
-  const preparing = todayOrders.filter(o => o.status === 'preparing');
-  const ready = todayOrders.filter(o => o.status === 'ready');
-  const cancelled = todayOrders.filter(o => o.status === 'cancelled');
-
-  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
-  const totalOrders = todayOrders.length;
-  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    served.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
-      else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
-    }));
-    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 5);
-  }, [served]);
-
-  const paymentTotals = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') cash += o.total;
-      else if (o.paymentType === 'upi') upi += o.total;
-      else if (o.paymentType === 'card') card += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
-      }
-    });
-    return { cash, upi, card };
-  }, [served]);
-
-  const peakHour = useMemo(() => {
-    const hours: Record<number, number> = {};
-    served.forEach(o => { const h = new Date(o.createdAt).getHours(); hours[h] = (hours[h] || 0) + 1; });
-    let max = 0, maxH = 0;
-    Object.entries(hours).forEach(([h, c]) => { if (Number(c) > max) { max = Number(c); maxH = Number(h); } });
-    if (max === 0) return 'N/A';
-    return `${maxH > 12 ? maxH - 12 : maxH}${maxH >= 12 ? 'PM' : 'AM'}`;
-  }, [served]);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
-        <span className="text-xs text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Total Orders" value={String(totalOrders)} color="bg-accent/20 text-accent-foreground" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<Clock className="size-4" />} label="Peak Hour" value={peakHour} color="bg-amber-50 text-amber-700" />
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3 flex items-center gap-2">
-          <RefreshCw className="size-4 text-primary" />Live Order Status
-        </h3>
-        <div className="grid grid-cols-4 gap-2">
-          <StatusBadge label="Pending" count={pending.length} color="bg-amber-100 text-amber-800" />
-          <StatusBadge label="Preparing" count={preparing.length} color="bg-blue-100 text-blue-800" />
-          <StatusBadge label="Ready" count={ready.length} color="bg-emerald-100 text-emerald-800" />
-          <StatusBadge label="Cancelled" count={cancelled.length} color="bg-red-100 text-red-800" />
+    <section className={cn('rounded-3xl border border-slate-200 bg-white shadow-sm shadow-slate-200/60 overflow-hidden', className)}>
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-bold text-slate-950">{title}</h3>
+          {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
         </div>
+        {action}
       </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">Payment Breakdown</h3>
-        <div className="space-y-2">
-          <PaymentRow label="💵 Cash" amount={paymentTotals.cash} total={totalRevenue} />
-          <PaymentRow label="📱 UPI" amount={paymentTotals.upi} total={totalRevenue} />
-          <PaymentRow label="💳 Card" amount={paymentTotals.card} total={totalRevenue} />
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">Top Selling Items</h3>
-        {topItems.length === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No sales today yet</p>
-        ) : (
-          <div className="space-y-2">
-            {topItems.map((item, i) => (
-              <div key={item.name} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                  i === 0 ? 'gold-gradient text-white' : i < 3 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-                )}>{i + 1}</span>
-                <div className="flex-1 min-w-0"><p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p></div>
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-body font-bold tabular-nums">{item.qty} sold</p>
-                  <p className="text-[10px] font-body text-muted-foreground tabular-nums">{formatCurrency(item.revenue)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">GST Summary</h3>
-        {totalRevenue === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No data</p>
-        ) : (() => {
-          const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
-          const gst = Math.round((totalRevenue - taxable) * 100) / 100;
-          const cgst = Math.round((gst / 2) * 100) / 100;
-          const sgst = Math.round((gst / 2) * 100) / 100;
-          return (
-            <div className="space-y-1.5">
-              <Row label="Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
-              <Row label="Taxable Amount" value={formatCurrency(taxable)} />
-              <Row label="GST @ 5%" value={formatCurrency(gst)} />
-              <div className="border-t border-border pt-1.5 mt-1.5">
-                <Row label="CGST @ 2.5%" value={formatCurrency(cgst)} highlight />
-                <Row label="SGST @ 2.5%" value={formatCurrency(sgst)} highlight />
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-
-      {cancelled.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-lg font-bold text-foreground mb-2 flex items-center gap-2">
-            <XCircle className="size-4 text-destructive" />Cancelled Orders
-          </h3>
-          <div className="flex justify-between text-sm font-body mb-2">
-            <span className="text-muted-foreground">Count</span>
-            <span className="font-bold text-destructive">{cancelled.length}</span>
-          </div>
-          <div className="flex justify-between text-sm font-body">
-            <span className="text-muted-foreground">Lost Revenue</span>
-            <span className="font-bold text-destructive">{formatCurrency(cancelled.reduce((s, o) => s + o.total, 0))}</span>
-          </div>
-        </div>
-      )}
-    </div>
+      <div className="p-4">{children}</div>
+    </section>
   );
 }
 
-// ─── CAFE VIEW (Dashboard / Sales / Reports sub-tabs) ────────────────────────
-function CafeView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'waste'>('dashboard');
-
-  const tabs = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
-    { id: 'waste'     as const, label: 'Waste Log', icon: Trash2 },
-  ];
-
+function KpiCard({ label, value, sub, icon, tone = 'slate' }: { label: string; value: ReactNode; sub?: ReactNode; icon: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = {
+    slate: 'bg-slate-50 text-slate-700 ring-slate-200',
+    green: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+    amber: 'bg-amber-50 text-amber-700 ring-amber-200',
+    red: 'bg-red-50 text-red-700 ring-red-200',
+    blue: 'bg-blue-50 text-blue-700 ring-blue-200',
+    purple: 'bg-purple-50 text-purple-700 ring-purple-200',
+  };
   return (
-    <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'shrink-0 whitespace-nowrap flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition',
-              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-            )}
-          >
-            <t.icon className="size-3" />
-            {t.label}
-          </button>
-        ))}
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/60">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</p>
+          <div className="mt-2 font-display text-2xl font-black leading-none text-slate-950 tabular-nums">{value}</div>
+          {sub && <p className="mt-2 text-xs text-slate-500">{sub}</p>}
+        </div>
+        <div className={cn('grid size-11 shrink-0 place-items-center rounded-2xl ring-1', tones[tone])}>{icon}</div>
       </div>
-      {tab === 'dashboard' && <CafeDashboardTab />}
-      {tab === 'reports'   && <CafeReportsTab />}
-      {tab === 'waste'     && <KitchenWasteLogTab />}
     </div>
   );
 }
 
-// ─── BAKERY DASHBOARD TAB (today only) ───────────────────────────────────────
-function BakeryDashboardTab() {
-  const { stock, sales, fetchBranchData } = useBranchStore();
+function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = {
+    slate: 'bg-slate-100 text-slate-700',
+    green: 'bg-emerald-100 text-emerald-700',
+    amber: 'bg-amber-100 text-amber-700',
+    red: 'bg-red-100 text-red-700',
+    blue: 'bg-blue-100 text-blue-700',
+    purple: 'bg-purple-100 text-purple-700',
+  };
+  return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide', tones[tone])}>{children}</span>;
+}
+
+function BranchPill({ branch }: { branch: Branch }) {
+  return <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase', BRANCH_COLORS[branch]?.badge)}>{BRANCH_LABELS[branch] ?? branch}</span>;
+}
+
+function EmptyState({ label }: { label: string }) {
+  return (
+    <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center">
+      <p className="text-sm font-semibold text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function ChartWrap({ children, minHeight = 260 }: { children: ReactNode; minHeight?: number }) {
+  return <div style={{ minHeight }} className="h-[280px] w-full">{children}</div>;
+}
+
+function AdminDashboard() {
+  const { currentUser } = useAuthStore();
+  const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
+  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [fromDate, setFromDate] = useState(lastWeekInput());
+  const [toDate, setToDate] = useState(todayInput());
+  const [closureDate, setClosureDate] = useState(todayInput());
+  const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [stockQuery, setStockQuery] = useState('');
+  const [stockStatusFilter, setStockStatusFilter] = useState<StockAlertStatus | 'all'>('all');
+  const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
+
+  const { orders, polling, startPolling, stopPolling } = useOrderStore((s) => ({
+    orders: s.orders,
+    polling: s.polling,
+    startPolling: s.startPolling,
+    stopPolling: s.stopPolling,
+  }));
+
+  const {
+    stock,
+    sales,
+    creditSales,
+    stockMismatches,
+    fetchBranchData,
+    fetchStockMismatches,
+  } = useBranchStore();
+
+  const {
+    bills,
+    returns,
+    purchases,
+    purchasePayments,
+    creditSales: opsCreditSales,
+    cashMovements,
+    bankDeposits,
+    cashierClosures,
+    auditLogs,
+  } = useBranchOpsStore();
 
   useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
-
-  const today = new Date().toDateString();
-
-  const branchStats = useMemo(() => {
-    return BRANCHES.map(branch => {
-      const todaySales = (sales[branch] || []).filter(s => new Date(s.soldAt).toDateString() === today);
-      const totalQty = todaySales.reduce((a, s) => a + s.quantitySold, 0);
-      const totalRevenue = todaySales.reduce((a, s) => {
-        const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
-        return a + unitPrice * s.quantitySold;
-      }, 0);
-      const stockCount = (stock[branch] || []).length;
-      const lowStock = (stock[branch] || []).filter(s => s.quantity <= s.minThreshold).length;
-      return { branch, totalQty, totalRevenue, stockCount, lowStock, salesCount: todaySales.length };
-    });
-  }, [sales, stock, today]);
-
-  const totalRevenue = branchStats.reduce((a, b) => a + b.totalRevenue, 0);
-  const totalQty = branchStats.reduce((a, b) => a + b.totalQty, 0);
-
-  const allTodaySales = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number }>();
-    BRANCHES.forEach(branch => {
-      (sales[branch] || [])
-        .filter(s => new Date(s.soldAt).toDateString() === today)
-        .forEach(s => {
-          const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
-          const ex = map.get(s.itemName);
-          if (ex) { ex.qty += s.quantitySold; ex.revenue += unitPrice * s.quantitySold; }
-          else map.set(s.itemName, { qty: s.quantitySold, revenue: unitPrice * s.quantitySold });
-        });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8);
-  }, [sales, today]);
-
-  const BRANCH_PILL: Record<Branch, string> = {
-    VRSNB: 'bg-blue-50 border-blue-200 text-blue-700',
-    SNB: 'bg-amber-50 border-amber-200 text-amber-700',
-    Hosur: 'bg-emerald-50 border-emerald-200 text-emerald-700',
-  };
-
-  const barData = branchStats.map(b => ({ branch: b.branch, revenue: b.totalRevenue, qty: b.totalQty }));
-  const maxRev = Math.max(...branchStats.map(b => b.totalRevenue), 1);
-
-  return (
-    <div className="space-y-4">
-      {/* KPI Row */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-card border border-border rounded-xl p-4 col-span-2">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Today's Total Revenue</p>
-          <p className="font-display text-3xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{totalQty} items sold across {BRANCHES.length} branches</p>
-        </div>
-        {branchStats.map(b => (
-          <div key={b.branch} className={cn('border rounded-xl p-3', BRANCH_PILL[b.branch as Branch])}>
-            <p className="text-[10px] font-bold uppercase tracking-wide mb-1">{b.branch}</p>
-            <p className="font-display text-xl font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</p>
-            <p className="text-[10px] mt-0.5 opacity-80">{b.totalQty} items · {b.salesCount} txns</p>
-            {b.lowStock > 0 && <p className="text-[9px] mt-0.5 font-medium text-red-600">⚠ {b.lowStock} low stock</p>}
-          </div>
-        ))}
-      </div>
-
-      {/* Branch Revenue Bar Chart */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-1">Branch Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-3">Today's revenue by branch</p>
-        <div className="space-y-3">
-          {branchStats.map((b, i) => (
-            <div key={b.branch}>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm font-medium">{b.branch}</span>
-                <div className="text-right">
-                  <span className="text-sm font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</span>
-                  <span className="text-[10px] text-muted-foreground ml-2">{b.totalQty} items</span>
-                </div>
-              </div>
-              <div className="h-2.5 bg-muted rounded-full">
-                <div className="h-full rounded-full transition-all" style={{
-                  width: `${Math.round((b.totalRevenue / maxRev) * 100)}%`,
-                  background: CHART_COLORS[i],
-                }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Top Items */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-3">Today · all branches</p>
-        {allTodaySales.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">No sales today</p>
-        ) : (
-          <div className="space-y-2">
-            {allTodaySales.map(([item, v], i) => (
-              <div key={item} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                  i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground'
-                )}>{i + 1}</span>
-                <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <div className="text-right">
-                  <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
-                  <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-// ─── BAKERY SALES TAB ────────────────────────────────────────────────────────
-function BakerySalesTab() {
-  const { sales, fetchBranchData } = useBranchStore();
-  const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
-  const [filterItem, setFilterItem] = useState('');
-  const [filterDate, setFilterDate] = useState('');
-
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
-
-  const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
-    BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({
-        ...s, branch,
-        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-      }));
-    });
-    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-  }, [sales]);
-
-  const allItems = useMemo(() => [...new Set(allSales.map(s => s.itemName))].sort(), [allSales]);
-
-  const filtered = useMemo(() => {
-    return allSales.filter(s => {
-      if (filterBranch !== 'all' && s.branch !== filterBranch) return false;
-      if (filterItem && s.itemName !== filterItem) return false;
-      if (filterDate && new Date(s.soldAt).toDateString() !== new Date(filterDate).toDateString()) return false;
-      return true;
-    });
-  }, [allSales, filterBranch, filterItem, filterDate]);
-
-  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
-  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
-
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-    const rows = filtered.map((s, i) => ({
-      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
-      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
-      'Revenue': s.unitPrice * s.quantitySold,
-      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By': s.soldBy,
-      'Payment': (s as typeof s & { paymentMethod?: string | null }).paymentMethod || '-',
-    }));
-    const ws = rows.length > 0 ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.json_to_sheet([{ Note: 'No sales match selected filters' }]);
-    if (rows.length > 0) autoWidth(ws, rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Bakery Sales');
-    XLSX.writeFile(wb, `BakerySales_${new Date().toISOString().split('T')[0]}.xlsx`);
-  };
-
-  const BRANCH_PILL: Record<Branch, string> = {
-    VRSNB: 'bg-blue-100 text-blue-700',
-    SNB: 'bg-amber-100 text-amber-700',
-    Hosur: 'bg-emerald-100 text-emerald-700',
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Summary KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
-          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
-          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <h3 className="font-semibold text-sm">Filters</h3>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
-            <Download className="size-3" />Excel
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
-            <option value="all">All Branches</option>
-            {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-          </select>
-          <select value={filterItem} onChange={e => setFilterItem(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background">
-            <option value="">All Items</option>
-            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
-          </select>
-          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
-        </div>
-        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
-      </div>
-
-      {/* Sales List */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {filtered.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No sales match your filters.</p>
-        ) : (
-          <div className="divide-y">
-            {filtered.slice(0, 50).map(s => {
-              const lineRevenue = s.unitPrice * s.quantitySold;
-              return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{s.itemName}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_PILL[s.branch])}>{s.branch}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right ml-2 shrink-0">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRevenue)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-// ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
-function CafeReportsTab() {
-  // STORE-01 FIX: select only what this component needs
-  const orders = useOrderStore(s => s.orders);
-
-  const todayISO = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
-
-  const rangeOrders = useMemo(() => {
-    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
-    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
-    return orders.filter(o => {
-      const t = new Date(o.createdAt).getTime();
-      return t >= from.getTime() && t <= to.getTime();
-    });
-  }, [orders, dateFrom, dateTo]);
-
-  const served = rangeOrders.filter(o => o.status === 'served');
-  const cancelled = rangeOrders.filter(o => o.status === 'cancelled');
-  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
-  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
-  const totalDiscount = served.reduce((s, o) => s + o.discount, 0);
-  const dineInCount   = served.filter(o => o.orderType === 'dine_in').length;
-  const takeawayCount = served.filter(o => o.orderType === 'takeaway').length;
-
-  const staffOrders  = useMemo(() => served.filter(o => o.orderSource === 'staff'), [served]);
-  const qrOrders     = useMemo(() => served.filter(o => o.orderSource === 'qr'),    [served]);
-  const staffRevenue = staffOrders.reduce((s, o) => s + o.total, 0);
-  const qrRevenue    = qrOrders.reduce((s, o) => s + o.total, 0);
-
-  const paymentTotals = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') cash += o.total;
-      else if (o.paymentType === 'upi') upi += o.total;
-      else if (o.paymentType === 'card') card += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
-      }
-    });
-    return { cash, upi, card };
-  }, [served]);
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    served.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
-      else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
-    }));
-    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
-  }, [served]);
-
-  const topItemsByRevenue = useMemo(() =>
-    [...topItems].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
-      .map(i => ({ name: i.name.length > 14 ? i.name.slice(0, 14) + '…' : i.name, revenue: i.revenue, qty: i.qty })),
-    [topItems]);
-
-  const dailyRevenue = useMemo(() => {
-    const days = Math.max(1, Math.round((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86400000) + 1);
-    if (days > 31) return [];
-    const result = [];
-    for (let i = 0; i < days; i++) {
-      const d = new Date(dateFrom);
-      d.setDate(d.getDate() + i);
-      const dateStr = d.toDateString();
-      const rev = served.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
-      result.push({ date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), revenue: rev });
-    }
-    return result;
-  }, [served, dateFrom, dateTo]);
-
-  const orderTypeData = [
-    { name: 'Dine In', value: dineInCount },
-    { name: 'Takeaway', value: takeawayCount },
-  ].filter(d => d.value > 0);
-
-  // FIX: rangeLabel must be at component scope — used in both render JSX (lines ~818, ~869)
-  // AND inside handleDownload. Previously it was only inside handleDownload (wrong scope).
-  const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
-
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-
-    const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-    // rangeLabel is now defined at component scope above — accessible here too
-
-    const PAYMENT_LABELS_LOCAL: Record<string, string> = {
-      cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
-    };
-
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-
-    const addSheet = (wb: ReturnType<typeof XLSX.utils.book_new>, data: Record<string, unknown>[], name: string, fallback: string) => {
-      const rows = data.length > 0 ? data : [{ Note: fallback }];
-      const ws = XLSX.utils.json_to_sheet(rows);
-      if (data.length > 0) autoWidth(ws, data);
-      XLSX.utils.book_append_sheet(wb, ws, name);
-    };
-
-    // ── Sheet 1: Sales Report ────────────────────────────────────────────────
-    const salesRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
-      const cashAmt = o.paymentType === 'cash'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.cash || 0) : 0;
-      const upiAmt  = o.paymentType === 'upi'   ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.upi  || 0) : 0;
-      const cardAmt = o.paymentType === 'card'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.card || 0) : 0;
-      return {
-        'S.No':              i + 1,
-        'Order ID':          `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Source':            o.orderSource === 'qr' ? 'QR' : 'Staff',
-        'Date':              new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Time':              new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        'Order Type':        o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':          o.tableNumber || '-',
-        'Customer':          o.customerName || '-',
-        'Items Ordered':     o.items.map(ci => ci.menuItem.name).join(', '),
-        'Total Qty':         o.items.reduce((s, ci) => s + ci.quantity, 0),
-        'Item-wise Breakup': o.items.map(ci => `${ci.menuItem.name} x${ci.quantity} = ₹${ci.menuItem.price * ci.quantity}`).join(' | '),
-        'Subtotal (₹)':      o.subtotal,
-        'Discount (₹)':      o.discount,
-        'Total Amount (₹)':  o.total,
-        'Taxable Amt (₹)':   gstBase,
-        'GST 5% (₹)':        gst5,
-        'CGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'SGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'Payment Type':      PAYMENT_LABELS_LOCAL[o.paymentType || 'unpaid'],
-        'Cash (₹)':          cashAmt || '-',
-        'UPI (₹)':           upiAmt  || '-',
-        'Card (₹)':          cardAmt || '-',
-        'Biller':            o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 2: Cancelled Orders ────────────────────────────────────────────
-    const cancelRows = cancelled.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
-      return {
-        'S.No':              i + 1,
-        'Order ID':          `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Source':            o.orderSource === 'qr' ? 'QR' : 'Staff',
-        'Date':              new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Time':              new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        'Order Type':        o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':          o.tableNumber || '-',
-        'Customer':          o.customerName || '-',
-        'Items':             o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
-        'Total Amount (₹)':  o.total,
-        'Taxable Amt (₹)':   gstBase,
-        'GST 5% (₹)':        gst5,
-        'CGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'SGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'Cancel Reason':     o.cancelReason || '-',
-        'Biller':            o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 3: CGST 2.5% (per-order breakdown) ────────────────────────────
-    const cgstRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return {
-        'S.No':             i + 1,
-        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Total Amount (₹)': o.total,
-        'Taxable Amt (₹)':  gstBase,
-        'CGST 2.5% (₹)':    Math.round(((o.total - gstBase) / 2) * 100) / 100,
-        'Biller':           o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 4: SGST 2.5% (per-order breakdown) ────────────────────────────
-    const sgstRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return {
-        'S.No':             i + 1,
-        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Total Amount (₹)': o.total,
-        'Taxable Amt (₹)':  gstBase,
-        'SGST 2.5% (₹)':    Math.round(((o.total - gstBase) / 2) * 100) / 100,
-        'Biller':           o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 5: GST Summary ─────────────────────────────────────────────────
-    const taxableTotal = Math.round((totalRevenue / 1.05) * 100) / 100;
-    const gstCollected = Math.round((totalRevenue - taxableTotal) * 100) / 100;
-    const cgstTotal    = Math.round((gstCollected / 2) * 100) / 100;
-
-    const gstRows = [
-      { 'Metric': 'Period',                       'Value': rangeLabel },
-      { 'Metric': 'Total Orders (Served)',         'Value': served.length },
-      { 'Metric': '',                             'Value': '' },
-      { 'Metric': 'Total Revenue (incl. GST) (₹)', 'Value': totalRevenue },
-      { 'Metric': 'Taxable Amount (₹)',            'Value': taxableTotal },
-      { 'Metric': 'Total GST @ 5% (₹)',            'Value': gstCollected },
-      { 'Metric': 'CGST @ 2.5% (₹)',               'Value': cgstTotal },
-      { 'Metric': 'SGST @ 2.5% (₹)',               'Value': cgstTotal },
-    ];
-
-    // ── Sheet 6: Payment Breakdown ───────────────────────────────────────────
-    let totalCash = 0, totalUpi = 0, totalCard = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') totalCash += o.total;
-      else if (o.paymentType === 'upi') totalUpi += o.total;
-      else if (o.paymentType === 'card') totalCard += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
-      }
-    });
-    const payRows = [
-      { 'Payment Method': 'Cash',  'Orders': served.filter(o => o.paymentType === 'cash'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
-      { 'Payment Method': 'UPI',   'Orders': served.filter(o => o.paymentType === 'upi'   || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
-      { 'Payment Method': 'Card',  'Orders': served.filter(o => o.paymentType === 'card'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
-      { 'Payment Method': 'TOTAL', 'Orders': served.length, 'Amount (₹)': totalRevenue },
-    ];
-
-    // ── Sheet 7: Top Items ───────────────────────────────────────────────────
-    const itemRows = topItems.map((item, i) => ({
-      'Rank':        i + 1,
-      'Item Name':   item.name,
-      'Qty Sold':    item.qty,
-      'Revenue (₹)': item.revenue,
-    }));
-
-    // ── Sheet 8: Daily Closing ───────────────────────────────────────────────
-    const closingRows = [
-      { 'Metric': 'Period',                  'Value': rangeLabel },
-      { 'Metric': 'Total Orders (Served)',   'Value': served.length },
-      { 'Metric': 'Cancelled Orders',        'Value': cancelled.length },
-      { 'Metric': 'Total Revenue (₹)',       'Value': totalRevenue },
-      { 'Metric': 'Taxable Amount (₹)',      'Value': taxableTotal },
-      { 'Metric': 'GST Collected 5% (₹)',    'Value': gstCollected },
-      { 'Metric': 'CGST 2.5% (₹)',           'Value': cgstTotal },
-      { 'Metric': 'SGST 2.5% (₹)',           'Value': cgstTotal },
-      { 'Metric': 'Total Discounts (₹)',     'Value': totalDiscount },
-      { 'Metric': 'Avg Order Value (₹)',     'Value': avgOrderValue },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'SOURCE BREAKDOWN',        'Value': '' },
-      { 'Metric': 'Staff Orders',            'Value': staffOrders.length },
-      { 'Metric': 'Staff Revenue (₹)',       'Value': staffRevenue },
-      { 'Metric': 'QR Orders',              'Value': qrOrders.length },
-      { 'Metric': 'QR Revenue (₹)',         'Value': qrRevenue },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'PAYMENT BREAKDOWN',       'Value': '' },
-      { 'Metric': 'Cash (₹)',               'Value': totalCash },
-      { 'Metric': 'UPI (₹)',                'Value': totalUpi  },
-      { 'Metric': 'Card (₹)',               'Value': totalCard },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'ORDER TYPE',              'Value': '' },
-      { 'Metric': 'Dine In',                'Value': dineInCount },
-      { 'Metric': 'Takeaway',               'Value': takeawayCount },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'CANCELLATIONS',           'Value': '' },
-      { 'Metric': 'Cancelled Orders',        'Value': cancelled.length },
-      { 'Metric': 'Lost Revenue (₹)',        'Value': cancelled.reduce((s, o) => s + o.total, 0) },
-    ];
-
-    const wb = XLSX.utils.book_new();
-    addSheet(wb, salesRows,   'Sales Report',      'No served orders');
-    addSheet(wb, cancelRows,  'Cancelled Orders',  'No cancellations');
-    addSheet(wb, cgstRows,    'CGST 2.5%',         'No data');
-    addSheet(wb, sgstRows,    'SGST 2.5%',         'No data');
-    addSheet(wb, gstRows,     'GST Summary',       'No data');
-    addSheet(wb, payRows,     'Payment Breakdown', 'No data');
-    addSheet(wb, itemRows,    'Top Items',         'No items sold');
-    addSheet(wb, closingRows, 'Daily Closing',     'No data');
-    XLSX.writeFile(wb, `CafeAadvikam_Report_${dateLabel}.xlsx`);
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Date range */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">Date Range</span>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
-            <Download className="size-3" />Excel
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
-          {' · '}{served.length} orders · {formatCurrency(totalRevenue)}
-        </p>
-      </div>
-
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Orders Served" value={String(served.length)} color="bg-accent/20 text-accent-foreground" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<XCircle className="size-4" />} label="Cancelled" value={String(cancelled.length)} color="bg-red-50 text-red-700" />
-      </div>
-
-      {/* Payment breakdown */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">Payment Breakdown</h3>
-        <div className="space-y-2">
-          <PaymentRow label="💵 Cash" amount={paymentTotals.cash} total={totalRevenue} />
-          <PaymentRow label="📱 UPI" amount={paymentTotals.upi} total={totalRevenue} />
-          <PaymentRow label="💳 Card" amount={paymentTotals.card} total={totalRevenue} />
-        </div>
-      </div>
-
-      {/* GST */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">GST Summary</h3>
-        {totalRevenue === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No data for this range</p>
-        ) : (() => {
-          const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
-          const gst = Math.round((totalRevenue - taxable) * 100) / 100;
-          const cgst = Math.round((gst / 2) * 100) / 100;
-          const sgst = Math.round((gst / 2) * 100) / 100;
-          return (
-            <div className="space-y-1.5">
-              <Row label="Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
-              <Row label="Taxable Amount" value={formatCurrency(taxable)} />
-              <Row label="GST @ 5%" value={formatCurrency(gst)} />
-              <div className="border-t border-border pt-1.5 mt-1.5">
-                <Row label="CGST @ 2.5%" value={formatCurrency(cgst)} highlight />
-                <Row label="SGST @ 2.5%" value={formatCurrency(sgst)} highlight />
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-
-      {/* Daily Revenue Chart */}
-      {dailyRevenue.length > 1 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1">Daily Revenue Trend</h3>
-          <p className="text-[10px] text-muted-foreground mb-4">{rangeLabel}</p>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={dailyRevenue}>
-              <defs>
-                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#revGrad)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Order Type Split */}
-      {orderTypeData.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Order Type Split</h3>
-          <div className="flex items-center gap-4">
-            <div className="flex-1">
-              <ResponsiveContainer width="100%" height={120}>
-                <PieChart>
-                  <Pie data={orderTypeData} dataKey="value" cx="50%" cy="50%" innerRadius={30} outerRadius={50}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={9}>
-                    <Cell fill={CHART_COLORS[0]} />
-                    <Cell fill={CHART_COLORS[2]} />
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="space-y-2">
-              {orderTypeData.map((d, i) => (
-                <div key={d.name} className="flex items-center gap-2">
-                  <div className="size-3 rounded-full" style={{ background: CHART_COLORS[i === 0 ? 0 : 2] }} />
-                  <div>
-                    <p className="text-xs font-semibold">{d.name}</p>
-                    <p className="text-xs text-muted-foreground">{d.value} orders</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Top items */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-1">Top Items by Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-4">Revenue · sales quantity shown alongside</p>
-        {topItemsByRevenue.length === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No sales in this range</p>
-        ) : (
-          <>
-            <ResponsiveContainer width="100%" height={Math.max(topItemsByRevenue.length * 30, 150)}>
-              <BarChart data={topItemsByRevenue} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-                <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
-                <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-                <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-            <div className="space-y-1.5 mt-3">
-              {topItems.slice(0, 5).map((item, i) => (
-                <div key={item.name} className="flex items-center gap-3">
-                  <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
-                    i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                  <p className="flex-1 text-xs font-medium truncate">{item.name}</p>
-                  <div className="text-right shrink-0">
-                    <p className="text-xs font-bold text-primary tabular-nums">{formatCurrency(item.revenue)}</p>
-                    <p className="text-[10px] text-muted-foreground">{item.qty} sold</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Order transactions */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
-          <h3 className="font-display text-base font-bold text-foreground">Order Transactions</h3>
-          <span className="text-xs text-muted-foreground">{rangeOrders.length} total</span>
-        </div>
-        {rangeOrders.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No orders in this range.</p>
-        ) : (
-          <div className="divide-y max-h-96 overflow-y-auto">
-            {rangeOrders.slice(0, 100).map(o => (
-              <div key={o.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">#{o.orderNumber}</span>
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold',
-                      o.status === 'served' ? 'bg-emerald-100 text-emerald-700' :
-                      o.status === 'cancelled' ? 'bg-red-100 text-red-700' :
-                      o.status === 'pending' ? 'bg-amber-100 text-amber-700' :
-                      'bg-blue-100 text-blue-700'
-                    )}>{o.status}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {new Date(o.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    {o.paymentType !== 'unpaid' && ` · ${o.paymentType}`}
-                  </p>
-                </div>
-                <span className="text-sm font-bold tabular-nums">{formatCurrency(o.total)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── BAKERY REPORTS TAB (custom range + summary + transactions) ───────────────
-function BakeryReportsTab() {
-  const { sales, fetchBranchData } = useBranchStore();
-  const [reportType, setReportType] = useState<'item' | 'branch'>('item');
-  const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
-
-  const todayISO = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
-
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
-
-  const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
-    BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({
-        ...s, branch,
-        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-      }));
-    });
-    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-  }, [sales]);
-
-  const rangeSales = useMemo(() => {
-    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
-    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
-    return allSales.filter(s => {
-      const t = new Date(s.soldAt).getTime();
-      if (t < from.getTime() || t > to.getTime()) return false;
-      if (filterBranch !== 'all' && s.branch !== filterBranch) return false;
-      return true;
-    });
-  }, [allSales, dateFrom, dateTo, filterBranch]);
-
-  const itemReport = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number }>();
-    rangeSales.forEach(s => {
-      const ex = map.get(s.itemName);
-      const rev = s.unitPrice * s.quantitySold;
-      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
-      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
-  }, [rangeSales]);
-
-  const branchReport = useMemo(() => {
-    const map = new Map<Branch, { qty: number; revenue: number }>();
-    rangeSales.forEach(s => {
-      const ex = map.get(s.branch);
-      const rev = s.unitPrice * s.quantitySold;
-      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
-      else map.set(s.branch, { qty: s.quantitySold, revenue: rev });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
-  }, [rangeSales]);
-
-  const totalRevenue = itemReport.reduce((a, [, v]) => a + v.revenue, 0);
-  const totalQty = itemReport.reduce((a, [, v]) => a + v.qty, 0);
-
-  const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
-
-  const BRANCH_COLORS: Record<Branch, string> = {
-    VRSNB: 'bg-blue-100 text-blue-700',
-    SNB: 'bg-amber-100 text-amber-700',
-    Hosur: 'bg-emerald-100 text-emerald-700',
-  };
-
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-    const addSheet = (wb: ReturnType<typeof XLSX.utils.book_new>, data: Record<string, unknown>[], name: string, fallback: string) => {
-      const rows = data.length > 0 ? data : [{ Note: fallback }];
-      const ws = XLSX.utils.json_to_sheet(rows);
-      if (data.length > 0) autoWidth(ws, data);
-      XLSX.utils.book_append_sheet(wb, ws, name);
-    };
-    const summaryRows = [
-      { 'Metric': 'Period', 'Value': `${dateFrom} to ${dateTo}` },
-      { 'Metric': 'Branch Filter', 'Value': filterBranch },
-      { 'Metric': 'Transactions', 'Value': rangeSales.length },
-      { 'Metric': 'Total Revenue', 'Value': formatCurrency(totalRevenue) },
-      { 'Metric': 'Total Qty Sold', 'Value': totalQty },
-    ];
-    const itemRows = itemReport.map(([item, v], i) => ({ 'Rank': i + 1, 'Item': item, 'Revenue': v.revenue, 'Qty Sold': v.qty }));
-    const branchRows = branchReport.map(([branch, v]) => ({
-      'Branch': branch, 'Revenue': v.revenue, 'Qty Sold': v.qty,
-      'Revenue Share %': totalRevenue > 0 ? `${Math.round((v.revenue / totalRevenue) * 100)}%` : '0%',
-    }));
-    const txRows = rangeSales.map((s, i) => ({
-      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
-      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
-      'Revenue': s.unitPrice * s.quantitySold,
-      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By': s.soldBy,
-    }));
-    const wb = XLSX.utils.book_new();
-    addSheet(wb, summaryRows, 'Summary', 'No data');
-    addSheet(wb, itemRows, 'Item-wise', 'No sales for this range');
-    addSheet(wb, branchRows, 'Branch-wise', 'No sales for this range');
-    addSheet(wb, txRows, 'Transactions', 'No transactions');
-    XLSX.writeFile(wb, `BakeryReport_${dateLabel}.xlsx`);
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Revenue KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 col-span-2">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Revenue</p>
-          <p className="font-display text-2xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{totalQty} items · {rangeSales.length} transactions · {rangeLabel}</p>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">Filters</span>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
-            <Download className="size-3" />Excel
-          </button>
-        </div>
-        <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-          className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background">
-          <option value="all">All Branches</option>
-          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-        </select>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-        </div>
-      </div>
-
-      {/* Item / Branch Report */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center gap-2">
-          {(['item', 'branch'] as const).map(r => (
-            <button key={r} onClick={() => setReportType(r)}
-              className={cn('text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
-                reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
-              {r}-wise
-            </button>
-          ))}
-        </div>
-        <div className="px-4 py-3">
-          {reportType === 'item' ? (
-            itemReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-muted-foreground border-b">
-                    <th className="text-left py-1.5">Item</th>
-                    <th className="text-right py-1.5 text-primary font-semibold">Revenue</th>
-                    <th className="text-right py-1.5">Qty</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {itemReport.map(([item, v]) => (
-                    <tr key={item}>
-                      <td className="py-2 text-sm">{item}</td>
-                      <td className="py-2 text-right font-bold text-primary tabular-nums">{formatCurrency(v.revenue)}</td>
-                      <td className="py-2 text-right text-muted-foreground tabular-nums text-xs">{v.qty}</td>
-                    </tr>
-                  ))}
-                  <tr className="font-bold border-t-2">
-                    <td className="py-2">Total</td>
-                    <td className="py-2 text-right text-primary">{formatCurrency(totalRevenue)}</td>
-                    <td className="py-2 text-right text-muted-foreground text-xs">{totalQty}</td>
-                  </tr>
-                </tbody>
-              </table>
-            )
-          ) : (
-            branchReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
-            ) : (
-              <div className="space-y-3 py-2">
-                {branchReport.map(([branch, v]) => {
-                  const pct = totalRevenue > 0 ? Math.round((v.revenue / totalRevenue) * 100) : 0;
-                  return (
-                    <div key={branch} className="space-y-1.5">
-                      <div className="flex justify-between">
-                        <span className={cn('px-2 py-0.5 rounded text-xs font-semibold', BRANCH_COLORS[branch as Branch])}>{branch}</span>
-                        <div className="text-right">
-                          <span className="text-sm font-bold text-primary">{formatCurrency(v.revenue)}</span>
-                          <span className="text-[10px] text-muted-foreground ml-2">{v.qty} items ({pct}%)</span>
-                        </div>
-                      </div>
-                      <div className="h-2 bg-muted rounded-full">
-                        <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-                <div className="flex justify-between text-sm font-bold border-t pt-2 mt-1">
-                  <span>Total</span>
-                  <span className="text-primary">{formatCurrency(totalRevenue)}</span>
-                </div>
-              </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* Transactions */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
-          <h3 className="font-display text-base font-bold text-foreground">Sale Transactions</h3>
-          <span className="text-xs text-muted-foreground">{rangeSales.length} records</span>
-        </div>
-        {rangeSales.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No transactions in this range.</p>
-        ) : (
-          <div className="divide-y max-h-96 overflow-y-auto">
-            {rangeSales.slice(0, 100).map(s => {
-              const lineRev = s.unitPrice * s.quantitySold;
-              return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
-                    <p className="text-sm font-medium">{s.itemName}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_COLORS[s.branch])}>{s.branch}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">· {s.soldBy}</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-// ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
-function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'activity' | 'dayend'>('dashboard');
-
-  useEffect(() => {
-    return () => {};
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const tabs = [
-    { id: 'dashboard' as const, label: 'Overview',  icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',   icon: FileText         },
-    { id: 'activity'  as const, label: 'Activity',  icon: ClipboardList    },
-    { id: 'dayend'    as const, label: 'Day-End',   icon: Calendar         },
-  ];
-
-  const unread = 0;
-  const pendingInvoices = 0;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'shrink-0 whitespace-nowrap flex items-center justify-center gap-1 py-1.5 px-3 rounded-lg text-[11px] font-medium transition',
-              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-            )}
-          >
-            <t.icon className="size-3" />
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {tab === 'dashboard' && <BakeryDashboardTab />}
-      {tab === 'reports'   && <BakeryReportsMerged branch="all" />}
-      {tab === 'activity'  && <StaffActivityLog />}
-      {tab === 'dayend'    && <DayEndReport />}
-    </div>
-  );
-}
-
-// ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
-export default function AdminDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit' | 'advance'>('cafe');
-  // BUG-03 FIX: single polling registration at root — previously registered twice
-  // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
-  // STORE-01 FIX: granular selector — stable action refs, no re-renders from unrelated state
-  const { startPolling, stopPolling } = useOrderStore(
-    useShallow(s => ({ startPolling: s.startPolling, stopPolling: s.stopPolling }))
-  );
-  useEffect(() => {
-    startPolling(60); // 60-day window for admin reports
+    startPolling(90);
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
-  return (
-    <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-6">
-      {/* ── Page header ── */}
-      <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-        <div className="flex items-end justify-between">
+  useEffect(() => {
+    BRANCHES.forEach((branch) => void fetchBranchData(branch));
+    void fetchStockMismatches();
+  }, [fetchBranchData, fetchStockMismatches]);
+
+  const rangeLabel = fromDate === toDate
+    ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+  const cafeOrdersInRange = useMemo(() => orders.filter((o) => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  const cafeServedOrders = useMemo(() => cafeOrdersInRange.filter((o) => o.status === 'served'), [cafeOrdersInRange]);
+  const cafeCancelledOrders = useMemo(() => cafeOrdersInRange.filter((o) => o.status === 'cancelled'), [cafeOrdersInRange]);
+
+  const cafeSalesTotal = useMemo(() => cafeServedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0), [cafeServedOrders]);
+  const cafePaymentSplit = useMemo(() => {
+    const split = { cash: 0, upi: 0, card: 0, credit: 0 };
+    cafeServedOrders.forEach((o) => {
+      if (o.paymentType === 'cash') split.cash += Number(o.total || 0);
+      else if (o.paymentType === 'upi') split.upi += Number(o.total || 0);
+      else if (o.paymentType === 'card') split.card += Number(o.total || 0);
+      else if (o.paymentType === 'unpaid') split.credit += Number(o.total || 0);
+      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
+        split.cash += Number(o.paymentBreakdown.cash || 0);
+        split.upi += Number(o.paymentBreakdown.upi || 0);
+        split.card += Number(o.paymentBreakdown.card || 0);
+      }
+    });
+    return split;
+  }, [cafeServedOrders]);
+
+  const branchTransactions = useMemo<SalesTxn[]>(() => {
+    const result: SalesTxn[] = [];
+    BRANCHES.filter((b) => b !== 'Cafe').forEach((branch) => {
+      (sales[branch] || []).filter((s) => inRange(s.soldAt, fromDate, toDate)).forEach((s) => {
+        result.push({
+          id: s.id,
+          branch,
+          itemName: s.itemName,
+          qty: Number(s.quantitySold || 0),
+          revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0),
+          payment: s.paymentMethod || '-',
+          soldAt: s.soldAt,
+          soldBy: s.soldBy,
+        });
+      });
+    });
+    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
+  }, [sales, fromDate, toDate]);
+
+  const opsBillsInRange = useMemo(() => bills.filter((b) => inRange(b.createdAt, fromDate, toDate)), [bills, fromDate, toDate]);
+  const branchRevenueFromSales = useMemo(() => branchTransactions.reduce((sum, t) => sum + t.revenue, 0), [branchTransactions]);
+  const opsBillRevenue = useMemo(() => opsBillsInRange.reduce((sum, b) => sum + Number(b.total || 0), 0), [opsBillsInRange]);
+  const branchSalesTotal = Math.max(branchRevenueFromSales, opsBillRevenue);
+  const businessTotalSales = cafeSalesTotal + branchSalesTotal;
+
+  const branchSalesByBranch = useMemo(() => {
+    return BRANCHES.map((branch) => {
+      if (branch === 'Cafe') {
+        return {
+          branch,
+          label: 'Cafe',
+          sales: cafeSalesTotal,
+          orders: cafeServedOrders.length,
+          returns: 0,
+        };
+      }
+      const txns = branchTransactions.filter((t) => t.branch === branch);
+      const ops = opsBillsInRange.filter((b) => b.branch === branch);
+      const revenue = Math.max(
+        txns.reduce((sum, t) => sum + t.revenue, 0),
+        ops.reduce((sum, b) => sum + Number(b.total || 0), 0),
+      );
+      return {
+        branch,
+        label: branch,
+        sales: revenue,
+        orders: Math.max(txns.length, ops.length),
+        returns: returns.filter((r) => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0),
+      };
+    });
+  }, [cafeSalesTotal, cafeServedOrders.length, branchTransactions, opsBillsInRange, returns, fromDate, toDate]);
+
+  const dailySalesTrend = useMemo(() => {
+    const days: Record<string, { date: string; Cafe: number; SNB: number; VRSNB: number; Hosur: number; Total: number }> = {};
+    for (let d = new Date(`${fromDate}T00:00:00`); d <= endOfDay(toDate); d.setDate(d.getDate() + 1)) {
+      const key = todayInput(d);
+      days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
+    }
+    cafeServedOrders.forEach((o) => {
+      const key = localDateKey(o.createdAt);
+      if (!days[key]) return;
+      days[key].Cafe += Number(o.total || 0);
+      days[key].Total += Number(o.total || 0);
+    });
+    branchTransactions.forEach((t) => {
+      const key = localDateKey(t.soldAt);
+      if (!days[key]) return;
+      if (t.branch !== 'Cafe') {
+        days[key][t.branch] += t.revenue;
+        days[key].Total += t.revenue;
+      }
+    });
+    return Object.values(days);
+  }, [fromDate, toDate, cafeServedOrders, branchTransactions]);
+
+  const paymentSplit = useMemo(() => {
+    const totals = { cash: cafePaymentSplit.cash, upi: cafePaymentSplit.upi, card: cafePaymentSplit.card, credit: cafePaymentSplit.credit };
+    opsBillsInRange.forEach((b) => {
+      if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+      else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+      else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+      else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+      else if (b.paymentMode === 'split') {
+        totals.cash += Number(b.split?.cash || 0);
+        totals.upi += Number(b.split?.upi || 0);
+        totals.card += Number(b.split?.card || 0);
+      }
+    });
+    branchTransactions.forEach((t) => {
+      if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+      else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+      else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+      else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+    });
+    return [
+      { name: 'Cash', value: totals.cash },
+      { name: 'UPI', value: totals.upi },
+      { name: 'Card', value: totals.card },
+      { name: 'Credit', value: totals.credit },
+    ].filter((item) => item.value > 0);
+  }, [cafePaymentSplit, opsBillsInRange, branchTransactions]);
+
+  const topSellingItems = useMemo(() => {
+    const map = new Map<string, { item: string; qty: number; revenue: number }>();
+    cafeServedOrders.forEach((o) => o.items.forEach((ci) => {
+      const key = ci.menuItem.name;
+      const existing = map.get(key) || { item: key, qty: 0, revenue: 0 };
+      existing.qty += Number(ci.quantity || 0);
+      existing.revenue += Number(ci.menuItem.price || 0) * Number(ci.quantity || 0);
+      map.set(key, existing);
+    }));
+    branchTransactions.forEach((t) => {
+      const existing = map.get(t.itemName) || { item: t.itemName, qty: 0, revenue: 0 };
+      existing.qty += t.qty;
+      existing.revenue += t.revenue;
+      map.set(t.itemName, existing);
+    });
+    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 10).map((item) => ({ ...item, short: item.item.length > 16 ? `${item.item.slice(0, 16)}…` : item.item }));
+  }, [cafeServedOrders, branchTransactions]);
+
+  const lowPerformingItems = useMemo(() => [...topSellingItems].reverse().slice(0, 5), [topSellingItems]);
+
+  const stockAlerts = useMemo<StockAlertRow[]>(() => {
+    const rows: StockAlertRow[] = [];
+    const addRow = (row: StockAlertRow) => rows.push(row);
+
+    BRANCHES.filter((b) => b !== 'Cafe').forEach((branch) => {
+      (stock[branch] || []).forEach((s) => {
+        const qty = Number(s.quantity || 0);
+        const min = Number(s.minThreshold || 0);
+        const status: StockAlertStatus | null = qty <= 0 ? 'Out of Stock' : min > 0 && qty <= min ? 'Low Stock' : null;
+        if (status) {
+          addRow({
+            itemName: s.itemName,
+            category: '-',
+            branch,
+            currentStock: qty,
+            minimumStock: min,
+            unit: s.unit || 'pcs',
+            lastUpdated: 'Live stock',
+            status,
+          });
+        }
+      });
+    });
+
+    const catalogChecks: Array<{ branch: Branch; items: Array<{ name: string; category: string; uom: string }> }> = [
+      { branch: 'SNB', items: SNB_ITEMS },
+      { branch: 'Hosur', items: SNB_ITEMS },
+      { branch: 'VRSNB', items: VRSNB_ITEMS },
+    ];
+    catalogChecks.forEach(({ branch, items }) => {
+      items.forEach((item) => {
+        const hasStock = (stock[branch] || []).some((s) => normal(s.itemName) === normal(item.name));
+        if (!hasStock) {
+          addRow({
+            itemName: item.name,
+            category: item.category,
+            branch,
+            currentStock: 0,
+            minimumStock: 0,
+            unit: item.uom === 'Kgs' ? 'kg' : 'pcs',
+            lastUpdated: 'Stock row missing',
+            status: 'Stock Not Available',
+          });
+        }
+      });
+    });
+
+    stockMismatches.forEach((m) => {
+      if (m.shortage <= 0) return;
+      rows.push({
+        itemName: m.itemName,
+        category: 'Mismatch',
+        branch: m.branch,
+        currentStock: -Number(m.shortage || 0),
+        minimumStock: 0,
+        unit: 'pcs/kg',
+        lastUpdated: fmtDate(m.soldAt),
+        status: 'Out of Stock',
+      });
+    });
+
+    const seen = new Set<string>();
+    return rows
+      .filter((row) => {
+        const key = `${row.branch}-${normal(row.itemName)}-${row.status}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => STOCK_ALERT_STATUSES.indexOf(a.status) - STOCK_ALERT_STATUSES.indexOf(b.status) || a.branch.localeCompare(b.branch));
+  }, [stock, stockMismatches]);
+
+  const filteredStockAlerts = useMemo(() => {
+    const q = stockQuery.trim().toLowerCase();
+    return stockAlerts.filter((row) => {
+      if (branchFilter !== 'all' && row.branch !== branchFilter) return false;
+      if (stockStatusFilter !== 'all' && row.status !== stockStatusFilter) return false;
+      if (q && !`${row.itemName} ${row.category} ${row.branch}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [stockAlerts, branchFilter, stockStatusFilter, stockQuery]);
+
+  const stockAlertChart = useMemo(() => STOCK_ALERT_STATUSES.map((status) => ({ status, count: stockAlerts.filter((row) => row.status === status).length })), [stockAlerts]);
+
+  const creditPendingTotal = useMemo(() => {
+    const branchCredit = BRANCHES.reduce((sum, branch) => sum + (creditSales[branch] || []).filter((c) => c.status !== 'settled').reduce((s, c) => s + Number(c.creditAmount || 0), 0), 0);
+    const opsCredit = opsCreditSales.filter((c) => c.status !== 'Paid' && c.status !== 'Written Off').reduce((s, c) => s + Number(c.balanceDue || 0), 0);
+    return branchCredit + opsCredit;
+  }, [creditSales, opsCreditSales]);
+
+  const purchaseTotal = useMemo(() => purchases.filter((p) => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + Number(p.total || 0), 0), [purchases, fromDate, toDate]);
+  const expenseTotal = useMemo(() => cashMovements.filter((m) => inRange(m.dateTime, fromDate, toDate) && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0), [cashMovements, fromDate, toDate]);
+
+  const balanceSummary = useMemo(() => {
+    const totals = { cash: 0, upi: 0, card: 0, bank: 0 };
+    cashMovements.forEach((m) => {
+      if (!['cash', 'upi', 'card', 'bank'].includes(m.paymentMode)) return;
+      const key = m.paymentMode as keyof typeof totals;
+      totals[key] += m.direction === 'in' ? Number(m.amount || 0) : -Number(m.amount || 0);
+    });
+    bankDeposits.forEach((d) => {
+      const amount = Number(d.amount || 0);
+      totals.bank += amount;
+      if (d.paymentMode === 'Cash Deposit') totals.cash -= amount;
+      if (d.paymentMode === 'UPI Transfer') totals.upi -= amount;
+      if (d.paymentMode === 'Card Settlement') totals.card -= amount;
+    });
+    return totals;
+  }, [cashMovements, bankDeposits]);
+
+  const closureRows = useMemo<ClosureRow[]>(() => {
+    return BRANCHES.map((branch) => {
+      const closureRecords = cashierClosures.filter((c) => c.branch === branch && localDateKey(c.createdAt) === closureDate);
+      const latestClosure = closureRecords[0] || null;
+      const txns = branch === 'Cafe'
+        ? []
+        : branchTransactions.filter((t) => t.branch === branch && localDateKey(t.soldAt) === closureDate);
+      const opsBills = opsBillsInRange.filter((b) => b.branch === branch && localDateKey(b.createdAt) === closureDate);
+      const cafeDayOrders = branch === 'Cafe' ? orders.filter((o) => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
+      const totalSales = branch === 'Cafe'
+        ? cafeDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0)
+        : Math.max(txns.reduce((sum, t) => sum + t.revenue, 0), opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0));
+      const cashSales = branch === 'Cafe'
+        ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.cash || 0) : o.paymentType === 'cash' ? Number(o.total || 0) : 0), 0)
+        : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'cash'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0));
+      const upiSales = branch === 'Cafe'
+        ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.upi || 0) : o.paymentType === 'upi' ? Number(o.total || 0) : 0), 0)
+        : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'upi'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0));
+      const cardSales = branch === 'Cafe'
+        ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.card || 0) : o.paymentType === 'card' ? Number(o.total || 0) : 0), 0)
+        : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'card'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0));
+      const creditSalesDay = branch === 'Cafe'
+        ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'unpaid' ? Number(o.total || 0) : 0), 0)
+        : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'credit'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'credit' ? Number(b.total || 0) : 0), 0));
+      const returnsDay = returns.filter((r) => r.branch === branch && localDateKey(r.createdAt) === closureDate).reduce((sum, r) => sum + Number(r.total || 0), 0);
+      const expensesDay = cashMovements.filter((m) => m.branch === branch && localDateKey(m.dateTime) === closureDate && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0);
+      const paymentsDay = purchasePayments.filter((p) => p.branch === branch && localDateKey(p.createdAt) === closureDate).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const depositsDay = bankDeposits.filter((d) => d.branch === branch && localDateKey(d.createdAt) === closureDate).reduce((sum, d) => sum + Number(d.amount || 0), 0);
+      const previousClosure = cashierClosures
+        .filter((c) => c.branch === branch && localDateKey(c.createdAt) < closureDate)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+      const openingBalance = Number(previousClosure?.closingCash || 0);
+      const closingBalance = latestClosure ? Number(latestClosure.closingCash || 0) : openingBalance + cashSales - returnsDay - expensesDay - paymentsDay - depositsDay;
+      const differenceAmount = latestClosure ? Number(latestClosure.difference || 0) : 0;
+      return {
+        branch,
+        openingBalance,
+        totalSales,
+        cashSales,
+        upiSales,
+        cardSales,
+        creditSales: creditSalesDay,
+        returns: returnsDay,
+        netSales: totalSales - returnsDay,
+        expenses: expensesDay,
+        purchasePayments: paymentsDay,
+        bankDeposits: depositsDay,
+        closingBalance,
+        differenceAmount,
+        remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'),
+        status: latestClosure ? (Math.abs(differenceAmount) > 0 ? 'Review' : 'Closed') : 'Pending',
+        closedBy: latestClosure?.cashier || '-',
+        closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-',
+      };
+    });
+  }, [cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+
+  const closureStatusChart = useMemo(() => [
+    { status: 'Closed', count: closureRows.filter((r) => r.status === 'Closed').length },
+    { status: 'Review', count: closureRows.filter((r) => r.status === 'Review').length },
+    { status: 'Pending', count: closureRows.filter((r) => r.status === 'Pending').length },
+  ], [closureRows]);
+
+  const filteredClosureRows = useMemo(() => closureRows.filter((row) => branchFilter === 'all' || row.branch === branchFilter), [closureRows, branchFilter]);
+
+  const exportDailyClosure = () => {
+    csvDownload(`Admin_DailyClosure_${closureDate}.csv`, filteredClosureRows.map((r) => ({
+      Branch: BRANCH_LABELS[r.branch],
+      'Opening Balance': r.openingBalance,
+      'Total Sales': r.totalSales,
+      'Cash Sales': r.cashSales,
+      'UPI Sales': r.upiSales,
+      'Card Sales': r.cardSales,
+      'Credit Sales': r.creditSales,
+      Returns: r.returns,
+      'Net Sales': r.netSales,
+      Expenses: r.expenses,
+      'Purchase Payments': r.purchasePayments,
+      'Bank Deposits': r.bankDeposits,
+      'Closing Balance': r.closingBalance,
+      Difference: r.differenceAmount,
+      Remarks: r.remarks,
+      Status: r.status,
+      'Closed By': r.closedBy,
+      'Closed At': r.closedAt,
+    })));
+  };
+
+  const printDailyClosure = () => {
+    const rows = filteredClosureRows.map((r) => `
+      <tr>
+        <td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${r.openingBalance.toFixed(2)}</td><td>₹${r.totalSales.toFixed(2)}</td>
+        <td>₹${r.cashSales.toFixed(2)}</td><td>₹${r.upiSales.toFixed(2)}</td><td>₹${r.cardSales.toFixed(2)}</td><td>₹${r.creditSales.toFixed(2)}</td>
+        <td>₹${r.returns.toFixed(2)}</td><td>₹${r.purchasePayments.toFixed(2)}</td><td>₹${r.bankDeposits.toFixed(2)}</td><td>₹${r.closingBalance.toFixed(2)}</td>
+        <td>₹${r.differenceAmount.toFixed(2)}</td><td>${r.closedBy}</td><td>${r.remarks}</td>
+      </tr>`).join('');
+    const html = `<!doctype html><html><head><title>Daily Closure ${closureDate}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#111}h1{font-size:22px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ddd;padding:6px;text-align:left}th{background:#f3f4f6}.meta{margin-bottom:16px;color:#555}@media print{button{display:none}}</style></head><body><h1>Admin Daily Closure Verification</h1><div class="meta">Date: ${closureDate} · Branch: ${branchFilter === 'all' ? 'All Branches' : BRANCH_LABELS[branchFilter]}</div><table><thead><tr><th>Branch</th><th>Status</th><th>Opening</th><th>Total Sales</th><th>Cash</th><th>UPI</th><th>Card</th><th>Credit</th><th>Returns</th><th>Purchase Pay.</th><th>Bank Deposit</th><th>Closing</th><th>Difference</th><th>Closed By</th><th>Remarks</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`;
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    if (win) { win.document.write(html); win.document.close(); }
+  };
+
+  const sidebar = (
+    <aside className="flex h-full flex-col border-r border-slate-200 bg-white/95 shadow-sm lg:w-72">
+      <div className="border-b border-slate-100 p-4">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Admin Portal</p>
-            <h1 className="font-display text-3xl font-bold text-foreground leading-none">Dashboard</h1>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">Admin Portal</p>
+            <h1 className="mt-1 font-display text-xl font-black text-slate-950">Business Control</h1>
+            <p className="mt-1 text-xs text-slate-500">Cafe · SNB · VRSNB · Hosur</p>
           </div>
-          <p className="text-xs font-body text-muted-foreground pb-0.5">
-            {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
+          <button className="rounded-xl p-2 hover:bg-slate-100 lg:hidden" onClick={() => setMobileNavOpen(false)}>
+            <X className="size-4" />
+          </button>
+        </div>
+      </div>
+      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const disabled = item.adminOnly && !isAdmin;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => { setActiveTab(item.id); setMobileNavOpen(false); }}
+              className={cn(
+                'w-full rounded-2xl px-3 py-3 text-left transition',
+                activeTab === item.id ? 'bg-slate-950 text-white shadow-lg shadow-slate-200' : 'text-slate-600 hover:bg-slate-100',
+                disabled && 'cursor-not-allowed opacity-45',
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className={cn('grid size-10 place-items-center rounded-xl', activeTab === item.id ? 'bg-white/15' : 'bg-slate-100 text-slate-600')}>
+                  {disabled ? <Lock className="size-4" /> : <Icon className="size-4" />}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-black">{item.label}</p>
+                  <p className={cn('mt-0.5 truncate text-[10px]', activeTab === item.id ? 'text-white/70' : 'text-slate-400')}>{item.description}</p>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </nav>
+      <div className="border-t border-slate-100 p-4">
+        <div className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-500">
+          <div className="flex items-center gap-2 font-semibold text-slate-700">
+            <ShieldCheck className="size-4 text-emerald-600" /> Role protected
+          </div>
+          <p className="mt-1">Sensitive stock, closure and master-data actions are Admin-only.</p>
+        </div>
+      </div>
+    </aside>
+  );
+
+  const rangeControls = (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        From
+        <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        To
+        <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+        <option value="all">All branches</option>
+        {BRANCHES.map((branch) => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+      </select>
+    </div>
+  );
+
+  const OverviewTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Business Sales" value={formatCurrency(businessTotalSales)} sub={`${rangeLabel} · Cafe + branches`} icon={<IndianRupee className="size-5" />} tone="green" />
+        <KpiCard label="Stock Alerts" value={stockAlerts.length} sub={`${stockAlertChart[0]?.count || 0} missing · ${stockAlertChart[1]?.count || 0} out · ${stockAlertChart[2]?.count || 0} low`} icon={<Bell className="size-5" />} tone={stockAlerts.length ? 'red' : 'green'} />
+        <KpiCard label="Credit Pending" value={formatCurrency(creditPendingTotal)} sub="Cafe / branch credit dues" icon={<WalletCards className="size-5" />} tone={creditPendingTotal > 0 ? 'amber' : 'green'} />
+        <KpiCard label="Closures Pending" value={closureRows.filter((r) => r.status === 'Pending').length} sub={`For ${closureDate}`} icon={<CalendarClock className="size-5" />} tone={closureRows.some((r) => r.status !== 'Closed') ? 'amber' : 'green'} />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
+        <Panel title="Branch-wise Sales Comparison" subtitle="Cafe, SNB, VRSNB and Hosur revenue for selected range" action={rangeControls}>
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={branchSalesByBranch}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]}>
+                  {branchSalesByBranch.map((_, index) => <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Payment Mode Split" subtitle="Cash, UPI, card and credit mix">
+          {paymentSplit.length === 0 ? <EmptyState label="No payment data in selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={paymentSplit} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {paymentSplit.map((_, index) => <Cell key={index} fill={PAYMENT_COLORS[index % PAYMENT_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            {paymentSplit.map((row, index) => (
+              <div key={row.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2">
+                  <span className="size-2 rounded-full" style={{ background: PAYMENT_COLORS[index % PAYMENT_COLORS.length] }} />
+                  <p className="text-xs font-black text-slate-700">{row.name}</p>
+                </div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(row.value)}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Daily Sales Trend" subtitle="Trend helps identify slow days and peak days">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={dailySalesTrend}>
+                <defs>
+                  <linearGradient id="totalSalesFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={(v) => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+                <Area type="monotone" dataKey="Total" stroke="#2563eb" fill="url(#totalSalesFill)" strokeWidth={3} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Top-selling Items" subtitle="Highest revenue items across cafe and branches">
+          {topSellingItems.length === 0 ? <EmptyState label="No sold items for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topSellingItems.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v) => `₹${Number(v) / 1000}k`} />
+                  <YAxis type="category" dataKey="short" width={110} tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+                  <Bar dataKey="revenue" fill="#059669" radius={[0, 10, 10, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Panel title="Purchases & Expenses" subtitle="Cost visibility for selected range">
+          <div className="space-y-3">
+            <KpiCard label="Purchases" value={formatCurrency(purchaseTotal)} icon={<ShoppingBag className="size-5" />} tone="blue" />
+            <KpiCard label="Expenses" value={formatCurrency(expenseTotal)} icon={<TrendingDown className="size-5" />} tone="red" />
+          </div>
+        </Panel>
+        <Panel title="Available Balance" subtitle="Ledger-based current balance split">
+          <div className="grid grid-cols-2 gap-3">
+            <KpiCard label="Cash" value={formatCurrency(balanceSummary.cash)} icon={<Banknote className="size-5" />} tone="green" />
+            <KpiCard label="UPI" value={formatCurrency(balanceSummary.upi)} icon={<Smartphone className="size-5" />} tone="blue" />
+            <KpiCard label="Card" value={formatCurrency(balanceSummary.card)} icon={<CreditCard className="size-5" />} tone="purple" />
+            <KpiCard label="Bank" value={formatCurrency(balanceSummary.bank)} icon={<Landmark className="size-5" />} tone="slate" />
+          </div>
+        </Panel>
+        <Panel title="Daily Closure Status" subtitle={`Status for ${closureDate}`}>
+          <div className="space-y-3">
+            {closureStatusChart.map((row, index) => (
+              <div key={row.status} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2">
+                  <span className="size-2 rounded-full" style={{ background: CHART_COLORS[index] }} />
+                  <p className="text-sm font-bold text-slate-700">{row.status}</p>
+                </div>
+                <p className="text-xl font-black text-slate-950">{row.count}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+
+  const CafeTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Cafe Sales" value={formatCurrency(cafeSalesTotal)} sub={`${cafeServedOrders.length} served orders`} icon={<IndianRupee className="size-5" />} tone="green" />
+        <KpiCard label="Total Orders" value={cafeOrdersInRange.length} sub={`${cafeCancelledOrders.length} cancelled`} icon={<Receipt className="size-5" />} tone="blue" />
+        <KpiCard label="Average Order" value={formatCurrency(cafeServedOrders.length ? cafeSalesTotal / cafeServedOrders.length : 0)} icon={<TrendingUp className="size-5" />} tone="purple" />
+        <KpiCard label="Live Status" value={polling ? 'Live' : 'Offline'} sub="Order polling" icon={<RefreshCw className={cn('size-5', polling && 'animate-spin')} />} tone={polling ? 'green' : 'amber'} />
+      </div>
+      <Panel title="Cafe Sales Trend" subtitle="Cafe-only revenue trend" action={rangeControls}>
+        <ChartWrap>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={dailySalesTrend}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₹${Number(v) / 1000}k`} width={72} />
+              <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+              <Line dataKey="Cafe" stroke="#16a34a" strokeWidth={3} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartWrap>
+      </Panel>
+      <Panel title="Recent Cafe Orders" subtitle="Served and cancelled orders in selected range">
+        {cafeOrdersInRange.length === 0 ? <EmptyState label="No cafe orders in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3">Payment</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {cafeOrdersInRange.slice(0, 60).map((o) => (
+                  <tr key={o.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                    <td className="p-3">{o.customerName || '-'}</td>
+                    <td className="p-3 text-slate-500">{o.items.reduce((s, i) => s + i.quantity, 0)} item(s)</td>
+                    <td className="p-3 uppercase">{o.paymentType || '-'}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(o.total || 0)}</td>
+                    <td className="p-3"><Badge tone={o.status === 'served' ? 'green' : o.status === 'cancelled' ? 'red' : 'amber'}>{o.status}</Badge></td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const BranchesTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {branchSalesByBranch.filter((b) => b.branch !== 'Cafe').map((row) => (
+          <KpiCard key={row.branch} label={`${row.branch} Sales`} value={formatCurrency(row.sales)} sub={`${row.orders} transactions · returns ${formatCurrency(row.returns)}`} icon={<Store className="size-5" />} tone={row.sales > 0 ? 'green' : 'slate'} />
+        ))}
+        <KpiCard label="Total Branch Sales" value={formatCurrency(branchSalesTotal)} sub="SNB + VRSNB + Hosur" icon={<BarChart3 className="size-5" />} tone="blue" />
+      </div>
+      <Panel title="Branch Sales Comparison" subtitle="Revenue by branch and selected range" action={rangeControls}>
+        <ChartWrap>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={branchSalesByBranch.filter((b) => b.branch !== 'Cafe')}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `₹${Number(v) / 1000}k`} width={72} />
+              <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+              <Bar dataKey="sales" radius={[10, 10, 0, 0]} fill="#2563eb" />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartWrap>
+      </Panel>
+      <Panel title="Branch Sales Transactions" subtitle="SNB, VRSNB and Hosur sales details">
+        {branchTransactions.length === 0 ? <EmptyState label="No branch sales in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Branch</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3">Payment</th><th className="p-3 text-right">Revenue</th><th className="p-3">Sold By</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {branchTransactions.slice(0, 100).map((t) => (
+                  <tr key={t.id} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={t.branch} /></td>
+                    <td className="p-3 font-semibold">{t.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{t.qty}</td>
+                    <td className="p-3 uppercase text-slate-500">{t.payment}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(t.revenue)}</td>
+                    <td className="p-3 text-slate-500">{t.soldBy}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(t.soldAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const ItemsTab = (
+    <div className="space-y-5">
+      <Panel title="Items > Bakery" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
+        <div className="mb-4 grid gap-2 sm:grid-cols-2">
+          <button onClick={() => setItemsSection('snb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'snb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">SNB Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'snb' ? 'text-white/70' : 'text-slate-500')}>Shared SNB and Hosur bakery price list with stock badges</p>
+          </button>
+          <button onClick={() => setItemsSection('vrsnb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'vrsnb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">VRSNB Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'vrsnb' ? 'text-white/70' : 'text-slate-500')}>VRSNB item list with stock validation visibility</p>
+          </button>
+        </div>
+        {itemsSection === 'snb' ? <SnbItemsTab /> : <VrsnbItemsTab />}
+      </Panel>
+    </div>
+  );
+
+  const StockAlertsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Stock Missing" value={stockAlertChart.find((r) => r.status === 'Stock Not Available')?.count || 0} sub="Items without stock row" icon={<Database className="size-5" />} tone="slate" />
+        <KpiCard label="Out of Stock" value={stockAlertChart.find((r) => r.status === 'Out of Stock')?.count || 0} sub="Cannot be billed" icon={<XCircle className="size-5" />} tone="red" />
+        <KpiCard label="Low Stock" value={stockAlertChart.find((r) => r.status === 'Low Stock')?.count || 0} sub="Needs restocking" icon={<AlertTriangle className="size-5" />} tone="amber" />
+        <KpiCard label="Total Alerts" value={stockAlerts.length} sub="All branches" icon={<Bell className="size-5" />} tone={stockAlerts.length ? 'red' : 'green'} />
+      </div>
+      <Panel title="Stock Alert Dashboard" subtitle="Missing stock, low stock and out-of-stock items" action={<button onClick={() => { BRANCHES.forEach((b) => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><RefreshCw className="size-3.5" />Refresh</button>}>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[1fr_180px_200px]">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={stockQuery} onChange={(e) => setStockQuery(e.target.value)} placeholder="Search item, category or branch" className="w-full rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-slate-300" />
+          </div>
+          <select value={stockStatusFilter} onChange={(e) => setStockStatusFilter(e.target.value as StockAlertStatus | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All statuses</option>
+            {STOCK_ALERT_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+          <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.filter((b) => b !== 'Cafe').map((branch) => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+        </div>
+        {filteredStockAlerts.length === 0 ? <EmptyState label="No stock alerts match filters." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Status</th><th className="p-3">Item</th><th className="p-3">Category</th><th className="p-3">Branch</th><th className="p-3 text-right">Current</th><th className="p-3 text-right">Minimum</th><th className="p-3">Unit</th><th className="p-3">Last Updated</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredStockAlerts.slice(0, 200).map((row, index) => (
+                  <tr key={`${row.branch}-${row.itemName}-${index}`} className="hover:bg-slate-50">
+                    <td className="p-3"><Badge tone={row.status === 'Low Stock' ? 'amber' : row.status === 'Out of Stock' ? 'red' : 'slate'}>{row.status}</Badge></td>
+                    <td className="p-3 font-semibold">{row.itemName}</td>
+                    <td className="p-3 text-slate-500">{row.category}</td>
+                    <td className="p-3"><BranchPill branch={row.branch} /></td>
+                    <td className="p-3 text-right font-black tabular-nums">{row.currentStock}</td>
+                    <td className="p-3 text-right tabular-nums">{row.minimumStock}</td>
+                    <td className="p-3 uppercase text-slate-500">{row.unit}</td>
+                    <td className="p-3 text-slate-500">{row.lastUpdated}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const DailyClosureTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Sales" value={formatCurrency(closureRows.reduce((s, r) => s + r.totalSales, 0))} sub={closureDate} icon={<IndianRupee className="size-5" />} tone="green" />
+        <KpiCard label="Bank Deposits" value={formatCurrency(closureRows.reduce((s, r) => s + r.bankDeposits, 0))} icon={<Landmark className="size-5" />} tone="blue" />
+        <KpiCard label="Purchase Payments" value={formatCurrency(closureRows.reduce((s, r) => s + r.purchasePayments, 0))} icon={<WalletCards className="size-5" />} tone="amber" />
+        <KpiCard label="Difference" value={formatCurrency(closureRows.reduce((s, r) => s + Math.abs(r.differenceAmount), 0))} icon={<AlertTriangle className="size-5" />} tone={closureRows.some((r) => Math.abs(r.differenceAmount) > 0) ? 'red' : 'green'} />
+      </div>
+      <Panel title="Daily Closure Verification" subtitle="Cafe, SNB Branch, VRSNB Branch and Hosur Branch" action={<div className="flex flex-wrap gap-2"><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            Date
+            <input type="date" value={closureDate} onChange={(e) => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map((branch) => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <div className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500"><Filter className="size-4" />Verify sales, collections, expenses, deposits and closing differences before approving.</div>
+        </div>
+        <div className="grid gap-4">
+          {filteredClosureRows.map((row) => (
+            <div key={row.branch} className="rounded-3xl border border-slate-200 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={cn('grid size-12 place-items-center rounded-2xl', BRANCH_COLORS[row.branch].bg)}><Store className={cn('size-5', BRANCH_COLORS[row.branch].text)} /></div>
+                  <div><h4 className="font-display text-lg font-black text-slate-950">{BRANCH_LABELS[row.branch]}</h4><p className="text-xs text-slate-500">Closed by {row.closedBy} · {row.closedAt}</p></div>
+                </div>
+                <Badge tone={row.status === 'Closed' ? 'green' : row.status === 'Review' ? 'red' : 'amber'}>{row.status}</Badge>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+                {[['Opening', row.openingBalance], ['Total sales', row.totalSales], ['Cash', row.cashSales], ['UPI', row.upiSales], ['Card', row.cardSales], ['Credit', row.creditSales], ['Returns', row.returns], ['Net sales', row.netSales], ['Expenses', row.expenses], ['Purchase pay.', row.purchasePayments], ['Bank deposit', row.bankDeposits], ['Closing', row.closingBalance], ['Difference', row.differenceAmount]].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-2xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase text-slate-500">{label}</p><p className="mt-1 text-sm font-black text-slate-950 tabular-nums">{formatCurrency(Number(value))}</p></div>
+                ))}
+              </div>
+              <p className="mt-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-600"><b>Remarks:</b> {row.remarks}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+
+  const CreditsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Credit Pending" value={formatCurrency(creditPendingTotal)} sub="All branches" icon={<WalletCards className="size-5" />} tone="amber" />
+        <KpiCard label="Branch Credits" value={BRANCHES.reduce((n, branch) => n + (creditSales[branch] || []).filter((c) => c.status !== 'settled').length, 0)} sub="Open records" icon={<Receipt className="size-5" />} tone="blue" />
+        <KpiCard label="Closed Credits" value={BRANCHES.reduce((n, branch) => n + (creditSales[branch] || []).filter((c) => c.status === 'settled').length, 0)} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <KpiCard label="Risk" value={creditPendingTotal > 0 ? 'Follow up' : 'Clear'} icon={<AlertTriangle className="size-5" />} tone={creditPendingTotal > 0 ? 'red' : 'green'} />
+      </div>
+      <Panel title="Credit Management" subtitle="Credit collection flow remains inside the existing credit module, now embedded in Admin control.">
+        <AdminCreditTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
+      </Panel>
+    </div>
+  );
+
+  const AdvanceTab = (
+    <div className="space-y-5">
+      <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across Cafe, SNB, VRSNB and Hosur.">
+        <AdminAdvanceTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
+      </Panel>
+    </div>
+  );
+
+  const AuditTab = (
+    <div className="space-y-5">
+      <Panel title="Admin Audit Logs" subtitle="Sensitive edits, stock changes, duplicate prints and closure actions">
+        {auditLogs.length === 0 ? <EmptyState label="No audit logs recorded yet." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Time</th><th className="p-3">Branch</th><th className="p-3">User</th><th className="p-3">Action</th><th className="p-3">Previous</th><th className="p-3">New</th></tr></thead>
+              <tbody className="divide-y">
+                {auditLogs.slice(0, 150).map((log) => (
+                  <tr key={log.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(log.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={log.branch} /></td>
+                    <td className="p-3 font-semibold">{log.user}</td>
+                    <td className="p-3">{log.action}</td>
+                    <td className="p-3 text-slate-500">{log.previousValue}</td>
+                    <td className="p-3 text-slate-500">{log.newValue}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const activeContent: Record<AdminTab, ReactNode> = {
+    overview: OverviewTab,
+    cafe: CafeTab,
+    branches: BranchesTab,
+    items: ItemsTab,
+    'stock-alerts': StockAlertsTab,
+    'daily-closure': DailyClosureTab,
+    credits: CreditsTab,
+    advance: AdvanceTab,
+    audit: AuditTab,
+  };
+
+  const activeMeta = NAV_ITEMS.find((item) => item.id === activeTab) || NAV_ITEMS[0];
+
+  return (
+    <div className="min-h-[100dvh] bg-slate-50/80">
+      <div className="lg:hidden sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
+        <div className="flex items-center justify-between gap-3">
+          <button onClick={() => setMobileNavOpen(true)} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-sm font-black text-white"><Menu className="size-4" />Menu</button>
+          <div className="text-right"><p className="text-xs font-black uppercase tracking-wider text-primary">Admin</p><p className="text-sm font-bold text-slate-950">{activeMeta.label}</p></div>
         </div>
       </div>
 
-      {/* Cafe / Bakery / Credit / Advance toggle */}
-      <div className="mx-4 my-4 grid grid-cols-2 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        <button
-          onClick={() => setMode('cafe')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          ☕ Cafe
-        </button>
-        <button
-          onClick={() => setMode('bakery')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          🥐 Bakery
-        </button>
-        <button
-          onClick={() => setMode('credit')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          💳 Credit
-        </button>
-        <button
-          onClick={() => setMode('advance')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'advance' ? 'bg-amber-500 text-white shadow-soft' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          🏷️ Advance
-        </button>
-      </div>
-
-      <div className="px-4 space-y-4">
-        {mode === 'cafe'   && <CafeView />}
-        {mode === 'bakery' && <BakeryView />}
-        {mode === 'credit' && (
-          <AdminCreditTab
-            branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']}
-          />
-        )}
-        {mode === 'advance' && (
-          <AdminAdvanceTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
-        )}
-      </div>
-
-      <div className="px-4 mt-6">
-        <div className="flex items-center gap-2 px-4 py-3 rounded-xl" style={{ background: 'hsl(var(--muted)/0.5)' }}>
-          <Package className="size-4 text-muted-foreground shrink-0" />
-          <p className="text-xs font-body text-muted-foreground">Data retained for last 60 days. Older records are automatically purged.</p>
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-slate-950/40" onClick={() => setMobileNavOpen(false)} />
+          <div className="relative h-full w-[88vw] max-w-sm">{sidebar}</div>
         </div>
+      )}
+
+      <div className="mx-auto flex min-h-[100dvh] max-w-[1800px]">
+        <div className="sticky top-0 hidden h-[100dvh] shrink-0 lg:block">{sidebar}</div>
+        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8">
+          <div className="mb-5 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/70 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Complete Business Control</p>
+                <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
+              </div>
+              <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
+              <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600"><Activity className="size-4 text-emerald-600" />{new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}</span>
+              <button onClick={() => { BRANCHES.forEach((b) => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
+            </div>
+          </div>
+
+          {!isAdmin && (
+            <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
+            </div>
+          )}
+
+          {activeContent[activeTab]}
+        </main>
       </div>
     </div>
   );
 }
+
+export default AdminDashboard;
