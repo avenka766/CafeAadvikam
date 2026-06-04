@@ -1,9 +1,10 @@
 // src/bakery/BakerDashboard.tsx  (Redesigned)
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Clock, BarChart2, Download, RefreshCw, Calendar, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Clock, BarChart2, Download, RefreshCw, Calendar, AlertCircle, FileSpreadsheet, Printer, Search } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import type { PreparedItem } from './types';
+import type { BakeryOrder, BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import { supabase } from '@/lib/supabase';
@@ -27,6 +28,123 @@ function fmtDate(iso: string) {
 }
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDateTime(iso?: string) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function safeDate(iso?: string) {
+  if (!iso) return 0;
+  const time = new Date(iso).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function orderCompletedAt(order: BakeryOrder) {
+  return order.sentToPackingAt || order.createdAt;
+}
+
+function orderStatusLabel(status: BakeryOrder['status']) {
+  if (status === 'packed') return 'At Packing';
+  if (status === 'dispatched') return 'Dispatched';
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function getRequestedQtyLabel(item: BakeryOrderItem) {
+  if (item.originalPcs != null) return `${item.originalPcs} pcs → ${item.quantity} kg`;
+  return `${item.quantity} ${item.dispatchUnit === 'pcs' ? 'pcs' : 'kg'}`;
+}
+
+function getPreparedQtyLabel(order: BakeryOrder, prepared: PreparedItem) {
+  const source = order.items.find(i => i.itemId === prepared.itemId);
+  const unit = source?.originalPcs != null ? 'kg' : (prepared.dispatchUnit ?? source?.dispatchUnit ?? 'kg');
+  return `${prepared.quantityPrepared} ${unit}`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function printCompletedOrder(order: BakeryOrder) {
+  const printWindow = window.open('', '_blank', 'width=680,height=760');
+  if (!printWindow) return;
+
+  const preparedRows = (order.preparedItems ?? []).map(prepared => {
+    const source = order.items.find(i => i.itemId === prepared.itemId);
+    return `
+      <tr>
+        <td>${escapeHtml(prepared.itemName)}</td>
+        <td>${escapeHtml(source ? getRequestedQtyLabel(source) : '—')}</td>
+        <td>${escapeHtml(getPreparedQtyLabel(order, prepared))}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const requestedRows = order.preparedItems?.length ? '' : order.items.map(item => `
+    <tr>
+      <td>${escapeHtml(item.itemName)}</td>
+      <td>${escapeHtml(getRequestedQtyLabel(item))}</td>
+      <td>—</td>
+    </tr>
+  `).join('');
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Baker Completed Order #${order.orderNumber}</title>
+      <style>
+        * { box-sizing: border-box; }
+        @page { margin: 10mm; }
+        body { font-family: Arial, sans-serif; color: #111827; margin: 0; font-size: 12px; line-height: 1.35; }
+        .header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 12px; }
+        h1 { font-size: 20px; margin: 0 0 4px; }
+        .muted { color: #6b7280; }
+        .badge { display: inline-block; border: 1px solid #d1d5db; border-radius: 999px; padding: 3px 9px; font-weight: 700; }
+        .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 14px; }
+        .box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; }
+        .label { font-size: 9px; color: #6b7280; font-weight: 700; text-transform: uppercase; margin-bottom: 3px; }
+        .value { font-size: 13px; font-weight: 700; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; background: #f3f4f6; color: #4b5563; font-size: 10px; text-transform: uppercase; padding: 8px; }
+        td { border-bottom: 1px solid #e5e7eb; padding: 8px; }
+        .footer { margin-top: 14px; color: #9ca3af; font-size: 10px; text-align: center; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div>
+          <h1>Completed Baker Order #${order.orderNumber}</h1>
+          <div class="muted">Printed: ${new Date().toLocaleString('en-IN')}</div>
+        </div>
+        <div><span class="badge">${escapeHtml(orderStatusLabel(order.status))}</span></div>
+      </div>
+      <div class="meta">
+        <div class="box"><div class="label">Branch</div><div class="value">${escapeHtml(order.targetBranch ?? '—')}</div></div>
+        <div class="box"><div class="label">Created By</div><div class="value">${escapeHtml(order.createdBy || '—')}</div></div>
+        <div class="box"><div class="label">Created</div><div class="value">${escapeHtml(fmtDateTime(order.createdAt))}</div></div>
+        <div class="box"><div class="label">Completed</div><div class="value">${escapeHtml(fmtDateTime(orderCompletedAt(order)))}</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Item</th><th>Requested</th><th>Prepared</th></tr></thead>
+        <tbody>${preparedRows || requestedRows}</tbody>
+      </table>
+      ${order.notes ? `<p><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : ''}
+      <div class="footer">Cafe Aadvikam · Baker Completed Order</div>
+    </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 300);
 }
 
 interface BakerReportRow {
@@ -78,12 +196,12 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
   return rows;
 }
 
-// ─── Baker Report Tab ─────────────────────────────────────────────────────────
-function BakerReportTab() {
-  const [period, setPeriod]       = useState<PeriodKey>('today');
-  const [rows, setRows]           = useState<BakerReportRow[]>([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState<string | null>(null);
+// ─── Daily Closure Tab ───────────────────────────────────────────────────────
+function DailyClosureTab() {
+  const [period, setPeriod]         = useState<PeriodKey>('today');
+  const [rows, setRows]             = useState<BakerReportRow[]>([]);
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState<string | null>(null);
   const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
 
   const { from, to } = useMemo(() => {
@@ -97,153 +215,236 @@ function BakerReportTab() {
     try {
       const data = await fetchBakerReport(from, to);
       setRows(data); setLastLoaded(new Date());
-    } catch { setError('Failed to load report. Please try again.'); }
-    finally { setLoading(false); }
+    } catch {
+      setError('Failed to load daily closure. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }, [from, to]);
 
   useEffect(() => { void load(); }, [load]);
 
-  // Summary stats
-  const totalOrders  = useMemo(() => new Set(rows.map(r => r.orderNumber)).size, [rows]);
-  const totalItems   = rows.length;
-  const dispatched   = useMemo(() => new Set(rows.filter(r => r.status === 'dispatched').map(r => r.orderNumber)).size, [rows]);
-
-  const handleDownload = () => {
-    const periodLabel = PERIODS.find(p => p.key === period)?.label ?? period;
-
-    // Sheet 1: Summary per order
-    const orderMap = new Map<number, BakerReportRow[]>();
+  const periodLabel = PERIODS.find(p => p.key === period)?.label ?? period;
+  const orderMap = useMemo(() => {
+    const map = new Map<number, BakerReportRow[]>();
     for (const r of rows) {
-      if (!orderMap.has(r.orderNumber)) orderMap.set(r.orderNumber, []);
-      orderMap.get(r.orderNumber)!.push(r);
+      if (!map.has(r.orderNumber)) map.set(r.orderNumber, []);
+      map.get(r.orderNumber)!.push(r);
     }
+    return map;
+  }, [rows]);
 
-    const summaryRows = [...orderMap.entries()].map(([num, items]) => [
-      num,
-      items[0].targetBranch,
-      items.map(i => i.itemName).join(', '),
-      fmtDate(items[0].sentToPackingAt),
-      fmtTime(items[0].sentToPackingAt),
-      items[0].status.charAt(0).toUpperCase() + items[0].status.slice(1),
-      items[0].createdBy,
-    ]);
+  const totalOrders = orderMap.size;
+  const totalItems = rows.length;
+  const dispatched = useMemo(() => new Set(rows.filter(r => r.status === 'dispatched').map(r => r.orderNumber)).size, [rows]);
+  const atPacking = Math.max(totalOrders - dispatched, 0);
+  const totalPreparedQty = rows.reduce((sum, r) => sum + (Number(r.preparedQty) || 0), 0);
+  const shortageLines = rows.filter(r => r.preparedQty < r.requestedQty).length;
 
-    // Sheet 2: Item-level detail
-    const detailRows = rows.map(r => [
-      r.orderNumber,
-      r.targetBranch,
-      r.itemName,
-      r.requestedQty,
-      r.requestedUnit,
-      r.preparedQty,
-      r.preparedUnit,
-      r.preparedQty - r.requestedQty,   // variance
-      fmtDate(r.sentToPackingAt),
-      fmtTime(r.sentToPackingAt),
-      r.status.charAt(0).toUpperCase() + r.status.slice(1),
-    ]);
+  const summaryRows = useMemo(() => [...orderMap.entries()].map(([num, items]) => ({
+    orderNumber: num,
+    branch: items[0].targetBranch,
+    items: items.map(i => i.itemName).join(', '),
+    date: fmtDate(items[0].sentToPackingAt),
+    time: fmtTime(items[0].sentToPackingAt),
+    status: orderStatusLabel(items[0].status as BakeryOrder['status']),
+    baker: items[0].createdBy,
+  })), [orderMap]);
 
+  const exportClosure = () => {
     const wb = XLSX.utils.book_new();
 
     const summarySheet = XLSX.utils.aoa_to_sheet([
+      ['Daily Closure', periodLabel],
+      ['From', from.toLocaleString('en-IN')],
+      ['To', to.toLocaleString('en-IN')],
+      [],
+      ['Total Orders', totalOrders],
+      ['Item Lines', totalItems],
+      ['At Packing', atPacking],
+      ['Dispatched', dispatched],
+      ['Shortage Lines', shortageLines],
+      [],
       ['Order #', 'Branch', 'Items', 'Date', 'Time', 'Status', 'Baker'],
-      ...summaryRows,
+      ...summaryRows.map(r => [r.orderNumber, r.branch, r.items, r.date, r.time, r.status, r.baker]),
     ]);
-    summarySheet['!cols'] = [8, 10, 40, 12, 8, 12, 16].map(w => ({ wch: w }));
-    XLSX.utils.book_append_sheet(wb, summarySheet, 'Order Summary');
+    summarySheet['!cols'] = [12, 16, 44, 14, 10, 14, 18].map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, summarySheet, 'Closure Summary');
 
     const detailSheet = XLSX.utils.aoa_to_sheet([
       ['Order #', 'Branch', 'Item Name', 'Requested Qty', 'Req Unit', 'Prepared Qty', 'Prep Unit', 'Variance', 'Date', 'Time', 'Status'],
-      ...detailRows,
+      ...rows.map(r => [
+        r.orderNumber,
+        r.targetBranch,
+        r.itemName,
+        r.requestedQty,
+        r.requestedUnit,
+        r.preparedQty,
+        r.preparedUnit,
+        r.preparedQty - r.requestedQty,
+        fmtDate(r.sentToPackingAt),
+        fmtTime(r.sentToPackingAt),
+        orderStatusLabel(r.status as BakeryOrder['status']),
+      ]),
     ]);
-    detailSheet['!cols'] = [8, 10, 28, 14, 8, 14, 8, 10, 12, 8, 12].map(w => ({ wch: w }));
+    detailSheet['!cols'] = [10, 12, 30, 14, 9, 14, 9, 10, 14, 10, 14].map(w => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, detailSheet, 'Item Detail');
 
-    XLSX.writeFile(wb, `baker-report-${periodLabel}-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `baker-daily-closure-${periodLabel}-${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+
+  const printClosure = () => {
+    const printWindow = window.open('', '_blank', 'width=860,height=780');
+    if (!printWindow) return;
+
+    const orderRows = summaryRows.map(r => `
+      <tr>
+        <td>#${r.orderNumber}</td>
+        <td>${escapeHtml(r.branch)}</td>
+        <td>${escapeHtml(r.items)}</td>
+        <td>${escapeHtml(r.date)} ${escapeHtml(r.time)}</td>
+        <td>${escapeHtml(r.status)}</td>
+      </tr>
+    `).join('');
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Baker Daily Closure - ${periodLabel}</title>
+        <style>
+          * { box-sizing: border-box; }
+          @page { margin: 10mm; }
+          body { font-family: Arial, sans-serif; color: #111827; margin: 0; font-size: 12px; line-height: 1.35; }
+          .header { border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 12px; }
+          h1 { font-size: 20px; margin: 0 0 4px; }
+          .muted { color: #6b7280; }
+          .summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 12px 0; }
+          .box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px; }
+          .label { font-size: 9px; color: #6b7280; font-weight: 700; text-transform: uppercase; }
+          .value { font-size: 16px; font-weight: 800; margin-top: 2px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th { text-align: left; background: #f3f4f6; color: #4b5563; font-size: 10px; text-transform: uppercase; padding: 8px; }
+          td { border-bottom: 1px solid #e5e7eb; padding: 8px; vertical-align: top; }
+          .footer { margin-top: 14px; color: #9ca3af; font-size: 10px; text-align: center; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Baker Daily Closure</h1>
+          <div class="muted">${periodLabel} · ${from.toLocaleDateString('en-IN')} to ${to.toLocaleDateString('en-IN')} · Printed ${new Date().toLocaleString('en-IN')}</div>
+        </div>
+        <div class="summary">
+          <div class="box"><div class="label">Orders</div><div class="value">${totalOrders}</div></div>
+          <div class="box"><div class="label">Item Lines</div><div class="value">${totalItems}</div></div>
+          <div class="box"><div class="label">At Packing</div><div class="value">${atPacking}</div></div>
+          <div class="box"><div class="label">Dispatched</div><div class="value">${dispatched}</div></div>
+          <div class="box"><div class="label">Shortage Lines</div><div class="value">${shortageLines}</div></div>
+        </div>
+        <table>
+          <thead><tr><th>Order</th><th>Branch</th><th>Items</th><th>Completed</th><th>Status</th></tr></thead>
+          <tbody>${orderRows || '<tr><td colspan="5">No completed work in this period.</td></tr>'}</tbody>
+        </table>
+        <div class="footer">Cafe Aadvikam · Baker Daily Closure</div>
+      </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 300);
   };
 
   return (
     <div className="space-y-4 pb-8">
-      {/* Header card */}
-      <div className="bg-card border border-border rounded-2xl p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <FileSpreadsheet className="size-4 text-primary" />
-          <h2 className="font-display font-bold text-foreground">Baker Report</h2>
-        </div>
-        <p className="text-[11px] font-body text-muted-foreground">
-          Download Excel of items prepared and sent to packing.
-        </p>
-      </div>
-
-      {/* Period selector */}
-      <div className="bg-card border border-border rounded-2xl p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Calendar className="size-4 text-muted-foreground" />
-          <p className="text-xs font-body font-bold text-foreground">Select Period</p>
-        </div>
-        <div className="flex gap-1.5">
-          {PERIODS.map(p => (
-            <button key={p.key} onClick={() => setPeriod(p.key)}
-              className={cn(
-                'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all border',
-                period === p.key
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-muted/40 text-muted-foreground border-border hover:bg-muted',
-              )}>
-              {p.label}
-            </button>
-          ))}
+      <div className="rounded-3xl border border-border bg-card/90 p-4 sm:p-5 shadow-soft">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="size-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+              <FileSpreadsheet className="size-5" />
+            </span>
+            <div>
+              <h2 className="font-display text-xl font-bold text-foreground">Daily Closure</h2>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Review completed production, totals, variance lines, and export or print closure details.
+              </p>
+            </div>
+          </div>
+          {lastLoaded && !loading && (
+            <span className="text-[10px] font-body font-semibold text-muted-foreground bg-muted px-3 py-1.5 rounded-full self-start sm:self-auto">
+              Last refreshed: {fmtTime(lastLoaded.toISOString())}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="rounded-3xl border border-border bg-card p-3 sm:p-4 space-y-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2">
+            <Calendar className="size-4 text-muted-foreground" />
+            <p className="text-xs font-body font-bold text-foreground">Closure Period</p>
+          </div>
+          <div className="grid grid-cols-2 sm:flex gap-2">
+            {PERIODS.map(p => (
+              <button
+                key={p.key}
+                onClick={() => setPeriod(p.key)}
+                className={cn(
+                  'min-h-10 px-3 rounded-xl text-xs font-body font-bold transition-all border',
+                  period === p.key
+                    ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                    : 'bg-background text-muted-foreground border-border hover:bg-muted'
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-3">
         {[
-          { label: 'Orders Sent',  value: totalOrders,  color: 'text-orange-600', bg: 'bg-orange-50 border-orange-200' },
-          { label: 'Item Lines',   value: totalItems,   color: 'text-primary',    bg: '' },
-          { label: 'Dispatched',   value: dispatched,   color: 'text-emerald-600',bg: '' },
+          { label: 'Orders', value: totalOrders, color: 'text-orange-600' },
+          { label: 'Item Lines', value: totalItems, color: 'text-primary' },
+          { label: 'At Packing', value: atPacking, color: 'text-purple-600' },
+          { label: 'Dispatched', value: dispatched, color: 'text-emerald-600' },
+          { label: 'Shortage Lines', value: shortageLines, color: shortageLines > 0 ? 'text-red-600' : 'text-muted-foreground' },
         ].map(s => (
-          <div key={s.label} className={cn('bg-card border border-border rounded-2xl p-3 text-center', s.bg)}>
-            <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
-            <p className="text-[9px] font-body text-muted-foreground uppercase font-semibold mt-0.5">{s.label}</p>
+          <div key={s.label} className="rounded-2xl border border-border bg-card p-3 text-center">
+            <p className={cn('font-display text-2xl font-bold tabular-nums', s.color)}>{s.value}</p>
+            <p className="text-[9px] font-body font-bold text-muted-foreground uppercase tracking-wide mt-0.5">{s.label}</p>
           </div>
         ))}
       </div>
 
-      {/* Download + Refresh */}
-      <div className="flex gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2">
+        <div className="rounded-2xl border border-border bg-card px-4 py-3">
+          <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wider">Total Prepared Quantity</p>
+          <p className="font-display text-xl font-bold text-foreground mt-0.5">{totalPreparedQty.toFixed(2)} <span className="text-sm text-muted-foreground">units/kg combined</span></p>
+        </div>
         <button
-          onClick={handleDownload}
+          onClick={exportClosure}
           disabled={rows.length === 0 || loading}
           className={cn(
-            'flex-1 h-12 rounded-2xl font-body font-semibold text-sm flex items-center justify-center gap-2 transition-all active:scale-95',
-            rows.length > 0 && !loading
-              ? 'bg-emerald-600 text-white shadow-sm hover:bg-emerald-700'
-              : 'bg-muted text-muted-foreground cursor-not-allowed',
-          )}>
-          <Download className="size-4" />
-          Download Excel
-          {rows.length > 0 && (
-            <span className="text-[10px] font-bold bg-white/20 px-1.5 py-0.5 rounded-full">{rows.length}</span>
+            'h-12 rounded-2xl px-4 font-body font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95',
+            rows.length > 0 && !loading ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-muted text-muted-foreground cursor-not-allowed'
           )}
+        >
+          <Download className="size-4" /> Export
         </button>
-        <button onClick={load}
-          className="size-12 rounded-2xl border border-border bg-card flex items-center justify-center shrink-0 active:scale-95 hover:bg-muted">
-          <RefreshCw className={cn('size-4 text-muted-foreground', loading && 'animate-spin')} />
+        <button
+          onClick={printClosure}
+          disabled={loading}
+          className="h-12 rounded-2xl px-4 border border-border bg-card font-body font-bold text-sm text-foreground flex items-center justify-center gap-2 hover:bg-muted active:scale-95 disabled:opacity-60"
+        >
+          <Printer className="size-4" /> Print
         </button>
       </div>
 
-      {lastLoaded && !loading && (
-        <p className="text-[10px] font-body text-muted-foreground text-center -mt-2">
-          Last refreshed: {fmtTime(lastLoaded.toISOString())}
-        </p>
-      )}
-
-      {/* States */}
       {loading && (
         <div className="bg-card border border-border rounded-2xl p-8 flex flex-col items-center gap-3">
           <Loader2 className="size-6 text-primary animate-spin" />
-          <p className="text-sm font-body text-muted-foreground">Loading report…</p>
+          <p className="text-sm font-body text-muted-foreground">Loading daily closure…</p>
         </div>
       )}
 
@@ -257,64 +458,69 @@ function BakerReportTab() {
         </div>
       )}
 
-      {/* Preview table */}
       {!loading && !error && rows.length === 0 && (
-        <div className="bg-card border border-border rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
-          <div className="size-12 rounded-2xl bg-muted flex items-center justify-center">
-            <FileSpreadsheet className="size-6 text-muted-foreground" />
+        <div className="bg-card border border-border rounded-3xl p-10 flex flex-col items-center gap-3 text-center">
+          <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
+            <FileSpreadsheet className="size-7 text-muted-foreground" />
           </div>
-          <p className="text-sm font-body font-bold text-foreground">No data found</p>
-          <p className="text-xs font-body text-muted-foreground">No items sent to packing in this period.</p>
+          <p className="text-sm font-body font-bold text-foreground">No completed production found</p>
+          <p className="text-xs font-body text-muted-foreground">No items were sent to packing for the selected period.</p>
         </div>
       )}
 
       {!loading && !error && rows.length > 0 && (
-        <div className="bg-card border border-border rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+        <div className="bg-card border border-border rounded-3xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <ChefHat className="size-4 text-muted-foreground" />
-              <p className="text-xs font-body font-bold text-foreground">Preview</p>
-              <span className="text-[10px] font-body text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{rows.length} rows</span>
+              <p className="text-xs font-body font-bold text-foreground">Closure Detail</p>
+              <span className="text-[10px] font-body text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{rows.length} item rows</span>
             </div>
-            {rows.length > 30 && <p className="text-[10px] font-body text-muted-foreground">Showing first 30</p>}
+            {rows.length > 40 && <p className="text-[10px] font-body text-muted-foreground">Showing first 40 — export to see all</p>}
           </div>
-          {/* Header */}
-          <div className="grid grid-cols-12 gap-1 px-4 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase border-b border-border">
-            <span className="col-span-1">#</span>
-            <span className="col-span-3">Item</span>
-            <span className="col-span-2">Branch</span>
-            <span className="col-span-2 text-right">Req</span>
-            <span className="col-span-2 text-right">Prepared</span>
-            <span className="col-span-2 text-right">Time</span>
-          </div>
-          {rows.slice(0, 30).map((r, i) => (
-            <div key={i}
-              className={cn('grid grid-cols-12 gap-1 px-4 py-2.5 border-b border-border/50 last:border-0 text-xs font-body items-center',
-                i % 2 === 0 ? 'bg-card' : 'bg-muted/20')}>
-              <span className="col-span-1 text-muted-foreground tabular-nums">{r.orderNumber}</span>
-              <span className="col-span-3 font-semibold text-foreground truncate">{r.itemName}</span>
-              <span className="col-span-2">
-                <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full',
-                  r.targetBranch === 'VRSNB' ? 'bg-blue-100 text-blue-700' :
-                  r.targetBranch === 'SNB'   ? 'bg-amber-100 text-amber-700' :
-                  'bg-emerald-100 text-emerald-700')}>
-                  {r.targetBranch}
-                </span>
-              </span>
-              <span className="col-span-2 text-right text-muted-foreground tabular-nums">{r.requestedQty} {r.requestedUnit}</span>
-              <span className={cn('col-span-2 text-right font-bold tabular-nums',
-                r.preparedQty < r.requestedQty ? 'text-red-600' :
-                r.preparedQty > r.requestedQty ? 'text-amber-600' : 'text-emerald-600')}>
-                {r.preparedQty} {r.preparedUnit}
-              </span>
-              <span className="col-span-2 text-right text-muted-foreground text-[10px]">
-                {r.sentToPackingAt ? fmtTime(r.sentToPackingAt) : '—'}
-              </span>
+          <div className="overflow-x-auto">
+            <div className="min-w-[760px]">
+              <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase border-b border-border">
+                <span className="col-span-1">Order</span>
+                <span className="col-span-3">Item</span>
+                <span className="col-span-2">Branch</span>
+                <span className="col-span-2 text-right">Requested</span>
+                <span className="col-span-2 text-right">Prepared</span>
+                <span className="col-span-2 text-right">Status / Time</span>
+              </div>
+              {rows.slice(0, 40).map((r, i) => (
+                <div key={`${r.orderNumber}-${r.itemName}-${i}`}
+                  className={cn('grid grid-cols-12 gap-2 px-4 py-3 border-b border-border/50 last:border-0 text-xs font-body items-center', i % 2 === 0 ? 'bg-card' : 'bg-muted/20')}
+                >
+                  <span className="col-span-1 text-muted-foreground tabular-nums">#{r.orderNumber}</span>
+                  <span className="col-span-3 font-semibold text-foreground truncate">{r.itemName}</span>
+                  <span className="col-span-2">
+                    <span className={cn('text-[9px] font-bold px-2 py-1 rounded-full',
+                      r.targetBranch === 'VRSNB' ? 'bg-blue-100 text-blue-700' :
+                      r.targetBranch === 'SNB' ? 'bg-amber-100 text-amber-700' :
+                      'bg-emerald-100 text-emerald-700')}
+                    >
+                      {r.targetBranch}
+                    </span>
+                  </span>
+                  <span className="col-span-2 text-right text-muted-foreground tabular-nums">{r.requestedQty} {r.requestedUnit}</span>
+                  <span className={cn('col-span-2 text-right font-bold tabular-nums',
+                    r.preparedQty < r.requestedQty ? 'text-red-600' :
+                    r.preparedQty > r.requestedQty ? 'text-amber-600' : 'text-emerald-600')}
+                  >
+                    {r.preparedQty} {r.preparedUnit}
+                  </span>
+                  <span className="col-span-2 text-right text-muted-foreground text-[10px]">
+                    <span className="block font-bold text-foreground">{orderStatusLabel(r.status as BakeryOrder['status'])}</span>
+                    {r.sentToPackingAt ? fmtTime(r.sentToPackingAt) : '—'}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-          {rows.length > 30 && (
-            <div className="px-4 py-3 text-center">
-              <p className="text-[11px] font-body text-muted-foreground">+{rows.length - 30} more rows — download Excel to see all</p>
+          </div>
+          {rows.length > 40 && (
+            <div className="px-4 py-3 text-center border-t border-border">
+              <p className="text-[11px] font-body text-muted-foreground">+{rows.length - 40} more rows — export to see all details</p>
             </div>
           )}
         </div>
@@ -480,51 +686,129 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   );
 }
 
-// ─── Completed card ───────────────────────────────────────────────────────────
-function CompletedCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
+// ─── Completed orders ────────────────────────────────────────────────────────
+function CompletedCard({ order }: { order: BakeryOrder }) {
   const [expanded, setExpanded] = useState(false);
   const isDispatched = order.status === 'dispatched';
+  const completedAt = orderCompletedAt(order);
+  const preparedCount = order.preparedItems?.length ?? 0;
 
   return (
-    <div className="bg-card border border-border rounded-2xl overflow-hidden opacity-75">
-      <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setExpanded(v => !v)}>
-        <div className={cn(
-          'size-8 rounded-xl flex items-center justify-center shrink-0',
-          isDispatched ? 'bg-emerald-100' : 'bg-purple-100'
-        )}>
-          <CheckCircle2 className={cn('size-4', isDispatched ? 'text-emerald-600' : 'text-purple-600')} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-display font-bold text-foreground text-sm">#{order.orderNumber}</span>
-            <span className={cn(
-              'text-[9px] font-body font-bold px-2 py-0.5 rounded-full border',
-              isDispatched
-                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                : 'bg-purple-100 text-purple-700 border-purple-200'
-            )}>
-              {isDispatched ? 'DISPATCHED' : 'AT PACKING'}
-            </span>
+    <div className="bg-card border border-border rounded-3xl overflow-hidden shadow-sm">
+      <div className="p-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start gap-3 min-w-0">
+          <div className={cn(
+            'size-11 rounded-2xl flex items-center justify-center shrink-0',
+            isDispatched ? 'bg-emerald-100' : 'bg-purple-100'
+          )}>
+            <CheckCircle2 className={cn('size-5', isDispatched ? 'text-emerald-600' : 'text-purple-600')} />
           </div>
-          <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">
-            {order.preparedItems?.map(p => `${p.itemName} ×${p.quantityPrepared}`).join(' · ')}
-          </p>
-        </div>
-        {expanded ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
-      </button>
-      {expanded && order.preparedItems && (
-        <div className="border-t border-border px-4 py-3 space-y-1.5">
-          {order.preparedItems.map((p, i) => (
-            <div key={i} className="flex justify-between text-sm font-body">
-              <span className="text-muted-foreground">{p.itemName}</span>
-              <span className="font-bold text-foreground">{p.quantityPrepared} {order.items.find(i => i.itemId === p.itemId)?.originalPcs != null ? 'kg' : (p.dispatchUnit ?? 'kg')}</span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-display font-bold text-foreground text-base">Order #{order.orderNumber}</h3>
+              <span className={cn(
+                'text-[10px] font-body font-bold px-2.5 py-1 rounded-full border',
+                isDispatched
+                  ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                  : 'bg-purple-100 text-purple-700 border-purple-200'
+              )}>
+                {orderStatusLabel(order.status)}
+              </span>
+              {order.targetBranch && (
+                <span className="text-[10px] font-body font-bold px-2.5 py-1 rounded-full bg-muted text-muted-foreground border border-border">
+                  {order.targetBranch}
+                </span>
+              )}
             </div>
-          ))}
-          {order.sentToPackingAt && (
-            <p className="text-[10px] font-body text-muted-foreground pt-1 border-t border-border/50 mt-2">
-              <Clock className="size-3 inline mr-1" />
-              {new Date(order.sentToPackingAt).toLocaleString('en-IN')}
+            <p className="text-xs font-body text-muted-foreground mt-1">
+              Completed: <strong className="text-foreground">{fmtDateTime(completedAt)}</strong>
+              <span className="mx-1.5">•</span>
+              Created: {fmtDateTime(order.createdAt)}
             </p>
+            <p className="text-xs font-body text-muted-foreground mt-1 truncate max-w-3xl">
+              {(order.preparedItems?.length ? order.preparedItems : order.items).map(item =>
+                'quantityPrepared' in item
+                  ? `${item.itemName} ×${item.quantityPrepared}`
+                  : `${item.itemName} ×${item.quantity}`
+              ).join(' · ')}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:flex gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setExpanded(v => !v)}
+            className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body font-bold text-foreground flex items-center justify-center gap-1.5 hover:bg-muted active:scale-95"
+          >
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {expanded ? 'Hide Details' : 'View Details'}
+          </button>
+          <button
+            type="button"
+            onClick={() => printCompletedOrder(order)}
+            className="h-10 rounded-xl bg-emerald-600 px-3 text-xs font-body font-bold text-white flex items-center justify-center gap-1.5 hover:bg-emerald-700 active:scale-95"
+          >
+            <Printer className="size-3.5" /> Print
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 pb-4">
+        <div className="rounded-2xl border border-border bg-muted/30 p-3">
+          <p className="text-[9px] font-body font-bold text-muted-foreground uppercase">Prepared Lines</p>
+          <p className="font-display text-lg font-bold text-foreground tabular-nums">{preparedCount || order.items.length}</p>
+        </div>
+        <div className="rounded-2xl border border-border bg-muted/30 p-3">
+          <p className="text-[9px] font-body font-bold text-muted-foreground uppercase">Status</p>
+          <p className={cn('font-display text-sm font-bold', isDispatched ? 'text-emerald-600' : 'text-purple-600')}>{orderStatusLabel(order.status)}</p>
+        </div>
+        <div className="rounded-2xl border border-border bg-muted/30 p-3">
+          <p className="text-[9px] font-body font-bold text-muted-foreground uppercase">Branch</p>
+          <p className="font-display text-sm font-bold text-foreground">{order.targetBranch ?? '—'}</p>
+        </div>
+        <div className="rounded-2xl border border-border bg-muted/30 p-3">
+          <p className="text-[9px] font-body font-bold text-muted-foreground uppercase">Baker</p>
+          <p className="font-display text-sm font-bold text-foreground truncate">{order.createdBy || '—'}</p>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border px-4 py-4 space-y-3 bg-muted/10">
+          <div className="overflow-x-auto rounded-2xl border border-border bg-background">
+            <div className="min-w-[560px]">
+              <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-muted/60 text-[9px] font-body font-bold text-muted-foreground uppercase">
+                <span className="col-span-5">Item</span>
+                <span className="col-span-3 text-right">Requested</span>
+                <span className="col-span-3 text-right">Prepared</span>
+                <span className="col-span-1 text-right">Unit</span>
+              </div>
+              {(order.preparedItems?.length ? order.preparedItems : []).map((p, i) => {
+                const source = order.items.find(item => item.itemId === p.itemId);
+                return (
+                  <div key={`${p.itemId}-${i}`} className="grid grid-cols-12 gap-2 px-4 py-2.5 border-t border-border/60 text-xs font-body items-center">
+                    <span className="col-span-5 font-semibold text-foreground truncate">{p.itemName}</span>
+                    <span className="col-span-3 text-right text-muted-foreground tabular-nums">{source ? getRequestedQtyLabel(source) : '—'}</span>
+                    <span className="col-span-3 text-right font-bold text-foreground tabular-nums">{p.quantityPrepared}</span>
+                    <span className="col-span-1 text-right text-muted-foreground">{source?.originalPcs != null ? 'kg' : (p.dispatchUnit ?? source?.dispatchUnit ?? 'kg')}</span>
+                  </div>
+                );
+              })}
+              {!order.preparedItems?.length && order.items.map((item, i) => (
+                <div key={`${item.itemId}-${i}`} className="grid grid-cols-12 gap-2 px-4 py-2.5 border-t border-border/60 text-xs font-body items-center">
+                  <span className="col-span-5 font-semibold text-foreground truncate">{item.itemName}</span>
+                  <span className="col-span-3 text-right text-muted-foreground tabular-nums">{getRequestedQtyLabel(item)}</span>
+                  <span className="col-span-3 text-right font-bold text-foreground tabular-nums">—</span>
+                  <span className="col-span-1 text-right text-muted-foreground">{item.dispatchUnit ?? 'kg'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {order.notes && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-wide">Special Instructions</p>
+              <p className="text-sm font-body text-amber-900 mt-1">{order.notes}</p>
+            </div>
           )}
         </div>
       )}
@@ -532,11 +816,143 @@ function CompletedCard({ order }: { order: ReturnType<typeof useBakeryStore.getS
   );
 }
 
+function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boolean }) {
+  const [search, setSearch] = useState('');
+
+  const sortedOrders = useMemo(() => [...orders].sort((a, b) => safeDate(orderCompletedAt(b)) - safeDate(orderCompletedAt(a))), [orders]);
+  const filteredOrders = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return sortedOrders;
+    return sortedOrders.filter(order => {
+      const haystack = [
+        String(order.orderNumber),
+        order.targetBranch ?? '',
+        order.createdBy ?? '',
+        orderStatusLabel(order.status),
+        ...order.items.map(i => i.itemName),
+        ...(order.preparedItems ?? []).map(i => i.itemName),
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [search, sortedOrders]);
+
+  const atPacking = orders.filter(o => o.status === 'packed').length;
+  const dispatched = orders.filter(o => o.status === 'dispatched').length;
+  const itemLines = orders.reduce((sum, order) => sum + (order.preparedItems?.length || order.items.length), 0);
+  const todayKey = new Date().toDateString();
+  const todayCompleted = orders.filter(order => new Date(orderCompletedAt(order)).toDateString() === todayKey).length;
+
+  const downloadCompleted = () => {
+    const wb = XLSX.utils.book_new();
+    const rows = filteredOrders.map(order => [
+      order.orderNumber,
+      order.targetBranch ?? '—',
+      orderStatusLabel(order.status),
+      fmtDateTime(order.createdAt),
+      fmtDateTime(orderCompletedAt(order)),
+      (order.preparedItems?.length ? order.preparedItems : order.items).map(item =>
+        'quantityPrepared' in item ? `${item.itemName} (${item.quantityPrepared})` : `${item.itemName} (${item.quantity})`
+      ).join(', '),
+      order.createdBy,
+    ]);
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Order #', 'Branch', 'Status', 'Created', 'Completed', 'Items', 'Baker'],
+      ...rows,
+    ]);
+    sheet['!cols'] = [10, 12, 14, 20, 20, 52, 18].map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, sheet, 'Completed Orders');
+    XLSX.writeFile(wb, `baker-completed-orders-${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-4 pb-8">
+      <div className="rounded-3xl border border-border bg-card/90 p-4 sm:p-5 shadow-soft">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="size-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+              <CheckCircle2 className="size-5" />
+            </span>
+            <div>
+              <h2 className="font-display text-xl font-bold text-foreground">Completed Orders</h2>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Packed and dispatched baker orders are kept here with clear details, status, date/time, and print actions.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={downloadCompleted}
+            disabled={filteredOrders.length === 0}
+            className={cn(
+              'h-11 rounded-2xl px-4 text-xs font-body font-bold flex items-center justify-center gap-2 active:scale-95',
+              filteredOrders.length > 0 ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-muted text-muted-foreground cursor-not-allowed'
+            )}
+          >
+            <Download className="size-4" /> Export Completed
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+        {[
+          { label: 'Completed', value: orders.length, color: 'text-emerald-600' },
+          { label: 'Today', value: todayCompleted, color: 'text-primary' },
+          { label: 'At Packing', value: atPacking, color: 'text-purple-600' },
+          { label: 'Dispatched', value: dispatched, color: 'text-emerald-700' },
+        ].map(s => (
+          <div key={s.label} className="rounded-2xl border border-border bg-card p-3 text-center">
+            <p className={cn('font-display text-2xl font-bold tabular-nums', s.color)}>{s.value}</p>
+            <p className="text-[9px] font-body font-bold text-muted-foreground uppercase tracking-wide mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-3xl border border-border bg-card p-3 sm:p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="relative flex-1 min-w-0">
+          <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by order number, branch, status, baker, or item…"
+            className="w-full h-11 pl-10 pr-3 rounded-2xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <div className="rounded-2xl border border-border bg-muted/30 px-4 py-2 text-center md:text-left">
+          <p className="text-[9px] font-body font-bold text-muted-foreground uppercase">Item Lines</p>
+          <p className="font-display text-lg font-bold text-foreground tabular-nums">{itemLines}</p>
+        </div>
+      </div>
+
+      {loading ? (
+        <LoadingSkeleton variant="card" count={3} />
+      ) : filteredOrders.length > 0 ? (
+        <div className="space-y-3">
+          {filteredOrders.map(order => <CompletedCard key={order.id} order={order} />)}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center py-20 gap-4 rounded-3xl border border-border bg-card text-center">
+          <div className="size-16 rounded-3xl bg-muted flex items-center justify-center">
+            <CheckCircle2 className="size-8 text-muted-foreground opacity-40" />
+          </div>
+          <div>
+            <p className="text-sm font-body font-semibold text-foreground">No completed orders found</p>
+            <p className="text-xs font-body text-muted-foreground mt-1">
+              {orders.length === 0 ? 'Completed orders will appear here after baking is sent to packing.' : 'No completed order matches your search.'}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
+type BakerDashboardTab = 'orders' | 'completed' | 'closure';
+
 export default function BakerDashboard() {
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
-  const [tab, setTab] = useState<'orders' | 'report'>('orders');
+  const [tab, setTab] = useState<BakerDashboardTab>('orders');
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
@@ -544,109 +960,166 @@ export default function BakerDashboard() {
     return () => clearInterval(id);
   }, []);
 
-  const bakingOrders    = orders.filter(o => o.status === 'baking');
+  const bakingOrders = orders.filter(o => o.status === 'baking');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
+  const atPacking = completedOrders.filter(o => o.status === 'packed').length;
+  const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
+
+  const tabs = [
+    {
+      id: 'orders',
+      label: 'Orders',
+      description: 'Active bake queue',
+      icon: ChefHat,
+      badge: bakingOrders.length > 0 ? String(bakingOrders.length) : null,
+      badgeColor: 'bg-orange-500',
+    },
+    {
+      id: 'completed',
+      label: 'Completed',
+      description: 'Packed & dispatched',
+      icon: CheckCircle2,
+      badge: completedOrders.length > 0 ? String(completedOrders.length) : null,
+      badgeColor: 'bg-emerald-600',
+    },
+    {
+      id: 'closure',
+      label: 'Daily Closure',
+      description: 'Summary & exports',
+      icon: BarChart2,
+      badge: null,
+      badgeColor: '',
+    },
+  ] as const;
+
+  const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
+  const ActiveIcon = activeTab.icon;
 
   return (
-    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
-
-      {/* Header */}
-      <div className="px-4 pt-5 pb-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
-            <h1 className="font-display text-2xl font-bold text-foreground">Baker</h1>
-          </div>
-          {bakingOrders.length > 0 && tab === 'orders' && (
-            <div className="mt-1 flex items-center gap-1.5 bg-orange-100 border border-orange-200 text-orange-700 text-xs font-body font-bold px-3 py-1.5 rounded-xl">
-              <Flame className="size-3.5" />
-              {bakingOrders.length} to bake
+    <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
+      <div className="mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6 py-4">
+        <div className="grid gap-4 md:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="md:sticky md:top-4 md:self-start rounded-3xl border border-border bg-card/95 shadow-soft overflow-hidden">
+            <div className="p-4 border-b border-border bg-gradient-to-br from-orange-100 via-background to-background">
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
+              <h1 className="font-display text-2xl font-bold text-foreground">Baker Dashboard</h1>
+              <p className="text-xs font-body text-muted-foreground mt-1">
+                Manage active baking, completed orders, and daily closure from one clean workspace.
+              </p>
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Tab switcher */}
-      <div className="px-4 mb-5">
-        <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl">
-          {([
-            { id: 'orders', label: 'Orders',  icon: ChefHat,   badge: bakingOrders.length > 0 ? String(bakingOrders.length) : null },
-            { id: 'report', label: 'Report',  icon: BarChart2, badge: null },
-          ] as const).map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={cn(
-                'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-body font-semibold transition-all',
-                tab === t.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
-              )}>
-              <t.icon className="size-3.5" />
-              {t.label}
-              {t.badge && (
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500 text-white">{t.badge}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
+            <nav className="flex gap-2 overflow-x-auto p-2 md:flex-col md:overflow-visible" aria-label="Baker dashboard navigation">
+              {tabs.map(item => {
+                const Icon = item.icon;
+                const selected = tab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setTab(item.id)}
+                    className={cn(
+                      'relative min-w-[168px] md:min-w-0 w-full rounded-2xl border px-3 py-3 text-left transition-all active:scale-[0.99]',
+                      selected
+                        ? 'border-primary/35 bg-primary/10 text-foreground shadow-sm'
+                        : 'border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
+                        <Icon className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-body font-bold truncate">{item.label}</span>
+                        <span className="hidden md:block text-[10px] font-body text-muted-foreground truncate mt-0.5">{item.description}</span>
+                      </span>
+                      {item.badge && (
+                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0', item.badgeColor)}>{item.badge}</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
 
-      {tab === 'report' ? (
-        <div className="px-4">
-          <BakerReportTab />
-        </div>
-      ) : (
-        <>
-          {/* Stats */}
-          <div className="px-4 grid grid-cols-3 gap-2 mb-5">
-            {[
-              { label: 'To Bake',    value: bakingOrders.length,    color: bakingOrders.length > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: bakingOrders.length > 0 ? 'bg-orange-50 border-orange-200' : 'bg-card border-border' },
-              { label: 'At Packing', value: completedOrders.filter(o => o.status === 'packed').length, color: 'text-purple-600', bg: 'bg-card border-border' },
-              { label: 'Dispatched', value: completedOrders.filter(o => o.status === 'dispatched').length, color: 'text-emerald-600', bg: 'bg-card border-border' },
-            ].map(s => (
-              <div key={s.label} className={cn('border rounded-2xl p-3 text-center', s.bg)}>
-                <p className={cn('font-display text-xl font-bold tabular-nums', s.color)}>{s.value}</p>
-                <p className="text-[9px] font-body font-semibold text-muted-foreground uppercase tracking-wide mt-0.5">{s.label}</p>
+          <main className="min-w-0 space-y-4">
+            <div className="rounded-3xl border border-border bg-card/90 shadow-soft px-4 py-3 sm:px-5 sm:py-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="size-11 rounded-2xl cafe-gradient text-primary-foreground flex items-center justify-center shrink-0 shadow-sm">
+                    <ActiveIcon className="size-5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest">Baker</p>
+                    <h2 className="font-display text-xl sm:text-2xl font-bold text-foreground truncate">{activeTab.label}</h2>
+                    <p className="text-xs font-body text-muted-foreground mt-0.5">{activeTab.description}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center">
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className={cn('font-display text-lg font-bold', bakingOrders.length > 0 ? 'text-orange-600' : 'text-foreground')}>{bakingOrders.length}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">To Bake</p>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className="font-display text-lg font-bold text-purple-600">{atPacking}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Packing</p>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className="font-display text-lg font-bold text-emerald-600">{dispatched}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Dispatched</p>
+                  </div>
+                </div>
               </div>
-            ))}
-          </div>
+            </div>
 
-          {initialLoading ? (
-            <LoadingSkeleton variant="card" count={3} className="mx-4" />
-          ) : (
-            <div className="px-4 space-y-4">
-              {bakingOrders.length > 0 && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Flame className="size-3.5 text-orange-500" />
-                    <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Active — Ready to Bake</p>
+            <div className="min-w-0 overflow-hidden">
+              {tab === 'closure' ? (
+                <DailyClosureTab />
+              ) : tab === 'completed' ? (
+                <CompletedTab orders={completedOrders} loading={initialLoading} />
+              ) : (
+                <div className="space-y-4 pb-8">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+                    {[
+                      { label: 'To Bake', value: bakingOrders.length, color: bakingOrders.length > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: bakingOrders.length > 0 ? 'bg-orange-50 border-orange-200' : 'bg-card border-border' },
+                      { label: 'Completed', value: completedOrders.length, color: 'text-emerald-600', bg: 'bg-card border-border' },
+                      { label: 'At Packing', value: atPacking, color: 'text-purple-600', bg: 'bg-card border-border' },
+                      { label: 'Dispatched', value: dispatched, color: 'text-emerald-700', bg: 'bg-card border-border' },
+                    ].map(s => (
+                      <div key={s.label} className={cn('border rounded-2xl p-3 text-center', s.bg)}>
+                        <p className={cn('font-display text-2xl font-bold tabular-nums', s.color)}>{s.value}</p>
+                        <p className="text-[9px] font-body font-semibold text-muted-foreground uppercase tracking-wide mt-0.5">{s.label}</p>
+                      </div>
+                    ))}
                   </div>
-                  {bakingOrders.map(o => <ActiveBakeCard key={o.id} order={o} />)}
-                </div>
-              )}
 
-              {completedOrders.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="size-3.5 text-emerald-500" />
-                    <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Completed</p>
-                  </div>
-                  {completedOrders.map(o => <CompletedCard key={o.id} order={o} />)}
-                </div>
-              )}
-
-              {bakingOrders.length === 0 && completedOrders.length === 0 && (
-                <div className="flex flex-col items-center py-24 gap-4">
-                  <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
-                    <ChefHat className="size-10 text-muted-foreground opacity-30" />
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm font-body font-semibold text-foreground">No orders yet</p>
-                    <p className="text-xs font-body text-muted-foreground mt-1">Orders will appear here once the store sends them</p>
-                  </div>
+                  {initialLoading ? (
+                    <LoadingSkeleton variant="card" count={3} />
+                  ) : bakingOrders.length > 0 ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Flame className="size-3.5 text-orange-500" />
+                        <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">Active — Ready to Bake</p>
+                      </div>
+                      {bakingOrders.map(o => <ActiveBakeCard key={o.id} order={o} />)}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card text-center">
+                      <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
+                        <ChefHat className="size-10 text-muted-foreground opacity-30" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-body font-semibold text-foreground">No active baking orders</p>
+                        <p className="text-xs font-body text-muted-foreground mt-1">Orders will appear here once the store sends them to the baker.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-        </>
-      )}
+          </main>
+        </div>
+      </div>
     </div>
   );
 }
