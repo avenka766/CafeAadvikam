@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { Branch } from './types';
 
-type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'bank';
+type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'bank' | 'credit';
 type PoStatus = 'Draft' | 'Approved' | 'Ordered' | 'Received' | 'Closed' | 'Rejected';
 type StoreOrderStatus = 'Pending Store Confirmation' | 'Confirmed' | 'Rejected' | 'Ready' | 'Delivered';
 
@@ -35,7 +35,42 @@ export interface BranchBillRecord {
   createdAt: string;
   printCount: number;
   status: 'Original Bill' | 'Duplicate Bill' | 'Returned';
+  creditCustomerName?: string;
+  creditCustomerMobile?: string;
+  creditDueDate?: string;
+  creditRemarks?: string;
 }
+
+export interface BranchCreditPayment {
+  id: string;
+  amount: number;
+  mode: 'cash' | 'upi' | 'card' | 'bank';
+  reference: string;
+  remarks: string;
+  collectedBy: string;
+  createdAt: string;
+}
+
+export interface BranchCreditSale {
+  id: string;
+  branch: Branch;
+  billId: string;
+  billNo: string;
+  customerName: string;
+  mobile: string;
+  total: number;
+  paidAmount: number;
+  balanceDue: number;
+  dueDate: string;
+  remarks: string;
+  salesperson: string;
+  biller: string;
+  status: 'Open' | 'Part Paid' | 'Paid' | 'Written Off';
+  payments: BranchCreditPayment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 
 export interface HoldBill {
   id: string;
@@ -194,6 +229,8 @@ export interface CashierClosure {
   discounts: number;
   billsCount: number;
   duplicateBills: number;
+  creditSales?: number;
+  creditCollections?: number;
   notes: string;
   createdAt: string;
 }
@@ -237,6 +274,7 @@ export interface AuditLogRecord {
 
 interface BranchOpsState {
   bills: BranchBillRecord[];
+  creditSales: BranchCreditSale[];
   holds: HoldBill[];
   salespeople: SalespersonProfile[];
   advanceCakeOrders: CakeAdvanceOrder[];
@@ -253,6 +291,8 @@ interface BranchOpsState {
   auditLogs: AuditLogRecord[];
   addBill: (bill: Omit<BranchBillRecord, 'id' | 'createdAt' | 'printCount' | 'status'>) => BranchBillRecord;
   markBillDuplicate: (billId: string, user: string) => void;
+  collectCreditPayment: (creditId: string, payment: Omit<BranchCreditPayment, 'id' | 'createdAt'>) => BranchCreditSale | undefined;
+  writeOffCreditSale: (creditId: string, user: string, remarks: string) => void;
   addHold: (hold: Omit<HoldBill, 'id' | 'createdAt'>) => HoldBill;
   removeHold: (id: string) => void;
   clearHolds: (branch: Branch) => void;
@@ -292,20 +332,82 @@ const audit = (branch: Branch, user: string, action: string, previousValue: stri
 export const useBranchOpsStore = create<BranchOpsState>()(
   persist(
     (set, get) => ({
-      bills: [], holds: [], salespeople: [], advanceCakeOrders: [], quotations: [], returns: [], purchases: [], purchasePayments: [], purchaseOrders: [], cashMovements: [], bankDeposits: [], cashierClosures: [], notifications: [], storeOrders: [], auditLogs: [],
+      bills: [], creditSales: [], holds: [], salespeople: [], advanceCakeOrders: [], quotations: [], returns: [], purchases: [], purchasePayments: [], purchaseOrders: [], cashMovements: [], bankDeposits: [], cashierClosures: [], notifications: [], storeOrders: [], auditLogs: [],
       addAuditLog: (log) => set((s) => ({ auditLogs: [{ ...log, id: uid('audit'), createdAt: new Date().toISOString() }, ...s.auditLogs].slice(0, 1000) })),
       addBill: (bill) => {
         const newBill: BranchBillRecord = { ...bill, id: uid('bill'), createdAt: new Date().toISOString(), printCount: 1, status: 'Original Bill' };
+        const paymentMovements: CashMovement[] = bill.paymentMode === 'credit'
+          ? []
+          : bill.paymentMode === 'split'
+            ? ([
+                ['cash', bill.split?.cash ?? 0],
+                ['upi', bill.split?.upi ?? 0],
+                ['card', bill.split?.card ?? 0],
+              ] as const)
+                .filter(([, amount]) => amount > 0)
+                .map(([mode, amount]) => ({
+                  id: uid('cash'), branch: bill.branch, dateTime: newBill.createdAt, amount,
+                  paymentMode: mode, direction: 'in', purpose: 'Bill collection - split',
+                  enteredBy: bill.biller, referenceNumber: bill.billNo, remarks: bill.salesperson,
+                }))
+            : [{
+                id: uid('cash'), branch: bill.branch, dateTime: newBill.createdAt, amount: bill.total,
+                paymentMode: bill.paymentMode, direction: 'in', purpose: 'Bill collection',
+                enteredBy: bill.biller, referenceNumber: bill.billNo, remarks: bill.salesperson,
+              }];
+        const creditEntry: BranchCreditSale | null = bill.paymentMode === 'credit'
+          ? {
+              id: uid('credit'), branch: bill.branch, billId: newBill.id, billNo: bill.billNo,
+              customerName: bill.creditCustomerName?.trim() || 'Credit Customer',
+              mobile: bill.creditCustomerMobile?.trim() || '', total: bill.total, paidAmount: 0,
+              balanceDue: bill.total, dueDate: bill.creditDueDate || '', remarks: bill.creditRemarks || '',
+              salesperson: bill.salesperson, biller: bill.biller, status: 'Open', payments: [],
+              createdAt: newBill.createdAt, updatedAt: newBill.createdAt,
+            }
+          : null;
         set((s) => ({
           bills: [newBill, ...s.bills],
-          cashMovements: [
-            { id: uid('cash'), branch: bill.branch, dateTime: newBill.createdAt, amount: bill.total, paymentMode: bill.paymentMode, direction: 'in', purpose: 'Bill collection', enteredBy: bill.biller, referenceNumber: bill.billNo, remarks: bill.salesperson },
-            ...s.cashMovements,
-          ],
-          auditLogs: [audit(bill.branch, bill.biller, 'Bill Printed - Original', '-', `${bill.billNo} ${bill.total}`), ...s.auditLogs],
+          creditSales: creditEntry ? [creditEntry, ...s.creditSales] : s.creditSales,
+          cashMovements: [...paymentMovements, ...s.cashMovements],
+          auditLogs: [audit(bill.branch, bill.biller, bill.paymentMode === 'credit' ? 'Credit Bill Created' : 'Bill Printed - Original', '-', `${bill.billNo} ${bill.total}`), ...s.auditLogs],
         }));
         return newBill;
       },
+      collectCreditPayment: (creditId, payment) => {
+        let updatedCredit: BranchCreditSale | undefined;
+        set((s) => {
+          const credit = s.creditSales.find((c) => c.id === creditId);
+          if (!credit || credit.status === 'Paid' || credit.status === 'Written Off') return {};
+          const amount = Math.max(0, Math.min(Number(payment.amount || 0), credit.balanceDue));
+          if (!amount) return {};
+          const now = new Date().toISOString();
+          const newPayment: BranchCreditPayment = { ...payment, amount, id: uid('cpay'), createdAt: now };
+          const paidAmount = Number((credit.paidAmount + amount).toFixed(2));
+          const balanceDue = Number(Math.max(0, credit.total - paidAmount).toFixed(2));
+          const status: BranchCreditSale['status'] = balanceDue <= 0 ? 'Paid' : 'Part Paid';
+          updatedCredit = { ...credit, paidAmount, balanceDue, status, payments: [newPayment, ...credit.payments], updatedAt: now };
+          const movement: CashMovement = {
+            id: uid('cash'), branch: credit.branch, dateTime: now, amount,
+            paymentMode: payment.mode, direction: 'in', purpose: 'Credit collection',
+            enteredBy: payment.collectedBy, referenceNumber: credit.billNo, remarks: `${credit.customerName}${payment.remarks ? ` · ${payment.remarks}` : ''}`,
+          };
+          return {
+            creditSales: s.creditSales.map((c) => c.id === creditId ? updatedCredit! : c),
+            cashMovements: [movement, ...s.cashMovements],
+            auditLogs: [audit(credit.branch, payment.collectedBy, 'Credit Payment Collection', `${credit.balanceDue}`, `${balanceDue}`), ...s.auditLogs],
+          };
+        });
+        return updatedCredit;
+      },
+      writeOffCreditSale: (creditId, user, remarks) => set((s) => {
+        const credit = s.creditSales.find((c) => c.id === creditId);
+        if (!credit || credit.status === 'Paid') return {};
+        const now = new Date().toISOString();
+        return {
+          creditSales: s.creditSales.map((c) => c.id === creditId ? { ...c, status: 'Written Off', remarks: [c.remarks, remarks].filter(Boolean).join(' · '), updatedAt: now } : c),
+          auditLogs: [audit(credit.branch, user, 'Credit Sale Written Off', `${credit.balanceDue}`, remarks || '-') , ...s.auditLogs],
+        };
+      }),
       markBillDuplicate: (billId, user) => set((s) => {
         const bill = s.bills.find((b) => b.id === billId);
         return {

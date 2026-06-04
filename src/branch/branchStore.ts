@@ -3,6 +3,10 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
 import { BAKERY_ITEMS } from '@/bakery/types';
+import { SNB_ITEMS } from './snbItems';
+import { VRSNB_ITEMS } from './vrsnbItems';
+
+const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 export interface StockItem {
   itemName: string;
@@ -297,7 +301,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Items newly added to the price list may not have been seeded into branch_stock.
     // We treat missing stock as quantity 0 and let the sale proceed — the RPC will
     // create/update the row, stock goes negative, and the Negative tab shows it.
-    const localStock = get().stock[branch].find((s) => s.itemName === itemName) ?? null;
+    const requestedStockName = normalizeStockName(itemName);
+    const localStock = get().stock[branch].find((s) => normalizeStockName(s.itemName) === requestedStockName) ?? null;
+    const stockItemName = localStock?.itemName ?? itemName;
 
     // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
     const resolvedPrice = unitPrice ?? localStock?.price ?? 0;
@@ -312,7 +318,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // UPDATE an existing row, not INSERT). In that case we fall through to a manual upsert.
     {
       const { data: newQtyRpc, error: rpcErr } = await supabase
-        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: stockItemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSale] stock RPC error:', rpcErr.message);
       }
@@ -323,7 +329,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // RPC returned null (no DB row existed) or errored — manually upsert so the
         // Negative tab can show this item. newQty is already set to (0 - qty) above.
         const { error: upsertErr } = await supabase.from('branch_stock').upsert(
-          { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
+          { branch, item_name: stockItemName, quantity: newQty, min_threshold: 0 },
           { onConflict: 'branch,item_name' },
         );
         if (upsertErr) {
@@ -378,14 +384,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (localStock !== null) {
         // Item already existed in local state — update its quantity in place
         stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: newQty } : si,
+          normalizeStockName(si.itemName) === requestedStockName ? { ...si, quantity: newQty } : si,
         );
       } else {
         // Item had no stock row — add it to local state so the Negative tab renders it
         // immediately without waiting for a full fetchBranchData() round-trip.
         stock[branch] = [
           ...stock[branch],
-          { itemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: resolvedPrice || null },
+          { itemName: stockItemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: resolvedPrice || null },
         ];
       }
       sales[branch] = [newSale, ...sales[branch]];
@@ -740,7 +746,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
   recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice, billNo) => {
     const now = new Date().toISOString();
-    const currentStock = get().stock[branch].find((s) => s.itemName === itemName) ?? null;
+    const requestedStockName = normalizeStockName(itemName);
+    const currentStock = get().stock[branch].find((s) => normalizeStockName(s.itemName) === requestedStockName) ?? null;
+    const stockItemName = currentStock?.itemName ?? itemName;
     const availableQty = currentStock?.quantity ?? 0;
     const shortage     = Math.max(0, qty - availableQty);
     const mismatch     = shortage > 0;
@@ -753,7 +761,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     let newQty = Math.round((availableQty - qty) * 1000) / 1000; // optimistic fallback
     {
       const { data: newQtyRpc, error: rpcErr } = await supabase
-        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: itemName, p_qty: qty });
+        .rpc('decrement_branch_stock_allow_negative', { p_branch: branch, p_item_name: stockItemName, p_qty: qty });
       if (rpcErr) {
         console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
       }
@@ -764,7 +772,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         // RPC returned null (no DB row) or errored — upsert so the Negative tab
         // reflects reality. newQty is already (0 - qty) when no stock row existed.
         const { error: upsertErr } = await supabase.from('branch_stock').upsert(
-          { branch, item_name: itemName, quantity: newQty, min_threshold: 0 },
+          { branch, item_name: stockItemName, quantity: newQty, min_threshold: 0 },
           { onConflict: 'branch,item_name' },
         );
         if (upsertErr) {
@@ -842,14 +850,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       if (currentStock !== null) {
         // Item already existed in local state — update its quantity in place.
         stock[branch] = stock[branch].map((si) =>
-          si.itemName === itemName ? { ...si, quantity: newQty } : si,
+          normalizeStockName(si.itemName) === requestedStockName ? { ...si, quantity: newQty } : si,
         );
       } else {
         // Item had no stock row — push it into local state so the Negative tab
         // renders it immediately without waiting for fetchBranchData().
         stock[branch] = [
           ...stock[branch],
-          { itemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: unitPrice || null },
+          { itemName: stockItemName, quantity: newQty, unit: 'pcs' as const, minThreshold: 0, price: unitPrice || null },
         ];
       }
       sales[branch] = [newSale, ...sales[branch]];
@@ -915,10 +923,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   seedBranchItems: async (branch) => {
-    const rows = BAKERY_ITEMS.map(item => ({
+    const priceItems = branch === 'VRSNB'
+      ? VRSNB_ITEMS
+      : branch === 'SNB' || branch === 'Hosur'
+        ? SNB_ITEMS
+        : BAKERY_ITEMS.map((item) => ({ ...item, uom: 'Nos' }));
+    const rows = priceItems.map(item => ({
       branch,
       item_name:     item.name,
       quantity:      0,
+      unit:          item.uom === 'Kgs' || item.uom === 'kg' ? 'kg' : 'pcs',
       min_threshold: 10,
     }));
     for (let i = 0; i < rows.length; i += 50) {
