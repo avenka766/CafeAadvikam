@@ -1094,34 +1094,33 @@
   }
 
   .workspace-redesign .order-category-rail {
-    display: flex;
-    gap: .65rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.4rem), 1fr));
+    gap: .7rem;
+    width: 100%;
     max-width: 100%;
-    padding: .95rem 1rem;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    min-width: 0;
+    padding: 1rem;
+    overflow: visible;
     border-bottom: 1px solid rgba(107,72,29,.10);
   }
-  .workspace-redesign .order-category-rail::-webkit-scrollbar { height: .45rem; }
-  .workspace-redesign .order-category-rail::-webkit-scrollbar-thumb { background: rgba(107,72,29,.25); border-radius: 999px; }
   .workspace-redesign .order-category-chip {
-    min-height: 3rem;
+    width: 100%;
+    min-width: 0;
+    min-height: 3.25rem;
     display: inline-flex;
     align-items: center;
+    justify-content: flex-start;
     gap: .55rem;
-    flex: 0 0 auto;
-    padding: .55rem .9rem .55rem .6rem;
-    border-radius: 999px;
+    padding: .62rem .78rem;
+    border-radius: 1.05rem;
     color: rgba(25,16,6,.72);
-    background: rgba(255,255,255,.86);
+    background: rgba(255,255,255,.88);
     border: 1px solid rgba(107,72,29,.14);
     box-shadow: 0 8px 22px rgba(48,29,8,.05);
-    transition: transform .15s ease, background .15s ease, color .15s ease;
+    transition: transform .15s ease, background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
   }
-  .workspace-redesign .order-category-chip:hover { transform: translateY(-1px); }
+  .workspace-redesign .order-category-chip:hover { transform: translateY(-1px); border-color: rgba(17,104,79,.20); }
   .workspace-redesign .order-category-chip-active {
     color: white !important;
     background: linear-gradient(135deg, var(--pos-green), var(--pos-green-dark)) !important;
@@ -1131,14 +1130,22 @@
   .workspace-redesign .order-category-icon {
     width: 2rem;
     height: 2rem;
+    flex: 0 0 2rem;
     display: grid;
     place-items: center;
-    border-radius: 999px;
+    border-radius: .8rem;
     background: rgba(25,16,6,.06);
     font-size: 1rem;
   }
   .workspace-redesign .order-category-chip-active .order-category-icon { background: rgba(255,255,255,.18); }
-  .workspace-redesign .order-category-name { font-size: 1rem; font-weight: 950; white-space: nowrap; }
+  .workspace-redesign .order-category-name {
+    min-width: 0;
+    font-size: clamp(.88rem, .9vw, .98rem);
+    font-weight: 950;
+    line-height: 1.08;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 
   .workspace-redesign .orderpad-catalog-panel {
     display: flex;
@@ -1442,7 +1449,11 @@
     --k-green: #10b981;
     --k-red: #ef4444;
     color: var(--k-text);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     min-height: 70dvh;
+    overflow-x: hidden;
     background:
       radial-gradient(circle at 6% 0%, rgba(245,158,11,.20), transparent 27rem),
       radial-gradient(circle at 90% 8%, rgba(16,185,129,.14), transparent 24rem),
@@ -1450,7 +1461,7 @@
   }
   .workspace-redesign .kitchen-command-center {
     display: grid;
-    grid-template-columns: minmax(0,1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 390px);
     gap: 1rem;
     align-items: stretch;
     padding: 1rem;
@@ -1459,13 +1470,14 @@
     border: 1px solid var(--k-line);
     box-shadow: 0 22px 70px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.08);
   }
+  .workspace-redesign .kitchen-title-area { min-width: 0; }
   .workspace-redesign .kitchen-eyebrow { display: inline-flex; align-items: center; gap: .45rem; width: max-content; padding: .42rem .75rem; border-radius: 999px; color: #fed7aa !important; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.22); font-size: .78rem; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
-  .workspace-redesign .kitchen-title-area h2 { margin-top: .7rem; color: white; font-size: clamp(2.4rem, 4.8vw, 5.2rem); line-height: .82; font-weight: 950; letter-spacing: -.055em; }
+  .workspace-redesign .kitchen-title-area h2 { margin-top: .7rem; color: white; font-size: clamp(2.15rem, 4.8vw, 5.2rem); line-height: .86; font-weight: 950; letter-spacing: -.055em; overflow-wrap: anywhere; }
   .workspace-redesign .kitchen-title-area p { max-width: 880px; margin-top: .65rem; color: var(--k-muted) !important; font-size: 1.08rem; line-height: 1.42; font-weight: 760; }
-  .workspace-redesign .kitchen-live-tools { display: flex; flex-direction: column; gap: .75rem; min-width: min(390px, 34vw); }
+  .workspace-redesign .kitchen-live-tools { display: flex; flex-direction: column; gap: .75rem; width: 100%; min-width: 0; }
   .workspace-redesign .kitchen-live-pill,
   .workspace-redesign .kitchen-new-alert,
-  .workspace-redesign .kitchen-sound-toggle { display: flex; align-items: center; gap: .75rem; min-height: 4.2rem; padding: .85rem 1rem; border-radius: 1.2rem; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; }
+  .workspace-redesign .kitchen-sound-toggle { display: flex; align-items: center; gap: .75rem; min-width: 0; min-height: 4.2rem; padding: .85rem 1rem; border-radius: 1.2rem; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; }
   .workspace-redesign .kitchen-live-pill > span { width: .9rem; height: .9rem; border-radius: 999px; background: #6b7280; box-shadow: 0 0 0 .3rem rgba(255,255,255,.08); }
   .workspace-redesign .kitchen-live-pill > span.is-live { background: var(--k-green); box-shadow: 0 0 0 .35rem rgba(16,185,129,.18); animation: pulseGlow 1.8s ease-in-out infinite; }
   .workspace-redesign .kitchen-live-pill strong,
@@ -1485,9 +1497,8 @@
   .workspace-redesign .kitchen-cancel-banner h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.25rem; font-weight: 950; text-transform: uppercase; }
   .workspace-redesign .kitchen-cancel-banner p { color: #fecaca !important; font-size: 1rem; font-weight: 850; }
   .workspace-redesign .kitchen-cancel-banner button { width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border-radius: .9rem; color: white !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.15) !important; }
-  .workspace-redesign .kitchen-tab-rail { display: flex; gap: .7rem; margin-top: 1rem; padding: .25rem; overflow-x: auto; scrollbar-width: none; }
-  .workspace-redesign .kitchen-tab-rail::-webkit-scrollbar { display: none; }
-  .workspace-redesign .kitchen-tab { position: relative; flex: 0 0 auto; min-width: 9.5rem; min-height: 4.2rem; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: .2rem; padding: .75rem .9rem; border-radius: 1.15rem; color: rgba(255,255,255,.74) !important; background: rgba(255,255,255,.075) !important; border: 1px solid var(--k-line) !important; }
+  .workspace-redesign .kitchen-tab-rail { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.75rem), 1fr)); gap: .7rem; margin-top: 1rem; padding: .25rem; overflow-x: visible; }
+  .workspace-redesign .kitchen-tab { position: relative; width: 100%; min-width: 0; min-height: 4.2rem; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: .2rem; padding: .75rem .9rem; border-radius: 1.15rem; color: rgba(255,255,255,.74) !important; background: rgba(255,255,255,.075) !important; border: 1px solid var(--k-line) !important; }
   .workspace-redesign .kitchen-tab.active { color: white !important; background: rgba(255,255,255,.14) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 16px 38px rgba(0,0,0,.18) !important; }
   .workspace-redesign .kitchen-tab[data-tab="pending"].active { border-color: rgba(245,158,11,.55) !important; background: rgba(245,158,11,.20) !important; }
   .workspace-redesign .kitchen-tab[data-tab="preparing"].active { border-color: rgba(59,130,246,.55) !important; background: rgba(59,130,246,.20) !important; }
@@ -1498,15 +1509,15 @@
   .workspace-redesign .kitchen-tab small { color: rgba(255,255,255,.48); font-size: .78rem; font-weight: 800; }
   .workspace-redesign .kitchen-tab strong { position: absolute; top: .55rem; right: .6rem; min-width: 1.7rem; height: 1.7rem; display: grid; place-items: center; padding: 0 .4rem; border-radius: 999px; color: #140f0a; background: #fed7aa; font-size: .88rem; font-weight: 950; }
   .workspace-redesign .kitchen-board,
-  .workspace-redesign .kitchen-waste-grid { margin-top: 1rem; }
-  .workspace-redesign .kitchen-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: .8rem; }
+  .workspace-redesign .kitchen-waste-grid { width: 100%; max-width: 100%; min-width: 0; margin-top: 1rem; }
+  .workspace-redesign .kitchen-section-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .55rem 1rem; margin-bottom: .8rem; }
   .workspace-redesign .kitchen-section-heading span { color: rgba(255,255,255,.52) !important; font-size: .82rem; font-weight: 950; letter-spacing: .13em; text-transform: uppercase; }
   .workspace-redesign .kitchen-section-heading strong { color: white; font-size: 1rem; font-weight: 950; }
   .workspace-redesign .kitchen-empty-state { min-height: 22rem; display: grid; place-items: center; align-content: center; gap: .6rem; text-align: center; border-radius: 1.35rem; color: rgba(255,255,255,.42); background: rgba(255,255,255,.055); border: 1px dashed rgba(255,255,255,.16); }
   .workspace-redesign .kitchen-empty-state h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.35rem; font-weight: 950; }
   .workspace-redesign .kitchen-empty-state p { color: var(--k-muted) !important; font-size: 1rem; font-weight: 750; }
-  .workspace-redesign .kitchen-order-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(355px, 1fr)); gap: .9rem; }
-  .workspace-redesign .kitchen-order-card { overflow: hidden; border-radius: 1.4rem; background: rgba(255,255,255,.075); border: 2px solid rgba(255,255,255,.14); box-shadow: 0 22px 58px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-order-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: .9rem; width: 100%; min-width: 0; }
+  .workspace-redesign .kitchen-order-card { min-width: 0; overflow: hidden; border-radius: 1.4rem; background: rgba(255,255,255,.075); border: 2px solid rgba(255,255,255,.14); box-shadow: 0 22px 58px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.08); }
   .workspace-redesign .kitchen-order-card.status-pending { border-color: rgba(245,158,11,.70); }
   .workspace-redesign .kitchen-order-card.status-preparing { border-color: rgba(59,130,246,.72); }
   .workspace-redesign .kitchen-order-card.status-ready { border-color: rgba(16,185,129,.72); }
@@ -1517,32 +1528,32 @@
   .workspace-redesign .kitchen-order-head strong { display: block; color: white; font-size: clamp(2.3rem, 4.5vw, 4rem); line-height: .82; font-weight: 950; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
   .workspace-redesign .kitchen-order-status { min-width: 0; }
   .workspace-redesign .kitchen-order-status b { display: inline-flex; align-items: center; border-radius: 999px; padding: .38rem .7rem; color: #140f0a; background: #fed7aa; font-size: .78rem; font-weight: 950; letter-spacing: .07em; text-transform: uppercase; }
-  .workspace-redesign .kitchen-order-status small { display: flex; align-items: center; gap: .3rem; margin-top: .45rem; color: var(--k-muted); font-size: .95rem; font-weight: 850; }
+  .workspace-redesign .kitchen-order-status small { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; color: var(--k-muted); font-size: .95rem; font-weight: 850; }
   .workspace-redesign .kitchen-order-head button { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: 1rem; color: white !important; background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.14) !important; }
   .workspace-redesign .kitchen-order-meta { display: flex; flex-wrap: wrap; gap: .45rem; padding: .8rem 1rem; border-bottom: 1px solid rgba(255,255,255,.08); }
-  .workspace-redesign .kitchen-order-meta span { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: .25rem .65rem; border-radius: 999px; color: rgba(255,255,255,.78) !important; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10); font-size: .88rem; font-weight: 850; }
+  .workspace-redesign .kitchen-order-meta span { display: inline-flex; align-items: center; gap: .35rem; max-width: 100%; min-height: 2rem; padding: .25rem .65rem; border-radius: 999px; color: rgba(255,255,255,.78) !important; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10); font-size: .88rem; font-weight: 850; overflow-wrap: anywhere; }
   .workspace-redesign .kitchen-order-items { padding: 1rem; display: flex; flex-direction: column; gap: .8rem; }
   .workspace-redesign .kitchen-order-item { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: .9rem; align-items: start; }
   .workspace-redesign .kitchen-order-item strong { color: #fed7aa; text-align: right; font-size: clamp(1.75rem, 3vw, 2.45rem); line-height: .92; font-weight: 950; font-variant-numeric: tabular-nums; }
-  .workspace-redesign .kitchen-order-item span { color: white !important; font-size: clamp(1.35rem, 2.6vw, 2rem); line-height: 1.02; font-weight: 950; letter-spacing: -.02em; }
+  .workspace-redesign .kitchen-order-item span { min-width: 0; color: white !important; font-size: clamp(1.35rem, 2.6vw, 2rem); line-height: 1.02; font-weight: 950; letter-spacing: -.02em; overflow-wrap: anywhere; }
   .workspace-redesign .kitchen-order-notes,
   .workspace-redesign .kitchen-order-cancel-reason { display: flex; align-items: flex-start; gap: .45rem; margin: 0 1rem 1rem; padding: .8rem .9rem; border-radius: .95rem; font-size: 1rem; line-height: 1.25; font-weight: 850; }
   .workspace-redesign .kitchen-order-notes { color: #fde68a !important; background: rgba(245,158,11,.13); border: 1px solid rgba(245,158,11,.26); }
   .workspace-redesign .kitchen-order-cancel-reason { color: #fecaca !important; background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.28); }
   .workspace-redesign .kitchen-inline-error { display: flex; align-items: center; gap: .45rem; margin: .75rem 0; padding: .7rem .85rem; border-radius: .9rem; color: #fecaca !important; background: rgba(239,68,68,.16); border: 1px solid rgba(239,68,68,.32); font-weight: 850; }
   .workspace-redesign .kitchen-order-card .kitchen-inline-error { margin: 0 1rem 1rem; }
-  .workspace-redesign .kitchen-order-actions { display: flex; gap: .55rem; padding: 0 1rem 1rem; }
+  .workspace-redesign .kitchen-order-actions { display: flex; flex-wrap: wrap; gap: .55rem; padding: 0 1rem 1rem; }
   .workspace-redesign .kitchen-order-actions button,
   .workspace-redesign .kitchen-order-actions div { min-height: 3.35rem; display: inline-flex; align-items: center; justify-content: center; gap: .55rem; border-radius: 1rem; font-size: 1rem; font-weight: 950; }
   .workspace-redesign .kitchen-order-actions .start { flex: 1; color: white !important; background: linear-gradient(135deg, #2563eb, #1d4ed8) !important; border: 0 !important; box-shadow: 0 14px 30px rgba(37,99,235,.24) !important; }
   .workspace-redesign .kitchen-order-actions .ready { flex: 1; color: white !important; background: linear-gradient(135deg, #10b981, #047857) !important; border: 0 !important; box-shadow: 0 14px 30px rgba(16,185,129,.24) !important; }
   .workspace-redesign .kitchen-order-actions .ready-state { flex: 1; color: #a7f3d0; background: rgba(16,185,129,.14); border: 1px solid rgba(16,185,129,.30); }
   .workspace-redesign .kitchen-order-actions .cancel-state { flex: 1; color: #fecaca; background: rgba(239,68,68,.16); border: 1px solid rgba(239,68,68,.32); }
-  .workspace-redesign .kitchen-order-actions .print { min-width: 7rem; color: rgba(255,255,255,.82) !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.13) !important; }
-  .workspace-redesign .kitchen-waste-grid { display: grid; grid-template-columns: minmax(300px, 420px) minmax(0, 1fr); gap: 1rem; align-items: start; }
+  .workspace-redesign .kitchen-order-actions .print { flex: 0 0 auto; min-width: min(7rem, 100%); color: rgba(255,255,255,.82) !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.13) !important; }
+  .workspace-redesign .kitchen-waste-grid { display: grid; grid-template-columns: minmax(0, min(420px, 100%)) minmax(0, 1fr); gap: 1rem; align-items: start; }
   .workspace-redesign .kitchen-waste-form,
-  .workspace-redesign .kitchen-waste-list { border-radius: 1.35rem; padding: 1rem; background: rgba(255,255,255,.075); border: 1px solid var(--k-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-  .workspace-redesign .kitchen-waste-head { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+  .workspace-redesign .kitchen-waste-list { min-width: 0; border-radius: 1.35rem; padding: 1rem; background: rgba(255,255,255,.075); border: 1px solid var(--k-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .workspace-redesign .kitchen-waste-head { display: flex; align-items: center; flex-wrap: wrap; gap: .8rem; margin-bottom: 1rem; }
   .workspace-redesign .kitchen-waste-head > span { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: 1rem; color: #fecaca !important; background: rgba(239,68,68,.16); }
   .workspace-redesign .kitchen-waste-head h3 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.25rem; font-weight: 950; }
   .workspace-redesign .kitchen-waste-head p { color: var(--k-muted) !important; font-weight: 800; }
@@ -1552,10 +1563,11 @@
   .workspace-redesign .kitchen-waste-form input { width: 100%; min-height: 3.3rem; border-radius: 1rem !important; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; font-size: 1rem; font-weight: 850; padding: 0 .9rem !important; }
   .workspace-redesign .kitchen-waste-form button { width: 100%; min-height: 3.35rem; display: flex; align-items: center; justify-content: center; gap: .55rem; border-radius: 1rem; color: white !important; background: linear-gradient(135deg, #ef4444, #b91c1c) !important; border: 0 !important; font-size: 1rem; font-weight: 950; }
   .workspace-redesign .kitchen-waste-items { display: flex; flex-direction: column; gap: .65rem; }
-  .workspace-redesign .kitchen-waste-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem; border-radius: 1rem; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.10); }
-  .workspace-redesign .kitchen-waste-item h4 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.05rem; line-height: 1.1; font-weight: 950; }
-  .workspace-redesign .kitchen-waste-item p { color: var(--k-muted) !important; font-weight: 800; }
-  .workspace-redesign .kitchen-waste-item button { width: 2.35rem; height: 2.35rem; display: grid; place-items: center; border-radius: .8rem; color: #fecaca !important; background: rgba(239,68,68,.14) !important; border: 1px solid rgba(239,68,68,.26) !important; }
+  .workspace-redesign .kitchen-waste-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: 0; padding: .85rem; border-radius: 1rem; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.10); }
+  .workspace-redesign .kitchen-waste-item > div { min-width: 0; }
+  .workspace-redesign .kitchen-waste-item h4 { color: white; font-family: 'Source Sans 3', sans-serif; font-size: 1.05rem; line-height: 1.1; font-weight: 950; overflow-wrap: anywhere; }
+  .workspace-redesign .kitchen-waste-item p { color: var(--k-muted) !important; font-weight: 800; overflow-wrap: anywhere; }
+  .workspace-redesign .kitchen-waste-item button { flex: 0 0 auto; width: 2.35rem; height: 2.35rem; display: grid; place-items: center; border-radius: .8rem; color: #fecaca !important; background: rgba(239,68,68,.14) !important; border: 1px solid rgba(239,68,68,.26) !important; }
   .workspace-redesign .kitchen-bottom-note { display: flex; align-items: center; gap: .45rem; margin-top: 1rem; color: var(--k-muted); font-size: .9rem; font-weight: 850; }
 
   @media (min-width: 1024px) {
@@ -1565,6 +1577,7 @@
   @media (max-width: 1180px) {
     .workspace-redesign .orderpad-command-card,
     .workspace-redesign .kitchen-command-center { grid-template-columns: 1fr; }
+    .workspace-redesign .kitchen-waste-grid { grid-template-columns: 1fr; }
     .workspace-redesign .orderpad-metrics,
     .workspace-redesign .kitchen-live-tools { min-width: 0; }
     .workspace-redesign .orderpad-layout { grid-template-columns: 1fr; }
@@ -1575,6 +1588,9 @@
   }
 
   @media (max-width: 820px) {
+    .workspace-redesign .order-category-rail { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.8rem), 1fr)); gap: .62rem; padding: .85rem; }
+    .workspace-redesign .order-category-chip { min-height: 3.05rem; border-radius: .95rem; padding: .56rem .66rem; }
+    .workspace-redesign .order-category-name { font-size: .9rem; }
     .workspace-redesign .orderpad-metrics,
     .workspace-redesign .kitchen-stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
     .workspace-redesign .kitchen-waste-grid { grid-template-columns: 1fr; }
@@ -1584,6 +1600,10 @@
   }
 
   @media (max-width: 640px) {
+    .workspace-redesign .order-category-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .52rem; padding: .72rem; }
+    .workspace-redesign .order-category-chip { min-height: 2.9rem; gap: .45rem; padding: .5rem .58rem; }
+    .workspace-redesign .order-category-icon { width: 1.8rem; height: 1.8rem; flex-basis: 1.8rem; border-radius: .7rem; font-size: .9rem; }
+    .workspace-redesign .order-category-name { font-size: .82rem; line-height: 1.05; }
     .workspace-redesign .orderpad-screen,
     .workspace-redesign .kitchen-screen { padding: .65rem !important; }
     .workspace-redesign .orderpad-command-card,
@@ -1608,13 +1628,17 @@
     .workspace-redesign .order-cart-line-controls .order-cart-delete { grid-column: auto; width: 100%; }
     .workspace-redesign .kitchen-stats-grid { grid-template-columns: 1fr 1fr; gap: .55rem; }
     .workspace-redesign .kitchen-stat-card { min-height: 6.8rem; padding: .85rem; }
-    .workspace-redesign .kitchen-tab { min-width: 8.3rem; }
-    .workspace-redesign .kitchen-order-head { grid-template-columns: 1fr auto; }
+    .workspace-redesign .kitchen-tab-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+    .workspace-redesign .kitchen-tab { min-height: 3.9rem; padding: .7rem .75rem; }
+    .workspace-redesign .kitchen-order-head { grid-template-columns: minmax(0, 1fr) auto; gap: .7rem; padding: .85rem; }
     .workspace-redesign .kitchen-order-status { grid-column: 1 / -1; grid-row: 2; }
     .workspace-redesign .kitchen-order-head button { grid-column: 2; grid-row: 1; }
     .workspace-redesign .kitchen-order-item { grid-template-columns: 3rem minmax(0,1fr); gap: .6rem; }
     .workspace-redesign .kitchen-order-actions { flex-wrap: wrap; }
     .workspace-redesign .kitchen-order-actions .print { width: 100%; }
+    .workspace-redesign .kitchen-waste-form,
+    .workspace-redesign .kitchen-waste-list { padding: .85rem; }
+    .workspace-redesign .kitchen-waste-item { align-items: flex-start; gap: .75rem; }
   }
 }
 
@@ -2248,5 +2272,253 @@
     .workspace-redesign .owner-command-hero h2 { font-size: 3.15rem; }
     .workspace-redesign .owner-payment-row { grid-template-columns: 2.85rem 1fr; }
     .workspace-redesign .owner-payment-row > strong { grid-column: 2; }
+  }
+}
+
+@layer components {
+  /* Biller dashboard cart and responsive billing workspace fixes */
+  .workspace-redesign [data-billing-dashboard] {
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-status-bar,
+  .workspace-redesign [data-billing-dashboard] .biller-tab-rail {
+    flex-wrap: wrap;
+    overflow-x: visible !important;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-tab-rail > button,
+  .workspace-redesign [data-billing-dashboard] .biller-status-bar button {
+    flex: 0 1 auto;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-workspace {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-category-sidebar {
+    width: clamp(10.5rem, 18vw, 14.25rem) !important;
+    min-width: 10.5rem;
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-menu-panel {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-menu-panel .biller-menu-grid {
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    align-items: stretch;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .pos-menu-footer {
+    min-width: 0;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .pos-menu-add,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-add-small,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-stepper button,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-stepper-small button {
+    min-width: 2.35rem;
+    min-height: 2.35rem;
+    color: #fff !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    background: linear-gradient(135deg, #11684f, #0d493d) !important;
+    box-shadow: 0 10px 24px rgba(17, 104, 79, .24) !important;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .pos-menu-add-small svg,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-add svg,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-stepper button svg,
+  .workspace-redesign [data-billing-dashboard] .pos-menu-stepper-small button svg {
+    color: currentColor !important;
+    stroke-width: 3;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-panel {
+    width: clamp(22rem, 34vw, 30rem) !important;
+    min-width: 21rem;
+    max-width: 100%;
+    overflow-x: hidden;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.96), rgba(255,248,236,.95)),
+      radial-gradient(circle at top right, rgba(18,109,82,.10), transparent 16rem);
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-items {
+    min-height: 9rem;
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: .6rem;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-line p,
+  .workspace-redesign [data-billing-dashboard] .biller-cart-line button {
+    overflow-wrap: anywhere;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-qty {
+    border-radius: .95rem;
+    background: rgba(18,109,82,.06);
+    padding: .16rem;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-footer {
+    max-height: min(48dvh, 31rem);
+    overflow-x: hidden;
+  }
+
+  .workspace-redesign [data-billing-dashboard] .biller-cart-footer input,
+  .workspace-redesign [data-billing-dashboard] .biller-cart-footer textarea,
+  .workspace-redesign [data-billing-dashboard] .biller-cart-footer button,
+  .workspace-redesign [data-billing-dashboard] .biller-cart-footer select {
+    min-width: 0;
+  }
+
+  @media (max-width: 1180px) {
+    .workspace-redesign [data-billing-dashboard] {
+      height: auto !important;
+      min-height: 100dvh;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-workspace {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-category-sidebar {
+      width: 100% !important;
+      min-width: 0;
+      max-height: 18rem;
+      border-right: 0 !important;
+      border-bottom: 1px solid hsl(var(--border));
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-menu-panel {
+      min-height: 26rem;
+      flex: 1 1 auto;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-cart-panel {
+      width: 100% !important;
+      min-width: 0;
+      border-left: 0 !important;
+      border-top: 1px solid hsl(var(--border));
+      max-height: none;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-cart-footer {
+      max-height: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .workspace-redesign [data-billing-dashboard] .biller-status-bar {
+      align-items: flex-start;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-status-bar > div:last-child,
+    .workspace-redesign [data-billing-dashboard] .biller-tab-rail {
+      width: 100%;
+      gap: .45rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-status-bar button,
+    .workspace-redesign [data-billing-dashboard] .biller-tab-rail > button {
+      flex: 1 1 calc(50% - .45rem);
+      justify-content: center;
+      min-height: 2.75rem;
+      padding-inline: .7rem;
+      font-size: .82rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-menu-panel .biller-menu-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: .6rem;
+      padding: .7rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-category-sidebar {
+      max-height: 15rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-cart-line {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: .5rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-cart-line > .text-right {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      text-align: left;
+      gap: .75rem;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-cart-panel {
+      border-radius: 1.2rem 1.2rem 0 0;
+    }
+  }
+
+  @media (max-width: 430px) {
+    .workspace-redesign [data-billing-dashboard] .biller-menu-panel .biller-menu-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .workspace-redesign [data-billing-dashboard] .biller-tab-rail > button,
+    .workspace-redesign [data-billing-dashboard] .biller-status-bar button {
+      flex-basis: 100%;
+    }
+  }
+}
+
+@media print {
+  @page {
+    margin: 6mm;
+  }
+
+  body:has(.daily-closure-page) {
+    background: #fff !important;
+  }
+
+  body:has(.daily-closure-page) .workspace-redesign > :not(.daily-closure-page),
+  body:has(.daily-closure-page) header,
+  body:has(.daily-closure-page) nav,
+  body:has(.daily-closure-page) aside {
+    display: none !important;
+  }
+
+  .daily-closure-page {
+    min-height: auto !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .daily-closure-page .print\:hidden {
+    display: none !important;
+  }
+
+  .daily-closure-page .overflow-x-auto,
+  .daily-closure-page .overflow-y-auto {
+    overflow: visible !important;
+  }
+
+  .daily-closure-page table {
+    min-width: 0 !important;
+  }
+
+  .daily-closure-page [class*="shadow"] {
+    box-shadow: none !important;
   }
 }
