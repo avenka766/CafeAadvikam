@@ -401,13 +401,14 @@ export default function DailyClosure() {
             <p className="mt-1 text-sm font-black text-foreground">{printableTitle}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="relative">
-              <CalendarDays className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <label className="relative w-full sm:w-auto">
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
               <input
                 type="date"
                 value={selectedDate}
                 onChange={e => setSelectedDate(e.target.value)}
-                className="h-11 rounded-xl border border-border bg-card pl-9 pr-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-primary/30"
+                style={{ colorScheme: 'light' }}
+                className="h-11 w-full sm:w-[168px] rounded-xl border border-border bg-card pl-9 pr-10 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
               />
             </label>
             <button onClick={refresh} disabled={loading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-60">
