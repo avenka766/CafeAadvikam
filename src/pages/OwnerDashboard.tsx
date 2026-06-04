@@ -16,6 +16,11 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import type { Branch } from '@/branch/types';
+import { BRANCH_LABELS } from '@/branch/types';
+import { useInvoiceStore } from '@/bakery/invoiceStore';
+import { usePurchaseOrderStore } from '@/bakery/purchaseOrderStore';
 import { useMenuStore } from '@/stores/menuStore';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
@@ -30,10 +35,165 @@ import {
   IndianRupee, ShoppingBag, TrendingUp, Users,
   Building2, BarChart3, CalendarCheck, ArrowUpRight, ArrowDownRight,
   Store, Layers, Banknote, Smartphone, CreditCard, Clock,
-  Utensils, Trash2, AlertTriangle,
+  Utensils, Trash2, AlertTriangle, WalletCards, PackageSearch,
+  Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
+  Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
+
+const OWNER_FULL_BRANCHES: Branch[] = ['Cafe', 'SNB', 'VRSNB', 'Hosur'];
+const OWNER_OPERATING_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch', 'Bakery Production', 'Store', 'Packing / Dispatch'] as const;
+
+type OwnerDatePreset = 'today' | '7d' | '30d' | 'month';
+
+type OwnerAlertTone = 'danger' | 'warning' | 'neutral' | 'success';
+
+type OwnerAlert = {
+  title: string;
+  value: string;
+  note: string;
+  tone: OwnerAlertTone;
+  branch?: string;
+};
+
+type OwnerClosureRow = {
+  branch: string;
+  opening: number;
+  grossSales: number;
+  returns: number;
+  netSales: number;
+  cash: number;
+  upi: number;
+  card: number;
+  credit: number;
+  expenses: number;
+  purchases: number;
+  bankDeposits: number;
+  expectedCash: number;
+  countedCash: number;
+  difference: number;
+  status: 'Completed' | 'Pending' | 'Difference';
+  closedBy: string;
+  closedAt: string;
+  remarks: string;
+};
+
+type OwnerStorePurchaseLine = {
+  id: string;
+  supplierName: string;
+  invoiceNumber: string;
+  purchaseDate: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  rate: number;
+  total: number;
+  paidAmount: number;
+  balanceAmount: number;
+  paymentMethod: string;
+  purchaseStatus: string;
+  stockSyncStatus: string;
+  remarks: string;
+};
+
+function ownerDateInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function ownerPresetStart(preset: OwnerDatePreset) {
+  const d = new Date();
+  if (preset === 'today') d.setHours(0, 0, 0, 0);
+  if (preset === '7d') d.setDate(d.getDate() - 6);
+  if (preset === '30d') d.setDate(d.getDate() - 29);
+  if (preset === 'month') d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function ownerEndOfToday() {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function ownerInRange(iso: string | null | undefined, from: Date, to: Date) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && t >= from.getTime() && t <= to.getTime();
+}
+
+function ownerLocalDay(iso: string | null | undefined) {
+  if (!iso) return '';
+  return ownerDateInput(new Date(iso));
+}
+
+function ownerFmtDate(iso: string | null | undefined) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function ownerFmtDateTime(iso: string | null | undefined) {
+  if (!iso) return 'Pending';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Pending';
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function ownerCsvDownload(filename: string, rows: Array<Record<string, string | number>>) {
+  const safeRows = rows.length ? rows : [{ Note: 'No records available for selected filters' }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [
+    headers.join(','),
+    ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(',')),
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function ownerPrintSection(title: string, html: string) {
+  const win = window.open('', '_blank', 'width=1100,height=760');
+  if (!win) return;
+  win.document.write(`
+    <html><head><title>${title}</title>
+      <style>
+        body{font-family:Inter,Arial,sans-serif;padding:24px;color:#111827}h1{font-size:20px;margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #d1d5db;padding:8px;font-size:12px;text-align:left}th{background:#f3f4f6}.muted{color:#6b7280;font-size:12px}
+      </style>
+    </head><body><h1>${title}</h1><p class="muted">Generated ${new Date().toLocaleString('en-IN')}</p>${html}</body></html>
+  `);
+  win.document.close();
+  win.print();
+}
+
+function ownerBranchDisplay(branch: Branch | string) {
+  return (BRANCH_LABELS as Record<string, string>)[branch] || branch;
+}
+
+function moneyNumber(value: number | null | undefined) {
+  return Number(value || 0);
+}
+
+function OwnerMetricCard({ icon, label, value, sub, tone = 'slate' }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: 'green' | 'amber' | 'red' | 'blue' | 'purple' | 'slate' }) {
+  return (
+    <div className={cn('owner-metric-card', `tone-${tone}`)}>
+      <div className="owner-metric-icon">{icon}</div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {sub && <p>{sub}</p>}
+    </div>
+  );
+}
+
+function OwnerToolbar({ children }: { children: React.ReactNode }) {
+  return <div className="owner-toolbar"><Filter className="size-4" />{children}</div>;
+}
+
 
 // ── Shared KPI card ───────────────────────────────────────────────────────────
 function KPI({
@@ -1311,25 +1471,589 @@ function WasteLogsTab() {
   );
 }
 
-// ── Main Export ───────────────────────────────────────────────────────────────
-export default function OwnerDashboard() {
-  const [tab, setTab] = useState<'command' | 'sales' | 'attendance' | 'credit' | 'waste'>('command');
 
-  const tabs = [
-    { id: 'command',    label: 'Command',    icon: <Building2     className="size-4" />, hint: 'Owner cockpit' },
-    { id: 'sales',      label: 'Sales',      icon: <BarChart3     className="size-4" />, hint: 'Revenue & payments' },
-    { id: 'attendance', label: 'Staff',      icon: <CalendarCheck className="size-4" />, hint: 'Payroll & advances' },
-    { id: 'credit',     label: 'Credit',     icon: <IndianRupee   className="size-4" />, hint: 'Receivables' },
-    { id: 'waste',      label: 'Waste',      icon: <Trash2        className="size-4" />, hint: 'Loss control' },
-  ] as const;
+// ── Branch Overview Tab ──────────────────────────────────────────────────────
+function BranchOverviewTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
+  const { bills, returns, purchases, purchasePayments, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
+  const [preset, setPreset] = useState<OwnerDatePreset>('today');
+
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+
+  const from = useMemo(() => ownerPresetStart(preset), [preset]);
+  const to = useMemo(() => ownerEndOfToday(), [preset]);
+
+  const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
+    if (unit === 'Cafe') {
+      const served = orders.filter(o => o.status === 'served' && ownerInRange(o.createdAt, from, to));
+      const cancelled = orders.filter(o => o.status === 'cancelled' && ownerInRange(o.createdAt, from, to));
+      const gross = served.reduce((sum, o) => sum + moneyNumber(o.total), 0);
+      const cash = served.reduce((sum, o) => sum + (o.paymentType === 'cash' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash) : 0), 0);
+      const upi = served.reduce((sum, o) => sum + (o.paymentType === 'upi' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi) : 0), 0);
+      const card = served.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
+      const credit = served.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
+      return {
+        unit, sales: gross, netSales: gross, cash, upi, card, credit,
+        expenses: 0, purchases: 0, pendingPayments: credit,
+        stockAlerts: 0, closureStatus: served.length ? 'Review Cafe closure' : 'No sale yet',
+        keyAlert: cancelled.length ? `${cancelled.length} cancelled orders` : 'Kitchen and billing live',
+      };
+    }
+
+    if (unit === 'Bakery Production') {
+      const pending = storeOrders.filter(o => ownerInRange(o.createdAt, from, to) && !['Delivered', 'Rejected'].includes(o.status)).length;
+      const approvedStorePurchases = purchases.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
+      return {
+        unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
+        expenses: 0, purchases: approvedStorePurchases, pendingPayments: 0,
+        stockAlerts: 0, closureStatus: pending ? `${pending} production/store orders pending` : 'No pending production alerts',
+        keyAlert: 'Track wastage, recipes and material movement',
+      };
+    }
+
+    if (unit === 'Store') {
+      const storePurchaseTotal = purchases.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
+      const paid = purchasePayments.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+      const syncedPending = purchases.filter(p => ownerInRange(p.createdAt, from, to) && (p.syncStatus || 'Not Synced') !== 'Synced').length;
+      return {
+        unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
+        expenses: paid, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - paid),
+        stockAlerts: syncedPending, closureStatus: syncedPending ? `${syncedPending} purchase sync pending` : 'Purchase sync clear',
+        keyAlert: 'Supplier invoices and stock sync control',
+      };
+    }
+
+    if (unit === 'Packing / Dispatch') {
+      const pendingDispatch = storeOrders.filter(o => ownerInRange(o.createdAt, from, to) && ['Confirmed', 'Ready'].includes(o.status)).length;
+      return {
+        unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
+        expenses: 0, purchases: 0, pendingPayments: 0,
+        stockAlerts: 0, closureStatus: pendingDispatch ? `${pendingDispatch} dispatches waiting` : 'Dispatch clear',
+        keyAlert: 'Pack, dispatch and shortage visibility',
+      };
+    }
+
+    const branch = unit.replace(' Branch', '') as Branch;
+    const dbSales = (sales[branch] || []).filter(s => ownerInRange(s.soldAt, from, to));
+    const localBills = bills.filter(b => b.branch === branch && ownerInRange(b.createdAt, from, to) && b.status !== 'Returned');
+    const branchReturns = returns.filter(r => r.branch === branch && ownerInRange(r.createdAt, from, to));
+    const gross = dbSales.reduce((sum, s) => sum + moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold), 0) + localBills.reduce((sum, b) => sum + moneyNumber(b.total), 0);
+    const ret = branchReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
+    const branchPurchases = purchases.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
+    const purchasePaid = purchasePayments.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+    const lowStock = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
+    const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
+    const openCredit = [
+      ...(creditSales[branch] || []).map(c => moneyNumber(c.creditAmount)),
+      ...useBranchOpsStore.getState().creditSales.filter(c => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').map(c => moneyNumber(c.balanceDue)),
+    ].reduce((a, b) => a + b, 0);
+    const lastClosure = cashierClosures.find(c => c.branch === branch && ownerInRange(c.createdAt, from, to));
+    const cash = localBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.cash) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('cash') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
+    const upi = localBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.upi) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('upi') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
+    const card = localBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.card) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('card') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
+    return {
+      unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
+      expenses: purchasePaid, purchases: branchPurchases, pendingPayments: Math.max(0, branchPurchases - purchasePaid),
+      stockAlerts: lowStock + outStock + incoming[branch].filter(i => !i.confirmed).length,
+      closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
+      keyAlert: `${advanceOrders[branch].filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
+    };
+  }), [orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
+
+  const totals = branchRows.reduce((acc, row) => ({
+    sales: acc.sales + row.sales,
+    netSales: acc.netSales + row.netSales,
+    purchases: acc.purchases + row.purchases,
+    expenses: acc.expenses + row.expenses,
+    pending: acc.pending + row.pendingPayments,
+    alerts: acc.alerts + row.stockAlerts,
+  }), { sales: 0, netSales: 0, purchases: 0, expenses: 0, pending: 0, alerts: 0 });
+
+  const chartRows = branchRows.filter(row => row.sales || row.purchases || row.pendingPayments).map(row => ({ name: row.unit.replace(' Branch', ''), Sales: row.netSales, Purchases: row.purchases, Pending: row.pendingPayments }));
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        {(['today', '7d', '30d', 'month'] as OwnerDatePreset[]).map(option => (
+          <button key={option} type="button" onClick={() => setPreset(option)} className={cn(preset === option && 'is-active')}>
+            {option === 'today' ? 'Today' : option === '7d' ? '7 Days' : option === '30d' ? '30 Days' : 'This Month'}
+          </button>
+        ))}
+        <button type="button" onClick={() => ownerCsvDownload('owner-branch-overview.csv', branchRows.map(r => ({ Unit: r.unit, Sales: r.sales, NetSales: r.netSales, Purchases: r.purchases, PendingPayments: r.pendingPayments, Alerts: r.stockAlerts, Closure: r.closureStatus })))}><Download className="size-4" />Export</button>
+      </OwnerToolbar>
+
+      <section className="owner-metric-grid wide">
+        <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
+        <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
+        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(totals.purchases)} sub="Store + branches" tone="purple" />
+        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(totals.pending)} sub="Credit + supplier" tone="amber" />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Owner Alerts" value={totals.alerts} sub="Stock and sync alerts" tone={totals.alerts ? 'red' : 'green'} />
+      </section>
+
+      <section className="owner-panel">
+        <div className="owner-panel-head"><div><span>Business Unit Performance</span><h3>Sales, stock, credit, purchases and closure status</h3></div></div>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={chartRows.length ? chartRows : [{ name: 'No data', Sales: 0, Purchases: 0, Pending: 0 }]}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" />
+            <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+            <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `₹${Math.round(Number(v) / 1000)}k`} />
+            <Tooltip formatter={(value: number) => formatCurrency(value)} />
+            <Bar dataKey="Sales" fill="#126d52" radius={[8, 8, 0, 0]} />
+            <Bar dataKey="Purchases" fill="#8b5cf6" radius={[8, 8, 0, 0]} />
+            <Bar dataKey="Pending" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+
+      <section className="owner-business-grid">
+        {branchRows.map(row => (
+          <article key={row.unit} className="owner-business-card">
+            <div className="owner-business-card-head">
+              <div><span>{row.unit}</span><strong>{formatCurrency(row.netSales)}</strong></div>
+              <em className={cn(row.closureStatus.toLowerCase().includes('pending') && 'warn', row.closureStatus.toLowerCase().includes('difference') && 'danger')}>{row.closureStatus}</em>
+            </div>
+            <div className="owner-business-mini-grid">
+              <p><span>Cash</span><b>{formatCurrency(row.cash)}</b></p>
+              <p><span>UPI</span><b>{formatCurrency(row.upi)}</b></p>
+              <p><span>Card</span><b>{formatCurrency(row.card)}</b></p>
+              <p><span>Credit</span><b>{formatCurrency(row.credit)}</b></p>
+              <p><span>Purchases</span><b>{formatCurrency(row.purchases)}</b></p>
+              <p><span>Expenses</span><b>{formatCurrency(row.expenses)}</b></p>
+            </div>
+            <footer><AlertTriangle className="size-4" />{row.keyAlert}</footer>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+// ── Stock Analytics Tab ──────────────────────────────────────────────────────
+function StockAnalyticsTab() {
+  const { stock, fetchBranchData } = useBranchStore();
+  const { purchases } = useBranchOpsStore();
+  const [query, setQuery] = useState('');
+  const [branchFilter, setBranchFilter] = useState<'all' | Branch>('all');
+
+  useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+
+  const rows = useMemo(() => OWNER_FULL_BRANCHES.flatMap(branch => (stock[branch] || []).map(item => {
+    const status = item.quantity <= 0 ? 'Out of Stock' : item.quantity <= item.minThreshold ? 'Low Stock' : item.quantity == null ? 'Stock Not Available' : 'Healthy';
+    const lastPurchase = purchases.find(p => p.branch === branch && p.itemName.toLowerCase() === item.itemName.toLowerCase());
+    return {
+      branch,
+      itemName: item.itemName,
+      category: branch === 'Cafe' ? 'Cafe item' : 'Bakery branch item',
+      currentStock: Number(item.quantity || 0),
+      minimumStock: Number(item.minThreshold || 0),
+      unit: item.unit || 'pcs',
+      status,
+      lastUpdated: lastPurchase?.createdAt || lastPurchase?.invoiceDate || '',
+      value: Number(item.quantity || 0) * Number(item.price || 0),
+    };
+  })), [stock, purchases]);
+
+  const filtered = rows.filter(row =>
+    (branchFilter === 'all' || row.branch === branchFilter) &&
+    `${row.itemName} ${row.branch} ${row.status}`.toLowerCase().includes(query.toLowerCase())
+  );
+  const alertRows = filtered.filter(row => row.status !== 'Healthy');
+  const healthy = rows.length - rows.filter(row => row.status !== 'Healthy').length;
+  const stockValue = rows.reduce((sum, row) => sum + row.value, 0);
+  const byBranch = OWNER_FULL_BRANCHES.map(branch => ({
+    name: ownerBranchDisplay(branch),
+    Healthy: rows.filter(r => r.branch === branch && r.status === 'Healthy').length,
+    Low: rows.filter(r => r.branch === branch && r.status === 'Low Stock').length,
+    Out: rows.filter(r => r.branch === branch && r.status === 'Out of Stock').length,
+  }));
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        <div className="owner-search"><Search className="size-4" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search stock alerts" /></div>
+        <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as 'all' | Branch)}>
+          <option value="all">All branches</option>
+          {OWNER_FULL_BRANCHES.map(branch => <option key={branch} value={branch}>{ownerBranchDisplay(branch)}</option>)}
+        </select>
+        <button type="button" onClick={() => ownerCsvDownload('owner-stock-alerts.csv', alertRows.map(r => ({ Item: r.itemName, Category: r.category, Branch: r.branch, CurrentStock: r.currentStock, MinimumStock: r.minimumStock, Unit: r.unit, Status: r.status, LastUpdated: ownerFmtDate(r.lastUpdated) })))}><Download className="size-4" />Export</button>
+      </OwnerToolbar>
+
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<PackageSearch className="size-5" />} label="Stock Value" value={formatCurrency(stockValue)} sub="Based on available item prices" tone="green" />
+        <OwnerMetricCard icon={<CheckCircle2 className="size-5" />} label="Healthy Items" value={healthy} sub="Above minimum level" tone="blue" />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Low Stock" value={rows.filter(r => r.status === 'Low Stock').length} sub="Restock soon" tone="amber" />
+        <OwnerMetricCard icon={<XCircle className="size-5" />} label="Out of Stock" value={rows.filter(r => r.status === 'Out of Stock').length} sub="Not billable" tone="red" />
+      </section>
+
+      <section className="owner-ops-grid compact">
+        <div className="owner-panel owner-panel-wide">
+          <div className="owner-panel-head"><div><span>Branch-wise Stock Status</span><h3>Healthy vs low/out-of-stock items</h3></div></div>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={byBranch}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+              <Tooltip />
+              <Bar dataKey="Healthy" stackId="a" fill="#16a34a" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="Low" stackId="a" fill="#f59e0b" />
+              <Bar dataKey="Out" stackId="a" fill="#dc2626" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="owner-panel">
+          <div className="owner-panel-head"><div><span>Restock Priority</span><h3>Critical alerts</h3></div></div>
+          <div className="owner-alert-list">
+            {alertRows.slice(0, 8).map(row => (
+              <div key={`${row.branch}-${row.itemName}`} className={cn('owner-alert-row', row.status === 'Out of Stock' ? 'tone-danger' : 'tone-warning')}>
+                <strong>{row.currentStock}</strong><div><p>{row.itemName}</p><span>{ownerBranchDisplay(row.branch)} · min {row.minimumStock} {row.unit} · {row.status}</span></div>
+              </div>
+            ))}
+            {!alertRows.length && <EmptyOwnerState title="Stock looks healthy" message="No low-stock or out-of-stock items match the selected filters." />}
+          </div>
+        </div>
+      </section>
+
+      <section className="owner-table-card">
+        <div className="owner-panel-head"><div><span>Stock Alert Register</span><h3>Missing, low and out-of-stock items</h3></div></div>
+        <div className="overflow-x-auto">
+          <table className="owner-data-table">
+            <thead><tr><th>Item</th><th>Branch</th><th>Status</th><th>Current</th><th>Minimum</th><th>Unit</th><th>Last Updated</th></tr></thead>
+            <tbody>
+              {filtered.map(row => (
+                <tr key={`${row.branch}-${row.itemName}`}>
+                  <td><strong>{row.itemName}</strong><span>{row.category}</span></td>
+                  <td>{ownerBranchDisplay(row.branch)}</td>
+                  <td><em className={cn('owner-status', row.status === 'Out of Stock' ? 'danger' : row.status === 'Low Stock' ? 'warn' : 'ok')}>{row.status}</em></td>
+                  <td>{row.currentStock}</td><td>{row.minimumStock}</td><td>{row.unit}</td><td>{ownerFmtDate(row.lastUpdated)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ── Daily Closure Tab ────────────────────────────────────────────────────────
+function OwnerDailyClosureTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements } = useBranchOpsStore();
+  const [date, setDate] = useState(ownerDateInput());
+  const [branch, setBranch] = useState<'all' | Branch>('all');
+
+  useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
+
+  const rows: OwnerClosureRow[] = useMemo(() => OWNER_FULL_BRANCHES.map(b => {
+    if (b === 'Cafe') {
+      const dayOrders = orders.filter(o => ownerLocalDay(o.createdAt) === date && o.status === 'served');
+      const gross = dayOrders.reduce((sum, o) => sum + moneyNumber(o.total), 0);
+      const cash = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'cash' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.cash) : 0), 0);
+      const upi = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'upi' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi) : 0), 0);
+      const card = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
+      const credit = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
+      return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: gross ? 'Pending' : 'Pending', closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
+    }
+    const dayBills = bills.filter(bill => bill.branch === b && ownerLocalDay(bill.createdAt) === date && bill.status !== 'Returned');
+    const dayReturns = returns.filter(ret => ret.branch === b && ownerLocalDay(ret.createdAt) === date);
+    const dayPayments = purchasePayments.filter(pay => pay.branch === b && ownerLocalDay(pay.createdAt) === date).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+    const dayDeposits = bankDeposits.filter(dep => dep.branch === b && ownerLocalDay(dep.createdAt) === date).reduce((sum, d) => sum + moneyNumber(d.amount), 0);
+    const dayExpenses = cashMovements.filter(m => m.branch === b && ownerLocalDay(m.dateTime) === date && m.direction === 'out').reduce((sum, m) => sum + moneyNumber(m.amount), 0);
+    const closure = cashierClosures.find(c => c.branch === b && ownerLocalDay(c.createdAt) === date);
+    const gross = dayBills.reduce((sum, bill) => sum + moneyNumber(bill.total), 0);
+    const ret = dayReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
+    const cash = dayBills.reduce((sum, bill) => sum + (bill.paymentMode === 'cash' ? moneyNumber(bill.total) : bill.paymentMode === 'split' ? moneyNumber(bill.split?.cash) : 0), 0);
+    const upi = dayBills.reduce((sum, bill) => sum + (bill.paymentMode === 'upi' ? moneyNumber(bill.total) : bill.paymentMode === 'split' ? moneyNumber(bill.split?.upi) : 0), 0);
+    const card = dayBills.reduce((sum, bill) => sum + (bill.paymentMode === 'card' ? moneyNumber(bill.total) : bill.paymentMode === 'split' ? moneyNumber(bill.split?.card) : 0), 0);
+    const credit = dayBills.reduce((sum, bill) => sum + (bill.paymentMode === 'credit' ? moneyNumber(bill.total) : 0), 0);
+    const expectedCash = closure?.expectedCash ?? Math.max(0, cash - dayPayments - dayExpenses - dayDeposits);
+    const countedCash = closure?.closingCash ?? 0;
+    const difference = closure?.difference ?? (closure ? countedCash - expectedCash : 0);
+    return {
+      branch: ownerBranchDisplay(b), opening: closure?.openingCash ?? 0, grossSales: gross, returns: ret, netSales: Math.max(0, gross - ret), cash, upi, card, credit,
+      expenses: dayExpenses, purchases: dayPayments, bankDeposits: dayDeposits, expectedCash, countedCash, difference,
+      status: closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending',
+      closedBy: closure?.cashier || 'Pending', closedAt: closure?.createdAt || '', remarks: closure?.notes || (closure ? 'Closed' : 'Closure not submitted'),
+    };
+  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
+
+  const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
+
+  const print = () => ownerPrintSection('Owner Daily Closure Overview', `<table><thead><tr><th>Branch</th><th>Status</th><th>Net sales</th><th>Cash</th><th>Expected cash</th><th>Counted cash</th><th>Difference</th><th>Closed by</th><th>Remarks</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.branch}</td><td>${r.status}</td><td>${r.netSales}</td><td>${r.cash}</td><td>${r.expectedCash}</td><td>${r.countedCash}</td><td>${r.difference}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('')}</tbody></table>`);
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        <select value={branch} onChange={e => setBranch(e.target.value as 'all' | Branch)}><option value="all">All business units</option>{OWNER_FULL_BRANCHES.map(b => <option key={b} value={b}>{ownerBranchDisplay(b)}</option>)}</select>
+        <button type="button" onClick={print}><Printer className="size-4" />Print</button>
+        <button type="button" onClick={() => ownerCsvDownload('owner-daily-closure.csv', rows.map(r => ({ Branch: r.branch, Status: r.status, Opening: r.opening, TotalSales: r.grossSales, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit, Returns: r.returns, NetSales: r.netSales, Expenses: r.expenses, PurchasePayments: r.purchases, BankDeposits: r.bankDeposits, Closing: r.expectedCash, Difference: r.difference, ClosedBy: r.closedBy, ClosedAt: ownerFmtDateTime(r.closedAt), Remarks: r.remarks })))}><FileSpreadsheet className="size-4" />Export</button>
+      </OwnerToolbar>
+
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<Receipt className="size-5" />} label="Net Sales" value={formatCurrency(totals.net)} tone="green" />
+        <OwnerMetricCard icon={<Banknote className="size-5" />} label="Cash Expected" value={formatCurrency(totals.cash)} tone="blue" />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Difference" value={formatCurrency(totals.diff)} tone={Math.abs(totals.diff) > 0 ? 'red' : 'green'} />
+        <OwnerMetricCard icon={<Clock className="size-5" />} label="Pending Closures" value={totals.pending} tone={totals.pending ? 'amber' : 'green'} />
+      </section>
+
+      <section className="owner-business-grid">
+        {rows.map(row => (
+          <article key={row.branch} className="owner-business-card closure">
+            <div className="owner-business-card-head"><div><span>{row.branch}</span><strong>{formatCurrency(row.netSales)}</strong></div><em className={cn(row.status === 'Pending' && 'warn', row.status === 'Difference' && 'danger')}>{row.status}</em></div>
+            <div className="owner-business-mini-grid">
+              <p><span>Opening</span><b>{formatCurrency(row.opening)}</b></p><p><span>Total</span><b>{formatCurrency(row.grossSales)}</b></p><p><span>Cash</span><b>{formatCurrency(row.cash)}</b></p><p><span>UPI</span><b>{formatCurrency(row.upi)}</b></p><p><span>Card</span><b>{formatCurrency(row.card)}</b></p><p><span>Credit</span><b>{formatCurrency(row.credit)}</b></p><p><span>Returns</span><b>{formatCurrency(row.returns)}</b></p><p><span>Expenses</span><b>{formatCurrency(row.expenses)}</b></p><p><span>Purchase Pay.</span><b>{formatCurrency(row.purchases)}</b></p><p><span>Bank Deposit</span><b>{formatCurrency(row.bankDeposits)}</b></p><p><span>Expected</span><b>{formatCurrency(row.expectedCash)}</b></p><p><span>Difference</span><b>{formatCurrency(row.difference)}</b></p>
+            </div>
+            <footer><ShieldCheck className="size-4" />{row.closedBy} · {ownerFmtDateTime(row.closedAt)} · {row.remarks}</footer>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+// ── Owner Alerts Tab ─────────────────────────────────────────────────────────
+function OwnerAlertsTab() {
+  const { orders, startPolling, stopPolling } = useOrderStore();
+  const { stock, creditSales, fetchBranchData } = useBranchStore();
+  const { creditSales: branchCredits, purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
+  const { invoices, load } = useInvoiceStore();
+  const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
+
+  useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { load(); }, [load]);
+
+  const alerts: OwnerAlert[] = useMemo(() => {
+    const today = ownerDateInput();
+    const list: OwnerAlert[] = [];
+    OWNER_FULL_BRANCHES.forEach(branch => {
+      const out = (stock[branch] || []).filter(item => item.quantity <= 0);
+      const low = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold);
+      if (out.length) list.push({ title: 'Out-of-stock items', value: String(out.length), note: `${ownerBranchDisplay(branch)} has items blocked for billing`, tone: 'danger', branch });
+      if (low.length) list.push({ title: 'Low stock warning', value: String(low.length), note: `${ownerBranchDisplay(branch)} needs restocking`, tone: 'warning', branch });
+      const dbCredits = (creditSales[branch] || []).filter(c => c.status !== 'settled' && c.dueDate && new Date(c.dueDate) < new Date());
+      if (dbCredits.length) list.push({ title: 'Overdue branch credit', value: String(dbCredits.length), note: `${ownerBranchDisplay(branch)} credit due follow-up`, tone: 'danger', branch });
+      const closedToday = cashierClosures.some(c => c.branch === branch && ownerLocalDay(c.createdAt) === today);
+      if (branch !== 'Cafe' && !closedToday) list.push({ title: 'Daily closure pending', value: '1', note: `${ownerBranchDisplay(branch)} closure not submitted for today`, tone: 'warning', branch });
+    });
+    const localCreditOverdue = branchCredits.filter(c => c.status !== 'Paid' && c.status !== 'Written Off' && c.dueDate && new Date(c.dueDate) < new Date());
+    if (localCreditOverdue.length) list.push({ title: 'Customer credit overdue', value: String(localCreditOverdue.length), note: `${formatCurrency(localCreditOverdue.reduce((s, c) => s + c.balanceDue, 0))} needs collection`, tone: 'danger' });
+    const pendingPurchases = purchases.filter(p => (p.syncStatus || 'Not Synced') !== 'Synced');
+    if (pendingPurchases.length) list.push({ title: 'Purchase stock sync pending', value: String(pendingPurchases.length), note: 'Purchased quantities not fully reflected in stock', tone: 'warning' });
+    const pendingInvoice = invoices.filter(i => i.status === 'pending_review');
+    if (pendingInvoice.length) list.push({ title: 'Store invoices pending review', value: String(pendingInvoice.length), note: 'Owner can review purchase exposure', tone: 'warning' });
+    const pendingDispatch = storeOrders.filter(o => ['Pending Store Confirmation', 'Confirmed', 'Ready'].includes(o.status));
+    if (pendingDispatch.length) list.push({ title: 'Pending dispatch / store orders', value: String(pendingDispatch.length), note: 'Packing or store confirmation pending', tone: 'neutral' });
+    const todayReturns = returns.filter(r => ownerLocalDay(r.createdAt) === today);
+    if (todayReturns.reduce((s, r) => s + r.total, 0) > 0) list.push({ title: 'Return amount today', value: formatCurrency(todayReturns.reduce((s, r) => s + r.total, 0)), note: 'Review reasons and staff notes', tone: 'warning' });
+    const cancelled = orders.filter(o => ownerLocalDay(o.createdAt) === today && o.status === 'cancelled');
+    if (cancelled.length) list.push({ title: 'Cafe cancelled orders', value: String(cancelled.length), note: 'Check wastage or service gaps', tone: 'neutral' });
+    notifications.filter(n => n.status !== 'Resolved').slice(0, 6).forEach(n => list.push({ title: n.title, value: n.status, note: `${ownerBranchDisplay(n.branch)} · ${n.details}`, tone: n.type === 'Stock Dispute' ? 'danger' : 'neutral', branch: n.branch }));
+    return list;
+  }, [orders, stock, creditSales, branchCredits, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
+
+  const visible = alerts.filter(a => tone === 'all' || a.tone === tone);
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        {(['all', 'danger', 'warning', 'neutral', 'success'] as const).map(option => <button key={option} type="button" onClick={() => setTone(option)} className={cn(tone === option && 'is-active')}>{option === 'all' ? 'All alerts' : option}</button>)}
+        <button type="button" onClick={() => ownerCsvDownload('owner-alerts.csv', visible.map(a => ({ Alert: a.title, Value: a.value, Branch: a.branch || 'Business', Tone: a.tone, Details: a.note })))}><Download className="size-4" />Export</button>
+      </OwnerToolbar>
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<XCircle className="size-5" />} label="Critical" value={alerts.filter(a => a.tone === 'danger').length} tone="red" />
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Warning" value={alerts.filter(a => a.tone === 'warning').length} tone="amber" />
+        <OwnerMetricCard icon={<Bell className="size-5" />} label="Operational" value={alerts.filter(a => a.tone === 'neutral').length} tone="blue" />
+        <OwnerMetricCard icon={<CheckCircle2 className="size-5" />} label="Total Owner Alerts" value={alerts.length} tone="purple" />
+      </section>
+      <section className="owner-alert-board">
+        {visible.map((alert, index) => (
+          <article key={`${alert.title}-${index}`} className={cn('owner-alert-card', `tone-${alert.tone}`)}>
+            <div><strong>{alert.value}</strong><span>{alert.tone}</span></div>
+            <section><h3>{alert.title}</h3><p>{alert.note}</p>{alert.branch && <em>{ownerBranchDisplay(alert.branch)}</em>}</section>
+          </article>
+        ))}
+        {!visible.length && <EmptyOwnerState title="No matching owner alerts" message="Critical issues will appear here automatically from sales, credit, stock, closure and dispatch flows." />}
+      </section>
+    </div>
+  );
+}
+
+// ── Purchases & Store Visibility Tab ─────────────────────────────────────────
+function OwnerPurchasesTab() {
+  const { invoices, load } = useInvoiceStore();
+  const { orders: purchaseOrders, load: loadOrders } = usePurchaseOrderStore();
+  const { purchases, purchasePayments } = useBranchOpsStore();
+  const [fromDate, setFromDate] = useState(ownerDateInput(ownerPresetStart('30d')));
+  const [toDate, setToDate] = useState(ownerDateInput());
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const [dbLines, setDbLines] = useState<OwnerStorePurchaseLine[]>([]);
+
+  useEffect(() => { load(); loadOrders(); }, [load, loadOrders]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await supabase.from('store_invoices').select('*').order('created_at', { ascending: false });
+      if (!alive || !data) return;
+      const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
+        const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
+        const paidAmount = Number(invoice.paid_amount || 0);
+        const grandTotal = Number(invoice.grand_total || 0);
+        return lineItems.map((line, index) => ({
+          id: `${invoice.id}-${index}`,
+          supplierName: String(invoice.supplier_name || 'Unknown supplier'),
+          invoiceNumber: String(invoice.invoice_number || '—'),
+          purchaseDate: String(invoice.delivery_date || invoice.created_at || ''),
+          itemName: String(line.itemName || line.item_name || line.materialName || 'Item'),
+          quantity: Number(line.quantity || 0),
+          unit: String(line.unit || 'unit'),
+          rate: Number(line.pricePerUnit || line.price_per_unit || 0),
+          total: Number(line.totalPrice || line.total_price || 0),
+          paidAmount: lineItems.length ? paidAmount * (Number(line.totalPrice || line.total_price || 0) / Math.max(grandTotal, 1)) : paidAmount,
+          balanceAmount: lineItems.length ? Math.max(0, (Number(line.totalPrice || line.total_price || 0)) - (paidAmount * (Number(line.totalPrice || line.total_price || 0) / Math.max(grandTotal, 1)))) : Math.max(0, grandTotal - paidAmount),
+          paymentMethod: String(invoice.payment_method || 'Not recorded'),
+          purchaseStatus: String(invoice.purchase_status || invoice.status || 'pending_review'),
+          stockSyncStatus: invoice.synced_to_stock ? 'Synced' : String(invoice.stock_sync_status || 'Not Synced'),
+          remarks: String(invoice.remarks || invoice.notes || '—'),
+        }));
+      });
+      setDbLines(rows);
+    })();
+    return () => { alive = false; };
+  }, [invoices.length]);
+
+  const fallbackLines: OwnerStorePurchaseLine[] = useMemo(() => invoices.flatMap((invoice, index) => invoice.lineItems.map((line, lineIndex) => ({
+    id: `${invoice.id}-${lineIndex}`,
+    supplierName: invoice.supplierName,
+    invoiceNumber: invoice.invoiceNumber,
+    purchaseDate: invoice.deliveryDate || invoice.createdAt,
+    itemName: line.itemName,
+    quantity: line.quantity,
+    unit: line.unit,
+    rate: line.pricePerUnit,
+    total: line.totalPrice,
+    paidAmount: 0,
+    balanceAmount: line.totalPrice,
+    paymentMethod: 'Not recorded',
+    purchaseStatus: invoice.status,
+    stockSyncStatus: invoice.syncedToStock ? 'Synced' : 'Not Synced',
+    remarks: invoice.notes || (index >= 0 ? 'Store invoice' : ''),
+  }))), [invoices]);
+
+  const lines = dbLines.length ? dbLines : fallbackLines;
+  const from = new Date(`${fromDate}T00:00:00`);
+  const to = new Date(`${toDate}T23:59:59`);
+  const filtered = lines.filter(line => ownerInRange(line.purchaseDate, from, to) && (status === 'all' || line.purchaseStatus === status || line.stockSyncStatus === status) && `${line.supplierName} ${line.invoiceNumber} ${line.itemName}`.toLowerCase().includes(query.toLowerCase()));
+  const branchPurchaseRows = purchases.filter(p => ownerInRange(p.createdAt, from, to));
+  const totalPurchase = filtered.reduce((sum, line) => sum + line.total, 0) + branchPurchaseRows.reduce((sum, p) => sum + moneyNumber(p.total), 0);
+  const paid = filtered.reduce((sum, line) => sum + line.paidAmount, 0) + purchasePayments.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+  const pending = Math.max(0, totalPurchase - paid);
+  const supplierRows = Object.values(filtered.reduce((acc, line) => {
+    acc[line.supplierName] ||= { name: line.supplierName, Amount: 0 };
+    acc[line.supplierName].Amount += line.total;
+    return acc;
+  }, {} as Record<string, { name: string; Amount: number }>)).sort((a, b) => b.Amount - a.Amount).slice(0, 8);
+  const itemRows = Object.values(filtered.reduce((acc, line) => {
+    acc[line.itemName] ||= { name: line.itemName, Quantity: 0, Amount: 0 };
+    acc[line.itemName].Quantity += line.quantity;
+    acc[line.itemName].Amount += line.total;
+    return acc;
+  }, {} as Record<string, { name: string; Quantity: number; Amount: number }>)).sort((a, b) => b.Amount - a.Amount).slice(0, 8);
+  const statusOptions = ['all', ...Array.from(new Set(lines.flatMap(line => [line.purchaseStatus, line.stockSyncStatus]).filter(Boolean)))];
+
+  return (
+    <div className="owner-tab-stack">
+      <OwnerToolbar>
+        <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} />
+        <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} />
+        <div className="owner-search"><Search className="size-4" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Supplier, invoice or item" /></div>
+        <select value={status} onChange={e => setStatus(e.target.value)}>{statusOptions.map(s => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>)}</select>
+        <button type="button" onClick={() => ownerCsvDownload('owner-store-purchases.csv', filtered.map(line => ({ Supplier: line.supplierName, Invoice: line.invoiceNumber, Date: ownerFmtDate(line.purchaseDate), Item: line.itemName, Quantity: line.quantity, Unit: line.unit, Rate: line.rate, Total: line.total, Paid: line.paidAmount, Balance: line.balanceAmount, PaymentMethod: line.paymentMethod, PurchaseStatus: line.purchaseStatus, StockSyncStatus: line.stockSyncStatus, Remarks: line.remarks })))}><Download className="size-4" />Export</button>
+      </OwnerToolbar>
+
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Total Purchases" value={formatCurrency(totalPurchase)} sub="Store + branch purchase invoices" tone="purple" />
+        <OwnerMetricCard icon={<Banknote className="size-5" />} label="Paid Amount" value={formatCurrency(paid)} sub="Supplier payments captured" tone="green" />
+        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payable" value={formatCurrency(pending)} sub="Needs payment follow-up" tone={pending ? 'amber' : 'green'} />
+        <OwnerMetricCard icon={<Package className="size-5" />} label="Stock Sync Pending" value={filtered.filter(line => line.stockSyncStatus !== 'Synced').length} sub="Prevent missing stock" tone="red" />
+        <OwnerMetricCard icon={<Receipt className="size-5" />} label="Purchase Orders" value={purchaseOrders.length} sub="Store purchase orders" tone="blue" />
+      </section>
+
+      <section className="owner-ops-grid compact">
+        <div className="owner-panel">
+          <div className="owner-panel-head"><div><span>Supplier-wise Purchase Amount</span><h3>Store purchase concentration</h3></div></div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={supplierRows.length ? supplierRows : [{ name: 'No purchase', Amount: 0 }]}><CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" /><XAxis dataKey="name" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 12 }} tickFormatter={v => `₹${Math.round(Number(v) / 1000)}k`} /><Tooltip formatter={(v: number) => formatCurrency(v)} /><Bar dataKey="Amount" fill="#8b5cf6" radius={[8,8,0,0]} /></BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="owner-panel">
+          <div className="owner-panel-head"><div><span>Item-wise Purchase Quantity</span><h3>Material movement</h3></div></div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={itemRows.length ? itemRows : [{ name: 'No item', Quantity: 0 }]}><CartesianGrid strokeDasharray="3 3" stroke="rgba(120,82,38,.14)" /><XAxis dataKey="name" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 12 }} /><Tooltip /><Bar dataKey="Quantity" fill="#126d52" radius={[8,8,0,0]} /></BarChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="owner-table-card">
+        <div className="owner-panel-head"><div><span>Store Purchase Register</span><h3>Supplier, invoice, item, payment and stock sync visibility</h3></div></div>
+        <div className="overflow-x-auto">
+          <table className="owner-data-table">
+            <thead><tr><th>Supplier / Invoice</th><th>Date</th><th>Item</th><th>Qty</th><th>Rate</th><th>Total</th><th>Paid</th><th>Balance</th><th>Method</th><th>Status</th><th>Sync</th><th>Remarks</th></tr></thead>
+            <tbody>
+              {filtered.map(line => (
+                <tr key={line.id}>
+                  <td><strong>{line.supplierName}</strong><span>{line.invoiceNumber}</span></td><td>{ownerFmtDate(line.purchaseDate)}</td><td>{line.itemName}</td><td>{line.quantity} {line.unit}</td><td>{formatCurrency(line.rate)}</td><td>{formatCurrency(line.total)}</td><td>{formatCurrency(line.paidAmount)}</td><td>{formatCurrency(line.balanceAmount)}</td><td>{line.paymentMethod}</td><td><em className="owner-status warn">{line.purchaseStatus}</em></td><td><em className={cn('owner-status', line.stockSyncStatus === 'Synced' ? 'ok' : 'warn')}>{line.stockSyncStatus}</em></td><td>{line.remarks}</td>
+                </tr>
+              ))}
+              {!filtered.length && <tr><td colSpan={12}><EmptyOwnerState title="No store purchases found" message="Create store invoices or adjust filters to see purchase visibility." /></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// ── Main Export ───────────────────────────────────────────────────────────────
+type OwnerDashboardTab =
+  | 'command'
+  | 'branches'
+  | 'sales'
+  | 'stock'
+  | 'credit'
+  | 'purchases'
+  | 'closure'
+  | 'alerts'
+  | 'attendance'
+  | 'waste';
+
+export default function OwnerDashboard() {
+  const [tab, setTab] = useState<OwnerDashboardTab>('command');
+
+  const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
+    { id: 'command',    label: 'Executive Overview', icon: <Building2     className="size-4" />, hint: 'Owner KPIs' },
+    { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
+    { id: 'sales',      label: 'Sales & Profit',     icon: <BarChart3     className="size-4" />, hint: 'Trends and payment split' },
+    { id: 'stock',      label: 'Stock Analytics',    icon: <PackageSearch className="size-4" />, hint: 'Low and out-of-stock' },
+    { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
+    { id: 'purchases',  label: 'Store Purchases',    icon: <ShoppingBag   className="size-4" />, hint: 'Supplier and invoice view' },
+    { id: 'closure',    label: 'Daily Closure',      icon: <WalletCards   className="size-4" />, hint: 'All unit closing status' },
+    { id: 'alerts',     label: 'Owner Alerts',       icon: <Bell          className="size-4" />, hint: 'Actionable risks' },
+    { id: 'attendance', label: 'Staff & Payroll',    icon: <CalendarCheck className="size-4" />, hint: 'Attendance and advances' },
+    { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
+  ];
 
   return (
     <div className="owner-dashboard-screen dashboard-screen min-h-screen bg-transparent">
       <header className="owner-dashboard-header">
         <div>
           <span>Owner Portal</span>
-          <h1>Business Control Room</h1>
-          <p>One premium dashboard for revenue, cash, UPI, card, branch stock, credit, staff, kitchen and daily decisions.</p>
+          <h1>Executive Business Dashboard</h1>
+          <p>Premium owner-level visibility for cafe, bakery, branches, store purchases, sales, profit, balances, stock, credit, closures and alerts.</p>
         </div>
         <div className="owner-header-actions">
           <Link to="/sales-report">Sales Report</Link>
@@ -1337,27 +2061,40 @@ export default function OwnerDashboard() {
         </div>
       </header>
 
-      <nav className="owner-tabs" aria-label="Owner dashboard sections">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cn(tab === t.id && 'is-active')}
-          >
-            {t.icon}
-            <span>{t.label}</span>
-            <em>{t.hint}</em>
-          </button>
-        ))}
-      </nav>
+      <div className="owner-dashboard-shell">
+        <aside className="owner-sidebar" aria-label="Owner dashboard sections">
+          <div className="owner-sidebar-brand">
+            <span>Owner Control</span>
+            <strong>Business cockpit</strong>
+          </div>
+          <nav className="owner-tabs">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(tab === t.id && 'is-active')}
+              >
+                {t.icon}
+                <span>{t.label}</span>
+                <em>{t.hint}</em>
+              </button>
+            ))}
+          </nav>
+        </aside>
 
-      <div className="owner-dashboard-body">
-        {tab === 'command'    && <OwnerCommandCenter />}
-        {tab === 'sales'      && <SalesOverviewTab />}
-        {tab === 'attendance' && <AttendanceSalaryTab />}
-        {tab === 'credit'     && <OwnerCreditTab />}
-        {tab === 'waste'      && <WasteLogsTab />}
+        <main className="owner-dashboard-body">
+          {tab === 'command'    && <OwnerCommandCenter />}
+          {tab === 'branches'   && <BranchOverviewTab />}
+          {tab === 'sales'      && <SalesOverviewTab />}
+          {tab === 'stock'      && <StockAnalyticsTab />}
+          {tab === 'credit'     && <OwnerCreditTab />}
+          {tab === 'purchases'  && <OwnerPurchasesTab />}
+          {tab === 'closure'    && <OwnerDailyClosureTab />}
+          {tab === 'alerts'     && <OwnerAlertsTab />}
+          {tab === 'attendance' && <AttendanceSalaryTab />}
+          {tab === 'waste'      && <WasteLogsTab />}
+        </main>
       </div>
     </div>
   );
