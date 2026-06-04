@@ -171,6 +171,7 @@ export interface PurchaseRecord {
   branch: Branch;
   supplier: string;
   invoiceNo: string;
+  invoiceDate?: string;
   itemName: string;
   quantity: number;
   unit?: "pcs" | "kg" | "ltr" | "nos" | "bunch";
