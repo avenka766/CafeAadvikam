@@ -58,7 +58,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/order-history/, meta: { title: 'Order History', eyebrow: 'Past orders', description: 'Search, inspect and audit completed orders from billing, kitchen and admin workflows.', accent: 'History • Search • Receipts' } },
   { match: /^\/daily-closure/, meta: { title: 'Daily Closure', eyebrow: 'Counter handover', description: 'Close the day with payment-wise collection, total sales, credit, advance and cashier summaries.', accent: 'Cash • UPI • Card' } },
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
-  { match: /^\/bakery\/store/, meta: { title: 'Bakery Store Control', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
+  { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Production Board', eyebrow: 'Baking team', description: 'A production-first dashboard for accepted orders, recipe quantities and batch preparation.', accent: 'Recipes • Batches • Dispatch' } },
   { match: /^\/bakery\/packing/, meta: { title: 'Packing & Dispatch', eyebrow: 'Packing desk', description: 'Pack orders branch-wise, record shortages/excess, and dispatch items with fewer mistakes.', accent: 'Pack • Check • Dispatch' } },
   { match: /^\/bakery\/receive/, meta: { title: 'Branch Order Receiver', eyebrow: 'Branch demand', description: 'Place bakery requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
@@ -166,7 +166,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
