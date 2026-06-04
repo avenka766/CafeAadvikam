@@ -321,10 +321,10 @@ export default function StoreCustomTab() {
   };
 
   return (
-    <div className="space-y-4 pb-8">
+    <div className="space-y-5 pb-8 overflow-hidden">
 
       {/* Header */}
-      <div className="bg-card border border-border rounded-2xl p-4">
+      <div className="bg-card border border-border rounded-3xl p-4 sm:p-5 shadow-soft">
         <div className="flex items-center gap-2 mb-1">
           <Scissors className="size-4 text-primary" />
           <h2 className="font-display font-bold text-foreground">Custom Deduction</h2>

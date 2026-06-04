@@ -5,7 +5,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle,
+  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle, ChefHat,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
@@ -24,6 +24,7 @@ import { useInvoiceStore } from './invoiceStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
 import StoreReportTab from './StoreReportTab';
+import RecipeManagement from './RecipeManagement';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 import { useAuthStore } from '@/stores/authStore';
 import type { DeductionContext } from './storeStockStore';
@@ -63,8 +64,8 @@ function printItemRecipe(
 
   const matsHtml = mats.map(m => `
     <tr>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;">${m.material}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
+      <td style="padding:4px 6px;border-bottom:1px solid #eee;">${m.material}</td>
+      <td style="padding:4px 6px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
         ${fmtMatQty(m.quantity)} ${m.unit}
       </td>
     </tr>
@@ -77,16 +78,17 @@ function printItemRecipe(
       <title>Order #${order.orderNumber} – ${item.itemName}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1a1a1a; padding: 24px; }
-        h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
+        @page { size: auto; margin: 8mm; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; color: #1a1a1a; padding: 0; line-height: 1.25; }
+        h1 { font-size: 16px; font-weight: 700; margin-bottom: 1px; }
         .sub { color: #666; font-size: 11px; margin-bottom: 4px; }
         .badge { display: inline-block; padding: 2px 8px; border-radius: 100px; font-size: 10px; font-weight: 700; background: #fef3c7; color: #92400e; margin-left: 6px; }
-        .qty { font-size: 15px; font-weight: 700; color: #111; margin-bottom: 16px; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        .qty { font-size: 13px; font-weight: 700; color: #111; margin: 6px 0 10px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
         thead th { text-align: left; padding: 6px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #888; border-bottom: 2px solid #e5e7eb; }
         thead th:last-child { text-align: right; }
         section h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #888; margin-bottom: 8px; }
-        .footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 10px; color: #aaa; text-align: center; }
+        .footer { margin-top: 8px; padding-top: 6px; border-top: 1px solid #e5e7eb; font-size: 9px; color: #aaa; text-align: center; }
       </style>
     </head>
     <body>
@@ -113,7 +115,25 @@ function printItemRecipe(
 }
 
 // ─── Stock Units ──────────────────────────────────────────────────────────────
-const UNITS: StockUnit[] = ['kg', 'L', 'g', 'pcs', 'nos', 'bunch', 'ltr'];
+const UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
+  { value: 'kg', label: 'KG' },
+  { value: 'ltr', label: 'Ltr' },
+  { value: 'pcs', label: 'Pcs' },
+  { value: 'nos', label: 'Nos' },
+  { value: 'bunch', label: 'Bunch' },
+];
+function toAllowedStockUnit(raw?: string): StockUnit {
+  const u = (raw || '').trim().toLowerCase();
+  if (u.startsWith('kg') || u === 'g' || u === 'gm' || u === 'gram' || u === 'grams') return 'kg';
+  if (u === 'l' || u === 'lt' || u === 'ltr' || u === 'litre' || u === 'liter' || u === 'ml') return 'ltr';
+  if (u === 'nos' || u === 'no' || u === 'number') return 'nos';
+  if (u === 'bunch') return 'bunch';
+  return 'pcs';
+}
+
+function stockUnitLabel(unit: StockUnit | string): string {
+  return UNIT_OPTIONS.find(u => u.value === unit)?.label ?? String(unit);
+}
 
 // ─── Item Row (per-item raw materials + stock status) ────────────────────────
 function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items'][number] }) {
@@ -445,10 +465,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
       return !existingItems.some(e => normaliseName(e.name) === normaliseName(m.item));
     }).map(m => ({
       name: m.item,
-      unit: (m.uom.toLowerCase().startsWith('kg') ? 'kg'
-        : m.uom.toLowerCase() === 'ltr' || m.uom.toLowerCase() === 'l' ? 'L'
-        : m.uom.toLowerCase() === 'g' ? 'g'
-        : 'pcs') as StockUnit,
+      unit: toAllowedStockUnit(m.uom),
       category: m.category,
       suppliers: m.suppliers,
     }));
@@ -458,7 +475,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
       const added = existingItems.some(e => normaliseName(e.name) === normaliseName(m.name));
       const inMaster = masterItems.some(x => normaliseName(x.name) === normaliseName(m.name));
       return !added && !inMaster && (q === '' || m.name.toLowerCase().includes(q));
-    }).map(m => ({ name: m.name, unit: m.unit, category: 'Recipe', suppliers: [] as string[] }));
+    }).map(m => ({ name: m.name, unit: toAllowedStockUnit(m.unit), category: 'Recipe', suppliers: [] as string[] }));
     return [...masterItems, ...recipeSugs].slice(0, 50);
   }, [recipeMats, existingItems, search]);
 
@@ -496,7 +513,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
                       <span className="text-[10px] text-primary ml-2">· {((s as {suppliers?: string[]}).suppliers ?? []).join(', ')}</span>
                     )}
                   </div>
-                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0 ml-2">{s.unit}</span>
+                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0 ml-2">{stockUnitLabel(s.unit)}</span>
                 </button>
               ))}
             </div>
@@ -505,23 +522,23 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
         <div>
           <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Unit</label>
           <div className="flex gap-2 flex-wrap">
-            {UNITS.map(u => (
-              <button key={u} onClick={() => setUnit(u)}
+            {UNIT_OPTIONS.map(({ value, label }) => (
+              <button key={value} onClick={() => setUnit(value)}
                 className={cn('px-3 py-2 rounded-xl border text-xs font-body font-semibold transition-all',
-                  unit === u ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground hover:border-primary/40')}>
-                {u}
+                  unit === value ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground hover:border-primary/40')}>
+                {label}
               </button>
             ))}
           </div>
         </div>
         <div className="flex gap-3">
           <div className="flex-1">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({unit})</label>
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({stockUnitLabel(unit)})</label>
             <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)}
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
           <div className="flex-1">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({unit})</label>
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({stockUnitLabel(unit)})</label>
             <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)}
               className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
@@ -572,16 +589,16 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
         <div>
           <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Unit</label>
           <div className="flex gap-2 flex-wrap">
-            {UNITS.map(u => (<button key={u} onClick={() => setUnit(u)} className={cn('px-3 py-2 rounded-xl border text-xs font-body font-semibold transition-all', unit === u ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground')}>{u}</button>))}
+            {UNIT_OPTIONS.map(({ value, label }) => (<button key={value} onClick={() => setUnit(value)} className={cn('px-3 py-2 rounded-xl border text-xs font-body font-semibold transition-all', unit === value ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-foreground')}>{label}</button>))}
           </div>
         </div>
         <div className="flex gap-3">
           <div className="flex-1">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({unit})</label>
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Stock ({stockUnitLabel(unit)})</label>
             <input type="number" min={0} step={0.1} value={qty} onChange={e => setQty(e.target.value)} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
           <div className="flex-1">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({unit})</label>
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Low Alert ({stockUnitLabel(unit)})</label>
             <input type="number" min={0} step={0.1} value={min} onChange={e => setMin(e.target.value)} className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
         </div>
@@ -719,7 +736,7 @@ function StoreInventoryTab() {
   const [importing, setImporting]   = useState(false);
   const [importToast, setImportToast] = useState<{ added: number; skipped: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [stockView, setStockView]   = useState<'all' | 'low' | 'deductions'>('all');
+  const [stockView, setStockView]   = useState<'all' | 'low'>('all');
 
   useEffect(() => { if (!loaded) load(); }, [loaded]);
 
@@ -740,13 +757,13 @@ function StoreInventoryTab() {
   const lowItems = items.filter(i => i.quantity >= 0 && i.quantity <= i.minThreshold);
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    const base = stockView === 'low' ? lowItems : stockView === 'deductions' ? [] : items;
+    const base = stockView === 'low' ? lowItems : items;
     return base.filter(i => !q || i.name.toLowerCase().includes(q));
   }, [items, lowItems, search, stockView]);
 
   return (
     <div className="space-y-3">
-      {/* Sub-tab switcher: All / Low Stock / Deductions */}
+      {/* Sub-tab switcher: All / Low Stock */}
       <div className="flex gap-1 bg-muted/60 p-1 rounded-xl">
         <button
           onClick={() => setStockView('all')}
@@ -778,24 +795,10 @@ function StoreInventoryTab() {
             )}>{lowItems.length + negativeItems.length}</span>
           )}
         </button>
-        <button
-          onClick={() => setStockView('deductions')}
-          className={cn(
-            'flex-1 py-2 rounded-lg text-[11px] font-body font-semibold transition-all flex items-center justify-center gap-1',
-            stockView === 'deductions' ? 'bg-amber-500 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          <MinusCircle className="size-3" />
-          Deductions
-        </button>
       </div>
 
-      {/* Deductions view */}
-      {stockView === 'deductions' && <InlineDeductionsView />}
-
       {/* Stock list views */}
-      {stockView !== 'deductions' && (
-        <>
+      <>
           <div className="flex gap-2">
             <div className="flex-1 relative">
               <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -858,7 +861,6 @@ function StoreInventoryTab() {
               })()
           }
         </>
-      )}
 
       {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m) => { await addItem(n, u, q, m); }} />}
       {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={async (u) => { await updateItem(editItem.id, u); setEditItem(null); }} />}
@@ -1175,7 +1177,7 @@ export default function StoreDashboard() {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report'>('orders');
+  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report' | 'recipes'>('orders');
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
 
@@ -1183,44 +1185,107 @@ export default function StoreDashboard() {
   const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
+  const tabs = [
+    { id: 'orders',    label: 'Orders',             description: 'Baker queue',        icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
+    { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
+    { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
+    { id: 'invoices',  label: 'Invoices',           description: 'Bills & reviews',    icon: FileText,    badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
+    { id: 'analytics', label: 'Analytics',          description: 'Stock insights',     icon: Calculator,  badge: null, badgeColor: '' },
+    { id: 'custom',    label: 'Custom',             description: 'Manual planning',    icon: ShoppingBag, badge: null, badgeColor: '' },
+    { id: 'report',    label: 'Reports',            description: 'History & exports',  icon: BarChart2,   badge: null, badgeColor: '' },
+    { id: 'recipes',   label: 'Recipe Management', description: 'Items & formulas',   icon: ChefHat,     badge: null, badgeColor: '' },
+  ] as const;
+
+  const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
+  const ActiveIcon = activeTab.icon;
+
   return (
-    <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-32">
-      <div className="px-4 pt-5 pb-4">
-        <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
-        <h1 className="font-display text-2xl font-bold text-foreground">Store</h1>
-        <p className="text-xs font-body text-muted-foreground mt-0.5">Review orders · manage raw stock · send to baker</p>
-      </div>
-      <div className="px-4 mb-5">
-        <div className="flex gap-1 bg-muted/60 p-1.5 rounded-xl overflow-x-auto">
-          {([
-            { id: 'orders',    label: 'Orders',    icon: Package,      badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
-            { id: 'inventory', label: 'Inventory', icon: Warehouse,    badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
-            { id: 'suppliers', label: 'Suppliers', icon: Truck,        badge: null, badgeColor: '' },
-            { id: 'invoices',  label: 'Invoices',  icon: FileText,     badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
-            { id: 'analytics', label: 'Analytics', icon: Calculator,   badge: null, badgeColor: '' },
-            { id: 'custom',    label: 'Custom',    icon: ShoppingBag, badge: null, badgeColor: '' },
-            { id: 'report',    label: 'Report',    icon: BarChart2,   badge: null, badgeColor: '' },
-          ] as const).map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={cn(
-                'shrink-0 whitespace-nowrap flex items-center justify-center gap-1 py-2.5 px-3 rounded-lg text-[11px] font-body font-semibold transition-all',
-                tab === t.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
-              )}>
-              <t.icon className="size-3.5" />
-              {t.label}
-              {t.badge && <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full text-white', t.badgeColor)}>{t.badge}</span>}
-            </button>
-          ))}
+    <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
+      <div className="mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6 py-4">
+        <div className="grid gap-4 md:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="md:sticky md:top-4 md:self-start rounded-3xl border border-border bg-card/95 shadow-soft overflow-hidden">
+            <div className="p-4 border-b border-border bg-gradient-to-br from-primary/10 via-background to-background">
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
+              <h1 className="font-display text-2xl font-bold text-foreground">Store Dashboard</h1>
+              <p className="text-xs font-body text-muted-foreground mt-1">Review orders, manage raw stock, invoices, reports, and recipes.</p>
+            </div>
+
+            <nav className="flex gap-2 overflow-x-auto p-2 md:flex-col md:overflow-visible" aria-label="Store dashboard navigation">
+              {tabs.map(item => {
+                const Icon = item.icon;
+                const selected = tab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setTab(item.id)}
+                    className={cn(
+                      'relative min-w-[168px] md:min-w-0 w-full rounded-2xl border px-3 py-3 text-left transition-all active:scale-[0.99]',
+                      selected
+                        ? 'border-primary/35 bg-primary/10 text-foreground shadow-sm'
+                        : 'border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
+                        <Icon className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-body font-bold truncate">{item.label}</span>
+                        <span className="hidden md:block text-[10px] font-body text-muted-foreground truncate mt-0.5">{item.description}</span>
+                      </span>
+                      {item.badge && (
+                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0', item.badgeColor)}>{item.badge}</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+
+          <main className="min-w-0 space-y-4">
+            <div className="rounded-3xl border border-border bg-card/90 shadow-soft px-4 py-3 sm:px-5 sm:py-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="size-11 rounded-2xl cafe-gradient text-primary-foreground flex items-center justify-center shrink-0 shadow-sm">
+                    <ActiveIcon className="size-5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest">Store</p>
+                    <h2 className="font-display text-xl sm:text-2xl font-bold text-foreground truncate">{activeTab.label}</h2>
+                    <p className="text-xs font-body text-muted-foreground mt-0.5">{activeTab.description}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center">
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className="font-display text-lg font-bold text-foreground">{pending.length}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Orders</p>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className={cn('font-display text-lg font-bold', lowStock.length > 0 ? 'text-red-600' : 'text-foreground')}>{lowStock.length}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Low Stock</p>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
+                    <p className={cn('font-display text-lg font-bold', pendingInv > 0 ? 'text-orange-600' : 'text-foreground')}>{pendingInv}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Invoices</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-w-0 overflow-hidden">
+              {tab === 'orders'    && <OrdersTab />}
+              {tab === 'inventory' && <StoreInventoryTab />}
+              {tab === 'suppliers' && <SuppliersTab />}
+              {tab === 'invoices'  && <InvoiceTab />}
+              {tab === 'analytics' && <StoreAnalyticsTab />}
+              {tab === 'custom'    && <StoreCustomTab />}
+              {tab === 'report'    && <StoreReportTab />}
+              {tab === 'recipes'   && <RecipeManagement embedded storeMode />}
+            </div>
+          </main>
         </div>
-      </div>
-      <div className="px-4">
-        {tab === 'orders'    && <OrdersTab />}
-        {tab === 'inventory' && <StoreInventoryTab />}
-        {tab === 'suppliers' && <SuppliersTab />}
-        {tab === 'invoices'  && <InvoiceTab />}
-        {tab === 'analytics' && <StoreAnalyticsTab />}
-        {tab === 'custom'    && <StoreCustomTab />}
-        {tab === 'report'    && <StoreReportTab />}
       </div>
     </div>
   );

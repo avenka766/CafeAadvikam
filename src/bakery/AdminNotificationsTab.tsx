@@ -6,7 +6,7 @@ import { useState, useEffect } from 'react';
 import {
   Bell, FileText, ChevronDown, ChevronUp, Check,
   Trash2, RefreshCw, Loader2, X, AlertTriangle,
-  PackageX, Scale, CheckCheck, CreditCard, IndianRupee, Tag,
+  PackageX, Scale, CheckCheck, CreditCard, IndianRupee, Tag, ChefHat, PackagePlus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -68,6 +68,22 @@ const TYPE_META: Record<
     iconBg: 'bg-blue-50',
     iconColor: 'text-blue-600',
     badgeCls: 'bg-blue-100 text-blue-700 border-blue-200',
+  },
+  store_item_change: {
+    label: 'Store Item',
+    icon: PackagePlus,
+    cardBorder: 'border-emerald-300',
+    iconBg: 'bg-emerald-50',
+    iconColor: 'text-emerald-600',
+    badgeCls: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  },
+  recipe_change: {
+    label: 'Recipe Change',
+    icon: ChefHat,
+    cardBorder: 'border-purple-300',
+    iconBg: 'bg-purple-50',
+    iconColor: 'text-purple-600',
+    badgeCls: 'bg-purple-100 text-purple-700 border-purple-200',
   },
   packing_remainder: {
     label: 'Packing Remainder',
@@ -376,6 +392,51 @@ function NotificationDetailModal({
       );
     }
 
+
+    if ((notification.type === 'store_item_change' || notification.type === 'recipe_change') && m) {
+      const isRecipe = notification.type === 'recipe_change';
+      const action = String(m.action ?? 'updated');
+      const itemName = String(m.itemName ?? notification.refLabel ?? '—');
+      return (
+        <div className="space-y-3">
+          <div className={cn('rounded-xl border p-3 space-y-2', isRecipe ? 'border-purple-200 bg-purple-50' : 'border-emerald-200 bg-emerald-50')}>
+            <p className={cn('text-xs font-body font-bold uppercase tracking-wide', isRecipe ? 'text-purple-800' : 'text-emerald-800')}>
+              {isRecipe ? 'Recipe Management Update' : 'Store Item Update'}
+            </p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Item</p>
+                <p className="text-sm font-body font-semibold text-foreground">{itemName}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Action</p>
+                <p className="text-sm font-body font-bold text-foreground capitalize">{action}</p>
+              </div>
+              {m.category && (
+                <div>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Category</p>
+                  <p className="text-sm font-body text-foreground">{String(m.category)}</p>
+                </div>
+              )}
+              {m.ingredientCount !== undefined && (
+                <div>
+                  <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Ingredients</p>
+                  <p className="text-sm font-body font-bold text-foreground">{Number(m.ingredientCount)}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-[10px] font-body text-muted-foreground uppercase font-bold">Changed By</p>
+                <p className="text-sm font-body text-foreground">{String(m.changedBy ?? 'Store user')}</p>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs font-body text-muted-foreground bg-muted/40 px-3 py-2 rounded-xl">
+            Review this change in Admin &gt; Items / Recipe Management if approval or correction is required.
+          </p>
+        </div>
+      );
+    }
+
     return (
       <p className="text-sm font-body text-muted-foreground px-3 py-2 bg-muted/40 rounded-xl">
         {notification.body}
@@ -518,6 +579,7 @@ export default function AdminNotificationsTab() {
   const lowStockCount    = notifications.filter(n => n.type === 'low_stock').length;
   const creditCount      = notifications.filter(n => n.type === 'credit_sale').length;
   const priceChangeCount = notifications.filter(n => n.type === 'price_change').length;
+  const itemRecipeCount  = notifications.filter(n => n.type === 'store_item_change' || n.type === 'recipe_change').length;
 
   return (
     <div className="space-y-4">
@@ -543,7 +605,7 @@ export default function AdminNotificationsTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2">
         {[
           { label: 'Invoices',    value: invoiceCount,     color: invoiceCount > 0 ? 'text-amber-600' : 'text-muted-foreground',    bg: invoiceCount > 0 ? 'bg-amber-50 border-amber-200' : '' },
           { label: 'Shortages',  value: shortageCount,    color: shortageCount > 0 ? 'text-red-600' : 'text-muted-foreground',      bg: shortageCount > 0 ? 'bg-red-50 border-red-200' : '' },
@@ -551,6 +613,7 @@ export default function AdminNotificationsTab() {
           { label: 'Low Stock',  value: lowStockCount,    color: lowStockCount > 0 ? 'text-yellow-600' : 'text-muted-foreground',   bg: lowStockCount > 0 ? 'bg-yellow-50 border-yellow-200' : '' },
           { label: 'Credit',     value: creditCount,      color: creditCount > 0 ? 'text-red-700' : 'text-muted-foreground',        bg: creditCount > 0 ? 'bg-red-50 border-red-300' : '' },
           { label: 'Prices',     value: priceChangeCount, color: priceChangeCount > 0 ? 'text-blue-600' : 'text-muted-foreground',  bg: priceChangeCount > 0 ? 'bg-blue-50 border-blue-200' : '' },
+          { label: 'Items/Recipes', value: itemRecipeCount, color: itemRecipeCount > 0 ? 'text-purple-600' : 'text-muted-foreground', bg: itemRecipeCount > 0 ? 'bg-purple-50 border-purple-200' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -571,6 +634,8 @@ export default function AdminNotificationsTab() {
             { id: 'low_stock',           label: '⚠️ Low Stock' },
             { id: 'credit_sale',         label: '💳 Credit' },
             { id: 'price_change',        label: '🏷️ Prices' },
+            { id: 'store_item_change',   label: '📦 Items' },
+            { id: 'recipe_change',       label: '👨‍🍳 Recipes' },
           ] as const).map(f => (
             <button
               key={f.id}

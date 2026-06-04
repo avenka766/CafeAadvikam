@@ -1,7 +1,7 @@
 // src/bakery/storeStockStore.ts
 // Raw ingredient stock management for the Store dashboard.
 // Each stock item is keyed by normalised material name.
-// Unit is fixed per item (kg, L, pcs, g, nos, bunch).
+// Unit is fixed per item (KG, Ltr, Pcs, Nos, Bunch in the UI).
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
@@ -87,9 +87,10 @@ export function getAllRecipeMaterials(): { name: string; unit: StockUnit }[] {
         // Determine best default unit
         let unit: StockUnit = 'kg';
         const u = mat.unit.toLowerCase();
-        if (u === 'l' || u === 'ltr') unit = 'L';
-        else if (u === 'g') unit = 'g';
-        else if (u === 'pcs' || u === 'nos') unit = 'pcs';
+        if (u === 'l' || u === 'ltr' || u === 'ml') unit = 'ltr';
+        else if (u === 'g') unit = 'kg';
+        else if (u === 'nos') unit = 'nos';
+        else if (u === 'pcs') unit = 'pcs';
         else if (u === 'bunch') unit = 'bunch';
         else unit = 'kg';
         seen.set(key, unit);

@@ -236,7 +236,13 @@ function CreateInvoiceModal({
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
 
-  const UNITS: StockUnit[] = ['kg', 'g', 'L', 'ltr', 'pcs', 'nos', 'bunch'];
+  const UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
+    { value: 'kg', label: 'KG' },
+    { value: 'ltr', label: 'Ltr' },
+    { value: 'pcs', label: 'Pcs' },
+    { value: 'nos', label: 'Nos' },
+    { value: 'bunch', label: 'Bunch' },
+  ];
 
   const updateLine = (idx: number, key: keyof InvoiceLineItem, val: string | number) => {
     setLines(prev => {
@@ -441,7 +447,7 @@ function CreateInvoiceModal({
                       onChange={e => updateLine(idx, 'unit', e.target.value)}
                       className="w-full h-9 px-2 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
                     >
-                      {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                      {UNIT_OPTIONS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                     </select>
                   </div>
                   <div>

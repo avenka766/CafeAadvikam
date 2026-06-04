@@ -117,6 +117,10 @@ export default function StoreAnalyticsTab() {
     return q ? allItems.filter(i => i.toLowerCase().includes(q)) : allItems;
   }, [allItems, search]);
 
+  useEffect(() => {
+    if (!selectedItem && allItems.length > 0) setSelectedItem(allItems[0]);
+  }, [allItems, selectedItem]);
+
   // All purchase points for the selected item, sorted oldest→newest
   const purchasePoints = useMemo((): PurchasePoint[] => {
     if (!selectedItem) return [];
@@ -223,10 +227,10 @@ export default function StoreAnalyticsTab() {
   }
 
   return (
-    <div className="space-y-4 pb-8">
+    <div className="space-y-5 pb-8 overflow-hidden">
 
       {/* Header */}
-      <div className="bg-card border border-border rounded-2xl p-4">
+      <div className="bg-card border border-border rounded-3xl p-4 sm:p-5 shadow-soft">
         <div className="flex items-center gap-2 mb-1">
           <BarChart3 className="size-4 text-primary" />
           <h2 className="font-display font-bold text-foreground">Price Analytics</h2>
@@ -292,7 +296,7 @@ export default function StoreAnalyticsTab() {
       {selectedItem && purchasePoints.length > 0 && (
         <>
           {/* ── KPI Summary ── */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
             {[
               {
                 label: 'Latest Price',

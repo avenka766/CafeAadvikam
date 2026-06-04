@@ -15,7 +15,9 @@ export type NotificationType =
   | 'packing_remainder'
   | 'low_stock'
   | 'credit_sale'
-  | 'price_change';
+  | 'price_change'
+  | 'store_item_change'
+  | 'recipe_change';
 
 export interface AdminNotification {
   id: string;
@@ -47,6 +49,8 @@ interface NotificationState {
   pushLowStock: (items: { name: string; quantity: number; minThreshold: number; unit: string }[]) => Promise<void>;
   pushCreditSale: (params: { customerName: string; amount: number; billNo: string; branch: string; soldBy: string; dueDate?: string }) => Promise<void>;
   pushPackingRemainder: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[]) => Promise<void>;
+  pushStoreItemChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; category?: string; changedBy?: string }) => Promise<void>;
+  pushRecipeChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; ingredientCount: number; changedBy?: string }) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -79,7 +83,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
-      const role = useAuthStore.getState().user?.role ?? 'admin';
+      const role = useAuthStore.getState().currentUser?.role ?? 'admin';
       const { data, error } = await supabase
         .from('admin_notifications')
         .select('*')
@@ -108,7 +112,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markAllRead: async () => {
-    const role = useAuthStore.getState().user?.role ?? 'admin';
+    const role = useAuthStore.getState().currentUser?.role ?? 'admin';
     await supabase
       .from('admin_notifications')
       .update({ is_read: true })
@@ -263,6 +267,37 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     if (!error) await get().load();
   },
 
+
+
+  pushStoreItemChange: async ({ action, itemId, itemName, category, changedBy }) => {
+    const verb = action === 'created' ? 'added' : 'updated';
+    const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'store_item_change',
+      title:     `Store Item ${action === 'created' ? 'Added' : 'Updated'}`,
+      body:      `${actor} ${verb} ${itemName}${category ? ` in ${category}` : ''}.`,
+      ref_id:    itemId,
+      ref_label: itemName,
+      meta:      { action, itemId, itemName, category: category ?? null, changedBy: actor },
+      recipient_role: 'admin',
+    });
+    if (!error) await get().load();
+  },
+
+  pushRecipeChange: async ({ action, itemId, itemName, ingredientCount, changedBy }) => {
+    const verb = action === 'created' ? 'created' : 'updated';
+    const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'recipe_change',
+      title:     `Recipe ${action === 'created' ? 'Added' : 'Updated'}`,
+      body:      `${actor} ${verb} recipe for ${itemName} with ${ingredientCount} ingredient${ingredientCount === 1 ? '' : 's'}.`,
+      ref_id:    itemId,
+      ref_label: itemName,
+      meta:      { action, itemId, itemName, ingredientCount, changedBy: actor },
+      recipient_role: 'admin',
+    });
+    if (!error) await get().load();
+  },
 
   pushPackingRemainder: async (orderId, orderNumber, branch, items) => {
     // Dedup — don't fire a remainder alert for the same order twice

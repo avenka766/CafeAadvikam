@@ -1200,9 +1200,9 @@ export default function StoreReportTab() {
   const [sub, setSub] = useState<SubTab>('closure');
 
   return (
-    <div className="space-y-4 pb-8">
+    <div className="space-y-5 pb-8 overflow-hidden">
       {/* Header */}
-      <div className="bg-card border border-border rounded-2xl p-4">
+      <div className="bg-card border border-border rounded-3xl p-4 sm:p-5 shadow-soft">
         <div className="flex items-center gap-2 mb-1">
           <FileSpreadsheet className="size-4 text-primary" />
           <h2 className="font-display font-bold text-foreground">Reports</h2>
@@ -1213,7 +1213,7 @@ export default function StoreReportTab() {
       </div>
 
       {/* Sub-tab switcher */}
-      <div className="flex gap-1.5 bg-muted/60 p-1.5 rounded-xl">
+      <div className="flex gap-1.5 bg-muted/60 p-1.5 rounded-xl overflow-x-auto">
         {([
           { key: 'closure',   label: 'Daily Closure', icon: CheckCircle2 },
           { key: 'inventory',  label: 'Inventory',     icon: Package     },
@@ -1222,7 +1222,7 @@ export default function StoreReportTab() {
         ] as { key: SubTab; label: string; icon: React.ElementType }[]).map(t => (
           <button key={t.key} onClick={() => setSub(t.key)}
             className={cn(
-              'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-body font-semibold transition-all',
+              'min-w-[128px] flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-body font-semibold transition-all',
               sub === t.key ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
             )}>
             <t.icon className="size-3.5" />
