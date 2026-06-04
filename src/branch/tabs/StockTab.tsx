@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
 import { useBranchStore } from '../branchStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchOpsStore } from '../branchOpsStore';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
@@ -399,11 +400,14 @@ type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches }: Props) {
   const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
+  const { addNotification } = useBranchOpsStore();
+  const { currentUser } = useAuthStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [confirmAllError, setConfirmAllError] = useState('');
   const [syncing, setSyncing]             = useState(false);
+  const [disputedIncoming, setDisputedIncoming] = useState<Record<string, boolean>>({});
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -417,7 +421,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
   // Build uom lookup from price list — 'Kgs' → 'kg', 'Nos'/'pcs' → 'pcs'
   const uomMap = new Map<string, 'kg' | 'pcs'>(
-    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i) => [
+    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i): [string, 'kg' | 'pcs'] => [
       i.name,
       i.uom === 'Kgs' || i.uom === 'kg' ? 'kg' : 'pcs',
     ])
@@ -478,6 +482,18 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     // but call again to ensure UI is refreshed even if sync was a no-op
     await fetchBranchData(branch);
     setSyncing(false);
+  };
+
+  const raiseIncomingDispute = (inc: IncomingStock) => {
+    const reason = window.prompt('Describe the mismatch/dispute for admin review:', 'Received quantity does not match expected quantity') || 'Received quantity does not match expected quantity';
+    addNotification({
+      branch,
+      type: 'Stock Dispute',
+      title: 'Incoming stock mismatch raised',
+      details: `${inc.itemName} · Expected/dispatch qty ${formatQtyLabel(inc.quantity, inc.itemName, inc.unit)} · ${reason}`,
+      raisedBy: currentUser?.displayName || currentUser?.username || 'Branch User',
+    });
+    setDisputedIncoming((prev) => ({ ...prev, [inc.id]: true }));
   };
 
   const SUBTABS: { id: StockSubTab; label: string }[] = [
@@ -557,6 +573,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
                         +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
                       </span>
+                      <button onClick={() => raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', disputedIncoming[inc.id] ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
+                        <AlertTriangle className="size-3.5" /> {disputedIncoming[inc.id] ? 'Disputed' : 'Dispute'}
+                      </button>
                       <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />
                     </div>
                   </div>

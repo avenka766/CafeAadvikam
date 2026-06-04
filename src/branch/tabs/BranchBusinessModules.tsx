@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ClipboardCheck,
-  CreditCard, Download, FileClock, FileText, History, IndianRupee, Landmark, Package,
+  CreditCard, Download, FileClock, FileText, Gift, History, IndianRupee, Landmark, Package,
   Plus, Printer, Receipt, RotateCcw, Search, ShieldCheck, Smartphone, Store, Trash2,
   Truck, UserRound, WalletCards, XCircle,
 } from 'lucide-react';
@@ -46,38 +46,160 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const { bills, markBillDuplicate } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [query, setQuery] = useState('');
-  const rows = bills.filter((b) => b.branch === branch && (!query || b.billNo.toLowerCase().includes(query.toLowerCase()) || b.salesperson.toLowerCase().includes(query.toLowerCase())));
+  const isVRSNB = branch === 'VRSNB';
+  const rows = bills.filter((b) => {
+    const q = query.trim().toLowerCase();
+    return b.branch === branch && (!q || b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || (!isVRSNB && b.salesperson.toLowerCase().includes(q)));
+  });
   const reprint = (bill: BranchBillRecord) => {
     markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
-    printHtml(`Duplicate ${bill.billNo}`, `<div class="stamp">DUPLICATE BILL</div><h2 class="c">${BRANCH_LABELS[branch]}</h2><p class="c b">${bill.billNo}</p><table>${bill.items.map(i=>`<tr><td>${i.itemName}<br/>${i.quantity} ${i.unit} × ₹${i.price}</td><td class="right">₹${i.lineTotal.toFixed(2)}</td></tr>`).join('')}</table><h2 class="right">Total: ₹${bill.total.toFixed(2)}</h2><p>Salesperson: ${bill.salesperson}</p>`);
+    printHtml(
+      `Duplicate ${bill.billNo}`,
+      `<div class="stamp">DUPLICATE BILL</div><h2 class="c">${BRANCH_LABELS[branch]}</h2><p class="c b">${bill.billNo}</p><table>${bill.items.map(i=>`<tr><td>${i.itemName}<br/>${i.quantity} ${i.unit} × ₹${i.price}</td><td class="right">₹${i.lineTotal.toFixed(2)}</td></tr>`).join('')}</table><h2 class="right">Total: ₹${bill.total.toFixed(2)}</h2>${isVRSNB ? `<p>Cashier: ${bill.biller}</p>` : `<p>Salesperson: ${bill.salesperson}</p><p>Cashier: ${bill.biller}</p>`}`,
+    );
   };
-  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Search bill" className="pl-9"/></div>}><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Time</th><th className="p-3">Salesperson</th><th className="p-3">Mode</th><th className="p-3 text-right">Total</th><th className="p-3">Print Status</th><th className="p-3 text-right">Action</th></tr></thead><tbody>{rows.map(b=><tr key={b.id} className="border-t"><td className="p-3 font-black">{b.billNo}</td><td className="p-3">{new Date(b.createdAt).toLocaleString('en-IN')}</td><td className="p-3">{b.salesperson}</td><td className="p-3 uppercase">{b.paymentMode}</td><td className="p-3 text-right font-black">{money(b.total)}</td><td className="p-3"><span className={cn('rounded-full px-2 py-1 text-xs font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate Printed' : 'Original Bill'}</span></td><td className="p-3 text-right"><SoftButton onClick={()=>reprint(b)}><Printer className="size-4"/>Duplicate</SoftButton></td></tr>)}</tbody></table></div></Section>;
+  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill or salesperson'} className="pl-9"/></div>}><div className="overflow-x-auto"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[760px]' : 'min-w-[850px]')}><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Time</th>{!isVRSNB && <th className="p-3">Salesperson</th>}<th className="p-3">Cashier</th><th className="p-3">Mode</th><th className="p-3 text-right">Total</th><th className="p-3">Print Status</th><th className="p-3 text-right">Action</th></tr></thead><tbody>{rows.map(b=><tr key={b.id} className="border-t"><td className="p-3 font-black">{b.billNo}</td><td className="p-3">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-3">{b.salesperson}</td>}<td className="p-3">{b.biller}</td><td className="p-3 uppercase">{b.paymentMode}</td><td className="p-3 text-right font-black">{money(b.total)}</td><td className="p-3"><span className={cn('rounded-full px-2 py-1 text-xs font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate Printed' : 'Original Bill'}</span></td><td className="p-3 text-right"><SoftButton onClick={()=>reprint(b)}><Printer className="size-4"/>Duplicate</SoftButton></td></tr>)}</tbody></table></div></Section>;
+}
+
+
+export function CreditSalesTab({ branch }: ModuleProps) {
+  const { currentUser } = useAuthStore();
+  const { creditSales, collectCreditPayment, writeOffCreditSale } = useBranchOpsStore();
+  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
+  const isVRSNB = branch === 'VRSNB';
+  const [query, setQuery] = useState('');
+  const [selectedId, setSelectedId] = useState('');
+  const [form, setForm] = useState({ amount: '', mode: 'cash', reference: '', remarks: '' });
+  const [message, setMessage] = useState('');
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return creditSales
+      .filter((c) => c.branch === branch)
+      .filter((c) => !q || c.billNo.toLowerCase().includes(q) || c.customerName.toLowerCase().includes(q) || c.mobile.includes(q))
+      .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
+  }, [branch, creditSales, query]);
+
+  const selected = rows.find((r) => r.id === selectedId);
+  const pending = rows.filter((r) => r.status !== 'Paid' && r.status !== 'Written Off');
+  const totalCredit = rows.reduce((s, r) => s + r.total, 0);
+  const collected = rows.reduce((s, r) => s + r.paidAmount, 0);
+  const outstanding = pending.reduce((s, r) => s + r.balanceDue, 0);
+  const dueToday = pending.filter((r) => r.dueDate && new Date(r.dueDate).toDateString() === new Date().toDateString()).reduce((s, r) => s + r.balanceDue, 0);
+
+  const startCollection = (id: string) => {
+    const row = rows.find((r) => r.id === id);
+    setSelectedId(id);
+    setForm({ amount: row ? String(row.balanceDue) : '', mode: 'cash', reference: '', remarks: '' });
+    setMessage('');
+  };
+
+  const saveCollection = () => {
+    if (!selected) { setMessage('Select a credit bill first.'); return; }
+    const amount = Number(form.amount || 0);
+    if (!amount || amount <= 0) { setMessage('Enter a valid collection amount.'); return; }
+    if (amount > selected.balanceDue) { setMessage('Collection amount cannot be more than pending balance.'); return; }
+    collectCreditPayment(selected.id, {
+      amount,
+      mode: form.mode as 'cash' | 'upi' | 'card' | 'bank',
+      reference: form.reference,
+      remarks: form.remarks,
+      collectedBy: user,
+    });
+    setMessage(`Collected ${money(amount)} for ${selected.billNo}.`);
+    setSelectedId('');
+    setForm({ amount: '', mode: 'cash', reference: '', remarks: '' });
+  };
+
+  const printReport = () => printHtml(`${branch} Credit Sales`, `<div class="stamp">CREDIT SALES REPORT</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Outstanding</span><b>₹${outstanding.toFixed(2)}</b></div><table><thead><tr><th>Bill</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${r.billNo}</td><td>${r.customerName}<br/>${r.mobile}</td><td>₹${r.total.toFixed(2)}</td><td>₹${r.paidAmount.toFixed(2)}</td><td>₹${r.balanceDue.toFixed(2)}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`);
+
+  const exportCsv = () => {
+    const csvRows = [
+      ['Bill No', 'Customer', 'Mobile', 'Date', 'Due Date', 'Total', 'Paid', 'Balance', 'Status', isVRSNB ? 'Cashier' : 'Salesperson', 'Remarks'],
+      ...rows.map((r) => [r.billNo, r.customerName, r.mobile, new Date(r.createdAt).toLocaleString('en-IN'), r.dueDate, r.total, r.paidAmount, r.balanceDue, r.status, r.salesperson, r.remarks]),
+    ];
+    const blob = new Blob([csvRows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${branch}-credit-sales.csv`;
+    a.click();
+  };
+
+  const statusClass = (status: string) => cn(
+    'rounded-full px-3 py-1 text-xs font-black',
+    status === 'Paid' ? 'bg-emerald-100 text-emerald-700' :
+    status === 'Part Paid' ? 'bg-blue-100 text-blue-700' :
+    status === 'Written Off' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700',
+  );
+
+  return <div className="space-y-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <Kpi label="Total Credit" value={money(totalCredit)} icon={<FileText/>} tone="blue"/>
+      <Kpi label="Collected" value={money(collected)} icon={<Banknote/>} tone="green"/>
+      <Kpi label="Outstanding" value={money(outstanding)} icon={<WalletCards/>} tone="amber"/>
+      <Kpi label="Due Today" value={money(dueToday)} icon={<CalendarClock/>} tone="red"/>
+    </div>
+
+    <Section title="Credit Sales Collection" icon={<WalletCards className="size-5"/>} action={<div className="flex flex-wrap gap-2"><SoftButton onClick={printReport}><Printer className="size-4"/>Print</SoftButton><SoftButton onClick={exportCsv}><Download className="size-4"/>Export</SoftButton></div>}>
+      <div className="mb-4 rounded-3xl bg-amber-50 p-4 text-sm font-semibold text-amber-900 ring-1 ring-amber-100">
+        <p className="font-black">How Credit Sales works</p>
+        <p className="mt-1">When the cashier selects Credit in New Bill, the bill is printed and stock is reduced immediately, but no cash/UPI/card collection is added until payment is collected here.</p>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0 space-y-3">
+          <div className="relative max-w-xl"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Search bill, customer or mobile" className="pl-9"/></div>
+          <div className="overflow-x-auto rounded-3xl border border-slate-200">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Customer</th><th className="p-3">Due Date</th><th className="p-3 text-right">Total</th><th className="p-3 text-right">Paid</th><th className="p-3 text-right">Balance</th><th className="p-3">Status</th><th className="p-3 text-right">Action</th></tr></thead>
+              <tbody>{rows.length === 0 ? <tr><td colSpan={8} className="p-6 text-center font-bold text-slate-500">No credit sales found.</td></tr> : rows.map((r)=><tr key={r.id} className="border-t align-top"><td className="p-3"><p className="font-black">{r.billNo}</p><p className="text-xs text-slate-400">{new Date(r.createdAt).toLocaleString('en-IN')}</p></td><td className="p-3"><p className="font-bold">{r.customerName}</p><p className="text-xs text-slate-500">{r.mobile || '-'}</p></td><td className="p-3">{r.dueDate || '-'}</td><td className="p-3 text-right font-black">{money(r.total)}</td><td className="p-3 text-right font-black text-emerald-700">{money(r.paidAmount)}</td><td className="p-3 text-right font-black text-amber-700">{money(r.balanceDue)}</td><td className="p-3"><span className={statusClass(r.status)}>{r.status}</span></td><td className="p-3 text-right"><div className="flex justify-end gap-2"><SoftButton onClick={()=>startCollection(r.id)} disabled={r.status === 'Paid' || r.status === 'Written Off'}>Collect</SoftButton>{isAdmin && r.status !== 'Paid' && r.status !== 'Written Off' && <SoftButton onClick={()=>writeOffCreditSale(r.id,user,'Admin write off')} className="text-red-600">Write off</SoftButton>}</div></td></tr>)}</tbody>
+            </table>
+          </div>
+        </div>
+        <div className="space-y-3 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200">
+          <h4 className="text-lg font-black text-slate-950">Collect Payment</h4>
+          <p className="text-sm font-semibold text-slate-500">{selected ? `${selected.billNo} · ${selected.customerName} · Pending ${money(selected.balanceDue)}` : 'Choose a pending credit bill from the table.'}</p>
+          <Field label="Amount"><Input type="number" min="0" max={selected?.balanceDue || undefined} value={form.amount} onChange={(e)=>setForm({...form,amount:e.target.value})}/></Field>
+          <Field label="Collection Mode"><Select value={form.mode} onChange={(e)=>setForm({...form,mode:e.target.value})}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option></Select></Field>
+          <Field label="Reference"><Input value={form.reference} onChange={(e)=>setForm({...form,reference:e.target.value})} placeholder="UPI/card/bank ref optional"/></Field>
+          <Field label="Remarks"><Textarea value={form.remarks} onChange={(e)=>setForm({...form,remarks:e.target.value})} placeholder="Optional collection note"/></Field>
+          {message && <p className={cn('rounded-xl px-3 py-2 text-sm font-black', message.startsWith('Collected') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{message}</p>}
+          <PrimaryButton onClick={saveCollection} disabled={!selected} className="w-full">Save Credit Collection</PrimaryButton>
+        </div>
+      </div>
+    </Section>
+  </div>;
 }
 
 export function AdvanceCakeOrdersTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus } = useBranchOpsStore();
+  const isVRSNB = branch === 'VRSNB';
+  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
   const [form, setForm] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
   const [error, setError] = useState('');
-  const people = salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
+  const people = isVRSNB ? [] : salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
   const update = (k: string, v: string) => { setForm((f)=>({...f,[k]:v})); setError(''); };
   const save = () => {
-    const required = ['customerName','mobile','deliveryDate','deliveryTime','cakeKg','flavor','shape','orderValue','advanceAmount','salesperson'];
+    const required = isVRSNB
+      ? ['customerName','mobile','deliveryDate','deliveryTime','cakeKg','flavor','shape','orderValue','advanceAmount']
+      : ['customerName','mobile','deliveryDate','deliveryTime','cakeKg','flavor','shape','orderValue','advanceAmount','salesperson'];
     const missing = required.find((k)=>!String(form[k as keyof typeof form]).trim());
-    if (missing) { setError('Please fill all mandatory fields: customer, mobile, delivery date/time, kg, flavor, shape, value, advance and salesperson.'); return; }
+    if (missing) { setError(isVRSNB ? 'Please fill all mandatory customer, delivery, cake, value and advance details.' : 'Please fill all mandatory fields: customer, mobile, delivery date/time, kg, flavor, shape, value, advance and salesperson.'); return; }
     const orderValue = Number(form.orderValue), adv = Number(form.advanceAmount);
     if (!orderValue || adv < 0 || adv > orderValue) { setError('Check order value and advance amount.'); return; }
-    const order = addAdvanceCakeOrder({ branch, customerName: form.customerName, mobile: form.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: form.deliveryDate, deliveryTime: form.deliveryTime, cakeKg: form.cakeKg, flavor: form.flavor, shape: form.shape, messageOnCake: form.messageOnCake, designNotes: form.designNotes, attachmentName: form.attachmentName, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: form.salesperson, paymentMode: form.paymentMode as 'cash'|'upi'|'card' });
-    printHtml(`Sales Order ${order.orderNo}`, `<div class="stamp">SALES ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Cake</span><b>${order.cakeKg}kg ${order.flavor} ${order.shape}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>₹${order.orderValue}</b></div><div class="row"><span>Advance</span><b>₹${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>₹${order.balanceAmount}</b></div>`);
+    const orderStaff = isVRSNB ? user : form.salesperson;
+    const order = addAdvanceCakeOrder({ branch, customerName: form.customerName, mobile: form.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: form.deliveryDate, deliveryTime: form.deliveryTime, cakeKg: form.cakeKg, flavor: form.flavor, shape: form.shape, messageOnCake: form.messageOnCake, designNotes: form.designNotes, attachmentName: form.attachmentName, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: orderStaff, paymentMode: form.paymentMode as 'cash'|'upi'|'card' });
+    printHtml(`Sales Order ${order.orderNo}`, `<div class="stamp">SALES ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Cake</span><b>${order.cakeKg}kg ${order.flavor} ${order.shape}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>₹${order.orderValue}</b></div><div class="row"><span>Advance</span><b>₹${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>₹${order.balanceAmount}</b></div><div class="row"><span>${isVRSNB ? 'Cashier' : 'Salesperson'}</span><b>${orderStaff}</b></div>`);
     setForm({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
   };
   const finalInvoice = (o: CakeAdvanceOrder) => {
     const { billNo } = nextBranchInvoice(branch);
     updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
-    printHtml(`Final Invoice ${billNo}`, `<div class="stamp">ORIGINAL BILL</div><h2>Final Tax Invoice</h2><p class="b">${billNo}</p><div class="row"><span>Customer</span><b>${o.customerName}</b></div><div class="row"><span>Mobile</span><b>${o.mobile}</b></div><div class="row"><span>Order Number</span><b>${o.orderNo}</b></div><div class="row"><span>Order Date</span><b>${o.orderDate}</b></div><div class="row"><span>Delivery</span><b>${o.deliveryDate} ${o.deliveryTime}</b></div><div class="row"><span>Cake Details</span><b>${o.cakeKg}kg ${o.flavor} ${o.shape}</b></div><div class="row"><span>Total Order Amount</span><b>₹${o.orderValue}</b></div><div class="row"><span>Advance Received</span><b>₹${o.advanceAmount}</b></div><div class="row"><span>Balance Received Today</span><b>₹${o.balanceAmount}</b></div><div class="row"><span>Total Received</span><b>₹${o.orderValue}</b></div><div class="row"><span>Status</span><b>PAID IN FULL</b></div><p>Salesperson: ${o.salesperson}</p><p>Biller: ${currentUser?.displayName || 'Staff'}</p><p>Store Confirmation: ${o.storeConfirmedBy || '-'} ${o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : ''}</p>`);
+    printHtml(`Final Invoice ${billNo}`, `<div class="stamp">ORIGINAL BILL</div><h2>Final Tax Invoice</h2><p class="b">${billNo}</p><div class="row"><span>Customer</span><b>${o.customerName}</b></div><div class="row"><span>Mobile</span><b>${o.mobile}</b></div><div class="row"><span>Order Number</span><b>${o.orderNo}</b></div><div class="row"><span>Order Date</span><b>${o.orderDate}</b></div><div class="row"><span>Delivery</span><b>${o.deliveryDate} ${o.deliveryTime}</b></div><div class="row"><span>Cake Details</span><b>${o.cakeKg}kg ${o.flavor} ${o.shape}</b></div><div class="row"><span>Total Order Amount</span><b>₹${o.orderValue}</b></div><div class="row"><span>Advance Received</span><b>₹${o.advanceAmount}</b></div><div class="row"><span>Balance Received Today</span><b>₹${o.balanceAmount}</b></div><div class="row"><span>Total Received</span><b>₹${o.orderValue}</b></div><div class="row"><span>Status</span><b>PAID IN FULL</b></div><p>${isVRSNB ? 'Cashier' : 'Salesperson'}: ${o.salesperson}</p><p>Biller: ${currentUser?.displayName || 'Staff'}</p><p>Store Confirmation: ${o.storeConfirmedBy || '-'} ${o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : ''}</p>`);
   };
-  return <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]"><Section title="Custom Cake Advance Order" icon={<Gift className="size-5"/>}><div className="grid gap-3"><Field label="Customer Name *"><Input value={form.customerName} onChange={(e)=>update('customerName',e.target.value)}/></Field><Field label="Mobile Number *"><Input value={form.mobile} onChange={(e)=>update('mobile',e.target.value)}/></Field><div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={form.deliveryDate} onChange={(e)=>update('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time *"><Input type="time" value={form.deliveryTime} onChange={(e)=>update('deliveryTime',e.target.value)}/></Field></div><div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={form.cakeKg} onChange={(e)=>update('cakeKg',e.target.value)}/></Field><Field label="Flavor *"><Input value={form.flavor} onChange={(e)=>update('flavor',e.target.value)}/></Field><Field label="Shape *"><Input value={form.shape} onChange={(e)=>update('shape',e.target.value)}/></Field></div><Field label="Message on cake"><Input value={form.messageOnCake} onChange={(e)=>update('messageOnCake',e.target.value)}/></Field><Field label="Design notes"><Textarea value={form.designNotes} onChange={(e)=>update('designNotes',e.target.value)}/></Field><Field label="Attachment/Image filename"><Input value={form.attachmentName} onChange={(e)=>update('attachmentName',e.target.value)} placeholder="Attach through real file storage later"/></Field><div className="grid grid-cols-2 gap-3"><Field label="Order Value *"><Input type="number" value={form.orderValue} onChange={(e)=>update('orderValue',e.target.value)}/></Field><Field label="Advance Amount *"><Input type="number" value={form.advanceAmount} onChange={(e)=>update('advanceAmount',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-3"><Field label="Salesperson *"><Select value={form.salesperson} onChange={(e)=>update('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field><Field label="Payment Mode"><Select value={form.paymentMode} onChange={(e)=>update('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field></div>{error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}<PrimaryButton onClick={save}><Printer className="size-4"/>Generate Sales Order Slip & Send to Store</PrimaryButton></div></Section><Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>}><div className="space-y-3">{orders.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} · {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} · {o.cakeKg}kg {o.flavor} {o.shape} · Delivery {o.deliveryDate} {o.deliveryTime}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>)}</div></Section></div>;
+  return <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]"><Section title="Custom Cake Advance Order" icon={<Gift className="size-5"/>}><div className="grid gap-3"><Field label="Customer Name *"><Input value={form.customerName} onChange={(e)=>update('customerName',e.target.value)}/></Field><Field label="Mobile Number *"><Input value={form.mobile} onChange={(e)=>update('mobile',e.target.value)}/></Field><div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={form.deliveryDate} onChange={(e)=>update('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time *"><Input type="time" value={form.deliveryTime} onChange={(e)=>update('deliveryTime',e.target.value)}/></Field></div><div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={form.cakeKg} onChange={(e)=>update('cakeKg',e.target.value)}/></Field><Field label="Flavor *"><Input value={form.flavor} onChange={(e)=>update('flavor',e.target.value)}/></Field><Field label="Shape *"><Input value={form.shape} onChange={(e)=>update('shape',e.target.value)}/></Field></div><Field label="Message on cake"><Input value={form.messageOnCake} onChange={(e)=>update('messageOnCake',e.target.value)}/></Field><Field label="Design notes"><Textarea value={form.designNotes} onChange={(e)=>update('designNotes',e.target.value)}/></Field><Field label="Attachment/Image filename"><Input value={form.attachmentName} onChange={(e)=>update('attachmentName',e.target.value)} placeholder="Attach through real file storage later"/></Field><div className="grid grid-cols-2 gap-3"><Field label="Order Value *"><Input type="number" value={form.orderValue} onChange={(e)=>update('orderValue',e.target.value)}/></Field><Field label="Advance Amount *"><Input type="number" value={form.advanceAmount} onChange={(e)=>update('advanceAmount',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={form.salesperson} onChange={(e)=>update('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}<Field label="Payment Mode"><Select value={form.paymentMode} onChange={(e)=>update('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}<br/><span className="text-xs font-semibold">No salesperson required for VRSNB.</span></div>}</div>{error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}<PrimaryButton onClick={save}><Printer className="size-4"/>Generate Sales Order Slip & Send to Store</PrimaryButton></div></Section><Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>}><div className="space-y-3">{orders.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} · {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} · {o.cakeKg}kg {o.flavor} {o.shape} · Delivery {o.deliveryDate} {o.deliveryTime}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>)}</div></Section></div>;
 }
 
 function makeLine(itemName: string, qty: number, price: number): BranchBillItem { return { itemName, quantity: qty, unit: 'pcs', price, tax: 0, discount: 0, lineTotal: qty * price }; }
@@ -157,10 +279,119 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
 }
 
 export function CashierClosureTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { bills, returns, cashierClosures, addCashierClosure } = useBranchOpsStore(); const [opening,setOpening]=useState('0'); const [closing,setClosing]=useState(''); const [notes,setNotes]=useState(''); const user=currentUser?.displayName||'Cashier';
-  const todayBills=bills.filter(b=>b.branch===branch&&today(b.createdAt)); const cash=todayBills.filter(b=>b.paymentMode==='cash').reduce((s,b)=>s+b.total,0); const upi=todayBills.filter(b=>b.paymentMode==='upi').reduce((s,b)=>s+b.total,0); const card=todayBills.filter(b=>b.paymentMode==='card').reduce((s,b)=>s+b.total,0); const ret=returns.filter(r=>r.branch===branch&&today(r.createdAt)).reduce((s,r)=>s+r.total,0); const discounts=todayBills.reduce((s,b)=>s+b.discount,0); const duplicate=todayBills.filter(b=>b.printCount>1).length; const expected=Number(opening)+cash-ret; const diff=Number(closing||0)-expected; const save=()=>addCashierClosure({branch,cashier:user,openingCash:Number(opening),closingCash:Number(closing||0),expectedCash:expected,difference:diff,cash,upi,card,returns:ret,discounts,billsCount:todayBills.length,duplicateBills:duplicate,notes});
-  return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-4"><Kpi label="Cash" value={money(cash)} icon={<Banknote/>} tone="green"/><Kpi label="UPI" value={money(upi)} icon={<Smartphone/>} tone="blue"/><Kpi label="Card" value={money(card)} icon={<CreditCard/>} tone="amber"/><Kpi label="Returns" value={money(ret)} icon={<RotateCcw/>} tone="red"/></div><Section title="Close Shift" icon={<WalletCards className="size-5"/>}><div className="grid gap-3 md:grid-cols-3"><Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)}/></Field><Field label="Closing Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)}/></Field><Field label="Difference"><div className={cn('flex h-12 items-center rounded-2xl px-4 text-xl font-black', diff===0?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{money(diff)}</div></Field></div><Field label="Notes"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)}/></Field><PrimaryButton onClick={save}>Save Cashier Closure</PrimaryButton></Section><Section title="Closure History" icon={<History className="size-5"/>}><div className="space-y-2">{cashierClosures.filter(c=>c.branch===branch).map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.createdAt).toLocaleString('en-IN')} · {c.cashier}</p><p className="text-sm text-slate-500">Bills {c.billsCount} · Cash {money(c.cash)} · Difference {money(c.difference)}</p></div>)}</div></Section></div>;
+  const { currentUser } = useAuthStore();
+  const { bills, creditSales, returns, cashierClosures, purchasePayments, cashMovements, addCashierClosure } = useBranchOpsStore();
+  const [opening, setOpening] = useState('0');
+  const [closing, setClosing] = useState('');
+  const [notes, setNotes] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
+  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+
+  const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
+  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt));
+  const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt));
+  const todayCreditSales = creditSales.filter((c) => c.branch === branch && today(c.createdAt));
+  const todayCreditCollections = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && m.purpose === 'Credit collection');
+
+  const totalSales = todayBills.reduce((s, b) => s + b.total, 0);
+  const cash = todayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
+  const upi = todayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
+  const card = todayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
+  const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.total, 0);
+  const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const creditCollectionDigital = todayCreditCollections.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const splitTotal = todayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
+  const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
+  const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
+  const discounts = todayBills.reduce((s, b) => s + b.discount, 0);
+  const duplicate = todayBills.filter((b) => b.printCount > 1).length;
+  const expected = Number(opening || 0) + cash + creditCollectionCash - refunds - expenses;
+  const countedCash = Number(closing || 0);
+  const diff = countedCash - expected;
+
+  const save = () => {
+    addCashierClosure({ branch, cashier: user, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: todayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionCash + creditCollectionDigital, notes });
+    setSavedMessage('Closure saved successfully.');
+    setClosing('');
+    setNotes('');
+    setTimeout(() => setSavedMessage(''), 3000);
+  };
+
+  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${todayBills.length}</b></div><div class="row"><span>Total Sales</span><b>₹${totalSales.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>₹${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Sales</span><b>₹${cash.toFixed(2)}</b></div><div class="row"><span>UPI Sales</span><b>₹${upi.toFixed(2)}</b></div><div class="row"><span>Card Sales</span><b>₹${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>₹${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>₹${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>₹${(creditCollectionCash + creditCollectionDigital).toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>₹${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>₹${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>₹${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>₹${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>₹${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
+
+  const exportClosure = () => {
+    const rows = [
+      ['Metric', 'Value'],
+      ['Opening Cash', Number(opening || 0)],
+      ['Total Sales', totalSales],
+      ['Cash Sales', cash],
+      ['UPI Sales', upi],
+      ['Card Sales', card],
+      ['Split Payments', splitTotal],
+      ['Credit Sales', creditSalesTotal],
+      ['Credit Collection Cash', creditCollectionCash],
+      ['Credit Collection Digital', creditCollectionDigital],
+      ['Expenses', expenses],
+      ['Refunds', refunds],
+      ['Expected Cash', expected],
+      ['Counted Cash', countedCash],
+      ['Difference', diff],
+      ['Remarks', notes],
+    ];
+    const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${branch}-cashier-closure.csv`;
+    a.click();
+  };
+
+  return <div className="space-y-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
+      <Kpi label="Opening Cash" value={money(Number(opening || 0))} icon={<Banknote/>}/>
+      <Kpi label="Total Sales" value={money(totalSales)} icon={<Receipt/>} tone="green"/>
+      <Kpi label="Cash Sales" value={money(cash)} icon={<Banknote/>} tone="green"/>
+      <Kpi label="UPI/Card" value={money(upi + card)} icon={<CreditCard/>} tone="blue"/>
+      <Kpi label="Credit Due" value={money(creditSales.filter((c)=>c.branch===branch && c.status !== 'Paid' && c.status !== 'Written Off').reduce((sum,c)=>sum+c.balanceDue,0))} icon={<WalletCards/>} tone="amber"/>
+      <Kpi label="Expenses/Refunds" value={money(expenses + refunds)} icon={<RotateCcw/>} tone="red"/>
+      <Kpi label="Expected Cash" value={money(expected)} icon={<WalletCards/>} tone="amber"/>
+    </div>
+
+    <Section title="Cashier Closure - Simple Shift Summary" icon={<WalletCards className="size-5"/>} action={<div className="flex flex-wrap gap-2"><SoftButton onClick={printClosure}><Printer className="size-4"/>Print</SoftButton><SoftButton onClick={exportClosure}><Download className="size-4"/>Export</SoftButton></div>}>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="overflow-x-auto rounded-3xl border border-slate-200">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Section</th><th className="p-3 text-right">Amount</th><th className="p-3">Meaning</th></tr></thead>
+            <tbody>
+              <tr className="border-t"><td className="p-3 font-black">Opening Cash</td><td className="p-3 text-right font-black">{money(Number(opening || 0))}</td><td className="p-3 text-slate-500">Cash available before starting shift.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Cash Sales</td><td className="p-3 text-right font-black text-emerald-700">{money(cash)}</td><td className="p-3 text-slate-500">Cash part of normal and split bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">UPI Sales</td><td className="p-3 text-right font-black">{money(upi)}</td><td className="p-3 text-slate-500">UPI part of normal and split bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Card Sales</td><td className="p-3 text-right font-black">{money(card)}</td><td className="p-3 text-slate-500">Card part of normal and split bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Split Payments</td><td className="p-3 text-right font-black">{money(splitTotal)}</td><td className="p-3 text-slate-500">Bills collected through more than one payment mode.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Credit Sales</td><td className="p-3 text-right font-black text-amber-700">{money(creditSalesTotal)}</td><td className="p-3 text-slate-500">Credit bills made today. This is sale value, not drawer cash.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionCash + creditCollectionDigital)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Expenses</td><td className="p-3 text-right font-black text-red-600">-{money(expenses)}</td><td className="p-3 text-slate-500">Supplier/purchase payments made today.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Refunds</td><td className="p-3 text-right font-black text-red-600">-{money(refunds)}</td><td className="p-3 text-slate-500">Return/refund amount paid today.</td></tr>
+              <tr className="border-t bg-amber-50"><td className="p-3 font-black">Expected Cash</td><td className="p-3 text-right text-lg font-black">{money(expected)}</td><td className="p-3 text-slate-600">Opening + cash sales + cash credit collections - cash out.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="space-y-3 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200">
+          <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)}/></Field>
+          <Field label="Counted Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter drawer cash counted"/></Field>
+          <Field label="Difference"><div className={cn('flex h-12 items-center rounded-2xl px-4 text-xl font-black', diff===0?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{money(diff)}</div></Field>
+          <Field label="Closing Remarks"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Optional notes: shortage reason, expense details, handover note"/></Field>
+          {savedMessage && <p className="rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">{savedMessage}</p>}
+          <PrimaryButton onClick={save} className="w-full">Save Cashier Closure</PrimaryButton>
+        </div>
+      </div>
+    </Section>
+
+    <Section title="Closure History" icon={<History className="size-5"/>}>
+      <div className="space-y-2">{cashierClosures.filter(c=>c.branch===branch).map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.createdAt).toLocaleString('en-IN')} · {c.cashier}</p><p className="text-sm text-slate-500">Bills {c.billsCount} · Cash {money(c.cash)} · Expected {money(c.expectedCash)} · Counted {money(c.closingCash)} · Difference {money(c.difference)}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}</div>
+    </Section>
+  </div>;
 }
+
 
 export function SalespersonReportTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore(); const { bills, salespeople, addSalesperson, updateSalesperson, removeSalesperson } = useBranchOpsStore(); const [name,setName]=useState(''); const isAdmin=['admin','admin_snb','admin_vrsnb','owner'].includes(currentUser?.role||''); const rows=useMemo(()=>{ const map:Record<string,{count:number,total:number}>={}; bills.filter(b=>b.branch===branch).forEach(b=>{map[b.salesperson]??={count:0,total:0}; map[b.salesperson].count++; map[b.salesperson].total+=b.total;}); return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);},[bills,branch]);
@@ -168,13 +399,18 @@ export function SalespersonReportTab({ branch }: ModuleProps) {
 }
 
 export function AdminNotificationsBranchTab({ branch }: ModuleProps) {
-  const { notifications, updateNotificationStatus } = useBranchOpsStore(); const { stockMismatches } = useBranchStore(); const { currentUser } = useAuthStore(); const rows=notifications.filter(n=>n.branch===branch); const mismatches=stockMismatches.filter(m=>m.branch===branch);
-  return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Pending Notifications" value={rows.filter(r=>r.status==='Unread').length} icon={<Bell/>} tone="amber"/><Kpi label="Stock Disputes" value={mismatches.length} icon={<AlertTriangle/>} tone="red"/><Kpi label="Resolved" value={rows.filter(r=>r.status==='Resolved').length} icon={<CheckCircle2/>} tone="green"/></div><Section title="Admin Notifications" icon={<Bell className="size-5"/>}><div className="space-y-3">{rows.map(n=><div key={n.id} className="rounded-3xl border p-4"><div className="flex justify-between gap-3"><div><p className="font-black">{n.type}: {n.title}</p><p className="text-sm text-slate-500">{n.details}</p><p className="mt-1 text-xs font-bold text-slate-400">{new Date(n.createdAt).toLocaleString('en-IN')} · {n.raisedBy}</p></div><Select value={n.status} onChange={(e)=>updateNotificationStatus(n.id,e.target.value as typeof n.status,currentUser?.displayName||'Admin')} className="w-36"><option>Unread</option><option>Seen</option><option>Resolved</option></Select></div></div>)}</div></Section><Section title="Stock Mismatch / Dispute Reports" icon={<AlertTriangle className="size-5"/>}><div className="space-y-2">{mismatches.map(m=><div key={m.id} className="rounded-2xl bg-red-50 p-4 text-red-800"><p className="font-black">{m.itemName}</p><p className="text-sm">Sold {m.soldQty} · Shortage {m.shortage} · Raised by {m.soldBy} · {new Date(m.soldAt).toLocaleString('en-IN')}</p></div>)}</div></Section></div>;
+  const { notifications, updateNotificationStatus } = useBranchOpsStore();
+  const { stockMismatches } = useBranchStore();
+  const { currentUser } = useAuthStore();
+  const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
+  const rows = notifications.filter(n=>n.branch===branch);
+  const mismatches = stockMismatches.filter(m=>m.branch===branch);
+  return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Pending Notifications" value={rows.filter(r=>r.status==='Unread').length} icon={<Bell/>} tone="amber"/><Kpi label="Stock Disputes" value={rows.filter(r=>r.type==='Stock Dispute'&&r.status!=='Resolved').length + mismatches.length} icon={<AlertTriangle/>} tone="red"/><Kpi label="Resolved" value={rows.filter(r=>r.status==='Resolved').length} icon={<CheckCircle2/>} tone="green"/></div><Section title="Admin Notifications - Review / Clear / Resolve" icon={<Bell className="size-5"/>}><div className="space-y-3">{rows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No admin notifications.</p> : rows.map(n=><div key={n.id} className="rounded-3xl border p-4"><div className="flex flex-col justify-between gap-3 lg:flex-row"><div><p className="font-black">{n.type}: {n.title}</p><p className="text-sm text-slate-500">{n.details}</p><p className="mt-1 text-xs font-bold text-slate-400">{new Date(n.createdAt).toLocaleString('en-IN')} · {n.raisedBy}</p></div><div className="flex flex-wrap items-start gap-2"><SoftButton onClick={()=>updateNotificationStatus(n.id,'Seen',adminName)}>Review</SoftButton><SoftButton onClick={()=>updateNotificationStatus(n.id,'Resolved',adminName)} className="text-emerald-700">Clear / Resolve</SoftButton><Select value={n.status} onChange={(e)=>updateNotificationStatus(n.id,e.target.value as typeof n.status,adminName)} className="w-36"><option>Unread</option><option>Seen</option><option>Resolved</option></Select></div></div></div>)}</div></Section><Section title="Stock Mismatch / Dispute Reports" icon={<AlertTriangle className="size-5"/>}><div className="space-y-2">{mismatches.map(m=><div key={m.id} className="rounded-2xl bg-red-50 p-4 text-red-800"><p className="font-black">{m.itemName}</p><p className="text-sm">Sold {m.soldQty} · Shortage {m.shortage} · Raised by {m.soldBy} · {new Date(m.soldAt).toLocaleString('en-IN')}</p></div>)}</div></Section></div>;
 }
 
 export function StoreOrdersTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore(); const { storeOrders, updateStoreOrderStatus } = useBranchOpsStore(); const [remarks,setRemarks]=useState(''); const rows=storeOrders.filter(o=>o.branch===branch);
-  return <Section title="Store Orders" icon={<Store className="size-5"/>}><div className="space-y-3">{rows.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap justify-between gap-3"><div><p className="font-black">{o.orderNo} · {o.customerName}</p><p className="text-sm text-slate-500">{o.mobile} · {o.details} · Required {o.requiredAt}</p><p className="mt-1 text-xs font-bold text-slate-400">Status: {o.status} {o.confirmerName ? `· ${o.confirmerName}` : ''}</p></div><div className="flex flex-wrap gap-2"><SoftButton onClick={()=>updateStoreOrderStatus(o.id,'Confirmed',currentUser?.displayName||'Store',remarks)}>Confirm</SoftButton><SoftButton onClick={()=>updateStoreOrderStatus(o.id,'Rejected',currentUser?.displayName||'Store',remarks)} className="text-red-600">Reject</SoftButton></div></div><Input value={remarks} onChange={(e)=>setRemarks(e.target.value)} placeholder="Remarks for confirmation/rejection" className="mt-3"/></div>)}</div></Section>;
+  return <Section title="Store Orders" icon={<Store className="size-5"/>}><div className="mb-4 rounded-3xl bg-blue-50 p-4 text-sm font-semibold text-blue-900 ring-1 ring-blue-100"><p className="font-black">What are Store Orders?</p><p className="mt-1">Store Orders are internal branch requests sent to the store team, mainly from advance/custom cake orders or stock/order requests. The store can confirm, reject, or add remarks so the branch cashier knows whether the request is accepted and ready for fulfilment.</p></div><div className="space-y-3">{rows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No store orders are pending for this branch.</p> : rows.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap justify-between gap-3"><div><p className="font-black">{o.orderNo} · {o.customerName}</p><p className="text-sm text-slate-500">{o.mobile} · {o.details} · Required {o.requiredAt}</p><p className="mt-1 text-xs font-bold text-slate-400">Status: {o.status} {o.confirmerName ? `· ${o.confirmerName}` : ''}</p></div><div className="flex flex-wrap gap-2"><SoftButton onClick={()=>updateStoreOrderStatus(o.id,'Confirmed',currentUser?.displayName||'Store',remarks)}>Confirm</SoftButton><SoftButton onClick={()=>updateStoreOrderStatus(o.id,'Rejected',currentUser?.displayName||'Store',remarks)} className="text-red-600">Reject</SoftButton></div></div><Input value={remarks} onChange={(e)=>setRemarks(e.target.value)} placeholder="Remarks for confirmation/rejection" className="mt-3"/></div>)}</div></Section>;
 }
 
 export function AuditLogsTab({ branch }: ModuleProps) {
