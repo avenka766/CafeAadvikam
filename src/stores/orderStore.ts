@@ -22,7 +22,7 @@ interface OrderState {
   getCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
@@ -175,6 +175,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       status: orderStatus, createdBy: params.createdBy, createdAt: now, updatedAt: now,
       notes: params.notes, customerName: params.customerName, paymentType, orderSource,
       ...(params.billedBy ? { billedBy: params.billedBy } : {}),
+      ...(params.paymentBreakdown ? { paymentBreakdown: params.paymentBreakdown } : {}),
       ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
@@ -189,7 +190,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
       discount_value: 0, total, status: orderStatus, created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
-      payment_type: paymentType, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
+      payment_type: paymentType, payment_breakdown: params.paymentBreakdown || null, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
       // parcel_charges column not in DB — charges are baked into `total` above
     };
 
