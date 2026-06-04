@@ -64,8 +64,8 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/bakery\/receive/, meta: { title: 'Branch Order Receiver', eyebrow: 'Branch demand', description: 'Place bakery requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
   { match: /^\/bakery\/items/, meta: { title: 'Item Master Studio', eyebrow: 'Master data', description: 'Cafe and bakery item management with clearer category, price and availability controls.', accent: 'Cafe • Bakery • Recipes' } },
   { match: /^\/bakery\/recipes/, meta: { title: 'Recipe Management', eyebrow: 'Production data', description: 'Recipe ingredients, output quantities and bakery item formulas in a readable editing surface.', accent: 'Ingredients • Output • Costing' } },
-  { match: /^\/branch\/vrsnb/, meta: { title: 'VRSNB Branch Billing', eyebrow: 'Branch POS', description: 'Branch billing, stock, sales, reports, history and payments redesigned for counter speed.', accent: 'Billing • Cash • Stock' } },
-  { match: /^\/branch\/snb/, meta: { title: 'SNB Branch Billing', eyebrow: 'Branch POS', description: 'SNB branch sales, purchase pay, cashier closure and stock operations in a cleaner workflow.', accent: 'Sales • Purchase • Reports' } },
+  { match: /^\/branch\/vrsnb/, meta: { title: 'VRSNB Branch Dashboard', eyebrow: 'Branch POS', description: 'VRSNB branch billing, credit, stock and cashier closure redesigned for counter speed.', accent: 'Billing • Credit • Stock' } },
+  { match: /^\/branch\/snb/, meta: { title: 'SNB Branch Dashboard', eyebrow: 'Branch POS', description: 'SNB branch sales, cashier closure and stock operations in a cleaner workflow.', accent: 'Sales • Stock • Cash' } },
   { match: /^\/branch\/hosur/, meta: { title: 'Hosur Branch Billing', eyebrow: 'Branch POS', description: 'Hosur billing and branch operations with clearer cart, payment, delivery and history states.', accent: 'Billing • Delivery • Cash' } },
   { match: /^\/admin-vrsnb/, meta: { title: 'VRSNB Admin Dashboard', eyebrow: 'Branch admin', description: 'VRSNB purchase, reports, stock and payment oversight with premium dashboard navigation.', accent: 'PO • Reports • Stock' } },
   { match: /^\/admin-snb/, meta: { title: 'SNB Admin Dashboard', eyebrow: 'Branch admin', description: 'SNB purchase, cashier closure, salesperson reports and bank/cash oversight in one place.', accent: 'Cash • Bank • Purchase' } },
@@ -166,7 +166,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
