@@ -80,7 +80,7 @@ export const useAuthStore = create<AuthState>()(
       // SEC-11: enforce min password length
       addStaff: async (user) => {
         if (user.password.trim().length < 6) return 'Password must be at least 6 characters';
-        // C-02 FIX: hash password server-side via RPC — never write plaintext to staff_users directly.
+        // C-02 FIX: hash password server-side via RPC; never write plaintext to staff_users directly.
         // The DB RPC add_staff_hashed() runs pgcrypto.crypt() before inserting.
         const { data, error } = await supabase
           .rpc('add_staff_hashed', {
@@ -99,9 +99,10 @@ export const useAuthStore = create<AuthState>()(
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
 
         const { error } = await supabase
-          .from('staff_users')
-          .update({ password: newPassword })
-          .eq('id', userId);
+          .rpc('update_staff_password_hashed', {
+            p_user_id: userId,
+            p_new_password: newPassword,
+          });
 
         if (error) {
           console.error('Password update error:', error);
@@ -151,7 +152,7 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null }),
       // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
       // but that means after a page reload the 8-hour auto-logout timer is never restarted.
-      // onRehydrateStorage fires once after sessionStorage is loaded — restart the timer here
+      // onRehydrateStorage fires once after sessionStorage is loaded; restart the timer here
       // if the user session was restored (so they are still auto-logged out after 8 hours).
       onRehydrateStorage: () => (state) => {
         if (state?.currentUser) {
@@ -165,7 +166,7 @@ export const useAuthStore = create<AuthState>()(
   ),
 );
 
-// M-03 FIX: sliding session — reset the timeout on meaningful user interactions.
+// M-03 FIX: sliding session; reset the timeout on meaningful user interactions.
 // Throttled to at most once per minute to avoid hammering clearTimeout/setTimeout.
 let _activityListenersAttached = false;
 let _lastActivityReset = 0;
@@ -179,7 +180,7 @@ function _attachActivityListeners() {
 
   const handleActivity = () => {
     const store = useAuthStore.getState();
-    if (!store.currentUser) return; // not logged in — nothing to reset
+    if (!store.currentUser) return; // not logged in; nothing to reset
     const now = Date.now();
     if (now - _lastActivityReset < THROTTLE_MS) return;
     _lastActivityReset = now;
