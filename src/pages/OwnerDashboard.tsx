@@ -37,7 +37,7 @@ import {
   Store, Layers, Banknote, Smartphone, CreditCard, Clock,
   Utensils, Trash2, AlertTriangle, WalletCards, PackageSearch,
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
-  Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory,
+  Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
@@ -1754,7 +1754,7 @@ function OwnerDailyClosureTab() {
       const upi = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'upi' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.upi) : 0), 0);
       const card = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
       const credit = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
-      return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: gross ? 'Pending' : 'Pending', closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
+      return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: 'Pending' as OwnerClosureRow['status'], closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
     }
     const dayBills = bills.filter(bill => bill.branch === b && ownerLocalDay(bill.createdAt) === date && bill.status !== 'Returned');
     const dayReturns = returns.filter(ret => ret.branch === b && ownerLocalDay(ret.createdAt) === date);
@@ -1774,7 +1774,7 @@ function OwnerDailyClosureTab() {
     return {
       branch: ownerBranchDisplay(b), opening: closure?.openingCash ?? 0, grossSales: gross, returns: ret, netSales: Math.max(0, gross - ret), cash, upi, card, credit,
       expenses: dayExpenses, purchases: dayPayments, bankDeposits: dayDeposits, expectedCash, countedCash, difference,
-      status: closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending',
+      status: (closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
       closedBy: closure?.cashier || 'Pending', closedAt: closure?.createdAt || '', remarks: closure?.notes || (closure ? 'Closed' : 'Closure not submitted'),
     };
   }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);

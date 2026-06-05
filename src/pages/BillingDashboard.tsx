@@ -1372,11 +1372,13 @@ function NewBillPanel() {
         const creditItems = allCartItems.map(c => ({
           itemName: c.menuItem.name,
           quantity: c.quantity,
-          sellUnit: 'pc' as const,
+          sellUnit: 'pcs' as const,
+          price: c.menuItem.price,
           lineTotal: c.menuItem.price * c.quantity,
         }));
         const err = await recordCreditSale(branch, {
           billNo,
+          branch,
           customerName: creditCustomerName.trim(),
           customerPhone: creditCustomerPhone.trim() || undefined,
           items: creditItems,
