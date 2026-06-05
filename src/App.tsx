@@ -1,4 +1,4 @@
-// src/App.tsx  ← REPLACE EXISTING FILE
+// src/App.tsx
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
@@ -32,7 +32,6 @@ import BakerDashboard from '@/bakery/BakerDashboard';
 import PackingDashboard from '@/bakery/PackingDashboard';
 import BakeryItemManagement from '@/bakery/BakeryItemManagement';
 import RecipeManagement from '@/bakery/RecipeManagement';
-// ── NEW ──────────────────────────────────────────────────────────────────────
 import VRSNBDashboard from '@/pages/VRSNBDashboard';
 import SNBDashboard   from '@/pages/SNBDashboard';
 import HosurDashboard from '@/pages/HosurDashboard';
@@ -45,8 +44,6 @@ import VRSNBHistoryPage    from '@/pages/VRSNBHistoryPage';
 import SNBHistoryPage      from '@/pages/SNBHistoryPage';
 import AdminInvoicesPage   from '@/pages/AdminInvoicesPage';
 import AdminAlertsPage     from '@/pages/AdminAlertsPage';
-import IncomingDebugPage   from '@/bakery/IncomingDebugPage';
-// ─────────────────────────────────────────────────────────────────────────────
 
 function AppRoutes() {
   const location = useLocation();
@@ -62,7 +59,6 @@ function AppRoutes() {
     if (!hydrated) {
       const unsub = useAuthStore.persist.onFinishHydration(() => setHydrated(true));
       if (useAuthStore.persist.hasHydrated()) setHydrated(true);
-      // Safety net — if hydration never fires (empty storage), unblock after 300ms
       const fallback = setTimeout(() => setHydrated(true), 300);
       return () => { unsub(); clearTimeout(fallback); };
     }
@@ -72,7 +68,7 @@ function AppRoutes() {
     <div className="min-h-screen bg-background flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="size-10 rounded-2xl bg-primary/10 animate-pulse" />
-        <p className="text-sm font-body text-muted-foreground animate-pulse">Loading…</p>
+        <p className="text-sm font-body text-muted-foreground animate-pulse">Loading...</p>
       </div>
     </div>
   );
@@ -82,7 +78,6 @@ function AppRoutes() {
 
   const routes = (
       <Routes>
-        {/* ── Public routes — manage their own padding ── */}
         <Route path="/"             element={<Landing />} />
         <Route path="/login"        element={<Login />} />
         <Route path="/menu"         element={<MenuPage />} />
@@ -90,7 +85,6 @@ function AppRoutes() {
         <Route path="/order"        element={<QROrderPage />} />
         <Route path="/order/track"  element={<OrderTrackingPage />} />
 
-        {/* ── Staff routes — all wrapped in layout shell ── */}
         <Route path="/order-pad"        element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
         <Route path="/billing"          element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
         <Route path="/daily-closure"    element={<ProtectedRoute allowedRoles={['billing', 'admin']}><DailyClosure /></ProtectedRoute>} />
@@ -125,7 +119,6 @@ function AppRoutes() {
         <Route path="/admin/invoices"      element={<ProtectedRoute allowedRoles={['admin']}><AdminInvoicesPage /></ProtectedRoute>} />
         <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb']}><AdminAlertsPage /></ProtectedRoute>} />
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
-        <Route path="/debug/incoming"      element={<IncomingDebugPage />} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
   );
