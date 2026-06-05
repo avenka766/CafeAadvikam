@@ -1,5 +1,5 @@
 // src/bakery/PurchaseOrderTab.tsx
-// Store dashboard tab — raise and manage purchase orders for raw materials.
+// Store dashboard tab - raise and manage purchase orders for raw materials.
 
 import { useState, useEffect } from 'react';
 import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
@@ -38,7 +38,7 @@ function POCard({ po, onStatusChange, onDelete }: {
             </span>
           </div>
           <p className="text-xs font-body text-muted-foreground truncate">
-            {po.supplierName} · {po.items.length} item(s)
+            {po.supplierName} - {po.items.length} item(s)
           </p>
         </div>
         <div className="shrink-0 text-right">
@@ -51,7 +51,6 @@ function POCard({ po, onStatusChange, onDelete }: {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
-          {/* Items */}
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
               <span className="col-span-6">Material</span>
@@ -71,14 +70,12 @@ function POCard({ po, onStatusChange, onDelete }: {
             <p className="text-xs font-body text-muted-foreground bg-muted/40 px-3 py-2 rounded-xl">{po.notes}</p>
           )}
 
-          {/* Timeline */}
           <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
             <span>Created {new Date(po.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
-            {po.sentAt && <><span>·</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
-            {po.receivedAt && <><span>·</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.sentAt && <><span>-</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.receivedAt && <><span>-</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
           </div>
 
-          {/* Actions */}
           <div className="flex gap-2">
             {po.status === 'draft' && (
               <button
@@ -111,8 +108,6 @@ function POCard({ po, onStatusChange, onDelete }: {
   );
 }
 
-// ── Create PO Form ─────────────────────────────────────────────────────────────
-
 function CreatePOForm({ onClose }: { onClose: () => void }) {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers }         = useSupplierStore();
@@ -142,7 +137,7 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
     setSaving(true);
     const err = await createPO({
       supplierId,
-      supplierName: supplier.name,
+      supplierName: supplier.businessName,
       items: lines,
       status: 'draft',
       notes,
@@ -160,16 +155,14 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <h3 className="font-display font-bold text-lg text-foreground">New Purchase Order</h3>
 
-        {/* Supplier */}
         <div className="space-y-1">
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Supplier</p>
           <select value={supplierId} onChange={e => setSupplierId(e.target.value)}
             className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-            {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {suppliers.map(s => <option key={s.id} value={s.id}>{s.businessName}</option>)}
           </select>
         </div>
 
-        {/* Items */}
         <div className="space-y-2">
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Materials</p>
           {lines.map((line, i) => (
@@ -193,7 +186,6 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Notes */}
         <div className="space-y-1">
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Notes (optional)</p>
           <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2}
@@ -211,14 +203,12 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────────
-
 export default function PurchaseOrderTab() {
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
   const filtered = orders.filter(o => filterStatus === 'all' || o.status === filterStatus);
   const draftCount    = orders.filter(o => o.status === 'draft').length;
@@ -227,7 +217,6 @@ export default function PurchaseOrderTab() {
 
   return (
     <div className="space-y-4">
-      {/* Stats */}
       <div className="grid grid-cols-3 gap-2">
         {[
           { label: 'Draft',    value: draftCount,    color: draftCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground', bg: '' },
@@ -241,7 +230,6 @@ export default function PurchaseOrderTab() {
         ))}
       </div>
 
-      {/* Filter + Create */}
       <div className="flex items-center gap-2">
         <div className="flex gap-1.5 flex-1 overflow-x-auto pb-0.5">
           {(['all', 'draft', 'sent', 'received'] as const).map(s => (
@@ -258,7 +246,6 @@ export default function PurchaseOrderTab() {
         </button>
       </div>
 
-      {/* List */}
       {loading && !loaded ? (
         <div className="flex justify-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
       ) : filtered.length === 0 ? (
