@@ -99,7 +99,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const [lines, setLines] = useState<LineItem[]>([
     defaultItem
       ? makeLine(branch, defaultItem)
-      : { itemId: "", itemName: "", uom: "Kgs", weightGrams: null, qty: "" },
+      : { id: `empty-${Date.now()}`, itemId: "", itemName: "", uom: "Kgs", weightGrams: null, qty: "" },
   ]);
   const [customLines, setCustomLines] = useState<
     { id: string; name: string; qty: string }[]
