@@ -20,6 +20,7 @@ import {
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const BRANCH_COLORS: Record<Branch, string> = {
+  Cafe:  '#4B9F6E',
   VRSNB: '#5BA3C9',
   SNB:   '#C5973E',
   Hosur: '#2D7D6F',
@@ -94,6 +95,7 @@ function BranchCreditCard({
     totalGiven > 0 ? Math.round((totalCollected / totalGiven) * 100) : 0;
 
   const BRANCH_PILL: Record<Branch, string> = {
+    Cafe:  'bg-green-50 border-green-200 text-green-700',
     VRSNB: 'bg-blue-50 border-blue-200 text-blue-700',
     SNB:   'bg-amber-50 border-amber-200 text-amber-700',
     Hosur: 'bg-emerald-50 border-emerald-200 text-emerald-700',

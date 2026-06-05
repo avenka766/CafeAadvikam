@@ -222,7 +222,7 @@ function EditItemModal({
 export default function VrsnbItemsTab() {
   const { stockMismatches, fetchStockMismatches, stock, fetchBranchData } = useBranchStore();
   const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
-  const { user } = useAuthStore();
+  const { currentUser: user } = useAuthStore();
   const [search, setSearch]                 = useState('');
   const [activeCategory, setActiveCategory] = useState<VrsnbCategory | 'All'>('All');
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
@@ -315,7 +315,7 @@ export default function VrsnbItemsTab() {
     const existing = VRSNB_ITEMS.find(i => i.barcode === barcode);
     const oldPrice = vrsnbOverrides[barcode]?.price ?? existing?.price ?? 0;
     const oldName  = vrsnbOverrides[barcode]?.name  ?? existing?.name  ?? '';
-    const updatedBy = user?.name ?? user?.email ?? 'Admin';
+    const updatedBy = user?.displayName ?? user?.username ?? 'Admin';
 
     const err = await saveOverride('VRSNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
     if (err) {

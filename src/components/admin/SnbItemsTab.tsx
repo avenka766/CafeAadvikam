@@ -224,7 +224,7 @@ function EditItemModal({
 export default function SnbItemsTab() {
   const { stockMismatches, fetchStockMismatches, stock, fetchBranchData } = useBranchStore();
   const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
-  const { user } = useAuthStore();
+  const { currentUser: user } = useAuthStore();
   const [search, setSearch]               = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
   const [mismatchExpanded, setMismatchExpanded] = useState(true);
@@ -330,7 +330,7 @@ export default function SnbItemsTab() {
     const existing = SNB_ITEMS.find(i => i.barcode === barcode);
     const oldPrice = snbOverrides[barcode]?.price ?? existing?.price ?? 0;
     const oldName  = snbOverrides[barcode]?.name  ?? existing?.name  ?? '';
-    const updatedBy = user?.name ?? user?.email ?? 'Admin';
+    const updatedBy = user?.displayName ?? user?.username ?? 'Admin';
 
     const err = await saveOverride('SNB', barcode, updates.name, updates.price, updatedBy, oldPrice, oldName);
     if (err) {
