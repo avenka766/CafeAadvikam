@@ -524,6 +524,7 @@ function ItemCard({ item, inCart, cartQty, onAdd, onRemove, onKgChange, colors }
   colors: { bg: string; text: string; badge: string };
 }) {
   const unit = detectSellUnit(item.itemName);
+  const noStock = item.quantity <= 0;
   return (
     <div className={cn('relative bg-white border rounded-3xl p-4 flex flex-col gap-3 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md',
       inCart ? 'border-emerald-400 shadow-md ring-4 ring-emerald-100 bg-emerald-50/30' : 'border-slate-200 hover:border-slate-300')}>
