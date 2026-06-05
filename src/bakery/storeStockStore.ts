@@ -10,14 +10,13 @@ import { RECIPE_DEFINITIONS } from './recipeDefinitions';
 export type StockUnit = 'kg' | 'L' | 'pcs' | 'g' | 'nos' | 'bunch' | 'ltr';
 
 export interface StockItem {
-  id: string;          // uuid from DB
-  name: string;        // normalised material name
+  id: string;
+  name: string;
   unit: StockUnit;
-  quantity: number;    // current stock
-  minThreshold: number; // low-stock warning level
+  quantity: number;
+  minThreshold: number;
 }
 
-// Logged entry written to store_material_deductions on each Send to Baker
 export interface MaterialDeductionLog {
   id: string;
   orderId: string;
@@ -31,7 +30,6 @@ export interface MaterialDeductionLog {
   deductedAt: string;
 }
 
-// Context passed by the caller (OrderCard) so we can write a proper audit log
 export interface DeductionContext {
   orderId: string;
   orderNumber: string | number;
@@ -49,16 +47,12 @@ interface StoreStockState {
   deleteItem: (id: string) => Promise<void>;
   bulkImportFromRecipes: () => Promise<{ added: number; skipped: number; error?: string }>;
   subscribe: () => () => void;
-  // H-06 FIX: unit is now required so conversions are explicit, not guessed
-  // DEDUCT-LOG: ctx is optional for backwards compat; when supplied, each deduction is logged
   deductMaterials: (
     deductions: { name: string; qty: number; unit?: string }[],
     ctx?: DeductionContext,
   ) => Promise<string | null>;
 }
 
-// H-06 FIX: explicit unit conversion — replaces the fragile "qty ≤ 10 = kg" heuristic.
-// Recipes pass their unit alongside qty; this function converts to the stock unit.
 function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string): number {
   const from = recipeUnit.toLowerCase().trim();
   const to   = stockUnit.toLowerCase().trim();
@@ -68,23 +62,18 @@ function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string):
   if (from === 'ml' && (to === 'l' || to === 'ltr')) return qty / 1000;
   if ((from === 'l' || from === 'ltr') && to === 'ml') return qty * 1000;
   if ((from === 'l' && to === 'ltr') || (from === 'ltr' && to === 'l')) return qty;
-  console.warn(`[storeStockStore] No conversion from "${recipeUnit}" → "${stockUnit}", using raw value`);
+  console.warn(`[storeStockStore] No conversion from "${recipeUnit}" to "${stockUnit}", using raw value`);
   return qty;
 }
 
-// Normalise a material name to lowercase trimmed for matching
 export function normaliseName(n: string) { return n.trim().toLowerCase(); }
 
-
-
-// Extract all unique materials from recipe definitions (deduplicated, sorted)
 export function getAllRecipeMaterials(): { name: string; unit: StockUnit }[] {
   const seen = new Map<string, StockUnit>();
   for (const recipe of Object.values(RECIPE_DEFINITIONS)) {
     for (const mat of recipe.materials) {
       const key = normaliseName(mat.material);
       if (!seen.has(key)) {
-        // Determine best default unit
         let unit: StockUnit = 'kg';
         const u = mat.unit.toLowerCase();
         if (u === 'l' || u === 'ltr' || u === 'ml') unit = 'ltr';
@@ -110,8 +99,6 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   load: async () => {
     if (get().loading) return;
     set({ loading: true });
-    // C-05 FIX: wrap in try/finally so loading is always reset to false even on
-    // network exceptions (previously an uncaught throw left an infinite spinner).
     try {
       const { data, error } = await supabase
         .from('store_raw_stock')
@@ -208,60 +195,33 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   },
 
   deductMaterials: async (deductions, ctx?) => {
-    // M-08 FIX: read fresh quantities from DB immediately before each write to
-    // narrow the stale-read race window. Concurrent deductions from multiple staff
-    // devices can still race within the same request, but the window is now ms not
-    // seconds. Full elimination requires a Postgres RPC:
-    //   CREATE FUNCTION deduct_materials(p_id uuid, p_qty numeric)
-    //   RETURNS void LANGUAGE plpgsql AS $$
-    //   BEGIN UPDATE store_raw_stock SET quantity = GREATEST(0, quantity - p_qty) WHERE id = p_id; END; $$;
-    // Call with: await supabase.rpc('deduct_materials', { p_id: match.id, p_qty: deductQty })
     const items = get().items;
 
-    // Build update list — capture name & unit from the stock item NOW, before set() mutates state.
-    // This prevents the stale get().items bug in the audit-log section below.
     const updates: { id: string; name: string; unit: string; deductQty: number }[] = [];
     const warnings: string[] = [];
     for (const d of deductions) {
       const match = items.find(i => normaliseName(i.name) === normaliseName(d.name));
       if (!match) { warnings.push(`${d.name} not in stock`); continue; }
-      // H-06 FIX: use convertToStockUnit() when recipe unit is provided.
-      // Falls back to the old numeric heuristic only for legacy callers that don't pass a unit.
       let deductQty = d.qty;
       if (d.unit) {
         deductQty = convertToStockUnit(d.qty, d.unit, match.unit);
       } else {
-        // Legacy fallback — remove once all callers supply unit
         if (match.unit === 'g' && deductQty <= 10) {
           deductQty = deductQty * 1000;
         } else if (match.unit === 'kg' && deductQty > 100) {
           deductQty = deductQty / 1000;
         }
       }
-      // Capture name and unit at this point — BEFORE set() runs — so the audit log
-      // doesn't have to call get().items again after state has already been updated.
       updates.push({ id: match.id, name: match.name, unit: match.unit, deductQty });
     }
 
-    // Apply all updates — read fresh DB quantity immediately before each write
     const finalUpdates: { id: string; stockBefore: number; newQty: number }[] = [];
     for (const u of updates) {
-      // M-08 FIX: fetch current quantity from DB right before writing to reduce stale-read race
-      const { data: fresh, error: fetchErr } = await supabase
-        .from('store_raw_stock')
-        .select('quantity')
-        .eq('id', u.id)
-        .single();
-      const currentQty = fresh && !fetchErr ? Number(fresh.quantity) : (items.find(i => i.id === u.id)?.quantity ?? 0);
-      // Stock goes negative when supply is insufficient — this is intentional.
-      // e.g. sugar at 0, baker needs 2kg → stock becomes -2 kg (shows the deficit).
-      const newQty = currentQty - u.deductQty;
-      const { error } = await supabase
-        .from('store_raw_stock')
-        .update({ quantity: newQty })
-        .eq('id', u.id);
+      const currentQty = items.find(i => i.id === u.id)?.quantity ?? 0;
+      const { data: newQty, error } = await supabase
+        .rpc('deduct_materials', { p_id: u.id, p_qty: u.deductQty });
       if (error) return error.message;
-      finalUpdates.push({ id: u.id, stockBefore: currentQty, newQty });
+      finalUpdates.push({ id: u.id, stockBefore: currentQty, newQty: Number(newQty) });
     }
 
     set(s => ({
@@ -271,9 +231,6 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
       }),
     }));
 
-    // ── DEDUCT-LOG: write one audit row per material to store_material_deductions ─
-    // FIXED: use `updates` (name/unit captured before set()) instead of calling get().items
-    // again after the state has already been mutated.
     if (ctx) {
       const now = new Date().toISOString();
       const logRows = updates.map(u => {
@@ -291,15 +248,12 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         };
       });
       if (logRows.length > 0) {
-        // Non-blocking — if insert fails, deduction already succeeded; just log to console
         supabase.from('store_material_deductions').insert(logRows).then(({ error }) => {
           if (error) console.warn('[storeStockStore] deduction log insert failed:', error.message);
         });
       }
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
-    // Fire low-stock notification for any item that dropped below its threshold
     const currentItems = get().items;
     const lowItems = finalUpdates
       .map(u => currentItems.find(i => i.id === u.id))
@@ -313,8 +267,6 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
   },
 
-  // Realtime subscription on store_raw_stock — any change (deduction, manual update)
-  // immediately re-fetches stock so ItemRow stock alerts are always current.
   subscribe: () => {
     const channel = supabase
       .channel('store-raw-stock-live')
