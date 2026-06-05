@@ -1,5 +1,5 @@
-// src/branch/tabs/SalesTab.tsx  ← UPDATED
-import { useState, useMemo } from 'react';
+// src/branch/tabs/SalesTab.tsx
+import { useState } from 'react';
 import { ShoppingCart, TrendingUp, CheckCircle2, Loader2, IndianRupee, Wallet } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
@@ -45,13 +45,6 @@ function pmColor(method: string | null) {
   return 'bg-muted text-muted-foreground';
 }
 
-interface Props {
-  branch: Branch;
-  branchStock: StockItem[];
-  todaySalesLog: SaleRecord[];
-  totalTodayQty: number;
-}
-
 export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: Props) {
   const { recordSale } = useBranchStore();
   const { currentUser } = useAuthStore();
@@ -63,7 +56,6 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
   const [saleSuccess, setSaleSuccess]   = useState('');
   const [recording, setRecording]       = useState(false);
 
-  // Find the currently selected stock item
   const selectedStockItem = branchStock.find(s => s.itemName === selectedItem);
   const availableQty = selectedStockItem?.quantity ?? 0;
   const saleQtyNum = Number(saleQty);
@@ -82,7 +74,7 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
     }
     setRecording(true);
     const err = await recordSale(
-      branch, selectedItem, saleQtyNum, currentUser?.displayName || 'Staff',
+      branch, selectedItem, saleQtyNum, currentUser?.displayName || 'Staff', 'cash',
     );
     setRecording(false);
     if (err) {
@@ -99,7 +91,6 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
 
   return (
     <div className="space-y-3">
-      {/* Record Sale Form */}
       <div className="bg-card border rounded-xl p-4 space-y-3">
         <h2 className="font-semibold text-sm flex items-center gap-2">
           <ShoppingCart className="size-4 text-primary" />
@@ -117,15 +108,14 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
               onChange={(e) => { setSelectedItem(e.target.value); setSaleError(''); setSaleQty(''); }}
               className="w-full border rounded-xl px-3 py-2.5 text-sm bg-background"
             >
-              <option value="">Select item…</option>
+              <option value="">Select item...</option>
               {availableItems.map((s) => (
                 <option key={s.itemName} value={s.itemName}>
-                  {s.itemName} — {s.quantity} in stock
+                  {s.itemName} - {s.quantity} in stock
                 </option>
               ))}
             </select>
 
-            {/* Stock info for selected item */}
             {selectedItem && selectedStockItem && (
               <div className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2">
                 <span className="text-xs text-muted-foreground">Available stock</span>
@@ -134,7 +124,7 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
                   availableQty <= selectedStockItem.minThreshold ? 'text-red-600' : 'text-emerald-600'
                 )}>
                   {availableQty} units
-                  {availableQty <= selectedStockItem.minThreshold && ' ⚠ Low'}
+                  {availableQty <= selectedStockItem.minThreshold && ' Low'}
                 </span>
               </div>
             )}
@@ -149,7 +139,7 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
               )}
             />
             {isOverStock && (
-              <p className="text-red-600 text-xs">⚠ Qty exceeds available stock ({availableQty})</p>
+              <p className="text-red-600 text-xs">Qty exceeds available stock ({availableQty})</p>
             )}
           </>
         )}
@@ -174,7 +164,6 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
         </p>
       </div>
 
-      {/* Today's Sales Log */}
       <div className="bg-card border rounded-xl overflow-hidden">
         <SectionHeader
           icon={<TrendingUp className="size-4 text-primary" />}
@@ -186,7 +175,6 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
           }
         />
 
-        {/* Revenue + advance summary */}
         {todaySalesLog.length > 0 && (() => {
           const todayRevenue = todaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0);
           const advanceEntries = todaySalesLog.filter(s => isAdvanceSale(s.paymentMethod));
@@ -195,7 +183,7 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
               <div className="flex-1 min-w-[100px] flex items-center gap-1.5 bg-emerald-50 rounded-lg px-2 py-1.5">
                 <IndianRupee className="size-3 text-emerald-600 shrink-0" />
                 <span className="text-[11px] font-semibold text-emerald-700 tabular-nums">
-                  ₹{todayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                  Rs.{todayRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                 </span>
               </div>
               {advanceEntries.length > 0 && (
@@ -223,7 +211,7 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{s.itemName}</p>
                     <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                      <p className="text-xs text-muted-foreground">{fmt(s.soldAt)} · {s.soldBy}</p>
+                      <p className="text-xs text-muted-foreground">{fmt(s.soldAt)} | {s.soldBy}</p>
                       {s.paymentMethod && (
                         <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full', pmColor(s.paymentMethod))}>
                           {payLabel(s.paymentMethod)}
@@ -233,11 +221,11 @@ export function SalesTab({ branch, branchStock, todaySalesLog, totalTodayQty }: 
                   </div>
                   <div className="text-right ml-2 shrink-0">
                     <span className="text-sm font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full block">
-                      ×{s.quantitySold}
+                      x{s.quantitySold}
                     </span>
                     {lineRev > 0 && (
                       <span className="text-[11px] font-semibold text-primary tabular-nums mt-0.5 block">
-                        ₹{lineRev.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        Rs.{lineRev.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </span>
                     )}
                   </div>
