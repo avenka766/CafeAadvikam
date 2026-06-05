@@ -31,6 +31,7 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
   part_payment: '🔀 Split Payment',
   unpaid: 'Unpaid',
   advance: '⏳ Advance',
+  credit: 'Credit',
 };
 
 type SplitMethod = 'cash' | 'upi' | 'card';

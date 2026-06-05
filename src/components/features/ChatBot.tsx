@@ -20,7 +20,7 @@ function getMenuData() {
 
 // Kick off the dynamic import immediately when this module loads —
 // it resolves before the user can type their first message.
-import('./chatBotMenuData.json').then(m => { _menuDataCache = m.default as typeof _menuDataCache; });
+import('./chatBotMenuData.json').then(m => { _menuDataCache = m.default as unknown as typeof _menuDataCache; });
 
 const CAFE_WA = '919095445444';
 const BAKERY_PHONE = '+91 9095445444';
