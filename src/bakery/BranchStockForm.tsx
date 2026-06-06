@@ -330,7 +330,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           </p>
 
           {/* ── Category filter pills ── */}
-          <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3 scrollbar-hide">
+          <div className="flex flex-wrap gap-1.5 pb-2 mb-3">
             {[ALL, ...categories].map((cat) => (
               <button
                 key={cat}
