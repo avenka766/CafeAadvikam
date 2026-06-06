@@ -61,7 +61,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Production Board', eyebrow: 'Baking team', description: 'A production-first dashboard for accepted orders, recipe quantities and batch preparation.', accent: 'Recipes • Batches • Dispatch' } },
   { match: /^\/bakery\/packing/, meta: { title: 'Packing & Dispatch', eyebrow: 'Packing desk', description: 'Pack orders branch-wise, record shortages/excess, and dispatch items with fewer mistakes.', accent: 'Pack • Check • Dispatch' } },
-  { match: /^\/bakery\/receive/, meta: { title: 'Branch Order Receiver', eyebrow: 'Branch demand', description: 'Place bakery requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
+  { match: /^\/bakery\/receive/, meta: { title: 'Order Receiver', eyebrow: 'Branch demand', description: 'Place requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
   { match: /^\/bakery\/items/, meta: { title: 'Item Master Studio', eyebrow: 'Master data', description: 'Cafe and bakery item management with clearer category, price and availability controls.', accent: 'Cafe • Bakery • Recipes' } },
   { match: /^\/bakery\/recipes/, meta: { title: 'Recipe Management', eyebrow: 'Production data', description: 'Recipe ingredients, output quantities and bakery item formulas in a readable editing surface.', accent: 'Ingredients • Output • Costing' } },
   { match: /^\/branch\/vrsnb/, meta: { title: 'VRSNB Branch Dashboard', eyebrow: 'Branch POS', description: 'VRSNB branch billing, credit, stock and cashier closure redesigned for counter speed.', accent: 'Billing • Credit • Stock' } },
@@ -128,11 +128,23 @@ function navForRole(role?: string): NavItem[] {
     case 'packing':
       return [{ label: 'Packing', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' }];
     case 'receiver_vrsnb':
-      return [{ label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+      ];
     case 'receiver_snb':
-      return [{ label: 'SNB Order', path: '/bakery/receive/snb', icon: <Inbox className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'SNB Order', path: '/bakery/receive/snb', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/receive/snb?tab=history', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Alert', path: '/bakery/receive/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+      ];
     case 'receiver_hosur':
-      return [{ label: 'Hosur Order', path: '/bakery/receive/hosur', icon: <Inbox className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'Hosur Order', path: '/bakery/receive/hosur', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/receive/hosur?tab=history', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Alert', path: '/bakery/receive/hosur?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+      ];
     case 'branch_vrsnb':
       return [{ label: 'VRSNB Branch', path: '/branch/vrsnb', icon: <ShoppingCart className="size-4" />, group: 'Main' }];
     case 'branch_snb':
@@ -166,7 +178,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || /^\/bakery\/receive/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
