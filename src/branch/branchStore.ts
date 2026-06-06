@@ -1003,22 +1003,20 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         amount_paid:  newAmountPaid,
         credit_amount: Math.max(0, sale.subtotal - newAmountPaid),
         status:       isSettled ? 'settled' : 'partial',
-        settled_at:   isSettled ? now : null,
+        settled_at:   now,
       })
       .eq('id', saleId);
     if (error) return `Failed to settle: ${error.message}`;
 
-    // NOTE: We do NOT insert into branch_sales on settlement.
-    // Revenue was already recorded when the credit sale was billed (in recordCreditSale).
-    // Inserting here again would double-count the revenue.
-    // The credit_sales table tracks collection separately (amountPaid, creditAmount, status).
+    // NOTE: Revenue was already recorded when the credit sale was billed.
+    // settled_at is reused as the last collection time so daily closure can show collected credit.
 
     set((s) => {
       const creditSales = { ...s.creditSales };
       creditSales[branch] = creditSales[branch].map((cs) =>
         cs.id === saleId
           ? { ...cs, amountPaid: newAmountPaid, creditAmount: Math.max(0, cs.subtotal - newAmountPaid),
-              status: isSettled ? 'settled' : 'partial', settledAt: isSettled ? now : null }
+              status: isSettled ? 'settled' : 'partial', settledAt: now }
           : cs
       );
       return { creditSales };
