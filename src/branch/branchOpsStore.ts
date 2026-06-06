@@ -494,7 +494,26 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         };
         const paymentMovements: CashMovement[] =
           bill.paymentMode === "credit"
-            ? []
+            ? (
+                [
+                  ["cash", bill.split?.cash ?? 0],
+                  ["upi", bill.split?.upi ?? 0],
+                  ["card", bill.split?.card ?? 0],
+                ] as const
+              )
+                .filter(([, amount]) => amount > 0)
+                .map(([mode, amount]) => ({
+                  id: uid("cash"),
+                  branch: bill.branch,
+                  dateTime: newBill.createdAt,
+                  amount,
+                  paymentMode: mode,
+                  direction: "in",
+                  purpose: "Credit upfront collection",
+                  enteredBy: bill.biller,
+                  referenceNumber: bill.billNo,
+                  remarks: bill.creditCustomerName || bill.salesperson,
+                }))
             : bill.paymentMode === "split"
               ? (
                   [
@@ -541,13 +560,13 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                   bill.creditCustomerName?.trim() || "Credit Customer",
                 mobile: bill.creditCustomerMobile?.trim() || "",
                 total: bill.total,
-                paidAmount: 0,
-                balanceDue: bill.total,
+                paidAmount: bill.tendered,
+                balanceDue: Math.max(0, bill.total - bill.tendered),
                 dueDate: bill.creditDueDate || "",
                 remarks: bill.creditRemarks || "",
                 salesperson: bill.salesperson,
                 biller: bill.biller,
-                status: "Open",
+                status: bill.tendered >= bill.total ? "Paid" : bill.tendered > 0 ? "Part Paid" : "Open",
                 payments: [],
                 createdAt: newBill.createdAt,
                 updatedAt: newBill.createdAt,

@@ -1,6 +1,7 @@
 // src/branch/BranchDashboard.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
@@ -47,6 +48,7 @@ type TabId =
   | 'history'
   | 'credit-sales'
   | 'closure'
+  | 'alerts'
   | 'salesperson'
   | 'notifications'
   | 'store-orders'
@@ -65,6 +67,7 @@ const BASE_TABS = [
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
   { id: 'credit-sales' as const, label: 'Credit', icon: CreditCard, adminOnly: false },
   { id: 'closure' as const, label: 'Cashier Closure', icon: WalletCards, adminOnly: false },
+  { id: 'alerts' as const, label: 'Alerts', icon: Bell, adminOnly: false },
   { id: 'store-orders' as const, label: 'Store Orders', icon: Store, adminOnly: false },
   { id: 'salesperson' as const, label: 'Salesperson Report', icon: UserRound, adminOnly: true },
   { id: 'reports' as const, label: 'Reports', icon: FileText, adminOnly: true },
@@ -81,16 +84,17 @@ const BASE_TABS = [
 interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { currentUser } = useAuthStore();
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
     stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
     subscribeToStock, fetchStockMismatches,
   } = useBranchStore();
-  const { bills, creditSales, cashMovements, notifications, storeOrders, purchases } = useBranchOpsStore();
+  const { bills, creditSales, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
 
-  const [tab, setTab] = useState<TabId>('bill');
   const initializedRef = useRef<Branch | null>(null);
+  const alertShownRef = useRef<string>('');
 
   const branchStock      = stock[branch]           || [];
   const branchIncoming   = incoming[branch]        || [];
@@ -109,11 +113,18 @@ export default function BranchDashboard({ branch }: Props) {
       : isAdminUser;
   const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : isAdminUser;
   const tabs = BASE_TABS.filter((t) => {
-    if (branch === 'VRSNB' && (t.id === 'quotation' || t.id === 'salesperson')) return false;
+    if (branch === 'VRSNB' && (t.id === 'quotation' || t.id === 'salesperson' || t.id === 'store-orders')) return false;
     if (t.id === 'reports') return canViewReports;
     if (t.id === 'salesperson') return canViewSalespersonReport;
     return !t.adminOnly || isAdminUser;
   });
+  const requestedTab = searchParams.get('tab') as TabId | null;
+  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
+  const openTab = (id: TabId | string) => {
+    const next = id as TabId;
+    if (next === 'bill') setSearchParams({});
+    else setSearchParams({ tab: next });
+  };
 
   useEffect(() => {
     fetchBranchData(branch);
@@ -138,8 +149,8 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch]);
 
   useEffect(() => {
-    if (!tabs.some((t) => t.id === tab)) setTab('bill');
-  }, [tab, tabs]);
+    if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
+  }, [requestedTab, tabs]);
 
   const lowStockCount = useMemo(
     () => branchStock.filter((s) => s.quantity <= (branchThresholds[s.itemName] ?? s.minThreshold ?? 10)).length,
@@ -152,6 +163,18 @@ export default function BranchDashboard({ branch }: Props) {
   const pendingPurchases = purchases.filter((p) => p.branch === branch && p.total > p.paidAmount).length;
   const pendingCreditSales = creditSales.filter((c) => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').length;
   const creditDue = creditSales.filter((c) => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').reduce((s, c) => s + c.balanceDue, 0);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
+  const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && o.status !== 'Paid In Full' && o.deliveryDate === todayIso);
+  const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
+
+  useEffect(() => {
+    const key = `${branch}-${todayIso}-${todayDeliveryCount}`;
+    if (todayDeliveryCount > 0 && alertShownRef.current !== key) {
+      alertShownRef.current = key;
+      window.alert(`${todayDeliveryCount} advance deliver${todayDeliveryCount > 1 ? 'ies are' : 'y is'} due today for ${BRANCH_LABELS[branch]}.`);
+    }
+  }, [branch, todayDeliveryCount, todayIso]);
 
   const todayString = new Date().toDateString();
   const todayBills = useMemo(
@@ -172,49 +195,7 @@ export default function BranchDashboard({ branch }: Props) {
 
   return (
     <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
-      <div className="grid min-h-0 gap-4 px-3 py-3 md:px-5 lg:grid-cols-[270px_minmax(0,1fr)] lg:gap-5">
-        <aside className="min-h-0 rounded-[2rem] border border-slate-200 bg-white/95 p-3 shadow-lg shadow-slate-200/60 lg:sticky lg:top-3 lg:flex lg:max-h-[calc(100dvh-var(--header-h,4rem)-2rem)] lg:flex-col">
-          <div className="mb-3 rounded-[1.5rem] bg-slate-950 p-4 text-white">
-            <div className="flex items-center gap-2">
-              <span className={cn('inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wide', colors.badge)}>
-                <Building2 className="size-3" /> {BRANCH_LABELS[branch]}
-              </span>
-            </div>
-            <h2 className="mt-3 text-xl font-black tracking-tight">Dashboard Menu</h2>
-            <p className="mt-1 text-xs font-semibold text-white/55">Cashier-first sidebar navigation</p>
-          </div>
-
-          <nav className="flex gap-2 overflow-x-auto pb-1 lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden lg:pb-0">
-            {tabs.map((t) => {
-              const count = t.id === 'notifications' ? unreadNotifications : t.id === 'store-orders' ? pendingStoreOrders : t.id === 'purchase-pay' ? pendingPurchases : t.id === 'credit-sales' ? pendingCreditSales : t.id === 'stock' ? pendingIncoming : 0;
-              const Icon = t.icon;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={cn(
-                    'relative flex shrink-0 items-center gap-2 rounded-2xl px-4 py-3 text-left text-sm font-black transition active:scale-[0.98] lg:w-full lg:shrink',
-                    tab === t.id
-                      ? 'bg-slate-950 text-white shadow-lg shadow-slate-200'
-                      : 'bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-white',
-                  )}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  <span className="whitespace-nowrap lg:whitespace-normal">{t.id === 'credit-sales' ? (branch === 'VRSNB' ? 'Credit' : 'Credit Sales') : t.label}</span>
-                  {count > 0 && <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[10px] text-white">{count}</span>}
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="mt-3 hidden rounded-[1.5rem] bg-slate-50 p-3 ring-1 ring-slate-200 lg:block">
-            <div className="grid grid-cols-2 gap-2 text-xs font-black text-slate-600">
-              <MiniStat label="Low" value={lowStockCount} />
-              <MiniStat label="Incoming" value={pendingIncoming} />
-            </div>
-          </div>
-        </aside>
-
+      <div className="grid min-h-0 gap-4 px-3 py-3 md:px-5">
         <main className="min-w-0 min-h-0 overflow-hidden rounded-[2rem] border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50">
           <div className="shrink-0 border-b border-slate-200 bg-white/95 p-3 backdrop-blur md:p-4">
             <div className="rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-4 text-white shadow-lg shadow-slate-300/50">
@@ -223,8 +204,9 @@ export default function BranchDashboard({ branch }: Props) {
                   <div className="flex flex-wrap items-center gap-2">
                     {pendingIncoming > 0 && <Badge tone="green"><Package className="size-3" /> {pendingIncoming} incoming</Badge>}
                     {pendingAdvance > 0 && <Badge tone="amber"><FileClock className="size-3" /> {pendingAdvance} legacy advance</Badge>}
-                    {pendingStoreOrders > 0 && <Badge tone="blue"><Store className="size-3" /> {pendingStoreOrders} store confirms</Badge>}
+                    {branch !== 'VRSNB' && pendingStoreOrders > 0 && <Badge tone="blue"><Store className="size-3" /> {pendingStoreOrders} store confirms</Badge>}
                     {pendingCreditSales > 0 && <Badge tone="amber"><CreditCard className="size-3" /> {pendingCreditSales} credit due</Badge>}
+                    {todayDeliveryCount > 0 && <Badge tone="red"><Bell className="size-3" /> {todayDeliveryCount} delivery today</Badge>}
                     {unreadNotifications > 0 && <Badge tone="red"><Bell className="size-3" /> {unreadNotifications} admin alerts</Badge>}
                   </div>
                   <h1 className="mt-3 text-2xl font-black tracking-tight md:text-4xl">Branch Billing Command Center</h1>
@@ -242,9 +224,9 @@ export default function BranchDashboard({ branch }: Props) {
           </div>
 
           <div className={cn('min-h-0 px-3 py-3 md:px-4', tab !== 'bill' && 'max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>
-            {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={(id) => setTab(id as TabId)} />}
-            {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={(id) => setTab(id as TabId)} />}
-            {tab === 'quotation' && branch !== 'VRSNB' && <QuotationTab branch={branch} branchStock={branchStock} onOpenTab={(id) => setTab(id as TabId)} />}
+            {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
+            {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
+            {tab === 'quotation' && branch !== 'VRSNB' && <QuotationTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase' && isAdminUser && <PurchaseTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase-pay' && isAdminUser && <PurchasePayTab branch={branch} branchStock={branchStock} />}
@@ -253,9 +235,10 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'history' && <BranchBillHistoryProTab branch={branch} branchStock={branchStock} />}
             {tab === 'credit-sales' && <CreditSalesTab branch={branch} branchStock={branchStock} />}
             {tab === 'closure' && <CashierClosureTab branch={branch} branchStock={branchStock} />}
+            {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
             {tab === 'salesperson' && branch !== 'VRSNB' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
-            {tab === 'store-orders' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
+            {tab === 'store-orders' && branch !== 'VRSNB' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
             {tab === 'current-cash' && isAdminUser && <CurrentCashTab branch={branch} branchStock={branchStock} />}
             {tab === 'bank' && isAdminUser && <BankTab branch={branch} branchStock={branchStock} />}
             {tab === 'reports' && canViewReports && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}
@@ -278,10 +261,68 @@ function Badge({ children, tone }: { children: React.ReactNode; tone: 'green' | 
   return <span className={cn('inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wide', cls)}>{children}</span>;
 }
 
-function HeroKpi({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
-  return <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10"><div className="flex items-center justify-between text-white/60"><p className="text-[10px] font-black uppercase tracking-wide">{label}</p>{icon}</div><p className="mt-1 text-xl font-black tabular-nums text-white">{value}</p></div>;
+function BranchAlertsTab({
+  branch,
+  legacyDeliveries,
+  cakeDeliveries,
+}: {
+  branch: Branch;
+  legacyDeliveries: Array<{ id: string; customerName: string; customerPhone?: string | null; deliveryDate: string; balanceDue: number; subtotal: number; items: Array<{ itemName: string; quantity: number }> }>;
+  cakeDeliveries: Array<{ id: string; orderNo: string; customerName: string; mobile: string; deliveryDate: string; deliveryTime?: string; cakeKg: string; flavor: string; shape: string; balanceAmount: number; status: string }>;
+}) {
+  const hasDeliveries = legacyDeliveries.length + cakeDeliveries.length > 0;
+  return (
+    <div className="space-y-5">
+      <section className="rounded-[2rem] border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl bg-red-50 p-3 text-red-600"><Bell className="size-5" /></div>
+            <div>
+              <h3 className="text-xl font-black text-slate-950">Delivery Alerts</h3>
+              <p className="text-sm font-bold text-slate-500">Today deliveries for {BRANCH_LABELS[branch]}.</p>
+            </div>
+          </div>
+        </div>
+        <div className="p-5">
+          {!hasDeliveries ? (
+            <div className="rounded-3xl bg-slate-50 p-8 text-center">
+              <Bell className="mx-auto size-10 text-slate-300" />
+              <p className="mt-3 font-black text-slate-700">No delivery due today</p>
+              <p className="text-sm font-semibold text-slate-400">Advance delivery reminders will appear here automatically.</p>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {legacyDeliveries.map((order) => (
+                <div key={order.id} className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-black text-slate-950">{order.customerName}</p>
+                      <p className="text-sm font-bold text-slate-600">{order.customerPhone || 'No mobile'} - {order.items.map((i) => `${i.itemName} x ${i.quantity}`).join(', ')}</p>
+                    </div>
+                    <span className="rounded-full bg-amber-200 px-3 py-1 text-xs font-black text-amber-800">Balance {money(order.balanceDue)}</span>
+                  </div>
+                </div>
+              ))}
+              {cakeDeliveries.map((order) => (
+                <div key={order.id} className="rounded-3xl border border-red-200 bg-red-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-black text-slate-950">{order.orderNo} - {order.customerName}</p>
+                      <p className="text-sm font-bold text-slate-600">{order.mobile} - {order.cakeKg}kg {order.flavor} {order.shape}</p>
+                      <p className="mt-1 text-xs font-black text-red-700">Delivery today {order.deliveryTime || ''}</p>
+                    </div>
+                    <span className="rounded-full bg-red-200 px-3 py-1 text-xs font-black text-red-800">Balance {money(order.balanceAmount)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
 }
 
-function MiniStat({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-2xl bg-white p-3 text-center ring-1 ring-slate-200"><p className="text-lg font-black text-slate-950">{value}</p><p className="text-[10px] uppercase tracking-wide text-slate-400">{label}</p></div>;
+function HeroKpi({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10"><div className="flex items-center justify-between text-white/60"><p className="text-[10px] font-black uppercase tracking-wide">{label}</p>{icon}</div><p className="mt-1 text-xl font-black tabular-nums text-white">{value}</p></div>;
 }
