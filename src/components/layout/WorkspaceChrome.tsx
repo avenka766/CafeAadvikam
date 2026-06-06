@@ -5,6 +5,7 @@ import {
   Bell,
   CalendarCheck,
   ChefHat,
+  CheckCircle2,
   ClipboardList,
   FileText,
   Flame,
@@ -59,7 +60,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/daily-closure/, meta: { title: 'Daily Closure', eyebrow: 'Counter handover', description: 'Close the day with payment-wise collection, total sales, credit, advance and cashier summaries.', accent: 'Cash • UPI • Card' } },
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
-  { match: /^\/bakery\/baker/, meta: { title: 'Baker Production Board', eyebrow: 'Baking team', description: 'A production-first dashboard for accepted orders, recipe quantities and batch preparation.', accent: 'Recipes • Batches • Dispatch' } },
+  { match: /^\/bakery\/baker/, meta: { title: 'Baker Dashboard', eyebrow: 'Baking team', description: 'Active baking orders, completed work and daily closure in one clean workspace.', accent: 'Orders • Completed • Closure' } },
   { match: /^\/bakery\/packing/, meta: { title: 'Packing & Dispatch', eyebrow: 'Packing desk', description: 'Pack orders branch-wise, record shortages/excess, and dispatch items with fewer mistakes.', accent: 'Pack • Check • Dispatch' } },
   { match: /^\/bakery\/receive/, meta: { title: 'Order Receiver', eyebrow: 'Branch demand', description: 'Place requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
   { match: /^\/bakery\/items/, meta: { title: 'Item Master Studio', eyebrow: 'Master data', description: 'Cafe and bakery item management with clearer category, price and availability controls.', accent: 'Cafe • Bakery • Recipes' } },
@@ -135,7 +136,11 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Recipes', path: '/bakery/store?tab=recipes', icon: <ChefHat className="size-4" />, group: 'Admin' },
       ];
     case 'baker':
-      return [{ label: 'Baker', path: '/bakery/baker', icon: <Flame className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'Orders', path: '/bakery/baker', icon: <Flame className="size-4" />, group: 'Main' },
+        { label: 'Completed', path: '/bakery/baker?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
+        { label: 'Daily Closure', path: '/bakery/baker?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+      ];
     case 'packing':
       return [{ label: 'Packing', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' }];
     case 'receiver_vrsnb':
@@ -189,7 +194,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/store/.test(location.pathname) || /^\/bakery\/receive/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/(store|baker|receive)/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
