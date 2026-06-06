@@ -127,6 +127,8 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const [creditCustomerName, setCreditCustomerName] = useState('');
   const [creditCustomerMobile, setCreditCustomerMobile] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
+  const [creditAmountPaid, setCreditAmountPaid] = useState('');
+  const [creditPaidMode, setCreditPaidMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [creditRemarks, setCreditRemarks] = useState('');
   const [discount, setDiscount] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -169,13 +171,14 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const discountValue = Math.min(Number(discount || 0), subtotal);
   const tax = useMemo(() => cart.reduce((s, i) => s + i.tax, 0), [cart]);
   const total = Math.max(0, subtotal + tax - discountValue);
+  const creditPaid = Math.min(Number(creditAmountPaid || 0), total);
   const tendered = paymentMode === 'credit'
-    ? 0
+    ? creditPaid
     : paymentMode === 'split'
       ? Number(split.cash || 0) + Number(split.upi || 0) + Number(split.card || 0)
       : Number(cashTendered || (paymentMode === 'cash' ? 0 : total));
   const due = Math.max(0, total - tendered);
-  const balance = paymentMode === 'credit' ? total : Math.max(0, tendered - total);
+  const balance = paymentMode === 'credit' ? Math.max(0, total - tendered) : Math.max(0, tendered - total);
   const todayBills = bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === new Date().toDateString());
   const branchHolds = holds.filter((h) => h.branch === branch);
 
@@ -224,7 +227,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   }));
 
   const clear = useCallback(() => {
-    setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
+    setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
   }, []);
 
   const holdBill = useCallback(() => {
@@ -254,6 +257,9 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     }
     if (paymentMode === 'cash' && Number(cashTendered || 0) < total) return 'Cash tendered is less than bill total.';
     if (paymentMode === 'credit' && !creditCustomerName.trim()) return 'Customer name is required for credit sale.';
+    if (paymentMode === 'credit' && !creditCustomerMobile.trim()) return 'Mobile number is required for credit sale.';
+    if (paymentMode === 'credit' && !creditDueDate) return 'Due date is required for credit sale.';
+    if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
     if (paymentMode === 'split' && tendered < total) return 'Split payment total is less than bill total.';
     if (paymentMode === 'split' && tendered > total) return 'Split payment cannot exceed the bill total.';
     return null;
@@ -284,6 +290,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     } else if (mode === 'credit') {
       setCashTendered('');
       setSplit({ cash: '', upi: '', card: '' });
+      setCreditAmountPaid('');
     } else {
       setCashTendered(String(total));
       setSplit({ cash: '', upi: '', card: '' });
@@ -308,20 +315,20 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
       }
       const saved = addBill({
         branch, billNo, invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
-        tendered: paymentMode === 'cash' || paymentMode === 'split' ? tendered : paymentMode === 'credit' ? 0 : total,
+        tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,
-        split: paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : undefined,
         creditCustomerName: paymentMode === 'credit' ? creditCustomerName.trim() : undefined,
         creditCustomerMobile: paymentMode === 'credit' ? creditCustomerMobile.trim() : undefined,
         creditDueDate: paymentMode === 'credit' ? creditDueDate : undefined,
-        creditRemarks: paymentMode === 'credit' ? creditRemarks.trim() : undefined,
+        creditRemarks: paymentMode === 'credit' ? [creditRemarks.trim(), creditPaid > 0 ? `Upfront ${money(creditPaid)} by ${creditPaidMode.toUpperCase()}` : 'No upfront payment'].filter(Boolean).join(' - ') : undefined,
+        split: paymentMode === 'credit' && creditPaid > 0 ? { [creditPaidMode]: creditPaid } : paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : undefined,
         salesperson: billingStaff,
         biller: userName,
       });
       printBranchBill(saved, false);
       setLastBill(saved);
-      setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditRemarks(''); setDiscount('');
+      setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       await fetchBranchData(branch);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
@@ -360,7 +367,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
 
   return (
     <div className="branch-billmaxo h-full min-h-[calc(100dvh-var(--header-h,4rem)-10rem)] overflow-hidden rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70">
-      <div className="grid h-full grid-cols-1 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
+      <div className="grid h-full max-h-[calc(100dvh-var(--header-h,4rem)-8rem)] grid-cols-1 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="border-b border-slate-200 bg-slate-950 p-5 text-white">
             <div className="flex items-center justify-between gap-3">
@@ -387,12 +394,9 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               {isAdmin && <p className="text-xs font-semibold text-slate-500">Admin can add/edit salesperson names in Salesperson Report.</p>}
             </div>
           ) : (
-            <div className="border-b border-slate-200 p-4">
-              <div className="rounded-2xl bg-emerald-50 px-4 py-3 ring-1 ring-emerald-100">
-                <p className="text-xs font-black uppercase tracking-wide text-emerald-700">Cashier Billing</p>
-                <p className="mt-1 text-base font-black text-slate-950">{userName}</p>
-                <p className="text-xs font-semibold text-emerald-700/80">VRSNB does not require salesperson selection.</p>
-              </div>
+            <div className="border-b border-slate-200 px-4 py-3">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
+              <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
             </div>
           )}
 
@@ -401,7 +405,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
               <button onClick={clear} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
               {cart.length === 0 ? (
                 <div className="flex h-full min-h-48 items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
                   <div><Receipt className="mx-auto size-10 text-slate-300"/><p className="mt-3 font-black text-slate-600">Cart is always visible</p><p className="text-sm text-slate-400">Select items from the right side.</p></div>
@@ -452,11 +456,17 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <div className="mt-3 space-y-2 rounded-2xl border-2 border-amber-200 bg-amber-50 p-3">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <input value={creditCustomerName} onChange={(e)=>setCreditCustomerName(e.target.value)} placeholder="Customer name *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
-                  <input value={creditCustomerMobile} onChange={(e)=>setCreditCustomerMobile(e.target.value)} placeholder="Mobile number" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
+                  <input value={creditCustomerMobile} onChange={(e)=>setCreditCustomerMobile(e.target.value)} placeholder="Mobile number *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                   <input type="date" value={creditDueDate} onChange={(e)=>setCreditDueDate(e.target.value)} className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
+                  <input type="number" min="0" max={total} value={creditAmountPaid} onChange={(e)=>setCreditAmountPaid(e.target.value)} placeholder="Amount paid now" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
+                  <select value={creditPaidMode} onChange={(e)=>setCreditPaidMode(e.target.value as 'cash' | 'upi' | 'card')} className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500">
+                    <option value="cash">Paid by Cash</option>
+                    <option value="upi">Paid by UPI</option>
+                    <option value="card">Paid by Card</option>
+                  </select>
                   <input value={creditRemarks} onChange={(e)=>setCreditRemarks(e.target.value)} placeholder="Credit remarks" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                 </div>
-                <p className="text-xs font-bold text-amber-800">Credit bill will reduce stock now and appear in Credit Sales as pending due: {money(total)}.</p>
+                <p className="text-xs font-bold text-amber-800">Credit due after upfront payment: {money(Math.max(0, total - creditPaid))}.</p>
               </div>
             ) : (
               <div className="mt-3 flex items-center gap-2 rounded-2xl border-2 border-slate-200 bg-slate-50 px-3 py-2"><IndianRupee className="size-5 text-slate-400"/><input value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-10 flex-1 bg-transparent text-xl font-black outline-none"/></div>
@@ -493,7 +503,15 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                 const disabled = stock <= 0;
                 const inCart = cart.find((c)=>c.itemName===item.name);
                 return (
-                  <button key={item.barcode} disabled={disabled} onClick={()=>addItem(item)} className={cn('group min-h-36 rounded-3xl border-2 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}>
+                  <div
+                    key={item.barcode}
+                    role="button"
+                    tabIndex={disabled ? -1 : 0}
+                    aria-disabled={disabled}
+                    onClick={() => !disabled && addItem(item)}
+                    onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) addItem(item); }}
+                    className={cn('group min-h-36 rounded-3xl border-2 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <p className="line-clamp-2 text-xl font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="rounded-xl bg-slate-100 px-2 py-1 text-xs font-black text-slate-500">{idx + 1}</span>
@@ -503,12 +521,30 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                         <p className="text-2xl font-black text-emerald-700">{money(item.price)}<span className="text-xs text-slate-400">/{unitOf(item)}</span></p>
                         <p className={cn('mt-1 text-sm font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-1 inline size-4"/>{disabled ? 'Out of stock' : `${formatQty(stock, unitOf(item))} left`}</p>
                       </div>
-                      <span className={cn('inline-flex size-12 items-center justify-center rounded-2xl text-lg font-black shadow-sm', disabled ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 text-white shadow-orange-200')} aria-label={`Add ${item.name}`}>
-                        <Plus className="size-6" />
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {inCart && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); reduceItem(item.name); }}
+                            className="inline-flex size-12 items-center justify-center rounded-2xl bg-slate-200 text-slate-700 shadow-sm"
+                            aria-label={`Remove ${item.name}`}
+                          >
+                            <Minus className="size-6" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={(e) => { e.stopPropagation(); addItem(item); }}
+                          className={cn('inline-flex size-12 items-center justify-center rounded-2xl text-lg font-black shadow-sm disabled:opacity-40', disabled ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 text-white shadow-orange-200')}
+                          aria-label={`Add ${item.name}`}
+                        >
+                          <Plus className="size-6" />
+                        </button>
+                      </div>
                     </div>
                     {inCart && <div className="mt-3 rounded-2xl bg-emerald-600 px-3 py-2 text-center text-sm font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
-                  </button>
+                  </div>
                 );
               })}
             </div>

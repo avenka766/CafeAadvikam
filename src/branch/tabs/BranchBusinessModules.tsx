@@ -142,10 +142,6 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     </div>
 
     <Section title="Credit Sales Collection" icon={<WalletCards className="size-5"/>} action={<div className="flex flex-wrap gap-2"><SoftButton onClick={printReport}><Printer className="size-4"/>Print</SoftButton><SoftButton onClick={exportCsv}><Download className="size-4"/>Export</SoftButton></div>}>
-      <div className="mb-4 rounded-3xl bg-amber-50 p-4 text-sm font-semibold text-amber-900 ring-1 ring-amber-100">
-        <p className="font-black">How Credit Sales works</p>
-        <p className="mt-1">When the cashier selects Credit in New Bill, the bill is printed and stock is reduced immediately, but no cash/UPI/card collection is added until payment is collected here.</p>
-      </div>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-3">
           <div className="relative max-w-xl"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Search bill, customer or mobile" className="pl-9"/></div>
@@ -171,37 +167,100 @@ export function CreditSalesTab({ branch }: ModuleProps) {
   </div>;
 }
 
-export function AdvanceCakeOrdersTab({ branch }: ModuleProps) {
+export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement } = useBranchOpsStore();
+  const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const items = catalog(branch);
+  const [mode, setMode] = useState<'store' | 'cake'>('store');
+  const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [form, setForm] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
+  const [storeForm, setStoreForm] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', itemName: items[0]?.name || '', quantity:'1', advanceAmount:'', paymentMode:'cash' });
   const [error, setError] = useState('');
   const people = isVRSNB ? [] : salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
   const update = (k: string, v: string) => { setForm((f)=>({...f,[k]:v})); setError(''); };
+  const updateStore = (k: string, v: string) => { setStoreForm((f)=>({...f,[k]:v})); setError(''); };
+
+  const saveStoreAdvance = () => {
+    const item = items.find((i)=>i.name===storeForm.itemName);
+    const qty = Number(storeForm.quantity || 0);
+    const adv = Number(storeForm.advanceAmount || 0);
+    if (!storeForm.customerName.trim() || !storeForm.mobile.trim() || !storeForm.deliveryDate || !item || qty <= 0) {
+      setError('Please fill customer name, mobile, delivery date, item and quantity.');
+      return;
+    }
+    const available = stockQty(branchStock, item.name);
+    if (qty > available) { setError(`Only ${available} available for ${item.name}.`); return; }
+    const orderValue = qty * item.price;
+    if (adv < 0 || adv > orderValue) { setError('Advance amount cannot be more than order value.'); return; }
+    const order = addAdvanceCakeOrder({ branch, customerName: storeForm.customerName, mobile: storeForm.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: storeForm.deliveryDate, deliveryTime: storeForm.deliveryTime, cakeKg: String(qty), flavor: item.name, shape: item.uom, messageOnCake: 'Existing branch stock item', designNotes: 'Existing branch stock advance order', attachmentName: '', orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: user, paymentMode: storeForm.paymentMode as 'cash'|'upi'|'card' });
+    printHtml(`Advance ${order.orderNo}`, `<div class="stamp">ADVANCE ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Item</span><b>${item.name}</b></div><div class="row"><span>Qty</span><b>${qty} ${item.uom}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>Rs ${order.orderValue}</b></div><div class="row"><span>Advance</span><b>Rs ${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>Rs ${order.balanceAmount}</b></div><p>Stock will reduce only on full payment/final invoice.</p>`);
+    setStoreForm({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', itemName: items[0]?.name || '', quantity:'1', advanceAmount:'', paymentMode:'cash' });
+  };
+
   const save = () => {
     const required = isVRSNB
-      ? ['customerName','mobile','deliveryDate','deliveryTime','cakeKg','flavor','shape','orderValue','advanceAmount']
-      : ['customerName','mobile','deliveryDate','deliveryTime','cakeKg','flavor','shape','orderValue','advanceAmount','salesperson'];
+      ? ['customerName','mobile','deliveryDate','cakeKg','flavor','shape','orderValue','advanceAmount']
+      : ['customerName','mobile','deliveryDate','cakeKg','flavor','shape','orderValue','advanceAmount','salesperson'];
     const missing = required.find((k)=>!String(form[k as keyof typeof form]).trim());
-    if (missing) { setError(isVRSNB ? 'Please fill all mandatory customer, delivery, cake, value and advance details.' : 'Please fill all mandatory fields: customer, mobile, delivery date/time, kg, flavor, shape, value, advance and salesperson.'); return; }
+    if (missing) { setError(isVRSNB ? 'Please fill customer name, mobile, delivery date, cake, value and advance details.' : 'Please fill customer name, mobile, delivery date, cake, value, advance and salesperson.'); return; }
     const orderValue = Number(form.orderValue), adv = Number(form.advanceAmount);
     if (!orderValue || adv < 0 || adv > orderValue) { setError('Check order value and advance amount.'); return; }
     const orderStaff = isVRSNB ? user : form.salesperson;
     const order = addAdvanceCakeOrder({ branch, customerName: form.customerName, mobile: form.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: form.deliveryDate, deliveryTime: form.deliveryTime, cakeKg: form.cakeKg, flavor: form.flavor, shape: form.shape, messageOnCake: form.messageOnCake, designNotes: form.designNotes, attachmentName: form.attachmentName, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: orderStaff, paymentMode: form.paymentMode as 'cash'|'upi'|'card' });
-    printHtml(`Sales Order ${order.orderNo}`, `<div class="stamp">SALES ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Cake</span><b>${order.cakeKg}kg ${order.flavor} ${order.shape}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>₹${order.orderValue}</b></div><div class="row"><span>Advance</span><b>₹${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>₹${order.balanceAmount}</b></div><div class="row"><span>${isVRSNB ? 'Cashier' : 'Salesperson'}</span><b>${orderStaff}</b></div>`);
+    printHtml(`Sales Order ${order.orderNo}`, `<div class="stamp">SALES ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Cake</span><b>${order.cakeKg}kg ${order.flavor} ${order.shape}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>Rs ${order.orderValue}</b></div><div class="row"><span>Advance</span><b>Rs ${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>Rs ${order.balanceAmount}</b></div><div class="row"><span>${isVRSNB ? 'Cashier' : 'Salesperson'}</span><b>${orderStaff}</b></div>`);
     setForm({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
   };
-  const finalInvoice = (o: CakeAdvanceOrder) => {
-    const { billNo } = nextBranchInvoice(branch);
-    updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
-    printHtml(`Final Invoice ${billNo}`, `<div class="stamp">ORIGINAL BILL</div><h2>Final Tax Invoice</h2><p class="b">${billNo}</p><div class="row"><span>Customer</span><b>${o.customerName}</b></div><div class="row"><span>Mobile</span><b>${o.mobile}</b></div><div class="row"><span>Order Number</span><b>${o.orderNo}</b></div><div class="row"><span>Order Date</span><b>${o.orderDate}</b></div><div class="row"><span>Delivery</span><b>${o.deliveryDate} ${o.deliveryTime}</b></div><div class="row"><span>Cake Details</span><b>${o.cakeKg}kg ${o.flavor} ${o.shape}</b></div><div class="row"><span>Total Order Amount</span><b>₹${o.orderValue}</b></div><div class="row"><span>Advance Received</span><b>₹${o.advanceAmount}</b></div><div class="row"><span>Balance Received Today</span><b>₹${o.balanceAmount}</b></div><div class="row"><span>Total Received</span><b>₹${o.orderValue}</b></div><div class="row"><span>Status</span><b>PAID IN FULL</b></div><p>${isVRSNB ? 'Cashier' : 'Salesperson'}: ${o.salesperson}</p><p>Biller: ${currentUser?.displayName || 'Staff'}</p><p>Store Confirmation: ${o.storeConfirmedBy || '-'} ${o.storeConfirmedAt ? new Date(o.storeConfirmedAt).toLocaleString('en-IN') : ''}</p>`);
-  };
-  return <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]"><Section title="Custom Cake Advance Order" icon={<Gift className="size-5"/>}><div className="grid gap-3"><Field label="Customer Name *"><Input value={form.customerName} onChange={(e)=>update('customerName',e.target.value)}/></Field><Field label="Mobile Number *"><Input value={form.mobile} onChange={(e)=>update('mobile',e.target.value)}/></Field><div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={form.deliveryDate} onChange={(e)=>update('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time *"><Input type="time" value={form.deliveryTime} onChange={(e)=>update('deliveryTime',e.target.value)}/></Field></div><div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={form.cakeKg} onChange={(e)=>update('cakeKg',e.target.value)}/></Field><Field label="Flavor *"><Input value={form.flavor} onChange={(e)=>update('flavor',e.target.value)}/></Field><Field label="Shape *"><Input value={form.shape} onChange={(e)=>update('shape',e.target.value)}/></Field></div><Field label="Message on cake"><Input value={form.messageOnCake} onChange={(e)=>update('messageOnCake',e.target.value)}/></Field><Field label="Design notes"><Textarea value={form.designNotes} onChange={(e)=>update('designNotes',e.target.value)}/></Field><Field label="Attachment/Image filename"><Input value={form.attachmentName} onChange={(e)=>update('attachmentName',e.target.value)} placeholder="Attach through real file storage later"/></Field><div className="grid grid-cols-2 gap-3"><Field label="Order Value *"><Input type="number" value={form.orderValue} onChange={(e)=>update('orderValue',e.target.value)}/></Field><Field label="Advance Amount *"><Input type="number" value={form.advanceAmount} onChange={(e)=>update('advanceAmount',e.target.value)}/></Field></div><div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={form.salesperson} onChange={(e)=>update('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}<Field label="Payment Mode"><Select value={form.paymentMode} onChange={(e)=>update('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}<br/><span className="text-xs font-semibold">No salesperson required for VRSNB.</span></div>}</div>{error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}<PrimaryButton onClick={save}><Printer className="size-4"/>Generate Sales Order Slip & Send to Store</PrimaryButton></div></Section><Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>}><div className="space-y-3">{orders.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} · {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} · {o.cakeKg}kg {o.flavor} {o.shape} · Delivery {o.deliveryDate} {o.deliveryTime}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>)}</div></Section></div>;
-}
 
+  const finalInvoice = async (o: CakeAdvanceOrder) => {
+    const { billNo } = nextBranchInvoice(branch);
+    if (o.designNotes === 'Existing branch stock advance order') {
+      const qty = Number(o.cakeKg || 0);
+      await manualUpdateStock(branch, o.flavor, Math.max(0, stockQty(branchStock, o.flavor) - qty), currentUser?.displayName || 'Staff');
+      await fetchBranchData(branch);
+    }
+    if (o.balanceAmount > 0) {
+      addCashMovement({ branch, amount: o.balanceAmount, paymentMode: finalPaymentMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    }
+    updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
+    const itemLabel = o.designNotes === 'Existing branch stock advance order' ? `${o.flavor} - ${o.cakeKg} ${o.shape}` : `${o.cakeKg}kg ${o.flavor} ${o.shape}`;
+    printHtml(`Final Invoice ${billNo}`, `<div class="stamp">ORIGINAL BILL</div><h2>Final Tax Invoice</h2><p class="b">${billNo}</p><div class="row"><span>Customer</span><b>${o.customerName}</b></div><div class="row"><span>Mobile</span><b>${o.mobile}</b></div><div class="row"><span>Order Number</span><b>${o.orderNo}</b></div><div class="row"><span>Delivery</span><b>${o.deliveryDate} ${o.deliveryTime}</b></div><div class="row"><span>Item</span><b>${itemLabel}</b></div><div class="row"><span>Total Order Amount</span><b>Rs ${o.orderValue}</b></div><div class="row"><span>Advance Received</span><b>Rs ${o.advanceAmount}</b></div><div class="row"><span>Balance Received Today</span><b>Rs ${o.balanceAmount}</b></div><div class="row"><span>Total Received</span><b>Rs ${o.orderValue}</b></div><div class="row"><span>Status</span><b>PAID IN FULL</b></div><p>${isVRSNB ? 'Cashier' : 'Salesperson'}: ${o.salesperson}</p><p>Biller: ${currentUser?.displayName || 'Staff'}</p>`);
+  };
+
+  return <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
+    <Section title="Advance Order" icon={<Gift className="size-5"/>}>
+      <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
+        <button onClick={()=>setMode('store')} className={cn('rounded-xl px-3 py-2 text-sm font-black', mode==='store'?'bg-slate-950 text-white':'text-slate-600')}>Store Items</button>
+        <button onClick={()=>setMode('cake')} className={cn('rounded-xl px-3 py-2 text-sm font-black', mode==='cake'?'bg-slate-950 text-white':'text-slate-600')}>Cake Orders</button>
+      </div>
+      {mode === 'store' ? <div className="grid gap-3">
+        <Field label="Customer Name *"><Input value={storeForm.customerName} onChange={(e)=>updateStore('customerName',e.target.value)}/></Field>
+        <Field label="Mobile Number *"><Input value={storeForm.mobile} onChange={(e)=>updateStore('mobile',e.target.value)}/></Field>
+        <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={storeForm.deliveryDate} onChange={(e)=>updateStore('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={storeForm.deliveryTime} onChange={(e)=>updateStore('deliveryTime',e.target.value)}/></Field></div>
+        <Field label="Item"><Select value={storeForm.itemName} onChange={(e)=>updateStore('itemName',e.target.value)}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field>
+        <div className="grid grid-cols-2 gap-3"><Field label="Quantity"><Input type="number" min="0" value={storeForm.quantity} onChange={(e)=>updateStore('quantity',e.target.value)}/></Field><Field label="Advance Amount"><Input type="number" min="0" value={storeForm.advanceAmount} onChange={(e)=>updateStore('advanceAmount',e.target.value)}/></Field></div>
+        <Field label="Payment Mode"><Select value={storeForm.paymentMode} onChange={(e)=>updateStore('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>
+        {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
+        <PrimaryButton onClick={saveStoreAdvance}><Printer className="size-4"/>Save Store Item Advance</PrimaryButton>
+      </div> : <div className="grid gap-3">
+        <Field label="Customer Name *"><Input value={form.customerName} onChange={(e)=>update('customerName',e.target.value)}/></Field><Field label="Mobile Number *"><Input value={form.mobile} onChange={(e)=>update('mobile',e.target.value)}/></Field>
+        <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={form.deliveryDate} onChange={(e)=>update('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={form.deliveryTime} onChange={(e)=>update('deliveryTime',e.target.value)}/></Field></div>
+        <div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={form.cakeKg} onChange={(e)=>update('cakeKg',e.target.value)}/></Field><Field label="Flavor *"><Input value={form.flavor} onChange={(e)=>update('flavor',e.target.value)}/></Field><Field label="Shape *"><Input value={form.shape} onChange={(e)=>update('shape',e.target.value)}/></Field></div>
+        <Field label="Message on cake"><Input value={form.messageOnCake} onChange={(e)=>update('messageOnCake',e.target.value)}/></Field><Field label="Design notes"><Textarea value={form.designNotes} onChange={(e)=>update('designNotes',e.target.value)}/></Field><Field label="Attachment/Image filename"><Input value={form.attachmentName} onChange={(e)=>update('attachmentName',e.target.value)} placeholder="Attach through real file storage later"/></Field>
+        <div className="grid grid-cols-2 gap-3"><Field label="Order Value *"><Input type="number" value={form.orderValue} onChange={(e)=>update('orderValue',e.target.value)}/></Field><Field label="Advance Amount *"><Input type="number" value={form.advanceAmount} onChange={(e)=>update('advanceAmount',e.target.value)}/></Field></div>
+        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={form.salesperson} onChange={(e)=>update('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}<Field label="Payment Mode"><Select value={form.paymentMode} onChange={(e)=>update('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
+        {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
+        <PrimaryButton onClick={save}><Printer className="size-4"/>Generate Sales Order Slip & Send to Store</PrimaryButton>
+      </div>}
+    </Section>
+    <Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>} action={<Select value={finalPaymentMode} onChange={(e)=>setFinalPaymentMode(e.target.value as typeof finalPaymentMode)} className="w-40"><option value="cash">Final Cash</option><option value="upi">Final UPI</option><option value="card">Final Card</option></Select>}>
+      <div className="space-y-3">{orders.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {o.designNotes === 'Existing branch stock advance order' ? `${o.flavor} ${o.cakeKg} ${o.shape}` : `${o.cakeKg}kg ${o.flavor} ${o.shape}`} - Delivery {o.deliveryDate} {o.deliveryTime}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>void finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>)}</div>
+    </Section>
+  </div>;
+}
 function makeLine(itemName: string, qty: number, price: number): BranchBillItem { return { itemName, quantity: qty, unit: 'pcs', price, tax: 0, discount: 0, lineTotal: qty * price }; }
 
 export function QuotationTab({ branch, branchStock, onOpenTab }: ModuleProps) {
@@ -291,7 +350,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt));
   const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt));
   const todayCreditSales = creditSales.filter((c) => c.branch === branch && today(c.createdAt));
-  const todayCreditCollections = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && m.purpose === 'Credit collection');
+  const todayCreditCollections = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Credit collection' || m.purpose === 'Credit upfront collection'));
+  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
   const totalSales = todayBills.reduce((s, b) => s + b.total, 0);
   const cash = todayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
@@ -300,12 +360,16 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.total, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = todayCreditCollections.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const advancePaid = todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
+  const advanceFull = todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = todayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
   const discounts = todayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = todayBills.filter((b) => b.printCount > 1).length;
-  const expected = Number(opening || 0) + cash + creditCollectionCash - refunds - expenses;
+  const expected = Number(opening || 0) + cash + creditCollectionCash + advanceCash - refunds - expenses;
   const countedCash = Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -331,6 +395,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       ['Credit Sales', creditSalesTotal],
       ['Credit Collection Cash', creditCollectionCash],
       ['Credit Collection Digital', creditCollectionDigital],
+      ['Advance Paid', advancePaid],
+      ['Advance Full Balance', advanceFull],
+      ['Advance Digital', advanceDigital],
       ['Expenses', expenses],
       ['Refunds', refunds],
       ['Expected Cash', expected],
@@ -369,9 +436,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <tr className="border-t"><td className="p-3 font-black">Split Payments</td><td className="p-3 text-right font-black">{money(splitTotal)}</td><td className="p-3 text-slate-500">Bills collected through more than one payment mode.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Credit Sales</td><td className="p-3 text-right font-black text-amber-700">{money(creditSalesTotal)}</td><td className="p-3 text-slate-500">Credit bills made today. This is sale value, not drawer cash.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionCash + creditCollectionDigital)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Advance Paid</td><td className="p-3 text-right font-black text-emerald-700">{money(advancePaid)}</td><td className="p-3 text-slate-500">Advance collected today for advance orders.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Advance Full / Balance</td><td className="p-3 text-right font-black text-emerald-700">{money(advanceFull)}</td><td className="p-3 text-slate-500">Final balance collected today for advance orders.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Expenses</td><td className="p-3 text-right font-black text-red-600">-{money(expenses)}</td><td className="p-3 text-slate-500">Supplier/purchase payments made today.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Refunds</td><td className="p-3 text-right font-black text-red-600">-{money(refunds)}</td><td className="p-3 text-slate-500">Return/refund amount paid today.</td></tr>
-              <tr className="border-t bg-amber-50"><td className="p-3 font-black">Expected Cash</td><td className="p-3 text-right text-lg font-black">{money(expected)}</td><td className="p-3 text-slate-600">Opening + cash sales + cash credit collections - cash out.</td></tr>
+              <tr className="border-t bg-amber-50"><td className="p-3 font-black">Expected Cash</td><td className="p-3 text-right text-lg font-black">{money(expected)}</td><td className="p-3 text-slate-600">Opening + cash sales + cash credit collections + cash advances - cash out.</td></tr>
             </tbody>
           </table>
         </div>
@@ -422,3 +491,4 @@ export function BranchAdminKpiStrip({ branch }: { branch: Branch }) {
   const b = bills.filter(x=>x.branch===branch&&today(x.createdAt));
   return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6"><Kpi label="Today's Sales" value={money(b.reduce((s,x)=>s+x.total,0))} icon={<Receipt/>} tone="green"/><Kpi label="Pending Advance" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status!=='Paid In Full').length} icon={<CalendarClock/>} tone="amber"/><Kpi label="Store Confirm" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status==='Store Confirmed').length} icon={<Store/>} tone="blue"/><Kpi label="Purchase Pay" value={money(purchasePayments.filter(p=>p.branch===branch&&today(p.createdAt)).reduce((s,p)=>s+p.amount,0))} icon={<WalletCards/>}/><Kpi label="Deposits" value={money(bankDeposits.filter(d=>d.branch===branch&&today(d.createdAt)).reduce((s,d)=>s+d.amount,0))} icon={<Landmark/>} tone="blue"/><Kpi label="Returns" value={money(returns.filter(r=>r.branch===branch&&today(r.createdAt)).reduce((s,r)=>s+r.total,0))} icon={<RotateCcw/>} tone="red"/><Kpi label="Disputes" value={notifications.filter(n=>n.branch===branch&&n.type==='Stock Dispute'&&n.status!=='Resolved').length} icon={<AlertTriangle/>} tone="red"/></div>;
 }
+
