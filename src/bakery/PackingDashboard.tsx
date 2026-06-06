@@ -1,11 +1,12 @@
 // src/bakery/PackingDashboard.tsx (Redesigned — Tabs + Excel Export)
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock,
   BoxSelect, MapPin, FileSpreadsheet, Calendar, Send,
-  Search, Filter, Printer, BarChart3, RefreshCw, ClipboardList,
+  Printer, RefreshCw,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -27,9 +28,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'closure';
-type StatusFilter = 'all' | 'packed' | 'dispatched';
+type ActiveTab  = 'orders' | 'dispatched' | 'closure';
 type BranchFilter = 'all' | Branch;
+const PACKING_TABS: ActiveTab[] = ['orders', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -222,8 +223,8 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
     if (!isNaN(n) && n >= 0) setPackedEntries(prev => prev.map((e, i) => i === idx ? { ...e, qty: n, confirmed: false } : e));
   };
 
-  const preparedItems = order.preparedItems || [];
-  const dispatchLog   = order.dispatchLog   || [];
+  const preparedItems = useMemo(() => order.preparedItems ?? [], [order.preparedItems]);
+  const dispatchLog   = useMemo(() => order.dispatchLog ?? [], [order.dispatchLog]);
 
   const stockByItem = useMemo(() => {
     const r: Record<string, { prepared: number; dispatched: number; available: number; unit: 'pcs' | 'kg' }> = {};
@@ -479,7 +480,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
 // ─── Dispatched Order Card (compact — for Dispatched tab) ─────────────────────
 function DispatchedOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
   const [expanded, setExpanded] = useState(false);
-  const dispatchLog = order.dispatchLog ?? [];
+  const dispatchLog = useMemo(() => order.dispatchLog ?? [], [order.dispatchLog]);
   const branchMeta  = order.targetBranch ? BRANCH_META[order.targetBranch] : null;
 
   const byBranch = useMemo(() => {
@@ -660,21 +661,21 @@ function printDailyClosure(payload: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function PackingDashboard() {
+  const [searchParams] = useSearchParams();
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('orders');
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
   const [isExporting, setIsExporting] = useState(false);
-  const [search, setSearch] = useState('');
-  const [closureSearch, setClosureSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [branchFilter, setBranchFilter] = useState<BranchFilter>('all');
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     const id = setInterval(() => fetchOrders(true), 15_000);
     return () => clearInterval(id);
-  }, []);
+  }, [fetchOrders]);
+
+  const requestedTab = searchParams.get('tab') as ActiveTab | null;
+  const activeTab: ActiveTab = requestedTab && PACKING_TABS.includes(requestedTab) ? requestedTab : 'orders';
 
   const packingOrders = useMemo(
     () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
@@ -690,16 +691,24 @@ export default function PackingDashboard() {
   );
 
   const filteredPackingOrders = useMemo(() => {
-    return packingOrders
-      .filter(o => statusFilter === 'all' ? true : o.status === statusFilter)
+    return readyToPackOrders
       .filter(o => branchFilter === 'all' ? true : o.targetBranch === branchFilter)
-      .filter(o => orderMatchesSearch(o, search))
       .sort((a, b) => {
         const aTime = new Date(a.sentToPackingAt || a.createdAt).getTime();
         const bTime = new Date(b.sentToPackingAt || b.createdAt).getTime();
         return bTime - aTime;
       });
-  }, [packingOrders, statusFilter, branchFilter, search]);
+  }, [readyToPackOrders, branchFilter]);
+
+  const filteredDispatchedOrders = useMemo(() => {
+    return dispatchedOrders
+      .filter(o => branchFilter === 'all' ? true : o.targetBranch === branchFilter)
+      .sort((a, b) => {
+        const aTime = new Date(orderLastDispatchAt(a) || a.sentToPackingAt || a.createdAt).getTime();
+        const bTime = new Date(orderLastDispatchAt(b) || b.sentToPackingAt || b.createdAt).getTime();
+        return bTime - aTime;
+      });
+  }, [branchFilter, dispatchedOrders]);
 
   const cutoff = useMemo(() => getCutoff(timeFilter), [timeFilter]);
   const periodLabel = TIME_FILTERS.find(t => t.key === timeFilter)?.label ?? 'Today';
@@ -707,24 +716,17 @@ export default function PackingDashboard() {
   const closureOrders = useMemo(() => {
     return packingOrders.filter(order => {
       if (branchFilter !== 'all' && order.targetBranch !== branchFilter) return false;
-      if (!orderMatchesSearch(order, closureSearch)) return false;
       const dateValue = order.status === 'dispatched' ? orderLastDispatchAt(order) : (order.sentToPackingAt || order.createdAt);
       return dateValue ? new Date(dateValue) >= cutoff : false;
     });
-  }, [packingOrders, branchFilter, closureSearch, cutoff]);
+  }, [packingOrders, branchFilter, cutoff]);
 
   const closureDispatchEntries = useMemo(() => {
     return closureOrders.flatMap(order => (order.dispatchLog ?? [])
       .filter(entry => new Date(entry.dispatchedAt) >= cutoff)
       .filter(entry => branchFilter === 'all' ? true : entry.branch === branchFilter)
-      .filter(entry => {
-        const q = closureSearch.trim().toLowerCase();
-        if (!q) return true;
-        return [order.orderNumber, entry.itemName, entry.branch, entry.dispatchedBy]
-          .join(' ').toLowerCase().includes(q);
-      })
       .map(entry => ({ order, entry })));
-  }, [closureOrders, cutoff, branchFilter, closureSearch]);
+  }, [closureOrders, cutoff, branchFilter]);
 
   const itemSummary = useMemo(() => {
     const summary: Record<string, { itemName: string; kg: number; pcs: number; entries: number; branches: Set<string> }> = {};
@@ -755,9 +757,6 @@ export default function PackingDashboard() {
     return totals;
   }, [closureDispatchEntries]);
 
-  const today = new Date().toDateString();
-  const todaysDispatchedOrders = dispatchedOrders.filter(order => (order.dispatchLog ?? []).some(entry => new Date(entry.dispatchedAt).toDateString() === today)).length;
-  const pendingItemsCount = readyToPackOrders.reduce((sum, order) => sum + (order.preparedItems?.length ?? 0), 0);
   const totalPackedForPeriod = closureOrders.filter(order => ['packed', 'dispatched'].includes(order.status)).length;
   const totalDispatchedForPeriod = closureOrders.filter(order => order.status === 'dispatched').length;
   const pendingForPeriod = closureOrders.filter(order => order.status === 'packed').length;
@@ -790,72 +789,24 @@ export default function PackingDashboard() {
     fetchOrders(true).finally(() => setInitialLoading(false));
   };
 
-  const navItems = [
-    { key: 'orders' as ActiveTab, label: 'Packing Orders', icon: BoxSelect, count: readyToPackOrders.length, hint: 'Pack & dispatch' },
-    { key: 'closure' as ActiveTab, label: 'Daily Closure', icon: ClipboardCheck, count: dispatchedOrders.length, hint: 'Summary & reports' },
-  ];
-
   return (
-    <div className="dashboard-screen min-h-screen bg-transparent md:flex md:items-start">
-      {/* Left navigation */}
-      <aside className="md:sticky md:top-0 md:min-h-screen md:w-72 md:border-r md:border-border/70 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 z-10">
-        <div className="p-4 md:p-5 border-b border-border/70">
-          <div className="flex items-center gap-3">
-            <div className="size-11 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
-              <Package className="size-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest">Bakery</p>
-              <h1 className="font-display text-xl font-bold text-foreground truncate">Packing Dashboard</h1>
-            </div>
-          </div>
-        </div>
-        <nav className="p-3 md:p-4 flex md:flex-col gap-2 overflow-x-auto md:overflow-visible">
-          {navItems.map(item => {
-            const Icon = item.icon;
-            const active = activeTab === item.key;
-            return (
-              <button
-                key={item.key}
-                onClick={() => setActiveTab(item.key)}
-                className={cn(
-                  'min-w-[180px] md:min-w-0 w-full flex items-center gap-3 rounded-2xl border px-3.5 py-3 text-left transition-all active:scale-[0.99]',
-                  active
-                    ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                    : 'bg-card text-foreground border-border hover:border-primary/30 hover:bg-muted/40'
-                )}>
-                <span className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', active ? 'bg-white/20' : 'bg-muted')}>
-                  <Icon className="size-4" />
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block text-sm font-body font-bold truncate">{item.label}</span>
-                  <span className={cn('block text-[10px] font-body truncate', active ? 'text-primary-foreground/75' : 'text-muted-foreground')}>{item.hint}</span>
-                </span>
-                {item.count > 0 && (
-                  <span className={cn('text-[10px] font-bold px-2 py-1 rounded-full min-w-[24px] text-center', active ? 'bg-white/20 text-white' : 'bg-primary/10 text-primary')}>
-                    {item.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
-      </aside>
-
-      <main className="flex-1 min-w-0 pb-8">
+    <div className="dashboard-screen min-h-screen bg-transparent">
+      <main className="min-w-0 pb-8">
         <div className="px-4 md:px-6 lg:px-8 pt-5 md:pt-6 space-y-5">
           {/* Header */}
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
-                  ? 'Review prepared orders, confirm packed quantity, and dispatch stock to branches.'
+                  ? 'Review baker-prepared orders, confirm packed quantity, and dispatch stock to branches.'
+                  : activeTab === 'dispatched'
+                  ? 'Orders dispatched to branches are kept here for follow-up.'
                   : 'Verify packed, pending, and dispatched work before closing the packing day.'}
               </p>
             </div>
@@ -885,55 +836,14 @@ export default function PackingDashboard() {
             </div>
           </div>
 
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            {[
-              { label: 'Ready to Pack', value: readyToPackOrders.length, icon: BoxSelect, tone: 'text-purple-700 bg-purple-50 border-purple-200' },
-              { label: 'Pending Items', value: pendingItemsCount, icon: Package, tone: 'text-amber-700 bg-amber-50 border-amber-200' },
-              { label: 'Dispatched Today', value: todaysDispatchedOrders, icon: Truck, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-              { label: 'Total Dispatches', value: closureDispatchEntries.length, icon: BarChart3, tone: 'text-blue-700 bg-blue-50 border-blue-200' },
-            ].map(card => {
-              const Icon = card.icon;
-              return (
-                <div key={card.label} className={cn('rounded-2xl border p-4 bg-card', card.tone)}>
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-body font-bold uppercase opacity-70">{card.label}</p>
-                    <Icon className="size-4 shrink-0" />
-                  </div>
-                  <p className="font-display text-2xl md:text-3xl font-bold tabular-nums mt-2">{card.value}</p>
-                </div>
-              );
-            })}
-          </div>
-
           {activeTab === 'orders' ? (
             <section className="space-y-4">
               {/* Filters */}
               <div className="rounded-2xl border border-border bg-card p-3 md:p-4">
-                <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-center">
-                  <div className="relative">
-                    <Search className="size-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      value={search}
-                      onChange={e => setSearch(e.target.value)}
-                      placeholder="Search order, item, branch, staff..."
-                      className="w-full h-11 rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/25"
-                    />
-                  </div>
-                  <div className="flex gap-2 overflow-x-auto pb-1 lg:pb-0">
-                    {(['all', 'packed', 'dispatched'] as StatusFilter[]).map(status => (
-                      <button
-                        key={status}
-                        onClick={() => setStatusFilter(status)}
-                        className={cn(
-                          'h-10 px-3 rounded-xl border text-xs font-body font-bold whitespace-nowrap flex items-center gap-1.5',
-                          statusFilter === status ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:text-foreground'
-                        )}>
-                        <Filter className="size-3" />
-                        {status === 'all' ? 'All Status' : status === 'packed' ? 'Pending / Packed' : 'Dispatched'}
-                      </button>
-                    ))}
-                  </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">
+                    {filteredPackingOrders.length} baker-ready order{filteredPackingOrders.length !== 1 ? 's' : ''}
+                  </p>
                   <select
                     value={branchFilter}
                     onChange={e => setBranchFilter(e.target.value as BranchFilter)}
@@ -951,12 +861,6 @@ export default function PackingDashboard() {
                 </div>
               ) : filteredPackingOrders.length > 0 ? (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <ClipboardList className="size-3.5 text-purple-500" />
-                    <p className="text-xs font-body font-bold text-muted-foreground uppercase">
-                      {filteredPackingOrders.length} order{filteredPackingOrders.length !== 1 ? 's' : ''} found
-                    </p>
-                  </div>
                   {filteredPackingOrders.map(order => <PackingOrderCard key={order.id} order={order} />)}
                 </div>
               ) : (
@@ -971,19 +875,48 @@ export default function PackingDashboard() {
                 </div>
               )}
             </section>
+          ) : activeTab === 'dispatched' ? (
+            <section className="space-y-4">
+              <div className="rounded-2xl border border-border bg-card p-3 md:p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">
+                    {filteredDispatchedOrders.length} dispatched order{filteredDispatchedOrders.length !== 1 ? 's' : ''}
+                  </p>
+                  <select
+                    value={branchFilter}
+                    onChange={e => setBranchFilter(e.target.value as BranchFilter)}
+                    className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25">
+                    <option value="all">All Branches</option>
+                    {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {initialLoading ? (
+                <div className="flex flex-col items-center justify-center py-24 gap-3">
+                  <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                  <p className="text-xs font-body text-muted-foreground">Loading dispatched orders...</p>
+                </div>
+              ) : filteredDispatchedOrders.length > 0 ? (
+                <div className="space-y-3">
+                  {filteredDispatchedOrders.map(order => <DispatchedOrderCard key={order.id} order={order} />)}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center py-24 gap-4 px-4 rounded-2xl border border-dashed border-border bg-card">
+                  <div className="size-20 rounded-3xl bg-muted flex items-center justify-center">
+                    <Truck className="size-10 text-muted-foreground opacity-30" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-body font-semibold text-foreground">No dispatched orders found</p>
+                    <p className="text-xs font-body text-muted-foreground mt-1">Orders appear here after packing dispatches them to branches.</p>
+                  </div>
+                </div>
+              )}
+            </section>
           ) : (
             <section className="space-y-4">
               <div className="rounded-2xl border border-border bg-card p-3 md:p-4 space-y-3">
-                <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-center">
-                  <div className="relative">
-                    <Search className="size-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      value={closureSearch}
-                      onChange={e => setClosureSearch(e.target.value)}
-                      placeholder="Search closure by order, item, branch, dispatcher..."
-                      className="w-full h-11 rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/25"
-                    />
-                  </div>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex gap-1.5 flex-wrap">
                     {TIME_FILTERS.map(tf => (
                       <button
@@ -1008,26 +941,6 @@ export default function PackingDashboard() {
                     {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
                   </select>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-                {[
-                  { label: 'Packed Orders', value: totalPackedForPeriod, icon: Package },
-                  { label: 'Dispatched Orders', value: totalDispatchedForPeriod, icon: CheckCircle2 },
-                  { label: 'Pending Orders', value: pendingForPeriod, icon: AlertTriangle },
-                  { label: 'Hold / Cancelled', value: holdCancelledForPeriod, icon: ClipboardCheck },
-                ].map(card => {
-                  const Icon = card.icon;
-                  return (
-                    <div key={card.label} className="rounded-2xl border border-border bg-card p-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] font-body font-bold text-muted-foreground uppercase">{card.label}</p>
-                        <Icon className="size-4 text-muted-foreground shrink-0" />
-                      </div>
-                      <p className="font-display text-2xl font-bold text-foreground tabular-nums mt-2">{card.value}</p>
-                    </div>
-                  );
-                })}
               </div>
 
               <div className="grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
