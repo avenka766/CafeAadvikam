@@ -30,13 +30,10 @@ import { supabase } from '@/lib/supabase';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import EmptyState from '@/components/ui/EmptyState';
 
-type KitchenTab = OrderStatus | 'active' | 'waste';
+type KitchenTab = 'active' | 'cancelled' | 'waste';
 
 const TABS: { key: KitchenTab; label: string; hint: string }[] = [
-  { key: 'active', label: 'Active', hint: 'New KOTs only' },
-  { key: 'pending', label: 'New', hint: 'Start these first' },
-  { key: 'preparing', label: 'Cooking', hint: 'In production' },
-  { key: 'ready', label: 'Ready', hint: 'Pickup / serve' },
+  { key: 'active', label: 'Active', hint: 'New and cooking' },
   { key: 'cancelled', label: 'Cancelled', hint: 'Stop / verify' },
 ];
 
@@ -56,20 +53,31 @@ function WasteTab() {
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const todayKey = new Date().toDateString();
 
   useEffect(() => {
     (async () => {
       setLoading(true);
+      const historyStart = new Date();
+      historyStart.setDate(historyStart.getDate() - 30);
       const { data } = await supabase
         .from('kitchen_waste_log')
         .select('*')
-        .gte('logged_at', today + 'T00:00:00')
+        .gte('logged_at', historyStart.toISOString())
         .order('logged_at', { ascending: false });
       setEntries((data as WasteEntry[]) ?? []);
       setLoading(false);
     })();
-  }, [today]);
+  }, []);
+
+  const todaysEntries = useMemo(
+    () => entries.filter(entry => new Date(entry.logged_at).toDateString() === todayKey),
+    [entries, todayKey]
+  );
+  const historyEntries = useMemo(
+    () => entries.filter(entry => new Date(entry.logged_at).toDateString() !== todayKey),
+    [entries, todayKey]
+  );
 
   const handleAdd = async () => {
     if (!foodItem.trim()) { setError('Enter a food item'); return; }
@@ -93,6 +101,26 @@ function WasteTab() {
     setDeleting(null);
   };
 
+  const renderEntries = (items: WasteEntry[], emptyMessage: string) => (
+    items.length === 0 ? (
+      <EmptyState icon="Waste" message={emptyMessage} sub="Entries will appear here after they are logged." />
+    ) : (
+      <div className="kitchen-waste-items">
+        {items.map(entry => (
+          <article key={entry.id} className="kitchen-waste-item">
+            <div>
+              <h4>{entry.food_item}</h4>
+              <p>{entry.quantity} - {new Date(entry.logged_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+            </div>
+            <button type="button" onClick={() => handleDelete(entry.id)} disabled={deleting === entry.id} aria-label={`Delete ${entry.food_item}`}>
+              {deleting === entry.id ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />}
+            </button>
+          </article>
+        ))}
+      </div>
+    )
+  );
+
   return (
     <div className="kitchen-waste-grid">
       <section className="kitchen-waste-form">
@@ -102,7 +130,7 @@ function WasteTab() {
             <h3>Today's Waste Log</h3>
             <p>{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           </div>
-          {entries.length > 0 && <strong>{entries.length}</strong>}
+          {todaysEntries.length > 0 && <strong>{todaysEntries.length}</strong>}
         </div>
 
         <label>
@@ -133,28 +161,18 @@ function WasteTab() {
 
       <section className="kitchen-waste-list">
         <div className="kitchen-section-heading">
-          <span>Logged today</span>
-          <strong>{entries.length} record{entries.length !== 1 ? 's' : ''}</strong>
+          <span>Today</span>
+          <strong>{todaysEntries.length} record{todaysEntries.length !== 1 ? 's' : ''}</strong>
         </div>
-        {loading ? (
-          <LoadingSkeleton variant="list" count={3} />
-        ) : entries.length === 0 ? (
-          <EmptyState icon="🗑️" message="No wastage logged today" sub="Add wastage entries from the form." />
-        ) : (
-          <div className="kitchen-waste-items">
-            {entries.map(entry => (
-              <article key={entry.id} className="kitchen-waste-item">
-                <div>
-                  <h4>{entry.food_item}</h4>
-                  <p>{entry.quantity} · {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
-                </div>
-                <button type="button" onClick={() => handleDelete(entry.id)} disabled={deleting === entry.id} aria-label={`Delete ${entry.food_item}`}>
-                  {deleting === entry.id ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />}
-                </button>
-              </article>
-            ))}
+        {loading ? <LoadingSkeleton variant="list" count={3} /> : renderEntries(todaysEntries, 'No wastage logged today')}
+
+        <div className="kitchen-waste-history-block">
+          <div className="kitchen-section-heading">
+            <span>Log history</span>
+            <strong>{historyEntries.length} record{historyEntries.length !== 1 ? 's' : ''}</strong>
           </div>
-        )}
+          {loading ? <LoadingSkeleton variant="list" count={3} /> : renderEntries(historyEntries, 'No previous waste logs in the last 30 days')}
+        </div>
       </section>
     </div>
   );
@@ -271,7 +289,7 @@ export default function KitchenDashboard() {
 
   const pending = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
   const preparing = useMemo(() => todayOrders.filter(o => o.status === 'preparing'), [todayOrders]);
-  const ready = useMemo(() => todayOrders.filter(o => o.status === 'ready'), [todayOrders]);
+  const activeKitchenOrders = useMemo(() => [...pending, ...preparing], [pending, preparing]);
   const cancelled = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
 
   useEffect(() => {
@@ -330,18 +348,15 @@ export default function KitchenDashboard() {
   }, [pending.length, soundEnabled]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'active') return pending;
+    if (activeTab === 'active') return activeKitchenOrders;
     if (activeTab === 'waste') return [];
-    return todayOrders.filter(o => o.status === activeTab);
-  }, [todayOrders, pending, activeTab]);
+    return cancelled;
+  }, [activeKitchenOrders, cancelled, activeTab]);
 
   const elapsedMins = (t: string) => Math.floor((Date.now() - new Date(t).getTime()) / 60000);
 
   const tabCount = (key: KitchenTab) => {
-    if (key === 'active') return pending.length;
-    if (key === 'pending') return pending.length;
-    if (key === 'preparing') return preparing.length;
-    if (key === 'ready') return ready.length;
+    if (key === 'active') return activeKitchenOrders.length;
     if (key === 'cancelled') return cancelled.length;
     return 0;
   };
@@ -362,6 +377,14 @@ export default function KitchenDashboard() {
       setUpdatingId(null);
     }
   };
+
+  if (activeTab === 'waste') {
+    return (
+      <div className="kitchen-screen dashboard-screen kitchen-waste-screen">
+        <WasteTab />
+      </div>
+    );
+  }
 
   return (
     <div className="kitchen-screen dashboard-screen">
@@ -422,8 +445,7 @@ export default function KitchenDashboard() {
         })}
       </nav>
 
-      {activeTab === 'waste' ? <WasteTab /> : (
-        <section className="kitchen-board">
+      <section className="kitchen-board">
           <div className="kitchen-section-heading">
             <span>{activeTab === 'active' ? 'Live kitchen tickets' : TABS.find(tab => tab.key === activeTab)?.label}</span>
             <strong>{filtered.length} order{filtered.length !== 1 ? 's' : ''}</strong>
@@ -433,10 +455,7 @@ export default function KitchenDashboard() {
             <div className="kitchen-empty-state">
               <Inbox className="size-14" />
               <h3>
-                {activeTab === 'pending' && 'Waiting for new orders'}
                 {activeTab === 'active' && 'No active orders right now'}
-                {activeTab === 'preparing' && 'No orders currently cooking'}
-                {activeTab === 'ready' && 'No orders ready to serve'}
                 {activeTab === 'cancelled' && 'No cancelled orders today'}
               </h3>
               <p>The board will update automatically when orders arrive.</p>
@@ -508,7 +527,6 @@ export default function KitchenDashboard() {
             </div>
           )}
         </section>
-      )}
 
     </div>
   );

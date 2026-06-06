@@ -19,6 +19,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchStore } from '@/branch/branchStore';
 import type { Order } from '@/types';
 import { cn, formatCurrency } from '@/lib/utils';
 
@@ -154,6 +155,7 @@ export default function DailyClosure() {
       loadOrders: s.loadOrders,
     }))
   );
+  const { creditSales: branchCreditSales, fetchCreditSales } = useBranchStore();
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
@@ -161,8 +163,9 @@ export default function DailyClosure() {
 
   useEffect(() => {
     startPolling(60);
+    fetchCreditSales('Cafe');
     return () => stopPolling();
-  }, [startPolling, stopPolling]);
+  }, [startPolling, stopPolling, fetchCreditSales]);
 
   const closure = useMemo(() => {
     const dayOrders = orders
@@ -175,6 +178,8 @@ export default function DailyClosure() {
 
     const payments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     let creditSales = 0;
+    let creditCollected = 0;
+    let creditPending = 0;
     let advanceReceived = 0;
     let advanceOrderValue = 0;
     let advanceBalanceOpen = 0;
@@ -231,6 +236,13 @@ export default function DailyClosure() {
 
     const advanceOpen = dayOrders.filter(order => order.paymentType === 'advance' && safeNumber(order.balanceDue) > 0);
     const advanceClosedToday = orders.filter(order => sameBusinessDate(order.fullyPaidAt, selectedDate));
+    const cafeCreditSales = branchCreditSales.Cafe || [];
+    creditCollected = cafeCreditSales
+      .filter(sale => sameBusinessDate(sale.settledAt ?? undefined, selectedDate))
+      .reduce((sum, sale) => sum + safeNumber(sale.amountPaid), 0);
+    creditPending = cafeCreditSales
+      .filter(sale => sale.status !== 'settled')
+      .reduce((sum, sale) => sum + safeNumber(sale.creditAmount), 0);
 
     const billers = Array.from(billPersonMap.entries())
       .map(([name, stats]) => ({ name, ...stats }))
@@ -242,9 +254,11 @@ export default function DailyClosure() {
       cancelled,
       unpaid,
       payments,
-      collectionTotal,
-      totalSales,
+      collectionTotal: collectionTotal + creditCollected,
+      totalSales: totalSales + creditCollected,
       creditSales,
+      creditCollected,
+      creditPending,
       advanceReceived,
       advanceOrderValue,
       advanceBalanceOpen,
@@ -259,7 +273,7 @@ export default function DailyClosure() {
       paymentModeCount,
       billers,
     };
-  }, [orders, selectedDate]);
+  }, [orders, selectedDate, branchCreditSales]);
 
   const closingCashValue = Number(closingCash || 0);
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - closure.payments.cash : 0;
@@ -358,7 +372,7 @@ export default function DailyClosure() {
         </div>
 
         <div class="totals">
-          <section class="section"><h2>Payment Collection</h2><table><tbody>${paymentRowsHtml}<tr><td class="strong">Total Collection</td><td class="right strong">${safeHtml(formatCurrency(closure.collectionTotal))}</td></tr></tbody></table></section>
+          <section class="section"><h2>Payment Collection</h2><table><tbody>${paymentRowsHtml}<tr><td>Credit Collected</td><td class="right">${safeHtml(formatCurrency(closure.creditCollected))}</td></tr><tr><td class="strong">Total Collection</td><td class="right strong">${safeHtml(formatCurrency(closure.collectionTotal))}</td></tr></tbody></table></section>
           <section class="section"><h2>Cash Counter</h2><table><tbody>
             <tr><td>System Cash</td><td class="right">${safeHtml(formatCurrency(closure.payments.cash))}</td></tr>
             <tr><td>Physical Cash</td><td class="right">${safeHtml(formatCurrency(closingCashValue || 0))}</td></tr>
@@ -368,6 +382,7 @@ export default function DailyClosure() {
 
         <div class="grid">
           <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(formatCurrency(closure.creditSales))}</div></div>
+          <div class="card"><div class="label">Credit Collected</div><div class="value">${safeHtml(formatCurrency(closure.creditCollected))}</div></div>
           <div class="card"><div class="label">Advance Received</div><div class="value">${safeHtml(formatCurrency(closure.advanceReceived))}</div></div>
           <div class="card"><div class="label">Advance Balance</div><div class="value">${safeHtml(formatCurrency(closure.advanceBalanceOpen))}</div></div>
           <div class="card"><div class="label">Average Bill</div><div class="value">${safeHtml(formatCurrency(closure.averageBill))}</div></div>
@@ -427,9 +442,10 @@ export default function DailyClosure() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 print:overflow-visible print:p-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <StatCard title="Total sales" value={formatCurrency(closure.totalSales)} icon={<IndianRupee className="size-5" />} helper="Collections + credit" tone="emerald" />
-          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Cash + UPI + Card" tone="blue" />
+          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Paid now + credit collected" tone="blue" />
+          <StatCard title="Credit collected" value={formatCurrency(closure.creditCollected)} icon={<UserCheck className="size-5" />} helper={`${formatCurrency(closure.creditPending)} still pending`} tone="amber" />
           <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="violet" />
           <StatCard title="Cancelled" value={String(closure.cancelled.length)} icon={<XCircle className="size-5" />} helper={formatCurrency(closure.cancelled.reduce((s, o) => s + safeNumber(o.total), 0))} tone="red" />
         </div>
@@ -439,7 +455,7 @@ export default function DailyClosure() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Payment details</p>
-                <h2 className="font-display text-xl font-black text-foreground">Cash / UPI / Card Collection</h2>
+                <h2 className="font-display text-xl font-black text-foreground">Cash / UPI / Card / Credit Collection</h2>
               </div>
               <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 border border-emerald-200">
                 {formatCurrency(closure.collectionTotal)} collected
@@ -455,6 +471,12 @@ export default function DailyClosure() {
                   icon={paymentIcons[key]}
                 />
               ))}
+              <PaymentRow
+                label="Credit collected"
+                value={closure.creditCollected}
+                percent={closure.collectionTotal > 0 ? (closure.creditCollected / closure.collectionTotal) * 100 : 0}
+                icon={<UserCheck className="size-5" />}
+              />
             </div>
           </div>
 
@@ -494,7 +516,7 @@ export default function DailyClosure() {
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <StatCard title="UPI" value={formatCurrency(closure.payments.upi)} icon={<Smartphone className="size-5" />} helper={`${closure.paymentModeCount.upi || 0} direct bills`} tone="blue" />
           <StatCard title="Card" value={formatCurrency(closure.payments.card)} icon={<CreditCard className="size-5" />} helper={`${closure.paymentModeCount.card || 0} direct bills`} tone="amber" />
-          <StatCard title="Credit sales" value={formatCurrency(closure.creditSales)} icon={<History className="size-5" />} helper="Pending collection" tone="red" />
+          <StatCard title="Credit sales" value={formatCurrency(closure.creditSales)} icon={<History className="size-5" />} helper={`${formatCurrency(closure.creditPending)} pending`} tone="red" />
           <StatCard title="Average bill" value={formatCurrency(closure.averageBill)} icon={<Receipt className="size-5" />} helper="Total sales / bills" tone="slate" />
         </div>
 

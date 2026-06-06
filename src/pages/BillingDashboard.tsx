@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -894,7 +894,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -1189,7 +1189,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
-                  <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
+                  <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
                         className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
@@ -1267,7 +1267,6 @@ function NewBillPanel() {
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
-  const [creditCustomerName, setCreditCustomerName] = useState('');
   const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
   const [creditError, setCreditError] = useState('');
@@ -1347,7 +1346,11 @@ function NewBillPanel() {
 
     // ── Credit sale path ──────────────────────────────────────────────────────
     if (paymentMode === 'credit') {
-      if (!creditCustomerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
+      if (!customerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      if (!creditCustomerPhone.trim()) { setCreditError('Phone number is required for credit sale'); return; }
+      if (phoneDigits.length < 10) { setCreditError('Enter a valid phone number for credit sale'); return; }
+      if (!creditDueDate) { setCreditError('Due date is required for credit sale'); return; }
       setCreditError('');
       setSubmitting(true);
 
@@ -1367,8 +1370,21 @@ function NewBillPanel() {
           branch_hosur: 'Hosur',
         };
         const branch: Branch = branchFromRole[currentUser.role] ?? 'Cafe';
-        const billNo = `CREDIT-${branch}-${Date.now()}`;
-        const allCartItems = [...(useOrderStore.getState().cart)];
+        const orderId = await submitOrder({
+          tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+          orderType,
+          notes: notes || undefined,
+          customerName: customerName.trim(),
+          createdBy: currentUser.username,
+          orderSource: 'staff',
+          parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+          paymentType: 'credit',
+          billedBy: currentUser.displayName || currentUser.username,
+          status: 'served',
+        });
+        const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+        const allCartItems = savedOrder?.items ?? [];
+        const billNo = savedOrder ? `CREDIT-${branch}-${savedOrder.orderNumber}` : `CREDIT-${branch}-${Date.now()}`;
         const creditItems = allCartItems.map(c => ({
           itemName: c.menuItem.name,
           quantity: c.quantity,
@@ -1379,13 +1395,13 @@ function NewBillPanel() {
         const err = await recordCreditSale(branch, {
           billNo,
           branch,
-          customerName: creditCustomerName.trim(),
-          customerPhone: creditCustomerPhone.trim() || undefined,
+          customerName: customerName.trim(),
+          customerPhone: creditCustomerPhone.trim(),
           items: creditItems,
           subtotal: total,
           amountPaid: 0,
           creditAmount: total,
-          dueDate: creditDueDate || undefined,
+          dueDate: creditDueDate,
           soldBy: currentUser.displayName || currentUser.username,
           notes: notes || undefined,
         });
@@ -1394,19 +1410,19 @@ function NewBillPanel() {
 
         // Notify VRSNB Admin + Admin
         await notifyCreditSale({
-          customerName: creditCustomerName.trim(),
+          customerName: customerName.trim(),
           amount: total,
           billNo,
           branch,
           soldBy: currentUser.displayName || currentUser.username,
-          dueDate: creditDueDate || undefined,
+          dueDate: creditDueDate,
         });
 
         clearCart();
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-        setCreditCustomerName(''); setCreditCustomerPhone(''); setCreditDueDate('');
+        setCreditCustomerPhone(''); setCreditDueDate('');
         setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -1647,7 +1663,7 @@ function NewBillPanel() {
               {filteredItems.length === 0 ? (
                 <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="biller-menu-grid grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
                       onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
@@ -1883,24 +1899,24 @@ function NewBillPanel() {
                 <div className="relative">
                   <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                   <input type="text" placeholder="Customer name *"
-                    value={creditCustomerName}
-                    onChange={e => { setCreditCustomerName(e.target.value); setCreditError(''); }}
+                    value={customerName}
+                    onChange={e => { setCustomerName(e.target.value); setCreditError(''); }}
                     className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div className="relative">
                   <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                  <input type="tel" placeholder="Phone number (optional)"
+                  <input type="tel" placeholder="Phone number *"
                     value={creditCustomerPhone}
-                    onChange={e => setCreditCustomerPhone(e.target.value)}
+                    onChange={e => { setCreditCustomerPhone(e.target.value); setCreditError(''); }}
                     className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div>
                   <label className="text-[10px] font-body font-bold text-red-700 uppercase tracking-widest mb-1 block flex items-center gap-1">
-                    <Calendar className="size-3" />Due Date (optional)
+                    <Calendar className="size-3" />Due Date *
                   </label>
                   <input type="date" value={creditDueDate}
                     min={new Date().toISOString().split('T')[0]}
-                    onChange={e => setCreditDueDate(e.target.value)}
+                    onChange={e => { setCreditDueDate(e.target.value); setCreditError(''); }}
                     className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div className="flex items-center gap-2 bg-red-100/60 rounded-xl px-3 py-2">
@@ -1941,13 +1957,13 @@ function NewBillPanel() {
                   </div>
                 )}
               </div>
-            ) : (
+            ) : paymentMode !== 'credit' ? (
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
                   className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
-            )}
+            ) : null}
             <div className="relative">
               <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
               <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
@@ -2083,12 +2099,23 @@ export default function BillingDashboard() {
     [todayOrders]
   );
 
+  const isUnpaidOpenOrder = useCallback((order: Order) =>
+    order.paymentType === 'unpaid' && order.status !== 'served' && order.status !== 'cancelled',
+    []
+  );
+
+  const matchesStatusTab = useCallback((order: Order, status: OrderStatus) => {
+    if (status === 'pending') return isUnpaidOpenOrder(order);
+    if (isUnpaidOpenOrder(order)) return false;
+    return order.status === status;
+  }, [isUnpaidOpenOrder]);
+
   const filtered = useMemo(() => {
     if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
-    let result = regularOrders.filter(o => o.status === activeTab);
+    let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
-  }, [regularOrders, activeTab, sourceFilter]);
+  }, [regularOrders, activeTab, sourceFilter, matchesStatusTab]);
 
   // Determine which branches this user's credit tab should show
   const creditBranches: Branch[] = useMemo(() => {
@@ -2210,8 +2237,8 @@ export default function BillingDashboard() {
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = sourceFilter === 'all'
-              ? regularOrders.filter(o => o.status === tab.key).length
-              : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length;
+              ? regularOrders.filter(o => matchesStatusTab(o, tab.key)).length
+              : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
             return (
               <button key={tab.key} onClick={() => switchTab(tab.key)}
                 className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
