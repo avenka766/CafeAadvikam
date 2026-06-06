@@ -1,6 +1,7 @@
 // src/bakery/BakerDashboard.tsx  (Redesigned)
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Clock, BarChart2, Download, RefreshCw, Calendar, AlertCircle, FileSpreadsheet, Printer, Search } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Download, Calendar, AlertCircle, FileSpreadsheet, Printer, Search } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import type { PreparedItem } from './types';
@@ -12,17 +13,19 @@ import * as XLSX from 'xlsx';
 
 // ─── Report helpers ───────────────────────────────────────────────────────────
 
-type PeriodKey = 'today' | '7d' | '15d' | '30d';
+type PeriodKey = 'today' | '7d' | '15d' | '30d' | 'custom';
 
-const PERIODS: { key: PeriodKey; label: string; days: number }[] = [
+const PERIODS: { key: PeriodKey; label: string; days: number | null }[] = [
   { key: 'today', label: 'Today',   days: 0  },
   { key: '7d',    label: '7 Days',  days: 7  },
   { key: '15d',   label: '15 Days', days: 15 },
   { key: '30d',   label: '30 Days', days: 30 },
+  { key: 'custom', label: 'Custom', days: null },
 ];
 
 function startOfDay(d: Date) { const r = new Date(d); r.setHours(0,0,0,0); return r; }
 function endOfDay(d: Date)   { const r = new Date(d); r.setHours(23,59,59,999); return r; }
+function inputDate(d: Date) { return d.toISOString().slice(0, 10); }
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
@@ -182,9 +185,8 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
         orderNumber:   r.order_number as number,
         targetBranch:  (r.target_branch as string) ?? '—',
         itemName:      p.itemName,
-        requestedQty:  req?.quantity ?? 0,
-        // VRSNB items with originalPcs are always in kg
-        requestedUnit: req?.originalPcs != null ? 'kg' : (req?.dispatchUnit ?? 'kg'),
+        requestedQty:  req?.originalPcs ?? req?.quantity ?? 0,
+        requestedUnit: req?.originalPcs != null ? 'pcs' : (req?.dispatchUnit ?? 'kg'),
         preparedQty:   p.quantityPrepared,
         preparedUnit:  req?.originalPcs != null ? 'kg' : (p.dispatchUnit ?? 'kg'),
         sentToPackingAt: (r.sent_to_packing_at as string) ?? '',
@@ -199,16 +201,24 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
 // ─── Daily Closure Tab ───────────────────────────────────────────────────────
 function DailyClosureTab() {
   const [period, setPeriod]         = useState<PeriodKey>('today');
+  const [customFrom, setCustomFrom] = useState(inputDate(new Date()));
+  const [customTo, setCustomTo]     = useState(inputDate(new Date()));
   const [rows, setRows]             = useState<BakerReportRow[]>([]);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState<string | null>(null);
   const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
 
   const { from, to } = useMemo(() => {
+    if (period === 'custom') {
+      return {
+        from: startOfDay(new Date(`${customFrom}T00:00:00`)),
+        to: endOfDay(new Date(`${customTo}T00:00:00`)),
+      };
+    }
     const days = PERIODS.find(p => p.key === period)?.days ?? 0;
-    const f = new Date(); f.setDate(f.getDate() - days);
+    const f = new Date(); f.setDate(f.getDate() - Number(days));
     return { from: startOfDay(f), to: endOfDay(new Date()) };
-  }, [period]);
+  }, [customFrom, customTo, period]);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -238,8 +248,15 @@ function DailyClosureTab() {
   const totalItems = rows.length;
   const dispatched = useMemo(() => new Set(rows.filter(r => r.status === 'dispatched').map(r => r.orderNumber)).size, [rows]);
   const atPacking = Math.max(totalOrders - dispatched, 0);
-  const totalPreparedQty = rows.reduce((sum, r) => sum + (Number(r.preparedQty) || 0), 0);
-  const shortageLines = rows.filter(r => r.preparedQty < r.requestedQty).length;
+  const preparedByUnit = useMemo(() => rows.reduce<Record<string, number>>((acc, row) => {
+    const unit = row.preparedUnit || 'unit';
+    acc[unit] = (acc[unit] ?? 0) + (Number(row.preparedQty) || 0);
+    return acc;
+  }, {}), [rows]);
+  const preparedSummary = Object.entries(preparedByUnit)
+    .map(([unit, qty]) => `${qty.toFixed(2)} ${unit}`)
+    .join(' + ') || '0';
+  const shortageLines = rows.filter(r => r.preparedUnit === r.requestedUnit && r.preparedQty < r.requestedQty).length;
 
   const summaryRows = useMemo(() => [...orderMap.entries()].map(([num, items]) => ({
     orderNumber: num,
@@ -281,7 +298,7 @@ function DailyClosureTab() {
         r.requestedUnit,
         r.preparedQty,
         r.preparedUnit,
-        r.preparedQty - r.requestedQty,
+        r.preparedUnit === r.requestedUnit ? r.preparedQty - r.requestedQty : '',
         fmtDate(r.sentToPackingAt),
         fmtTime(r.sentToPackingAt),
         orderStatusLabel(r.status as BakeryOrder['status']),
@@ -356,27 +373,6 @@ function DailyClosureTab() {
 
   return (
     <div className="space-y-4 pb-8">
-      <div className="rounded-3xl border border-border bg-card/90 p-4 sm:p-5 shadow-soft">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <span className="size-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <FileSpreadsheet className="size-5" />
-            </span>
-            <div>
-              <h2 className="font-display text-xl font-bold text-foreground">Daily Closure</h2>
-              <p className="text-xs font-body text-muted-foreground mt-1">
-                Review completed production, totals, variance lines, and export or print closure details.
-              </p>
-            </div>
-          </div>
-          {lastLoaded && !loading && (
-            <span className="text-[10px] font-body font-semibold text-muted-foreground bg-muted px-3 py-1.5 rounded-full self-start sm:self-auto">
-              Last refreshed: {fmtTime(lastLoaded.toISOString())}
-            </span>
-          )}
-        </div>
-      </div>
-
       <div className="rounded-3xl border border-border bg-card p-3 sm:p-4 space-y-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-2">
@@ -400,6 +396,23 @@ function DailyClosureTab() {
             ))}
           </div>
         </div>
+        {period === 'custom' && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="text-[10px] font-body font-bold uppercase text-muted-foreground">
+              From
+              <input type="date" value={customFrom} max={customTo} onChange={e => setCustomFrom(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
+            </label>
+            <label className="text-[10px] font-body font-bold uppercase text-muted-foreground">
+              To
+              <input type="date" value={customTo} min={customFrom} max={inputDate(new Date())} onChange={e => setCustomTo(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
+            </label>
+          </div>
+        )}
+        {lastLoaded && !loading && (
+          <p className="text-[10px] font-body font-semibold text-muted-foreground">
+            Last refreshed: {fmtTime(lastLoaded.toISOString())}
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-3">
@@ -420,7 +433,7 @@ function DailyClosureTab() {
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2">
         <div className="rounded-2xl border border-border bg-card px-4 py-3">
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wider">Total Prepared Quantity</p>
-          <p className="font-display text-xl font-bold text-foreground mt-0.5">{totalPreparedQty.toFixed(2)} <span className="text-sm text-muted-foreground">units/kg combined</span></p>
+          <p className="font-display text-xl font-bold text-foreground mt-0.5">{preparedSummary}</p>
         </div>
         <button
           onClick={exportClosure}
@@ -627,7 +640,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
                       )}
                     </div>
                     <p className="text-[10px] font-body text-muted-foreground mt-0.5">
-                      Requested: <span className="font-bold text-foreground">{item.quantity}{(item.dispatchUnit === 'pcs' && item.originalPcs == null) ? ' pcs' : ' kg'}</span>
+                      Requested: <span className="font-bold text-foreground">{getRequestedQtyLabel(item)}</span>
                     </p>
                   </div>
                   <div className="flex flex-col items-center gap-1 shrink-0">
@@ -818,8 +831,19 @@ function CompletedCard({ order }: { order: BakeryOrder }) {
 
 function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boolean }) {
   const [search, setSearch] = useState('');
+  const [fromDate, setFromDate] = useState(inputDate(new Date()));
+  const [toDate, setToDate] = useState(inputDate(new Date()));
 
-  const sortedOrders = useMemo(() => [...orders].sort((a, b) => safeDate(orderCompletedAt(b)) - safeDate(orderCompletedAt(a))), [orders]);
+  const dateFilteredOrders = useMemo(() => {
+    const from = startOfDay(new Date(`${fromDate}T00:00:00`)).getTime();
+    const to = endOfDay(new Date(`${toDate}T00:00:00`)).getTime();
+    return orders.filter(order => {
+      const completed = safeDate(orderCompletedAt(order));
+      return completed >= from && completed <= to;
+    });
+  }, [fromDate, orders, toDate]);
+
+  const sortedOrders = useMemo(() => [...dateFilteredOrders].sort((a, b) => safeDate(orderCompletedAt(b)) - safeDate(orderCompletedAt(a))), [dateFilteredOrders]);
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return sortedOrders;
@@ -836,11 +860,11 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
     });
   }, [search, sortedOrders]);
 
-  const atPacking = orders.filter(o => o.status === 'packed').length;
-  const dispatched = orders.filter(o => o.status === 'dispatched').length;
-  const itemLines = orders.reduce((sum, order) => sum + (order.preparedItems?.length || order.items.length), 0);
+  const atPacking = dateFilteredOrders.filter(o => o.status === 'packed').length;
+  const dispatched = dateFilteredOrders.filter(o => o.status === 'dispatched').length;
+  const itemLines = dateFilteredOrders.reduce((sum, order) => sum + (order.preparedItems?.length || order.items.length), 0);
   const todayKey = new Date().toDateString();
-  const todayCompleted = orders.filter(order => new Date(orderCompletedAt(order)).toDateString() === todayKey).length;
+  const todayCompleted = dateFilteredOrders.filter(order => new Date(orderCompletedAt(order)).toDateString() === todayKey).length;
 
   const downloadCompleted = () => {
     const wb = XLSX.utils.book_new();
@@ -861,24 +885,22 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
     ]);
     sheet['!cols'] = [10, 12, 14, 20, 20, 52, 18].map(w => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, sheet, 'Completed Orders');
-    XLSX.writeFile(wb, `baker-completed-orders-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `baker-completed-orders-${fromDate}-to-${toDate}.xlsx`);
   };
 
   return (
     <div className="space-y-4 pb-8">
-      <div className="rounded-3xl border border-border bg-card/90 p-4 sm:p-5 shadow-soft">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-start gap-3">
-            <span className="size-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <CheckCircle2 className="size-5" />
-            </span>
-            <div>
-              <h2 className="font-display text-xl font-bold text-foreground">Completed Orders</h2>
-              <p className="text-xs font-body text-muted-foreground mt-1">
-                Packed and dispatched baker orders are kept here with clear details, status, date/time, and print actions.
-              </p>
-            </div>
-          </div>
+      <div className="rounded-3xl border border-border bg-card p-3 sm:p-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="text-[10px] font-body font-bold uppercase text-muted-foreground">
+            From
+            <input type="date" value={fromDate} max={toDate} onChange={e => setFromDate(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
+          </label>
+          <label className="text-[10px] font-body font-bold uppercase text-muted-foreground">
+            To
+            <input type="date" value={toDate} min={fromDate} max={inputDate(new Date())} onChange={e => setToDate(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
+          </label>
+        </div>
           <button
             onClick={downloadCompleted}
             disabled={filteredOrders.length === 0}
@@ -889,7 +911,6 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
           >
             <Download className="size-4" /> Export Completed
           </button>
-        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
@@ -936,7 +957,7 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
           <div>
             <p className="text-sm font-body font-semibold text-foreground">No completed orders found</p>
             <p className="text-xs font-body text-muted-foreground mt-1">
-              {orders.length === 0 ? 'Completed orders will appear here after baking is sent to packing.' : 'No completed order matches your search.'}
+              {dateFilteredOrders.length === 0 ? 'No completed orders found in this date range.' : 'No completed order matches your search.'}
             </p>
           </div>
         </div>
@@ -948,130 +969,30 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 type BakerDashboardTab = 'orders' | 'completed' | 'closure';
+const BAKER_TABS: BakerDashboardTab[] = ['orders', 'completed', 'closure'];
 
 export default function BakerDashboard() {
+  const [searchParams] = useSearchParams();
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
-  const [tab, setTab] = useState<BakerDashboardTab>('orders');
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     const id = setInterval(() => fetchOrders(true), 15_000);
     return () => clearInterval(id);
-  }, []);
+  }, [fetchOrders]);
 
+  const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
+  const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
   const bakingOrders = orders.filter(o => o.status === 'baking');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
   const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
 
-  const tabs = [
-    {
-      id: 'orders',
-      label: 'Orders',
-      description: 'Active bake queue',
-      icon: ChefHat,
-      badge: bakingOrders.length > 0 ? String(bakingOrders.length) : null,
-      badgeColor: 'bg-orange-500',
-    },
-    {
-      id: 'completed',
-      label: 'Completed',
-      description: 'Packed & dispatched',
-      icon: CheckCircle2,
-      badge: completedOrders.length > 0 ? String(completedOrders.length) : null,
-      badgeColor: 'bg-emerald-600',
-    },
-    {
-      id: 'closure',
-      label: 'Daily Closure',
-      description: 'Summary & exports',
-      icon: BarChart2,
-      badge: null,
-      badgeColor: '',
-    },
-  ] as const;
-
-  const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
-  const ActiveIcon = activeTab.icon;
-
   return (
     <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
       <div className="mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6 py-4">
-        <div className="grid gap-4 md:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="md:sticky md:top-4 md:self-start rounded-3xl border border-border bg-card/95 shadow-soft overflow-hidden">
-            <div className="p-4 border-b border-border bg-gradient-to-br from-orange-100 via-background to-background">
-              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
-              <h1 className="font-display text-2xl font-bold text-foreground">Baker Dashboard</h1>
-              <p className="text-xs font-body text-muted-foreground mt-1">
-                Manage active baking, completed orders, and daily closure from one clean workspace.
-              </p>
-            </div>
-
-            <nav className="flex gap-2 overflow-x-auto p-2 md:flex-col md:overflow-visible" aria-label="Baker dashboard navigation">
-              {tabs.map(item => {
-                const Icon = item.icon;
-                const selected = tab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setTab(item.id)}
-                    className={cn(
-                      'relative min-w-[168px] md:min-w-0 w-full rounded-2xl border px-3 py-3 text-left transition-all active:scale-[0.99]',
-                      selected
-                        ? 'border-primary/35 bg-primary/10 text-foreground shadow-sm'
-                        : 'border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
-                    )}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
-                        <Icon className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-xs font-body font-bold truncate">{item.label}</span>
-                        <span className="hidden md:block text-[10px] font-body text-muted-foreground truncate mt-0.5">{item.description}</span>
-                      </span>
-                      {item.badge && (
-                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0', item.badgeColor)}>{item.badge}</span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </nav>
-          </aside>
-
-          <main className="min-w-0 space-y-4">
-            <div className="rounded-3xl border border-border bg-card/90 shadow-soft px-4 py-3 sm:px-5 sm:py-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="size-11 rounded-2xl cafe-gradient text-primary-foreground flex items-center justify-center shrink-0 shadow-sm">
-                    <ActiveIcon className="size-5" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest">Baker</p>
-                    <h2 className="font-display text-xl sm:text-2xl font-bold text-foreground truncate">{activeTab.label}</h2>
-                    <p className="text-xs font-body text-muted-foreground mt-0.5">{activeTab.description}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center">
-                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
-                    <p className={cn('font-display text-lg font-bold', bakingOrders.length > 0 ? 'text-orange-600' : 'text-foreground')}>{bakingOrders.length}</p>
-                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">To Bake</p>
-                  </div>
-                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
-                    <p className="font-display text-lg font-bold text-purple-600">{atPacking}</p>
-                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Packing</p>
-                  </div>
-                  <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
-                    <p className="font-display text-lg font-bold text-emerald-600">{dispatched}</p>
-                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Dispatched</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
+        <main className="min-w-0 space-y-4">
             <div className="min-w-0 overflow-hidden">
               {tab === 'closure' ? (
                 <DailyClosureTab />
@@ -1118,7 +1039,6 @@ export default function BakerDashboard() {
               )}
             </div>
           </main>
-        </div>
       </div>
     </div>
   );
