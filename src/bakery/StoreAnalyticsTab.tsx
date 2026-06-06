@@ -92,7 +92,7 @@ export default function StoreAnalyticsTab() {
   const [search, setSearch] = useState('');
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
   // Build a deduplicated list of all item names across all approved invoices
   const allItems = useMemo(() => {
@@ -110,6 +110,23 @@ export default function StoreAnalyticsTab() {
       }
     }
     return items.sort((a, b) => a.localeCompare(b));
+  }, [invoices]);
+
+  const storeSummary = useMemo(() => {
+    const activeInvoices = invoices.filter(inv => inv.status !== 'rejected');
+    const totalSpend = activeInvoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
+    const supplierSpend = activeInvoices.reduce<Record<string, number>>((acc, inv) => {
+      acc[inv.supplierName] = (acc[inv.supplierName] ?? 0) + Number(inv.grandTotal || 0);
+      return acc;
+    }, {});
+    const topSupplier = Object.entries(supplierSpend).sort((a, b) => b[1] - a[1])[0];
+    return {
+      invoiceCount: activeInvoices.length,
+      totalSpend,
+      avgInvoice: activeInvoices.length > 0 ? totalSpend / activeInvoices.length : 0,
+      topSupplierName: topSupplier?.[0] ?? 'No supplier yet',
+      topSupplierSpend: topSupplier?.[1] ?? 0,
+    };
   }, [invoices]);
 
   const filteredItems = useMemo(() => {
@@ -233,11 +250,36 @@ export default function StoreAnalyticsTab() {
       <div className="bg-card border border-border rounded-3xl p-4 sm:p-5 shadow-soft">
         <div className="flex items-center gap-2 mb-1">
           <BarChart3 className="size-4 text-primary" />
-          <h2 className="font-display font-bold text-foreground">Price Analytics</h2>
+          <h2 className="font-display font-bold text-foreground">Store Analytics</h2>
         </div>
         <p className="text-[11px] font-body text-muted-foreground">
-          Track price changes across purchases, months and suppliers for each item.
+          Review purchase spend first, then drill into item-wise price changes across months and suppliers.
         </p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+        {[
+          { label: 'Invoice Spend', value: fmt(storeSummary.totalSpend), sub: 'Approved and pending bills', icon: ShoppingCart },
+          { label: 'Invoices', value: storeSummary.invoiceCount, sub: `Average ${fmt(storeSummary.avgInvoice)}`, icon: Calendar },
+          { label: 'Tracked Items', value: allItems.length, sub: 'Items found in invoices', icon: BarChart3 },
+          { label: 'Top Supplier', value: storeSummary.topSupplierName, sub: fmt(storeSummary.topSupplierSpend), icon: Users },
+        ].map(card => {
+          const Icon = card.icon;
+          return (
+            <div key={card.label} className="rounded-2xl border border-border bg-card p-3 sm:p-4">
+              <div className="flex items-start gap-3">
+                <span className="size-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <Icon className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground">{card.label}</p>
+                  <p className="font-display text-lg font-bold text-foreground mt-0.5 truncate">{card.value}</p>
+                  <p className="text-[10px] font-body text-muted-foreground mt-0.5 truncate">{card.sub}</p>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Item selector */}

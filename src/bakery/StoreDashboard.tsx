@@ -1,11 +1,13 @@
 // src/bakery/StoreDashboard.tsx (Redesigned)
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Store, Calculator, ChevronDown, ChevronUp, ArrowRight,
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle, ChefHat,
+  History, WalletCards,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
@@ -29,6 +31,9 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 import { useAuthStore } from '@/stores/authStore';
 import type { DeductionContext } from './storeStockStore';
 
+type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
+const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report', 'recipes'];
+
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 function matForItem(item: BakeryOrder['items'][number]) {
@@ -47,6 +52,20 @@ function roundToNice(value: number): number {
 function fmtMatQty(quantity: number): string {
   const rounded = roundToNice(quantity);
   return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(2);
+}
+
+function inputDate(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+
+function dayWindow(date: string) {
+  const from = new Date(`${date}T00:00:00`);
+  const to = new Date(`${date}T23:59:59.999`);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+function fmtMoney(value: number) {
+  return `Rs ${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ─── Print helper (per-item) ──────────────────────────────────────────────────
@@ -289,13 +308,9 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const [sent,      setSent]      = useState(order.status !== 'pending');
   const [sendError, setSendError] = useState<string | null>(null);
 
-  const initialised = useRef(false);
   useEffect(() => {
-    if (!initialised.current) {
-      setSent(order.status !== 'pending');
-      initialised.current = true;
-    }
-  }, []);
+    setSent(order.status !== 'pending');
+  }, [order.status]);
 
   // Collect all materials across items for stock deduction on send
   const allMats = useMemo(() => {
@@ -738,7 +753,7 @@ function StoreInventoryTab() {
   const [importError, setImportError] = useState<string | null>(null);
   const [stockView, setStockView]   = useState<'all' | 'low'>('all');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
   const handleImport = async () => {
     setImporting(true);
@@ -884,9 +899,8 @@ function OrdersTab() {
       unsubOrders();
       unsubStock();
     };
-  }, []);
+  }, [fetchOrders, loadStock, subscribeOrders, subscribeStock]);
   const pending    = orders.filter(o => o.status === 'pending');
-  const inProgress = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
   return (
     <>
@@ -896,19 +910,51 @@ function OrdersTab() {
           {pending.map(o => <OrderCard key={o.id} order={o} />)}
         </div>
       )}
-      {inProgress.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2"><CheckCircle2 className="size-3.5 text-emerald-500" /><p className="text-xs font-body font-bold text-muted-foreground uppercase">In Progress / Done</p></div>
-          {inProgress.map(o => <OrderCard key={o.id} order={o} />)}
-        </div>
-      )}
-      {orders.length === 0 && (
+      {pending.length === 0 && (
         <div className="flex flex-col items-center py-24 gap-4">
           <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><Store className="size-10 text-muted-foreground opacity-30" /></div>
-          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No orders yet</p><p className="text-xs font-body text-muted-foreground mt-1">Orders appear here once received</p></div>
+          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No new orders</p><p className="text-xs font-body text-muted-foreground mt-1">Orders already sent to baker are now in History</p></div>
         </div>
       )}
     </>
+  );
+}
+
+function StoreHistoryTab() {
+  const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  useEffect(() => {
+    fetchOrders().finally(() => setInitialLoading(false));
+    const unsubOrders = subscribeOrders();
+    return () => unsubOrders();
+  }, [fetchOrders, subscribeOrders]);
+
+  const historyOrders = orders.filter(o => ['baking', 'packed', 'dispatched'].includes(o.status));
+
+  if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+        <div className="flex items-center gap-2">
+          <History className="size-4 text-primary" />
+          <h3 className="font-display text-lg font-bold text-foreground">Orders Sent To Baker</h3>
+        </div>
+        <p className="text-xs font-body text-muted-foreground mt-1">In progress, packed and dispatched orders stay here for store follow-up.</p>
+      </div>
+
+      {historyOrders.length > 0 ? (
+        <div className="space-y-2">
+          {historyOrders.map(o => <OrderCard key={o.id} order={o} />)}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center py-24 gap-4 rounded-3xl border border-border bg-card">
+          <div className="size-20 rounded-3xl bg-muted flex items-center justify-center"><History className="size-10 text-muted-foreground opacity-30" /></div>
+          <div className="text-center"><p className="text-sm font-body font-semibold text-foreground">No sent orders yet</p><p className="text-xs font-body text-muted-foreground mt-1">Once a new order is sent to baker, it moves here.</p></div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1078,7 +1124,7 @@ function SuppliersTab() {
   const [showAdd, setShowAdd]       = useState(false);
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -1171,27 +1217,209 @@ function SuppliersTab() {
   );
 }
 
+interface StoreAutoDeductionRow {
+  id: string;
+  orderNumber: string;
+  materialName: string;
+  quantityDeducted: number;
+  unit: string;
+  stockBefore: number;
+  stockAfter: number;
+  deductedBy: string | null;
+}
+
+interface StoreCustomDeductionRow {
+  id: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  reason: string;
+  deductedBy: string | null;
+}
+
+function StoreDailyClosureTab() {
+  const { invoices, loaded: invoicesLoaded, load: loadInvoices } = useInvoiceStore();
+  const [date, setDate] = useState(inputDate(new Date()));
+  const [autoRows, setAutoRows] = useState<StoreAutoDeductionRow[]>([]);
+  const [customRows, setCustomRows] = useState<StoreCustomDeductionRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadClosure = useCallback(async () => {
+    const { from, to } = dayWindow(date);
+    setLoading(true);
+    try {
+      const [autoRes, customRes] = await Promise.all([
+        supabase
+          .from('store_material_deductions')
+          .select('*')
+          .gte('deducted_at', from)
+          .lte('deducted_at', to)
+          .order('deducted_at', { ascending: false }),
+        supabase
+          .from('store_custom_deductions')
+          .select('*')
+          .gte('created_at', from)
+          .lte('created_at', to)
+          .order('created_at', { ascending: false }),
+      ]);
+
+      setAutoRows((autoRes.data ?? []).map((r: Record<string, unknown>) => ({
+        id: String(r.id ?? ''),
+        orderNumber: String(r.order_number ?? ''),
+        materialName: String(r.material_name ?? ''),
+        quantityDeducted: Number(r.quantity_deducted ?? 0),
+        unit: String(r.unit ?? ''),
+        stockBefore: Number(r.stock_before ?? 0),
+        stockAfter: Number(r.stock_after ?? 0),
+        deductedBy: (r.deducted_by as string) ?? null,
+      })));
+
+      setCustomRows((customRes.data ?? []).map((r: Record<string, unknown>) => ({
+        id: String(r.id ?? ''),
+        itemName: String(r.item_name ?? ''),
+        quantity: Number(r.quantity ?? 0),
+        unit: String(r.unit ?? ''),
+        reason: String(r.reason ?? ''),
+        deductedBy: (r.deducted_by as string) ?? null,
+      })));
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
+
+  useEffect(() => { if (!invoicesLoaded) loadInvoices(); }, [invoicesLoaded, loadInvoices]);
+  useEffect(() => { loadClosure(); }, [loadClosure]);
+
+  const invoicesToday = invoices.filter(inv => inputDate(new Date(inv.createdAt)) === date);
+  const invoiceTotal = invoicesToday.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
+  const pendingInvoices = invoicesToday.filter(inv => inv.status === 'pending_review').length;
+
+  return (
+    <div className="space-y-4 pb-8">
+      <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <WalletCards className="size-4 text-primary" />
+              <h3 className="font-display text-lg font-bold text-foreground">Store Daily Closure</h3>
+            </div>
+            <p className="text-xs font-body text-muted-foreground mt-1">Daily summary of store deductions and invoices added.</p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="date"
+              value={date}
+              max={inputDate(new Date())}
+              onChange={e => setDate(e.target.value)}
+              className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+            <button onClick={loadClosure} className="size-10 rounded-xl border border-border bg-background flex items-center justify-center hover:bg-muted">
+              <RefreshCw className={cn('size-4 text-muted-foreground', loading && 'animate-spin')} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          { label: 'Recipe Deductions', value: autoRows.length, sub: 'Sent to baker stock cuts' },
+          { label: 'Custom Deductions', value: customRows.length, sub: 'Manual store removals' },
+          { label: 'Invoices Added', value: invoicesToday.length, sub: `${pendingInvoices} pending review` },
+          { label: 'Invoice Value', value: fmtMoney(invoiceTotal), sub: 'Bills entered today' },
+        ].map(card => (
+          <div key={card.label} className="rounded-2xl border border-border bg-card p-4">
+            <p className="text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground">{card.label}</p>
+            <p className="font-display text-xl font-bold text-foreground mt-1">{card.value}</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-1">{card.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+          <h4 className="text-sm font-body font-bold text-foreground">Recipe Deductions</h4>
+          <div className="mt-3 space-y-2">
+            {autoRows.length === 0 ? <p className="text-xs font-body text-muted-foreground py-6 text-center">No recipe deductions for this date.</p> : autoRows.map(row => (
+              <div key={row.id} className="rounded-2xl border border-border bg-background p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-body font-bold text-foreground">{row.materialName}</p>
+                    <p className="text-[11px] font-body text-muted-foreground">Order #{row.orderNumber} - {row.deductedBy ?? 'Store'}</p>
+                  </div>
+                  <p className="text-sm font-body font-bold text-red-600">-{row.quantityDeducted} {row.unit}</p>
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground mt-2">Stock: {row.stockBefore} -&gt; {row.stockAfter} {row.unit}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+          <h4 className="text-sm font-body font-bold text-foreground">Custom Deductions</h4>
+          <div className="mt-3 space-y-2">
+            {customRows.length === 0 ? <p className="text-xs font-body text-muted-foreground py-6 text-center">No custom deductions for this date.</p> : customRows.map(row => (
+              <div key={row.id} className="rounded-2xl border border-border bg-background p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-body font-bold text-foreground">{row.itemName}</p>
+                    <p className="text-[11px] font-body text-muted-foreground">{row.reason}</p>
+                  </div>
+                  <p className="text-sm font-body font-bold text-orange-600">-{row.quantity} {row.unit}</p>
+                </div>
+                <p className="text-[10px] font-body text-muted-foreground mt-2">By {row.deductedBy ?? 'Store'}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+        <h4 className="text-sm font-body font-bold text-foreground">Invoices Added</h4>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          {invoicesToday.length === 0 ? <p className="text-xs font-body text-muted-foreground py-6 text-center md:col-span-2">No invoices added for this date.</p> : invoicesToday.map(inv => (
+            <div key={inv.id} className="rounded-2xl border border-border bg-background p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-body font-bold text-foreground">{inv.invoiceNumber}</p>
+                  <p className="text-[11px] font-body text-muted-foreground">{inv.supplierName} - {inv.lineItems.length} items</p>
+                </div>
+                <p className="text-sm font-body font-bold text-foreground">{fmtMoney(inv.grandTotal)}</p>
+              </div>
+              <p className="text-[10px] font-body font-bold uppercase text-muted-foreground mt-2">{inv.status.replace('_', ' ')}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function StoreDashboard() {
+  const [searchParams] = useSearchParams();
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
-  const [tab, setTab] = useState<'orders' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'report' | 'recipes'>('orders');
 
-  useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded]);
+  useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded, loadInvoices]);
 
+  const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
+  const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
   const pending    = orders.filter(o => o.status === 'pending');
+  const sentOrders = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
   const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   const tabs = [
     { id: 'orders',    label: 'Orders',             description: 'Baker queue',        icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
+    { id: 'history',   label: 'History',            description: 'Sent to baker',      icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
     { id: 'invoices',  label: 'Invoices',           description: 'Bills & reviews',    icon: FileText,    badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
     { id: 'analytics', label: 'Analytics',          description: 'Stock insights',     icon: Calculator,  badge: null, badgeColor: '' },
     { id: 'custom',    label: 'Custom',             description: 'Manual planning',    icon: ShoppingBag, badge: null, badgeColor: '' },
+    { id: 'closure',   label: 'Daily Closure',       description: 'Deductions & bills', icon: WalletCards, badge: null, badgeColor: '' },
     { id: 'report',    label: 'Reports',            description: 'History & exports',  icon: BarChart2,   badge: null, badgeColor: '' },
     { id: 'recipes',   label: 'Recipe Management', description: 'Items & formulas',   icon: ChefHat,     badge: null, badgeColor: '' },
   ] as const;
@@ -1202,49 +1430,7 @@ export default function StoreDashboard() {
   return (
     <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
       <div className="mx-auto w-full max-w-7xl px-3 sm:px-4 lg:px-6 py-4">
-        <div className="grid gap-4 md:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="md:sticky md:top-4 md:self-start rounded-3xl border border-border bg-card/95 shadow-soft overflow-hidden">
-            <div className="p-4 border-b border-border bg-gradient-to-br from-primary/10 via-background to-background">
-              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">Bakery</p>
-              <h1 className="font-display text-2xl font-bold text-foreground">Store Dashboard</h1>
-              <p className="text-xs font-body text-muted-foreground mt-1">Review orders, manage raw stock, invoices, reports, and recipes.</p>
-            </div>
-
-            <nav className="flex gap-2 overflow-x-auto p-2 md:flex-col md:overflow-visible" aria-label="Store dashboard navigation">
-              {tabs.map(item => {
-                const Icon = item.icon;
-                const selected = tab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setTab(item.id)}
-                    className={cn(
-                      'relative min-w-[168px] md:min-w-0 w-full rounded-2xl border px-3 py-3 text-left transition-all active:scale-[0.99]',
-                      selected
-                        ? 'border-primary/35 bg-primary/10 text-foreground shadow-sm'
-                        : 'border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
-                    )}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
-                        <Icon className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-xs font-body font-bold truncate">{item.label}</span>
-                        <span className="hidden md:block text-[10px] font-body text-muted-foreground truncate mt-0.5">{item.description}</span>
-                      </span>
-                      {item.badge && (
-                        <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0', item.badgeColor)}>{item.badge}</span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </nav>
-          </aside>
-
-          <main className="min-w-0 space-y-4">
+        <main className="min-w-0 space-y-4">
             <div className="rounded-3xl border border-border bg-card/90 shadow-soft px-4 py-3 sm:px-5 sm:py-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-3 min-w-0">
@@ -1276,17 +1462,18 @@ export default function StoreDashboard() {
 
             <div className="min-w-0 overflow-hidden">
               {tab === 'orders'    && <OrdersTab />}
+              {tab === 'history'   && <StoreHistoryTab />}
               {tab === 'inventory' && <StoreInventoryTab />}
               {tab === 'suppliers' && <SuppliersTab />}
               {tab === 'invoices'  && <InvoiceTab />}
               {tab === 'analytics' && <StoreAnalyticsTab />}
               {tab === 'custom'    && <StoreCustomTab />}
+              {tab === 'closure'   && <StoreDailyClosureTab />}
               {tab === 'report'    && <StoreReportTab />}
               {tab === 'recipes'   && <RecipeManagement embedded storeMode />}
             </div>
           </main>
         </div>
-      </div>
     </div>
   );
 }
