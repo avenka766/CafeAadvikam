@@ -1452,7 +1452,8 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    min-height: 70dvh;
+    min-height: calc(100dvh - var(--header-h, 3.5rem) - var(--nav-h, 0px));
+    padding: 1rem;
     overflow-x: hidden;
     background:
       radial-gradient(circle at 6% 0%, rgba(245,158,11,.20), transparent 27rem),
@@ -1550,6 +1551,7 @@
   .workspace-redesign .kitchen-order-actions .ready-state { flex: 1; color: #a7f3d0; background: rgba(16,185,129,.14); border: 1px solid rgba(16,185,129,.30); }
   .workspace-redesign .kitchen-order-actions .cancel-state { flex: 1; color: #fecaca; background: rgba(239,68,68,.16); border: 1px solid rgba(239,68,68,.32); }
   .workspace-redesign .kitchen-order-actions .print { flex: 0 0 auto; min-width: min(7rem, 100%); color: rgba(255,255,255,.82) !important; background: rgba(255,255,255,.08) !important; border: 1px solid rgba(255,255,255,.13) !important; }
+  .workspace-redesign .kitchen-waste-screen { display: flex; flex-direction: column; }
   .workspace-redesign .kitchen-waste-grid { display: grid; grid-template-columns: minmax(0, min(420px, 100%)) minmax(0, 1fr); gap: 1rem; align-items: start; }
   .workspace-redesign .kitchen-waste-form,
   .workspace-redesign .kitchen-waste-list { min-width: 0; border-radius: 1.35rem; padding: 1rem; background: rgba(255,255,255,.075); border: 1px solid var(--k-line); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
@@ -1562,6 +1564,7 @@
   .workspace-redesign .kitchen-waste-form label span { display: block; margin-bottom: .35rem; color: var(--k-muted) !important; font-size: .8rem; font-weight: 950; letter-spacing: .1em; text-transform: uppercase; }
   .workspace-redesign .kitchen-waste-form input { width: 100%; min-height: 3.3rem; border-radius: 1rem !important; color: white !important; background: rgba(255,255,255,.08) !important; border: 1px solid var(--k-line) !important; font-size: 1rem; font-weight: 850; padding: 0 .9rem !important; }
   .workspace-redesign .kitchen-waste-form button { width: 100%; min-height: 3.35rem; display: flex; align-items: center; justify-content: center; gap: .55rem; border-radius: 1rem; color: white !important; background: linear-gradient(135deg, #ef4444, #b91c1c) !important; border: 0 !important; font-size: 1rem; font-weight: 950; }
+  .workspace-redesign .kitchen-waste-history-block { margin-top: 1.15rem; padding-top: 1rem; border-top: 1px solid var(--k-line); }
   .workspace-redesign .kitchen-waste-items { display: flex; flex-direction: column; gap: .65rem; }
   .workspace-redesign .kitchen-waste-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-width: 0; padding: .85rem; border-radius: 1rem; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.10); }
   .workspace-redesign .kitchen-waste-item > div { min-width: 0; }
@@ -2309,7 +2312,7 @@
   }
 
   .workspace-redesign [data-billing-dashboard] .biller-menu-panel .biller-menu-grid {
-    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     align-items: stretch;
   }
 
