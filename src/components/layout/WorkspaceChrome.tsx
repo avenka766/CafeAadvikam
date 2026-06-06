@@ -122,7 +122,18 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Waste Log', path: '/kitchen?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
       ];
     case 'store':
-      return [{ label: 'Store', path: '/bakery/store', icon: <Store className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'Orders', path: '/bakery/store', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/store?tab=history', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Inventory', path: '/bakery/store?tab=inventory', icon: <Store className="size-4" />, group: 'Operations' },
+        { label: 'Suppliers', path: '/bakery/store?tab=suppliers', icon: <Users className="size-4" />, group: 'Operations' },
+        { label: 'Invoices', path: '/bakery/store?tab=invoices', icon: <FileText className="size-4" />, group: 'Operations' },
+        { label: 'Analytics', path: '/bakery/store?tab=analytics', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Custom Deduction', path: '/bakery/store?tab=custom', icon: <Sparkles className="size-4" />, group: 'Reports' },
+        { label: 'Daily Closure', path: '/bakery/store?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Reports', path: '/bakery/store?tab=report', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Recipes', path: '/bakery/store?tab=recipes', icon: <ChefHat className="size-4" />, group: 'Admin' },
+      ];
     case 'baker':
       return [{ label: 'Baker', path: '/bakery/baker', icon: <Flame className="size-4" />, group: 'Main' }];
     case 'packing':
