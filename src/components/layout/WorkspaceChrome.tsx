@@ -1,24 +1,29 @@
 import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  Banknote,
   BarChart3,
   Bell,
   CalendarCheck,
   ChefHat,
   CheckCircle2,
+  ClipboardCheck,
   ClipboardList,
   FileText,
   Flame,
   History,
   Inbox,
+  Landmark,
   LayoutDashboard,
   Package,
   QrCode,
   Receipt,
+  CreditCard,
   Settings2,
   ShoppingCart,
   Store,
   Trash2,
+  Truck,
   Users,
   UtensilsCrossed,
   WalletCards,
@@ -61,7 +66,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Dashboard', eyebrow: 'Baking team', description: 'Active baking orders, completed work and daily closure in one clean workspace.', accent: 'Orders • Completed • Closure' } },
-  { match: /^\/bakery\/packing/, meta: { title: 'Packing & Dispatch', eyebrow: 'Packing desk', description: 'Pack orders branch-wise, record shortages/excess, and dispatch items with fewer mistakes.', accent: 'Pack • Check • Dispatch' } },
+  { match: /^\/bakery\/packing/, meta: { title: 'Packing Dashboard', eyebrow: 'Packing desk', description: 'Pack active baker orders, review dispatched orders, and close the packing day.', accent: 'Pack • Dispatch • Closure' } },
   { match: /^\/bakery\/receive/, meta: { title: 'Order Receiver', eyebrow: 'Branch demand', description: 'Place requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
   { match: /^\/bakery\/items/, meta: { title: 'Item Master Studio', eyebrow: 'Master data', description: 'Cafe and bakery item management with clearer category, price and availability controls.', accent: 'Cafe • Bakery • Recipes' } },
   { match: /^\/bakery\/recipes/, meta: { title: 'Recipe Management', eyebrow: 'Production data', description: 'Recipe ingredients, output quantities and bakery item formulas in a readable editing surface.', accent: 'Ingredients • Output • Costing' } },
@@ -142,7 +147,11 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Daily Closure', path: '/bakery/baker?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
       ];
     case 'packing':
-      return [{ label: 'Packing', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'Packing Orders', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Dispatched', path: '/bakery/packing?tab=dispatched', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Daily Closure', path: '/bakery/packing?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+      ];
     case 'receiver_vrsnb':
       return [
         { label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' },
@@ -162,7 +171,23 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alert', path: '/bakery/receive/hosur?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
       ];
     case 'branch_vrsnb':
-      return [{ label: 'VRSNB Branch', path: '/branch/vrsnb', icon: <ShoppingCart className="size-4" />, group: 'Main' }];
+      return [
+        { label: 'New Bill', path: '/branch/vrsnb', icon: <Receipt className="size-4" />, group: 'Main' },
+        { label: 'Advance Orders', path: '/branch/vrsnb?tab=advance', icon: <FileText className="size-4" />, group: 'Main' },
+        { label: 'Alerts', path: '/branch/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+        { label: 'Returns', path: '/branch/vrsnb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
+        { label: 'Stock / Incoming', path: '/branch/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Bill History', path: '/branch/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Credit', path: '/branch/vrsnb?tab=credit-sales', icon: <CreditCard className="size-4" />, group: 'Reports' },
+        { label: 'Daily Closure', path: '/branch/vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Reports', path: '/branch/vrsnb?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Purchase', path: '/branch/vrsnb?tab=purchase', icon: <Truck className="size-4" />, group: 'Admin' },
+        { label: 'Purchase Pay', path: '/branch/vrsnb?tab=purchase-pay', icon: <Banknote className="size-4" />, group: 'Admin' },
+        { label: 'Purchase Order', path: '/branch/vrsnb?tab=po', icon: <ClipboardCheck className="size-4" />, group: 'Admin' },
+        { label: 'Current Cash', path: '/branch/vrsnb?tab=current-cash', icon: <CreditCard className="size-4" />, group: 'Admin' },
+        { label: 'Bank', path: '/branch/vrsnb?tab=bank', icon: <Landmark className="size-4" />, group: 'Admin' },
+        { label: 'Admin Alerts', path: '/branch/vrsnb?tab=notifications', icon: <ShieldCheck className="size-4" />, group: 'Admin' },
+      ];
     case 'branch_snb':
       return [{ label: 'SNB Branch', path: '/branch/snb', icon: <ShoppingCart className="size-4" />, group: 'Main' }];
     case 'branch_hosur':
@@ -194,7 +219,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/(store|baker|receive)/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
