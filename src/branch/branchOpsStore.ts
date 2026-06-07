@@ -113,17 +113,20 @@ export interface CakeAdvanceOrder {
   id: string;
   branch: Branch;
   orderNo: string;
+  orderType?: "store" | "cake" | "custom";
   customerName: string;
   mobile: string;
   orderDate: string;
   deliveryDate: string;
   deliveryTime: string;
+  items?: BranchBillItem[];
   cakeKg: string;
   flavor: string;
   shape: string;
   messageOnCake: string;
   designNotes: string;
   attachmentName?: string;
+  attachmentDataUrl?: string;
   orderValue: number;
   advanceAmount: number;
   balanceAmount: number;
@@ -819,6 +822,10 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: "Pending Store Confirmation",
           createdAt: new Date().toISOString(),
         };
+        const orderItems = order.items && order.items.length > 0
+          ? order.items.map((item) => `${item.itemName} ${item.quantity} ${item.unit}`).join(", ")
+          : `${order.cakeKg}kg ${order.flavor} ${order.shape} cake`;
+        const orderType = order.orderType || "cake";
         const storeOrder: StoreOrderRecord = {
           id: uid("store"),
           branch: order.branch,
@@ -826,7 +833,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           orderNo,
           customerName: order.customerName,
           mobile: order.mobile,
-          details: `${order.cakeKg}kg ${order.flavor} ${order.shape} cake · ${order.messageOnCake || "No message"}`,
+          details: `${orderType.toUpperCase()} - ${orderItems}${order.messageOnCake ? ` - ${order.messageOnCake}` : ""}${order.attachmentName ? ` - Attachment: ${order.attachmentName}` : ""}`,
           requiredAt: `${order.deliveryDate} ${order.deliveryTime}`,
           status: "Pending Store Confirmation",
           createdAt: newOrder.createdAt,
@@ -839,7 +846,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               id: uid("note"),
               branch: order.branch,
               type: "Advance Order",
-              title: "New cake advance order sent to store",
+              title: `New ${orderType} advance order sent to store`,
               details: `${orderNo} · ${order.customerName} · ${storeOrder.details}`,
               createdAt: newOrder.createdAt,
               raisedBy: order.salesperson,
@@ -866,7 +873,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             audit(
               order.branch,
               order.salesperson,
-              "Advance Cake Order",
+              "Advance Order",
               "-",
               `${orderNo} ${order.advanceAmount}`,
             ),
