@@ -360,8 +360,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
           <Field label="Custom Item Name *"><Input value={custom.itemName} onChange={(e)=>setCustom({...custom,itemName:e.target.value})}/></Field>
           <div className="grid grid-cols-3 gap-2"><Field label="Qty *"><Input type="number" value={custom.quantity} onChange={(e)=>setCustom({...custom,quantity:e.target.value})}/></Field><Field label="Unit"><Select value={custom.unit} onChange={(e)=>setCustom({...custom,unit:e.target.value as 'pcs'|'kg'})}><option value="pcs">Pcs</option><option value="kg">Kgs</option></Select></Field><Field label="Rate *"><Input type="number" value={custom.price} onChange={(e)=>setCustom({...custom,price:e.target.value})}/></Field></div>
           <Field label="Custom Notes"><Textarea value={custom.notes} onChange={(e)=>setCustom({...custom,notes:e.target.value})}/></Field>
-          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'custom')}/></Field>
-          {custom.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {custom.attachmentName}</p>}
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
             <label className="flex-1 text-sm font-black text-emerald-800">Fully Paid (no balance)</label>

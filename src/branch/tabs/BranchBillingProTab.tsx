@@ -382,8 +382,8 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   }, [addItem, branch, cart, clear, holdBill, isVRSNB, onOpenTab, selectedIndex, subtotal, total, visibleItems]);
 
   return (
-    <div className="branch-billmaxo min-h-[760px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 xl:h-[calc(100dvh-var(--header-h,4rem)-13.5rem)] xl:min-h-[680px] xl:overflow-hidden">
-      <div className="grid min-h-[760px] grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
+    <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 xl:h-[calc(100dvh-var(--header-h,4rem)-7rem)] xl:overflow-hidden">
+      <div className="grid min-h-[680px] grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="border-b border-slate-200 bg-slate-950 p-5 text-white">
             <div className="flex items-center justify-between gap-3">
