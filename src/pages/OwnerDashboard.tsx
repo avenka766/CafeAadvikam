@@ -245,7 +245,7 @@ function OwnerCommandCenter() {
   useEffect(() => { OWNER_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
-  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, [orders]);
   const rangeStart = useMemo(() => {
     const d = new Date();
     if (dateRange === 'today') d.setHours(0, 0, 0, 0);
@@ -645,7 +645,7 @@ function SalesOverviewTab() {
     d.setDate(d.getDate() - 30); return d;
   }, [dateRange]);
 
-  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, [orders]);
 
   // Cafe orders within range
   const cafeOrders = useMemo(() =>
@@ -1483,7 +1483,7 @@ function BranchOverviewTab() {
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
 
   const from = useMemo(() => ownerPresetStart(preset), [preset]);
-  const to = useMemo(() => ownerEndOfToday(), [preset]);
+  const to = useMemo(() => ownerEndOfToday(), [from]); // always end of today; recompute when `from` changes to keep pair in sync
 
   const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
     if (unit === 'Cafe') {

@@ -50,12 +50,20 @@ async function notifyCreditSale(params: {
   }
 }
 
-function BillerCreditTab({ branches }: { branches: Branch[] }) {
+const ROLE_BRANCHES: Record<string, Branch[]> = {
+  admin:       ALL_BRANCHES,
+  admin_vrsnb: ['Cafe', 'VRSNB'],
+};
+
+function BillerCreditTab() {
+  const { currentUser } = useAuthStore();
+  const branches: Branch[] = ROLE_BRANCHES[currentUser?.role ?? ''] ?? ['Cafe'];
   const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
 
   useEffect(() => {
     branches.forEach(b => fetchCreditSales(b));
-  }, [branches, fetchCreditSales]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchCreditSales]);
 
   const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
@@ -2264,7 +2272,7 @@ export default function BillingDashboard() {
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
       ) : activeTab === 'credit' ? (
-        <div className="flex-1 overflow-y-auto"><BillerCreditTab branches={creditBranches} /></div>
+        <div className="flex-1 overflow-y-auto"><BillerCreditTab /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
