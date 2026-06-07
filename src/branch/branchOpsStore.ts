@@ -549,29 +549,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                     remarks: bill.salesperson,
                   },
                 ];
-        const creditEntry: BranchCreditSale | null =
-          bill.paymentMode === "credit"
-            ? {
-                id: uid("credit"),
-                branch: bill.branch,
-                billId: newBill.id,
-                billNo: bill.billNo,
-                customerName:
-                  bill.creditCustomerName?.trim() || "Credit Customer",
-                mobile: bill.creditCustomerMobile?.trim() || "",
-                total: bill.total,
-                paidAmount: bill.tendered,
-                balanceDue: Math.max(0, bill.total - bill.tendered),
-                dueDate: bill.creditDueDate || "",
-                remarks: bill.creditRemarks || "",
-                salesperson: bill.salesperson,
-                biller: bill.biller,
-                status: bill.tendered >= bill.total ? "Paid" : bill.tendered > 0 ? "Part Paid" : "Open",
-                payments: [],
-                createdAt: newBill.createdAt,
-                updatedAt: newBill.createdAt,
-              }
-            : null;
+        const creditEntry: BranchCreditSale | null = null;
         set((s) => ({
           bills: [newBill, ...s.bills],
           creditSales: creditEntry

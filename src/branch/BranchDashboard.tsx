@@ -88,10 +88,11 @@ export default function BranchDashboard({ branch }: Props) {
   const { currentUser } = useAuthStore();
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
+    creditSales: branchCreditSales,
     stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
     subscribeToStock, fetchStockMismatches,
   } = useBranchStore();
-  const { bills, creditSales, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
+  const { bills, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
 
   const initializedRef = useRef<Branch | null>(null);
   const alertShownRef = useRef<string>('');
@@ -161,8 +162,9 @@ export default function BranchDashboard({ branch }: Props) {
   const unreadNotifications = notifications.filter((n) => n.branch === branch && n.status === 'Unread').length;
   const pendingStoreOrders = storeOrders.filter((o) => o.branch === branch && o.status === 'Pending Store Confirmation').length;
   const pendingPurchases = purchases.filter((p) => p.branch === branch && p.total > p.paidAmount).length;
-  const pendingCreditSales = creditSales.filter((c) => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').length;
-  const creditDue = creditSales.filter((c) => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').reduce((s, c) => s + c.balanceDue, 0);
+  const visibleCreditSales = branchCreditSales[branch] || [];
+  const pendingCreditSales = visibleCreditSales.filter((c) => c.status !== 'settled').length;
+  const creditDue = visibleCreditSales.filter((c) => c.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0);
   const todayIso = new Date().toISOString().slice(0, 10);
   const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
   const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && o.status !== 'Paid In Full' && o.deliveryDate === todayIso);

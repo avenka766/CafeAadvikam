@@ -109,6 +109,9 @@ export interface CreditSaleItem {
 export interface CreditSale {
   id: string;
   branch: Branch;
+  source?: string | null;
+  sourceId?: string | null;
+  customerRef?: string | null;
   customerName: string;
   customerPhone: string | null;
   items: CreditSaleItem[];
@@ -124,12 +127,27 @@ export interface CreditSale {
   billNo: string;
 }
 
+export interface CreditPayment {
+  id: string;
+  creditSaleId: string;
+  branch: Branch;
+  billNo: string;
+  amount: number;
+  paymentMode: 'cash' | 'upi' | 'card' | 'bank' | 'mixed';
+  reference: string | null;
+  remarks: string | null;
+  collectedBy: string;
+  collectedRole: string | null;
+  createdAt: string;
+}
+
 interface BranchState {
   stock:           Record<Branch, StockItem[]>;
   sales:           Record<Branch, SaleRecord[]>;
   incoming:        Record<Branch, IncomingStock[]>;
   advanceOrders:   Record<Branch, BranchAdvanceOrder[]>;
   creditSales:     Record<Branch, CreditSale[]>;
+  creditPayments:  Record<Branch, CreditPayment[]>;
   thresholds:      Record<Branch, Record<string, number>>;
   stockMismatches: StockMismatch[];
   loading:         boolean;
@@ -159,9 +177,32 @@ interface BranchState {
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
   // ── Credit sales ──────────────────────────────────────────────────────────
-  recordCreditSale: (branch: Branch, sale: Omit<CreditSale, 'id' | 'createdAt' | 'settledAt' | 'status'>) => Promise<string | null>;
-  settleCreditSale: (branch: Branch, saleId: string, amountCollected: number) => Promise<string | null>;
+  recordCreditSale: (
+    branch: Branch,
+    sale: Omit<CreditSale, 'id' | 'createdAt' | 'settledAt' | 'status'>,
+    options?: {
+      writeSalesRows?: boolean;
+      upfrontPaymentMode?: CreditPayment['paymentMode'];
+      reference?: string;
+      collectedBy?: string;
+      collectedRole?: string;
+      remarks?: string;
+    },
+  ) => Promise<string | null>;
+  settleCreditSale: (
+    branch: Branch,
+    saleId: string,
+    amountCollected: number,
+    payment?: {
+      mode?: CreditPayment['paymentMode'];
+      reference?: string;
+      remarks?: string;
+      collectedBy?: string;
+      collectedRole?: string;
+    },
+  ) => Promise<string | null>;
   fetchCreditSales: (branch: Branch) => Promise<void>;
+  fetchCreditPayments: (branch: Branch) => Promise<void>;
   // ── Live stock ────────────────────────────────────────────────────────────
   subscribeToStock:   (branch: Branch) => () => void; // returns unsubscribe fn
 }
@@ -172,6 +213,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   incoming:        { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
   advanceOrders:   { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
   creditSales:     { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
+  creditPayments:  { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
   thresholds:      { Cafe: {}, VRSNB: {}, SNB: {}, Hosur: {} },
   stockMismatches: [],
   loading:         false,
@@ -285,6 +327,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .map((d) => ({
             id:            d.id,
             branch:        d.branch as Branch,
+            source:        d.source ?? null,
+            sourceId:      d.source_id ?? null,
+            customerRef:   d.customer_ref ?? null,
             customerName:  d.customer_name ?? 'Unknown',
             customerPhone: d.customer_phone ?? null,
             items:         ((d.items as CreditSaleItem[] | null) || []).filter((i): i is CreditSaleItem => i != null),
@@ -905,6 +950,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         .map((d) => ({
           id:            d.id,
           branch:        d.branch as Branch,
+          source:        d.source ?? null,
+          sourceId:      d.source_id ?? null,
+          customerRef:   d.customer_ref ?? null,
           customerName:  d.customer_name ?? 'Unknown',
           customerPhone: d.customer_phone ?? null,
           items:         ((d.items as CreditSaleItem[] | null) || []).filter((i): i is CreditSaleItem => i != null),
@@ -923,12 +971,43 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     });
   },
 
-  recordCreditSale: async (branch, sale) => {
+  fetchCreditPayments: async (branch) => {
+    const { data, error } = await supabase
+      .from('branch_credit_payments')
+      .select('*')
+      .eq('branch', branch)
+      .order('created_at', { ascending: false });
+    if (error) { console.error('[fetchCreditPayments]', error.message); return; }
+    set((s) => {
+      const creditPayments = { ...s.creditPayments };
+      creditPayments[branch] = (data || [])
+        .filter((d): d is NonNullable<typeof d> => d != null && d.id != null)
+        .map((d) => ({
+          id: d.id,
+          creditSaleId: d.credit_sale_id,
+          branch: d.branch as Branch,
+          billNo: d.bill_no,
+          amount: Number(d.amount ?? 0),
+          paymentMode: (d.payment_mode ?? 'cash') as CreditPayment['paymentMode'],
+          reference: d.reference ?? null,
+          remarks: d.remarks ?? null,
+          collectedBy: d.collected_by ?? 'Staff',
+          collectedRole: d.collected_role ?? null,
+          createdAt: d.created_at ?? new Date().toISOString(),
+        }));
+      return { creditPayments };
+    });
+  },
+
+  recordCreditSale: async (branch, sale, options = {}) => {
     const now = new Date().toISOString();
     const { data, error } = await supabase
       .from('branch_credit_sales')
       .insert({
         branch,
+        source:         sale.source ?? null,
+        source_id:      sale.sourceId ?? null,
+        customer_ref:   sale.customerRef ?? null,
         customer_name:  sale.customerName,
         customer_phone: sale.customerPhone ?? null,
         items:          sale.items,
@@ -949,6 +1028,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const newSale: CreditSale = {
       id:            data.id,
       branch,
+      source:        sale.source ?? null,
+      sourceId:      sale.sourceId ?? null,
+      customerRef:   sale.customerRef ?? null,
       customerName:  sale.customerName,
       customerPhone: sale.customerPhone ?? null,
       items:         sale.items,
@@ -964,10 +1046,27 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       billNo:        sale.billNo,
     };
 
+    if (sale.amountPaid > 0) {
+      const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
+        credit_sale_id: data.id,
+        branch,
+        bill_no: sale.billNo,
+        amount: sale.amountPaid,
+        payment_mode: options.upfrontPaymentMode ?? 'cash',
+        reference: options.reference ?? null,
+        remarks: options.remarks ?? 'Credit upfront collection',
+        collected_by: options.collectedBy ?? sale.soldBy,
+        collected_role: options.collectedRole ?? null,
+        created_at: now,
+      });
+      if (paymentError) return `Credit sale saved but upfront payment history failed: ${paymentError.message}`;
+    }
+
     // Also write each item as a branch_sales row so revenue reports include credit sales.
     // payment_method='credit' marks these as credit-billed (goods delivered, payment pending).
     // They must NOT be excluded from revenue — the earning happened at point of sale.
-    const salesRows = sale.items.map(item => ({
+    const shouldWriteSalesRows = options.writeSalesRows !== false;
+    const salesRows = shouldWriteSalesRows ? sale.items.map(item => ({
       branch,
       item_name:      item.itemName,
       quantity_sold:  item.quantity,
@@ -976,26 +1075,58 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       payment_method: 'credit',
       unit_price:     item.price,
       bill_no:        sale.billNo,
-    }));
+    })) : [];
     if (salesRows.length > 0) {
       await supabase.from('branch_sales').insert(salesRows);
     }
 
     set((s) => {
       const creditSales = { ...s.creditSales };
+      const creditPayments = { ...s.creditPayments };
       creditSales[branch] = [newSale, ...creditSales[branch]];
-      return { creditSales };
+      if (sale.amountPaid > 0) {
+        creditPayments[branch] = [{
+          id: `pending-${data.id}`,
+          creditSaleId: data.id,
+          branch,
+          billNo: sale.billNo,
+          amount: sale.amountPaid,
+          paymentMode: options.upfrontPaymentMode ?? 'cash',
+          reference: options.reference ?? null,
+          remarks: options.remarks ?? 'Credit upfront collection',
+          collectedBy: options.collectedBy ?? sale.soldBy,
+          collectedRole: options.collectedRole ?? null,
+          createdAt: now,
+        }, ...creditPayments[branch]];
+      }
+      return { creditSales, creditPayments };
     });
     return null;
   },
 
-  settleCreditSale: async (branch, saleId, amountCollected) => {
+  settleCreditSale: async (branch, saleId, amountCollected, payment = {}) => {
     const sale = get().creditSales[branch].find((s) => s.id === saleId);
     if (!sale) return 'Credit sale not found';
 
     const newAmountPaid = sale.amountPaid + amountCollected;
     const isSettled = newAmountPaid >= sale.subtotal;
     const now = new Date().toISOString();
+
+    const { error: paymentError } = await supabase
+      .from('branch_credit_payments')
+      .insert({
+        credit_sale_id: saleId,
+        branch,
+        bill_no: sale.billNo,
+        amount: amountCollected,
+        payment_mode: payment.mode ?? 'cash',
+        reference: payment.reference ?? null,
+        remarks: payment.remarks ?? null,
+        collected_by: payment.collectedBy ?? 'Staff',
+        collected_role: payment.collectedRole ?? null,
+        created_at: now,
+      });
+    if (paymentError) return `Failed to record credit payment: ${paymentError.message}`;
 
     const { error } = await supabase
       .from('branch_credit_sales')
@@ -1013,13 +1144,27 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     set((s) => {
       const creditSales = { ...s.creditSales };
+      const creditPayments = { ...s.creditPayments };
       creditSales[branch] = creditSales[branch].map((cs) =>
         cs.id === saleId
           ? { ...cs, amountPaid: newAmountPaid, creditAmount: Math.max(0, cs.subtotal - newAmountPaid),
               status: isSettled ? 'settled' : 'partial', settledAt: now }
           : cs
       );
-      return { creditSales };
+      creditPayments[branch] = [{
+        id: `pending-${saleId}-${now}`,
+        creditSaleId: saleId,
+        branch,
+        billNo: sale.billNo,
+        amount: amountCollected,
+        paymentMode: payment.mode ?? 'cash',
+        reference: payment.reference ?? null,
+        remarks: payment.remarks ?? null,
+        collectedBy: payment.collectedBy ?? 'Staff',
+        collectedRole: payment.collectedRole ?? null,
+        createdAt: now,
+      }, ...creditPayments[branch]];
+      return { creditSales, creditPayments };
     });
     return null;
   },
