@@ -396,7 +396,7 @@ function NegativeStockTab({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative';
+type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative' | 'threshold';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches }: Props) {
   const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
@@ -501,6 +501,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     { id: 'current',  label: 'Current stock' },
     { id: 'manual',   label: 'Update stock' },
     { id: 'negative', label: `Negative${negativeItems.length > 0 ? ` (${negativeItems.length})` : ''}` },
+    { id: 'threshold', label: 'Thresholds' },
   ];
 
   return (
@@ -658,6 +659,114 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
         />
       )}
 
+      {/* ── Thresholds ───────────────────────────────────────────────────────── */}
+      {subTab === 'threshold' && (
+        <ThresholdSubTab
+          branch={branch}
+          completeStock={completeStock}
+          branchThresholds={branchThresholds}
+        />
+      )}
+
+    </div>
+  );
+}
+
+// ─── Threshold sub-tab ────────────────────────────────────────────────────────
+
+function ThresholdSubTab({
+  branch,
+  completeStock,
+  branchThresholds,
+}: {
+  branch: Branch;
+  completeStock: Array<{ itemName: string; quantity: number; minThreshold: number; unit?: 'kg' | 'pcs' }>;
+  branchThresholds: Record<string, number>;
+}) {
+  const { updateThreshold } = useBranchStore();
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+
+  const handleSave = async (itemName: string) => {
+    const newVal = Number(edits[itemName]);
+    if (isNaN(newVal) || newVal < 0) return;
+    setSaving((s) => ({ ...s, [itemName]: true }));
+    await updateThreshold(branch, itemName, newVal);
+    setSaved((s) => ({ ...s, [itemName]: true }));
+    setSaving((s) => ({ ...s, [itemName]: false }));
+    setTimeout(() => setSaved((s) => ({ ...s, [itemName]: false })), 2000);
+  };
+
+  return (
+    <div className="rounded-[1.75rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="flex items-center gap-3 border-b border-slate-200 px-5 py-4">
+        <div className="rounded-2xl bg-amber-50 p-3 text-amber-600"><AlertTriangle className="size-4" /></div>
+        <div>
+          <h3 className="text-xl font-black text-slate-950">Stock Thresholds</h3>
+          <p className="text-sm font-bold text-slate-500">Set low-stock alert thresholds per item. Rows highlighted when stock ≤ threshold.</p>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <th className="p-3">Item Name</th>
+              <th className="p-3 text-right">Current Qty</th>
+              <th className="p-3 text-right">Current Threshold</th>
+              <th className="p-3 text-right">New Threshold</th>
+              <th className="p-3 text-right">Save</th>
+            </tr>
+          </thead>
+          <tbody>
+            {completeStock.map((s) => {
+              const threshold = branchThresholds[s.itemName] ?? s.minThreshold;
+              const isLow = s.quantity <= threshold;
+              const editVal = edits[s.itemName] ?? '';
+              return (
+                <tr key={s.itemName} className={cn('border-t', isLow && 'bg-amber-50/70')}>
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      {isLow && <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />}
+                      <span className={cn('font-medium', isLow && 'font-black text-amber-900')}>{s.itemName}</span>
+                    </div>
+                  </td>
+                  <td className="p-3 text-right tabular-nums">
+                    <SmartStockBadge qty={s.quantity} threshold={threshold} itemName={s.itemName} unit={s.unit} />
+                  </td>
+                  <td className="p-3 text-right tabular-nums font-semibold">{threshold}</td>
+                  <td className="p-3 text-right">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder={String(threshold)}
+                      value={editVal}
+                      onChange={(e) => setEdits((prev) => ({ ...prev, [s.itemName]: e.target.value }))}
+                      className="w-24 rounded-xl border-2 border-slate-200 px-3 py-1.5 text-right text-sm font-bold outline-none focus:border-amber-400"
+                    />
+                  </td>
+                  <td className="p-3 text-right">
+                    {saved[s.itemName] ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-600">
+                        <CheckCircle2 className="size-3.5" /> Saved
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => void handleSave(s.itemName)}
+                        disabled={!editVal || saving[s.itemName]}
+                        className="inline-flex items-center gap-1 rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40"
+                      >
+                        {saving[s.itemName] ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                        Save
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

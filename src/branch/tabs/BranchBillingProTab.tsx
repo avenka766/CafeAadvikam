@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { printCounterBill } from '../printUtils';
 import {
   AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee,
   Package, PauseCircle, Printer, Receipt, RotateCcw, Search, Smartphone,
@@ -86,62 +87,8 @@ function toBillItem(item: BillingItem, qty: number): BranchBillItem {
   };
 }
 
-function printBranchBill(bill: BranchBillRecord, duplicate = false) {
-  const title = duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
-  const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
-    @page{size:80mm auto;margin:4mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.b{font-weight:800}.row{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px dashed #111;margin:6px 0}.item{margin:4px 0}.total{font-size:16px;font-weight:900}.stamp{border:2px solid #111;padding:4px;text-align:center;font-weight:900;margin:6px 0;font-size:13px}table{width:100%;border-collapse:collapse}td{padding:2px 0}.right{text-align:right}</style></head><body>
-    <div class="stamp">${title}</div><div class="c b">${BRANCH_LABELS[bill.branch]}</div><div class="c">Tax Invoice · ${bill.billNo}</div><div class="dash"></div>
-    <div class="row"><span>Date</span><span>${new Date(bill.createdAt).toLocaleString('en-IN')}</span></div>
-    ${bill.branch === 'VRSNB' ? '' : `<div class="row"><span>Salesperson</span><span>${bill.salesperson}</span></div>`}<div class="row"><span>Cashier</span><span>${bill.biller}</span></div><div class="dash"></div>
-    <table>${bill.items.map((i) => `<tr><td>${i.itemName}<br/><small>${i.quantity} ${i.unit} × ₹${i.price}</small></td><td class="right b">₹${i.lineTotal.toFixed(2)}</td></tr>`).join('')}</table>
-    <div class="dash"></div><div class="row"><span>Subtotal</span><span>₹${bill.subtotal.toFixed(2)}</span></div><div class="row"><span>Discount</span><span>₹${bill.discount.toFixed(2)}</span></div><div class="row"><span>Tax</span><span>₹${bill.tax.toFixed(2)}</span></div><div class="row total"><span>Total</span><span>₹${bill.total.toFixed(2)}</span></div>
-    <div class="row"><span>Tendered</span><span>₹${bill.tendered.toFixed(2)}</span></div><div class="row"><span>${bill.paymentMode === 'credit' ? 'Credit Due' : 'Balance'}</span><span>₹${bill.balance.toFixed(2)}</span></div><div class="row"><span>Mode</span><span>${bill.paymentMode.toUpperCase()}</span></div>
-    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div>` : ''}
-    <div class="dash"></div><div class="c b">Thank you. Visit again.</div><script>window.onload=()=>window.print()</script></body></html>`;
-  const win = window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.write(html); win.document.close(); }
-}
+// printCounterBill is imported from shared printUtils
 
-function printCounterBill(bill: BranchBillRecord, duplicate = false) {
-  const title = duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
-  const business = bill.branch === 'VRSNB'
-    ? {
-        name: 'VRSNB FOODS LLP - HO',
-        lines: ['109/1C, BAGALUR MAIN ROAD, BERIGAI', 'Hosur-635106', 'Phone: 9095445444'],
-        gstin: '33AAZFV1266C1ZZ',
-      }
-    : {
-        name: 'Sri Nanjundeshwara Bakery',
-        lines: ['404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk', 'Krishnagiri, Tamil Nadu, Hosur-635105', 'Phone: 9942266779, 9095445444'],
-        gstin: '33AMTPR1760M1ZE',
-      };
-  const printedAt = new Date(bill.createdAt);
-  const paymentRows = bill.paymentMode === 'split' && bill.split
-    ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${Number(amount).toFixed(2)}</span></div>`).join('')
-    : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${(bill.paymentMode === 'credit' ? bill.tendered : bill.total).toFixed(2)}</span></div>`;
-  const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
-    @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:6px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}</style></head><body>
-    ${duplicate ? `<div class="copy">${title}</div>` : ''}
-    <div class="c brand">${business.name}</div>
-    <div class="c small">${business.lines.join('<br/>')}</div>
-    <div class="c">GSTIN : ${business.gstin}</div>
-    <div class="c doc">TAX INVOICE</div>
-    <div class="row"><span>Bill No : ${bill.billNo}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div>
-    <div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
-    <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
-      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
-      <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
-    </tbody></table>
-    <div class="summary"><div class="row"><span>Discount :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Delivery Charges :</span><span>0.00</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>0.00</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
-    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}</div>
-    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
-    <table class="gst"><thead><tr><th>Taxable Value</th><th>CGST %</th><th>CGST Amt</th><th>SGST %</th><th>SGST Amt</th><th>Total GST</th></tr></thead><tbody><tr><td>${bill.total.toFixed(2)}</td><td>0</td><td>0.00</td><td>0</td><td>0.00</td><td>0.00</td></tr></tbody></table>
-    <div class="c small">Staff Name : ${bill.biller}</div>
-    <div class="footer">Thank you, Visit Again</div><div class="c small">www.billmaxo.com</div>
-    <script>window.onload=()=>window.print()</script></body></html>`;
-  const win = window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.write(html); win.document.close(); }
-}
 
 export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
   const { currentUser } = useAuthStore();
@@ -474,24 +421,27 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
               <button onClick={clear} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
               {cart.length === 0 ? (
-                <div className="flex h-full min-h-48 items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
-                  <div><Receipt className="mx-auto size-10 text-slate-300"/><p className="mt-3 font-black text-slate-600">Cart is always visible</p><p className="text-sm text-slate-400">Select items from the right side.</p></div>
+                <div className="flex min-h-28 items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
+                  <div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-black text-slate-600">Cart is empty</p><p className="text-xs text-slate-400">Select items from the right.</p></div>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {cart.map((i) => (
-                    <div key={i.itemName} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0"><p className="text-base font-black leading-tight text-slate-950">{i.itemName}</p><p className="mt-1 text-xs font-bold text-slate-500">{formatQty(i.quantity, i.unit)} × {money(i.price)}</p></div>
-                        <p className="text-lg font-black text-slate-950">{money(i.lineTotal)}</p>
+                    <div key={i.itemName} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-bold leading-tight text-slate-950 truncate">{i.itemName}</p>
+                          <p className="text-xs text-slate-500">{formatQty(i.quantity, i.unit)} × {money(i.price)}</p>
+                        </div>
+                        <p className="shrink-0 text-sm font-black text-slate-950">{money(i.lineTotal)}</p>
+                        <button onClick={() => setCart((c) => c.filter((x) => x.itemName !== i.itemName))} className="shrink-0 rounded-lg bg-red-50 p-1 text-red-500 hover:bg-red-100"><XCircle className="size-4"/></button>
                       </div>
-                      <div className="mt-3 flex items-center gap-2">
-                        <button onClick={() => reduceItem(i.itemName)} className="size-9 rounded-xl bg-slate-100 font-black"><Minus className="mx-auto size-4"/></button>
-                        <span className="min-w-20 rounded-xl bg-slate-950 px-3 py-2 text-center text-base font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
-                        <button onClick={() => { const catalogItem = items.find((it) => it.name === i.itemName); if (catalogItem) addItem(catalogItem); }} className="size-9 rounded-xl bg-amber-400 font-black text-slate-950"><Plus className="mx-auto size-4"/></button>
-                        <button onClick={() => setCart((c) => c.filter((x) => x.itemName !== i.itemName))} className="ml-auto rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600"><XCircle className="size-4"/></button>
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <button onClick={() => reduceItem(i.itemName)} className="size-7 rounded-lg bg-slate-100 font-black text-slate-700 flex items-center justify-center"><Minus className="size-3"/></button>
+                        <span className="min-w-16 rounded-lg bg-slate-950 px-2 py-1 text-center text-xs font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
+                        <button onClick={() => { const catalogItem = items.find((it) => it.name === i.itemName); if (catalogItem) addItem(catalogItem); }} className="size-7 rounded-lg bg-amber-400 font-black text-slate-950 flex items-center justify-center"><Plus className="size-3"/></button>
                       </div>
                     </div>
                   ))}
@@ -526,7 +476,10 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <input value={creditCustomerName} onChange={(e)=>setCreditCustomerName(e.target.value)} placeholder="Customer name *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                   <input value={creditCustomerMobile} onChange={(e)=>setCreditCustomerMobile(e.target.value)} placeholder="Mobile number *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
-                  <input type="date" value={creditDueDate} onChange={(e)=>setCreditDueDate(e.target.value)} className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase tracking-wide text-amber-800">Due Date <span className="text-red-500">*</span></label>
+                    <input required type="date" value={creditDueDate} onChange={(e)=>setCreditDueDate(e.target.value)} className={cn('w-full rounded-xl border bg-white p-2 font-bold outline-none', paymentMode === 'credit' && !creditDueDate ? 'border-red-400' : 'border-amber-200', 'focus:border-amber-500')}/>
+                  </div>
                   <input type="number" min="0" max={total} value={creditAmountPaid} onChange={(e)=>setCreditAmountPaid(e.target.value)} placeholder="Amount paid now" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                   <select value={creditPaidMode} onChange={(e)=>setCreditPaidMode(e.target.value as 'cash' | 'upi' | 'card')} className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500">
                     <option value="cash">Paid by Cash</option>
@@ -566,7 +519,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
               {visibleItems.map((item, idx) => {
                 const stock = stockFor(branchStock, item.name);
                 const disabled = stock <= 0;
@@ -579,40 +532,40 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                     aria-disabled={disabled}
                     onClick={() => !disabled && addItem(item)}
                     onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) addItem(item); }}
-                    className={cn('group min-h-36 rounded-3xl border-2 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
+                    className={cn('group rounded-3xl border-2 bg-white p-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="line-clamp-2 text-xl font-black leading-tight text-slate-950">{item.name}</p>
-                      <span className="rounded-xl bg-slate-100 px-2 py-1 text-xs font-black text-slate-500">{idx + 1}</span>
+                    <div className="flex items-start justify-between gap-1">
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
+                      <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-black text-slate-500">{idx + 1}</span>
                     </div>
-                    <div className="mt-4 flex items-end justify-between gap-3">
+                    <div className="mt-2 flex items-end justify-between gap-1">
                       <div>
-                        <p className="text-2xl font-black text-emerald-700">{money(item.price)}<span className="text-xs text-slate-400">/{unitOf(item)}</span></p>
-                        <p className={cn('mt-1 text-sm font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-1 inline size-4"/>{disabled ? 'Out of stock' : `${formatQty(stock, unitOf(item))} left`}</p>
+                        <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[10px] text-slate-400">/{unitOf(item)}</span></p>
+                        <p className={cn('mt-0.5 text-[10px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
                         {inCart && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); reduceItem(item.name); }}
-                            className="inline-flex size-12 items-center justify-center rounded-2xl bg-slate-200 text-slate-700 shadow-sm"
+                            className="inline-flex size-8 items-center justify-center rounded-xl bg-slate-200 text-slate-700 shadow-sm"
                             aria-label={`Remove ${item.name}`}
                           >
-                            <Minus className="size-6" />
+                            <Minus className="size-4" />
                           </button>
                         )}
                         <button
                           type="button"
                           disabled={disabled}
                           onClick={(e) => { e.stopPropagation(); addItem(item); }}
-                          className={cn('inline-flex size-12 items-center justify-center rounded-2xl text-lg font-black shadow-sm disabled:opacity-40', disabled ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 text-white shadow-orange-200')}
+                          className={cn('inline-flex size-8 items-center justify-center rounded-xl text-lg font-black shadow-sm disabled:opacity-40', disabled ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 text-white shadow-orange-200')}
                           aria-label={`Add ${item.name}`}
                         >
-                          <Plus className="size-6" />
+                          <Plus className="size-4" />
                         </button>
                       </div>
                     </div>
-                    {inCart && <div className="mt-3 rounded-2xl bg-emerald-600 px-3 py-2 text-center text-sm font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
+                    {inCart && <div className="mt-2 rounded-xl bg-emerald-600 px-2 py-1 text-center text-[10px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
                 );
               })}
