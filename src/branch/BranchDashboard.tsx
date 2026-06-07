@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle, Banknote, Bell, Building2, ClipboardCheck, CreditCard, FileClock,
+  AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
   Smartphone, Store, Truck, UserRound, WalletCards,
 } from 'lucide-react';
@@ -187,9 +187,15 @@ export default function BranchDashboard({ branch }: Props) {
     () => branchSales.filter((s) => new Date(s.soldAt).toDateString() === todayString && !s.billNo),
     [branchSales, todayString],
   );
+  const todayAdvanceIn = useMemo(
+    () => cashMovements
+      .filter((m) => m.branch === branch && new Date(m.dateTime).toDateString() === todayString && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'))
+      .reduce((s, m) => s + m.amount, 0),
+    [cashMovements, branch, todayString],
+  );
   const totalTodayRevenue = useMemo(
-    () => todayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0),
-    [todayBills, legacyTodaySalesLog],
+    () => todayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
+    [todayBills, legacyTodaySalesLog, todayAdvanceIn],
   );
   const currentCash = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
   const currentUpi = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
@@ -214,6 +220,7 @@ export default function BranchDashboard({ branch }: Props) {
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 xl:min-w-[740px]">
                   <HeroKpi label="Today Sales" value={money(totalTodayRevenue)} icon={<Receipt className="size-4" />} />
+                  <HeroKpi label="Advance" value={money(todayAdvanceIn)} icon={<CalendarClock className="size-4" />} />
                   <HeroKpi label="Cash" value={money(currentCash)} icon={<Banknote className="size-4" />} />
                   <HeroKpi label="UPI" value={money(currentUpi)} icon={<Smartphone className="size-4" />} />
                   <HeroKpi label="Card" value={money(currentCard)} icon={<CreditCard className="size-4" />} />
