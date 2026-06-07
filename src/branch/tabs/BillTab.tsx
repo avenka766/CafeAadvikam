@@ -1911,7 +1911,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
         creditAmount: Math.max(0, finalTotal - amtPaid),
         soldBy, dueDate: creditDueDate || null, notes: creditNotes.trim() || null,
         billNo: billNo.current,
-      });
+      }, { writeSalesRows: false, upfrontPaymentMode: 'cash', collectedBy: soldBy });
       if (creditErr) { setError(creditErr); return; }
       // Still record each sale for history/stock
       if (isSNB) {

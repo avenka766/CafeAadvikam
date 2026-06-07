@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ClipboardCheck,
@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
-import { useBranchStore, type SaleRecord, type StockItem } from '../branchStore';
+import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from '../branchStore';
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
@@ -64,60 +64,66 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
 
 export function CreditSalesTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { creditSales, collectCreditPayment, writeOffCreditSale } = useBranchOpsStore();
+  const { creditSales, fetchCreditSales, fetchCreditPayments, settleCreditSale } = useBranchStore();
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
-  const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
   const isVRSNB = branch === 'VRSNB';
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState('');
   const [form, setForm] = useState({ amount: '', mode: 'cash', reference: '', remarks: '' });
   const [message, setMessage] = useState('');
 
+  useEffect(() => {
+    void fetchCreditSales(branch);
+    void fetchCreditPayments(branch);
+  }, [branch, fetchCreditPayments, fetchCreditSales]);
+
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return creditSales
-      .filter((c) => c.branch === branch)
-      .filter((c) => !q || c.billNo.toLowerCase().includes(q) || c.customerName.toLowerCase().includes(q) || c.mobile.includes(q))
+    return (creditSales[branch] || [])
+      .filter((c) => !q || c.billNo.toLowerCase().includes(q) || c.customerName.toLowerCase().includes(q) || (c.customerPhone || '').includes(q))
       .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
   }, [branch, creditSales, query]);
 
   const selected = rows.find((r) => r.id === selectedId);
-  const pending = rows.filter((r) => r.status !== 'Paid' && r.status !== 'Written Off');
-  const totalCredit = rows.reduce((s, r) => s + r.total, 0);
-  const collected = rows.reduce((s, r) => s + r.paidAmount, 0);
-  const outstanding = pending.reduce((s, r) => s + r.balanceDue, 0);
-  const dueToday = pending.filter((r) => r.dueDate && new Date(r.dueDate).toDateString() === new Date().toDateString()).reduce((s, r) => s + r.balanceDue, 0);
+  const pending = rows.filter((r) => r.status !== 'settled');
+  const totalCredit = rows.reduce((s, r) => s + r.subtotal, 0);
+  const collected = rows.reduce((s, r) => s + r.amountPaid, 0);
+  const outstanding = pending.reduce((s, r) => s + r.creditAmount, 0);
+  const dueToday = pending.filter((r) => r.dueDate && new Date(r.dueDate).toDateString() === new Date().toDateString()).reduce((s, r) => s + r.creditAmount, 0);
 
   const startCollection = (id: string) => {
     const row = rows.find((r) => r.id === id);
     setSelectedId(id);
-    setForm({ amount: row ? String(row.balanceDue) : '', mode: 'cash', reference: '', remarks: '' });
+    setForm({ amount: row ? String(row.creditAmount) : '', mode: 'cash', reference: '', remarks: '' });
     setMessage('');
   };
 
-  const saveCollection = () => {
+  const saveCollection = async () => {
     if (!selected) { setMessage('Select a credit bill first.'); return; }
     const amount = Number(form.amount || 0);
     if (!amount || amount <= 0) { setMessage('Enter a valid collection amount.'); return; }
-    if (amount > selected.balanceDue) { setMessage('Collection amount cannot be more than pending balance.'); return; }
-    collectCreditPayment(selected.id, {
-      amount,
+    if (amount > selected.creditAmount) { setMessage('Collection amount cannot be more than pending balance.'); return; }
+    const err = await settleCreditSale(branch, selected.id, amount, {
       mode: form.mode as 'cash' | 'upi' | 'card' | 'bank',
       reference: form.reference,
       remarks: form.remarks,
       collectedBy: user,
+      collectedRole: currentUser?.role,
     });
+    if (err) { setMessage(err); return; }
+    await fetchCreditSales(branch);
+    await fetchCreditPayments(branch);
     setMessage(`Collected ${money(amount)} for ${selected.billNo}.`);
     setSelectedId('');
     setForm({ amount: '', mode: 'cash', reference: '', remarks: '' });
   };
 
-  const printReport = () => printHtml(`${branch} Credit Sales`, `<div class="stamp">CREDIT SALES REPORT</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Outstanding</span><b>₹${outstanding.toFixed(2)}</b></div><table><thead><tr><th>Bill</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${r.billNo}</td><td>${r.customerName}<br/>${r.mobile}</td><td>₹${r.total.toFixed(2)}</td><td>₹${r.paidAmount.toFixed(2)}</td><td>₹${r.balanceDue.toFixed(2)}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`);
+  const printReport = () => printHtml(`${branch} Credit Sales`, `<div class="stamp">CREDIT SALES REPORT</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Outstanding</span><b>Rs ${outstanding.toFixed(2)}</b></div><table><thead><tr><th>Bill</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${r.billNo}</td><td>${r.customerName}<br/>${r.customerPhone || ''}</td><td>Rs ${r.subtotal.toFixed(2)}</td><td>Rs ${r.amountPaid.toFixed(2)}</td><td>Rs ${r.creditAmount.toFixed(2)}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`);
 
   const exportCsv = () => {
     const csvRows = [
       ['Bill No', 'Customer', 'Mobile', 'Date', 'Due Date', 'Total', 'Paid', 'Balance', 'Status', isVRSNB ? 'Cashier' : 'Salesperson', 'Remarks'],
-      ...rows.map((r) => [r.billNo, r.customerName, r.mobile, new Date(r.createdAt).toLocaleString('en-IN'), r.dueDate, r.total, r.paidAmount, r.balanceDue, r.status, r.salesperson, r.remarks]),
+      ...rows.map((r) => [r.billNo, r.customerName, r.customerPhone || '', new Date(r.createdAt).toLocaleString('en-IN'), r.dueDate, r.subtotal, r.amountPaid, r.creditAmount, r.status, r.soldBy, r.notes || '']),
     ];
     const blob = new Blob([csvRows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
@@ -126,11 +132,10 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     a.click();
   };
 
-  const statusClass = (status: string) => cn(
+  const statusClass = (status: CreditSale['status']) => cn(
     'rounded-full px-3 py-1 text-xs font-black',
-    status === 'Paid' ? 'bg-emerald-100 text-emerald-700' :
-    status === 'Part Paid' ? 'bg-blue-100 text-blue-700' :
-    status === 'Written Off' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700',
+    status === 'settled' ? 'bg-emerald-100 text-emerald-700' :
+    status === 'partial' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700',
   );
 
   return <div className="space-y-5">
@@ -148,14 +153,14 @@ export function CreditSalesTab({ branch }: ModuleProps) {
           <div className="overflow-x-auto rounded-3xl border border-slate-200">
             <table className="w-full min-w-[980px] text-sm">
               <thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Customer</th><th className="p-3">Due Date</th><th className="p-3 text-right">Total</th><th className="p-3 text-right">Paid</th><th className="p-3 text-right">Balance</th><th className="p-3">Status</th><th className="p-3 text-right">Action</th></tr></thead>
-              <tbody>{rows.length === 0 ? <tr><td colSpan={8} className="p-6 text-center font-bold text-slate-500">No credit sales found.</td></tr> : rows.map((r)=><tr key={r.id} className="border-t align-top"><td className="p-3"><p className="font-black">{r.billNo}</p><p className="text-xs text-slate-400">{new Date(r.createdAt).toLocaleString('en-IN')}</p></td><td className="p-3"><p className="font-bold">{r.customerName}</p><p className="text-xs text-slate-500">{r.mobile || '-'}</p></td><td className="p-3">{r.dueDate || '-'}</td><td className="p-3 text-right font-black">{money(r.total)}</td><td className="p-3 text-right font-black text-emerald-700">{money(r.paidAmount)}</td><td className="p-3 text-right font-black text-amber-700">{money(r.balanceDue)}</td><td className="p-3"><span className={statusClass(r.status)}>{r.status}</span></td><td className="p-3 text-right"><div className="flex justify-end gap-2"><SoftButton onClick={()=>startCollection(r.id)} disabled={r.status === 'Paid' || r.status === 'Written Off'}>Collect</SoftButton>{isAdmin && r.status !== 'Paid' && r.status !== 'Written Off' && <SoftButton onClick={()=>writeOffCreditSale(r.id,user,'Admin write off')} className="text-red-600">Write off</SoftButton>}</div></td></tr>)}</tbody>
+              <tbody>{rows.length === 0 ? <tr><td colSpan={8} className="p-6 text-center font-bold text-slate-500">No credit sales found.</td></tr> : rows.map((r)=><tr key={r.id} className="border-t align-top"><td className="p-3"><p className="font-black">{r.billNo}</p><p className="text-xs text-slate-400">{new Date(r.createdAt).toLocaleString('en-IN')}</p></td><td className="p-3"><p className="font-bold">{r.customerName}</p><p className="text-xs text-slate-500">{r.customerPhone || '-'}</p></td><td className="p-3">{r.dueDate || '-'}</td><td className="p-3 text-right font-black">{money(r.subtotal)}</td><td className="p-3 text-right font-black text-emerald-700">{money(r.amountPaid)}</td><td className="p-3 text-right font-black text-amber-700">{money(r.creditAmount)}</td><td className="p-3"><span className={statusClass(r.status)}>{r.status}</span></td><td className="p-3 text-right"><div className="flex justify-end gap-2"><SoftButton onClick={()=>startCollection(r.id)} disabled={r.status === 'settled'}>Collect</SoftButton></div></td></tr>)}</tbody>
             </table>
           </div>
         </div>
         <div className="space-y-3 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200">
           <h4 className="text-lg font-black text-slate-950">Collect Payment</h4>
-          <p className="text-sm font-semibold text-slate-500">{selected ? `${selected.billNo} · ${selected.customerName} · Pending ${money(selected.balanceDue)}` : 'Choose a pending credit bill from the table.'}</p>
-          <Field label="Amount"><Input type="number" min="0" max={selected?.balanceDue || undefined} value={form.amount} onChange={(e)=>setForm({...form,amount:e.target.value})}/></Field>
+          <p className="text-sm font-semibold text-slate-500">{selected ? `${selected.billNo} - ${selected.customerName} - Pending ${money(selected.creditAmount)}` : 'Choose a pending credit bill from the table.'}</p>
+          <Field label="Amount"><Input type="number" min="0" max={selected?.creditAmount || undefined} value={form.amount} onChange={(e)=>setForm({...form,amount:e.target.value})}/></Field>
           <Field label="Collection Mode"><Select value={form.mode} onChange={(e)=>setForm({...form,mode:e.target.value})}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option></Select></Field>
           <Field label="Reference"><Input value={form.reference} onChange={(e)=>setForm({...form,reference:e.target.value})} placeholder="UPI/card/bank ref optional"/></Field>
           <Field label="Remarks"><Textarea value={form.remarks} onChange={(e)=>setForm({...form,remarks:e.target.value})} placeholder="Optional collection note"/></Field>
@@ -166,7 +171,6 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     </Section>
   </div>;
 }
-
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement } = useBranchOpsStore();
@@ -339,25 +343,33 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
 
 export function CashierClosureTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { bills, creditSales, returns, cashierClosures, purchasePayments, cashMovements, addCashierClosure } = useBranchOpsStore();
+  const { bills, returns, cashierClosures, purchasePayments, cashMovements, addCashierClosure } = useBranchOpsStore();
+  const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
   const [closing, setClosing] = useState('');
   const [notes, setNotes] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
 
+  useEffect(() => {
+    void fetchCreditSales(branch);
+    void fetchCreditPayments(branch);
+  }, [branch, fetchCreditPayments, fetchCreditSales]);
+
   const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
   const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt));
   const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt));
-  const todayCreditSales = creditSales.filter((c) => c.branch === branch && today(c.createdAt));
-  const todayCreditCollections = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Credit collection' || m.purpose === 'Credit upfront collection'));
+  const branchCredits = creditSales[branch] || [];
+  const branchCreditPayments = creditPayments[branch] || [];
+  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt));
+  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt));
   const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
   const totalSales = todayBills.reduce((s, b) => s + b.total, 0);
   const cash = todayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
   const upi = todayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
   const card = todayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
-  const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.total, 0);
+  const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = todayCreditCollections.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
@@ -418,7 +430,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       <Kpi label="Total Sales" value={money(totalSales)} icon={<Receipt/>} tone="green"/>
       <Kpi label="Cash Sales" value={money(cash)} icon={<Banknote/>} tone="green"/>
       <Kpi label="UPI/Card" value={money(upi + card)} icon={<CreditCard/>} tone="blue"/>
-      <Kpi label="Credit Due" value={money(creditSales.filter((c)=>c.branch===branch && c.status !== 'Paid' && c.status !== 'Written Off').reduce((sum,c)=>sum+c.balanceDue,0))} icon={<WalletCards/>} tone="amber"/>
+      <Kpi label="Credit Due" value={money(branchCredits.filter((c)=>c.status !== 'settled').reduce((sum,c)=>sum+c.creditAmount,0))} icon={<WalletCards/>} tone="amber"/>
       <Kpi label="Expenses/Refunds" value={money(expenses + refunds)} icon={<RotateCcw/>} tone="red"/>
       <Kpi label="Expected Cash" value={money(expected)} icon={<WalletCards/>} tone="amber"/>
     </div>

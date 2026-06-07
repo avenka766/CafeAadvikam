@@ -104,7 +104,7 @@ function printBranchBill(bill: BranchBillRecord, duplicate = false) {
 
 export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
   const { currentUser } = useAuthStore();
-  const { recordSnbSale, recordSale, fetchBranchData } = useBranchStore();
+  const { recordSnbSale, recordSale, recordCreditSale, fetchBranchData } = useBranchStore();
   const {
     bills, holds, salespeople, addBill, addHold, removeHold, addNotification,
   } = useBranchOpsStore();
@@ -312,6 +312,34 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
           ? await recordSnbSale(branch, item.itemName, item.quantity, billingStaff, modeLabel, item.price, billNo)
           : { error: await recordSale(branch, item.itemName, item.quantity, billingStaff, modeLabel, billNo, item.price), mismatch: false };
         if (err.error) throw new Error(err.error);
+      }
+      if (paymentMode === 'credit') {
+        const creditErr = await recordCreditSale(branch, {
+          branch,
+          customerName: creditCustomerName.trim(),
+          customerPhone: creditCustomerMobile.trim(),
+          items: cart.map((item) => ({
+            itemName: item.itemName,
+            quantity: item.quantity,
+            sellUnit: item.unit,
+            price: item.price,
+            lineTotal: item.lineTotal,
+          })),
+          subtotal: total,
+          amountPaid: creditPaid,
+          creditAmount: Math.max(0, total - creditPaid),
+          soldBy: billingStaff,
+          dueDate: creditDueDate,
+          notes: creditRemarks.trim() || null,
+          billNo,
+        }, {
+          writeSalesRows: false,
+          upfrontPaymentMode: creditPaidMode,
+          collectedBy: userName,
+          collectedRole: currentUser?.role,
+          remarks: creditRemarks.trim() || 'Credit upfront collection',
+        });
+        if (creditErr) throw new Error(creditErr);
       }
       const saved = addBill({
         branch, billNo, invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
