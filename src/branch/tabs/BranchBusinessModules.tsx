@@ -198,7 +198,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement, addAdvanceFinalBill } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
@@ -310,7 +310,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: orderType === 'cake' ? cake.flavor : first.itemName, shape: orderType === 'cake' ? cake.shape : first.unit,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order',
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
-      status: fullyPaid ? 'Paid In Full' : 'pending',
     });
     if (orderType === 'cake') await sendCakeToStoreDashboard(order);
     else await sendToStoreDashboard(order, sourceLines);
@@ -319,19 +318,34 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
     setStoreFullyPaid(false); setCustomFullyPaid(false);
     setStoreLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+    setError('');
   };
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
     const usedMode = payMode || finalPaymentMode;
-    const { billNo } = nextBranchInvoice(branch);
+    const { billNo, invoiceNo } = nextBranchInvoice(branch);
     const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
     if ((o.orderType || (o.designNotes === 'Existing branch stock advance order' ? 'store' : 'cake')) === 'store') {
       for (const line of orderLines) await manualUpdateStock(branch, line.itemName, Math.max(0, stockQty(branchStock, line.itemName) - line.quantity), currentUser?.displayName || 'Staff');
       await fetchBranchData(branch);
     }
     if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    const finalBill = addAdvanceFinalBill({
+      branch,
+      billNo,
+      invoiceNo,
+      items: orderLines,
+      subtotal: o.orderValue,
+      discount: 0,
+      tax: 0,
+      total: o.orderValue,
+      tendered: o.orderValue,
+      balance: 0,
+      paymentMode: usedMode,
+      salesperson: o.salesperson,
+      biller: currentUser?.displayName || 'Staff',
+    });
     updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
-    // Print final bill in counter bill format
-    printAdvanceSalesOrder({ branch, orderNo: billNo, customerName: o.customerName, mobile: o.mobile, deliveryDate: o.deliveryDate, deliveryTime: o.deliveryTime, items: orderLines, orderValue: o.orderValue, advanceAmount: o.orderValue, balanceAmount: 0, paymentMode: usedMode, staffName: currentUser?.displayName || 'Staff', fullyPaid: true });
+    printCounterBill(finalBill, false);
     setCollectingId(null);
   };
 
@@ -354,7 +368,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
             <label className="flex-1 text-sm font-black text-emerald-800">Fully Paid (no balance)</label>
             <input type="checkbox" checked={storeFullyPaid} onChange={e => handleStoreFullyPaid(e.target.checked)} className="size-5 accent-emerald-600" />
           </div>
-          {storeFullyPaid && <div className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-sm font-black text-emerald-700">✓ Fully Paid — no balance due</div>}
+          {storeFullyPaid && <div className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-sm font-black text-emerald-700">Fully paid - no balance due</div>}
         </>}
         {mode === 'custom' && <>
           <Field label="Custom Item Name *"><Input value={custom.itemName} onChange={(e)=>setCustom({...custom,itemName:e.target.value})}/></Field>
@@ -365,7 +379,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
             <label className="flex-1 text-sm font-black text-emerald-800">Fully Paid (no balance)</label>
             <input type="checkbox" checked={customFullyPaid} onChange={e => handleCustomFullyPaid(e.target.checked)} className="size-5 accent-emerald-600" />
           </div>
-          {customFullyPaid && <div className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-sm font-black text-emerald-700">✓ Fully Paid — no balance due</div>}
+          {customFullyPaid && <div className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-sm font-black text-emerald-700">Fully paid - no balance due</div>}
         </>}
         {mode === 'cake' && <>
           <div className="grid grid-cols-2 gap-3">
@@ -407,7 +421,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<span className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-xs font-black text-emerald-700">Fully Paid</span>)}</div></div></div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div></div>; })}</div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[600px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Customer</th><th className="p-3">Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={5} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3">{o.deliveryDate}</td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
@@ -506,6 +520,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   }, [branch, fetchCreditPayments, fetchCreditSales]);
 
   const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
+  const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
   const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt));
   const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt));
   const branchCredits = creditSales[branch] || [];
@@ -514,37 +529,38 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt));
   const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
-  const totalSales = todayBills.reduce((s, b) => s + b.total, 0);
+  const totalSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
   const advanceCollectedToday = todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
-  const totalSalesIncAdvance = totalSales + advanceCollectedToday;
-  const cash = todayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
-  const upi = todayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
-  const card = todayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
+  const cash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
+  const upi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
+  const card = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
   const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = todayCreditCollections.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const creditCollectionTotal = creditCollectionCash + creditCollectionDigital;
+  const totalSalesIncAdvance = totalSales + advanceCollectedToday + creditCollectionTotal;
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
   const advancePaid = todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
   const advanceFull = todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
-  const splitTotal = todayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
+  const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
-  const discounts = todayBills.reduce((s, b) => s + b.discount, 0);
-  const duplicate = todayBills.filter((b) => b.printCount > 1).length;
+  const discounts = counterTodayBills.reduce((s, b) => s + b.discount, 0);
+  const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
   const expected = Number(opening || 0) + cash + creditCollectionCash + advanceCash - refunds - expenses;
   const countedCash = Number(closing || 0);
   const diff = countedCash - expected;
 
   const save = () => {
-    addCashierClosure({ branch, cashier: user, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: todayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionCash + creditCollectionDigital, notes });
+    addCashierClosure({ branch, cashier: user, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
     setSavedMessage('Closure saved successfully.');
     setClosing('');
     setNotes('');
     setTimeout(() => setSavedMessage(''), 3000);
   };
 
-  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${todayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Sales</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Sales</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Sales</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${(creditCollectionCash + creditCollectionDigital).toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
+  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${counterTodayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance/Credit)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Sales</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Sales</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Sales</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${creditCollectionTotal.toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
 
   const exportClosure = () => {
     const rows = [
@@ -603,7 +619,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <tr className="border-t"><td className="p-3 font-black">Card Sales</td><td className="p-3 text-right font-black">{money(card)}</td><td className="p-3 text-slate-500">Card part of normal and split bills.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Split Payments</td><td className="p-3 text-right font-black">{money(splitTotal)}</td><td className="p-3 text-slate-500">Bills collected through more than one payment mode.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Credit Sales</td><td className="p-3 text-right font-black text-amber-700">{money(creditSalesTotal)}</td><td className="p-3 text-slate-500">Credit bills made today. This is sale value, not drawer cash.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionCash + creditCollectionDigital)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionTotal)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Advance Paid</td><td className="p-3 text-right font-black text-emerald-700">{money(advancePaid)}</td><td className="p-3 text-slate-500">Advance collected today for advance orders.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Advance Full / Balance</td><td className="p-3 text-right font-black text-emerald-700">{money(advanceFull)}</td><td className="p-3 text-slate-500">Final balance collected today for advance orders.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Expenses</td><td className="p-3 text-right font-black text-red-600">-{money(expenses)}</td><td className="p-3 text-slate-500">Supplier/purchase payments made today.</td></tr>

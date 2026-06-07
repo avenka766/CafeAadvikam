@@ -385,7 +385,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 xl:h-[calc(100dvh-var(--header-h,4rem)-7rem)] xl:overflow-hidden">
       <div className="grid min-h-[680px] grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
-          <div className="border-b border-slate-200 bg-slate-950 p-5 text-white">
+          <div className="hidden">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.25em] text-amber-300">New Bill · {branch}</p>
@@ -410,9 +410,12 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               {isAdmin && <p className="text-xs font-semibold text-slate-500">Admin can add/edit salesperson names in Salesperson Report.</p>}
             </div>
           ) : (
-            <div className="border-b border-slate-200 px-4 py-3">
-              <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
-              <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
+                <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
+              </div>
+              <span className="rounded-2xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">{branchHolds.length} hold</span>
             </div>
           )}
 
