@@ -266,6 +266,8 @@ function ChartWrap({ children, minHeight = 260 }: { children: ReactNode; minHeig
   return <div style={{ minHeight }} className="h-[280px] w-full">{children}</div>;
 }
 
+const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
+
 function AdminDashboard() {
   const { currentUser } = useAuthStore();
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
@@ -1077,7 +1079,7 @@ function AdminDashboard() {
         <KpiCard label="Risk" value={creditPendingTotal > 0 ? 'Follow up' : 'Clear'} icon={<AlertTriangle className="size-5" />} tone={creditPendingTotal > 0 ? 'red' : 'green'} />
       </div>
       <Panel title="Credit Management" subtitle="Credit collection flow remains inside the existing credit module, now embedded in Admin control.">
-        <AdminCreditTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
+        <AdminCreditTab branches={ADMIN_BRANCHES} />
       </Panel>
     </div>
   );
@@ -1085,7 +1087,7 @@ function AdminDashboard() {
   const AdvanceTab = (
     <div className="space-y-5">
       <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across Cafe, SNB, VRSNB and Hosur.">
-        <AdminAdvanceTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
+        <AdminAdvanceTab branches={ADMIN_BRANCHES} />
       </Panel>
     </div>
   );
