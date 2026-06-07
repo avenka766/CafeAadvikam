@@ -204,6 +204,7 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
       <div className="grid min-h-0 gap-4 px-3 py-3 md:px-5">
+        {tab !== 'bill' && (
         <div className="shrink-0 rounded-[2rem] border border-slate-200 bg-white/95 p-3 shadow-lg shadow-slate-200/50 backdrop-blur md:p-4">
             <div className="rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-4 text-white shadow-lg shadow-slate-300/50">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -230,6 +231,7 @@ export default function BranchDashboard({ branch }: Props) {
               {isAdminUser && <div className="mt-4"><BranchAdminKpiStrip branch={branch} /></div>}
             </div>
           </div>
+        )}
 
         <main className="min-w-0 min-h-0 overflow-visible rounded-[2rem] border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50">
           <div className={cn('min-h-0 px-3 py-3 md:px-4', tab !== 'bill' && 'max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>

@@ -1319,10 +1319,28 @@ export const useBranchOpsStore = create<BranchOpsState>()(
 );
 
 export function nextBranchInvoice(branch: Branch) {
-  const invoiceNo = seq(`branch-invoice-${branch}`, 500);
+  // Derive the next invoice number from the highest existing bill for this branch.
+  // This survives localStorage clears / logout because the bills array is persisted
+  // in the same Zustand store. Falls back to the localStorage seq counter if no
+  // bills exist yet, so first-time usage still works.
+  const existingBills = useBranchOpsStore.getState().bills.filter((b) => b.branch === branch);
+  let maxNo = 0;
+  for (const b of existingBills) {
+    // billNo format: "VRSNB-042" or "SNB-007"
+    const parts = b.billNo.split('-');
+    const n = Number(parts[parts.length - 1]);
+    if (!isNaN(n) && n > maxNo) maxNo = n;
+  }
+  // Also check the localStorage seq in case it is ahead (e.g. bills were pruned)
+  const lsKey = `branch-invoice-${branch}`;
+  const lsNo = Number(localStorage.getItem(lsKey) || '0');
+  const next = Math.max(maxNo, lsNo) + 1;
+  // Keep localStorage in sync so seq() stays consistent
+  localStorage.setItem(lsKey, String(next));
+  const invoiceNo = next;
   return {
     invoiceNo,
-    billNo: `${branch}-${String(invoiceNo).padStart(3, "0")}`,
+    billNo: `${branch}-${String(invoiceNo).padStart(3, '0')}`,
   };
 }
 
