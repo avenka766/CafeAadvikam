@@ -279,7 +279,8 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   // Fetch on mount for each relevant branch
   useEffect(() => {
     branches.forEach(b => fetchCreditSales(b));
-  }, [branches, fetchCreditSales]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchCreditSales]);
 
   // Collect all credit sales for the given branches
   const allSales = useMemo(() => {
