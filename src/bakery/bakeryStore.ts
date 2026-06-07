@@ -9,7 +9,7 @@ interface BakeryState {
   // FIX: added `silent` param — background polls pass true so loading stays false,
   // preventing the StoreDashboard list from unmounting and resetting card state.
   fetchOrders: (silent?: boolean) => Promise<void>;
-  submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch) => Promise<void>;
+  submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
@@ -59,10 +59,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
-  submitOrder: async (items, createdBy, targetBranch) => {
+  submitOrder: async (items, createdBy, targetBranch, notes) => {
     const { data, error } = await supabase
       .from('bakery_orders')
-      .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch })
+      .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch, notes: notes || null })
       .select()
       .single();
     if (error || !data) throw new Error('Failed to submit order. Please try again.');
@@ -98,12 +98,27 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   sendToBaker: async (orderId) => {
+    const order = get().orders.find(o => o.id === orderId);
     const { error } = await supabase
       .from('bakery_orders')
       .update({ status: 'baking' })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
+    if (order?.targetBranch === 'VRSNB') {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const acceptedAt = new Date().toLocaleString('en-IN');
+      useBranchOpsStore.getState().addNotification({
+        branch: 'VRSNB',
+        type: 'Store Confirmation',
+        title: 'Store accepted VRSNB advance order',
+        details: `Store accepted bakery order #${order.orderNumber} by ${acceptedBy} at ${acceptedAt}. ${order.notes || ''}`,
+        raisedBy: acceptedBy,
+      });
+    }
   },
 
   submitPrepared: async (orderId, preparedItems) => {
