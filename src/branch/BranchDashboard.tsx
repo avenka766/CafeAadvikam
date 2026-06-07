@@ -89,8 +89,9 @@ export default function BranchDashboard({ branch }: Props) {
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
     creditSales: branchCreditSales,
+    creditPayments: branchCreditPayments,
     stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
-    subscribeToStock, fetchStockMismatches,
+    subscribeToStock, fetchStockMismatches, fetchCreditPayments,
   } = useBranchStore();
   const { bills, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
 
@@ -130,6 +131,7 @@ export default function BranchDashboard({ branch }: Props) {
   useEffect(() => {
     fetchBranchData(branch);
     fetchStockMismatches();
+    fetchCreditPayments(branch);
 
     if (initializedRef.current !== branch) {
       initializedRef.current = branch;
@@ -183,6 +185,10 @@ export default function BranchDashboard({ branch }: Props) {
     () => bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === todayString),
     [bills, branch, todayString],
   );
+  const counterTodayBills = useMemo(
+    () => todayBills.filter((b) => b.source !== 'advance-final'),
+    [todayBills],
+  );
   const legacyTodaySalesLog = useMemo(
     () => branchSales.filter((s) => new Date(s.soldAt).toDateString() === todayString && !s.billNo),
     [branchSales, todayString],
@@ -193,9 +199,15 @@ export default function BranchDashboard({ branch }: Props) {
       .reduce((s, m) => s + m.amount, 0),
     [cashMovements, branch, todayString],
   );
+  const todayCreditCollections = useMemo(
+    () => (branchCreditPayments[branch] || [])
+      .filter((m) => new Date(m.createdAt).toDateString() === todayString)
+      .reduce((s, m) => s + m.amount, 0),
+    [branchCreditPayments, branch, todayString],
+  );
   const totalTodayRevenue = useMemo(
-    () => todayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
-    [todayBills, legacyTodaySalesLog, todayAdvanceIn],
+    () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn + todayCreditCollections,
+    [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn, todayCreditCollections],
   );
   const currentCash = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
   const currentUpi = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);

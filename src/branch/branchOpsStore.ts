@@ -48,6 +48,7 @@ export interface BranchBillRecord {
   createdAt: string;
   printCount: number;
   status: "Original Bill" | "Duplicate Bill" | "Returned";
+  source?: "counter" | "advance-final";
   creditCustomerName?: string;
   creditCustomerMobile?: string;
   creditDueDate?: string;
@@ -338,6 +339,9 @@ interface BranchOpsState {
   addBill: (
     bill: Omit<BranchBillRecord, "id" | "createdAt" | "printCount" | "status">,
   ) => BranchBillRecord;
+  addAdvanceFinalBill: (
+    bill: Omit<BranchBillRecord, "id" | "createdAt" | "printCount" | "status" | "source">,
+  ) => BranchBillRecord;
   markBillDuplicate: (billId: string, user: string) => void;
   collectCreditPayment: (
     creditId: string,
@@ -494,6 +498,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           createdAt: new Date().toISOString(),
           printCount: 1,
           status: "Original Bill",
+          source: bill.source ?? "counter",
         };
         const paymentMovements: CashMovement[] =
           bill.paymentMode === "credit"
@@ -566,6 +571,30 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               bill.paymentMode === "credit"
                 ? "Credit Bill Created"
                 : "Bill Printed - Original",
+              "-",
+              `${bill.billNo} ${bill.total}`,
+            ),
+            ...s.auditLogs,
+          ],
+        }));
+        return newBill;
+      },
+      addAdvanceFinalBill: (bill) => {
+        const newBill: BranchBillRecord = {
+          ...bill,
+          id: uid("bill"),
+          createdAt: new Date().toISOString(),
+          printCount: 1,
+          status: "Original Bill",
+          source: "advance-final",
+        };
+        set((s) => ({
+          bills: [newBill, ...s.bills],
+          auditLogs: [
+            audit(
+              bill.branch,
+              bill.biller,
+              "Advance Final Bill Printed",
               "-",
               `${bill.billNo} ${bill.total}`,
             ),
@@ -815,17 +844,17 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         }),
       addAdvanceCakeOrder: (order) => {
         const orderNo = `${order.branch}-ADV-${String(seq(`adv-${order.branch}`)).padStart(4, "0")}`;
+        const orderType = order.orderType || "cake";
         const newOrder: CakeAdvanceOrder = {
           ...order,
           id: uid("adv"),
           orderNo,
-          status: "Pending Store Confirmation",
+          status: orderType === "store" ? "Ready for Final Invoice" : "Pending Store Confirmation",
           createdAt: new Date().toISOString(),
         };
         const orderItems = order.items && order.items.length > 0
           ? order.items.map((item) => `${item.itemName} ${item.quantity} ${item.unit}`).join(", ")
           : `${order.cakeKg}kg ${order.flavor} ${order.shape} cake`;
-        const orderType = order.orderType || "cake";
         const storeOrder: StoreOrderRecord = {
           id: uid("store"),
           branch: order.branch,
@@ -840,8 +869,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         };
         set((s) => ({
           advanceCakeOrders: [newOrder, ...s.advanceCakeOrders],
-          storeOrders: [storeOrder, ...s.storeOrders],
-          notifications: [
+          storeOrders: orderType === "store" ? s.storeOrders : [storeOrder, ...s.storeOrders],
+          notifications: orderType === "store" ? s.notifications : [
             {
               id: uid("note"),
               branch: order.branch,
