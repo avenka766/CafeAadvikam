@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
+import { useBakeryStore } from '@/bakery/bakeryStore';
+import type { BakeryOrderItem } from '@/bakery/types';
 import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from '../branchStore';
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
@@ -41,6 +43,56 @@ function stockQty(stock: StockItem[], item: string) { return Number(stock.find((
 function today(d: string) { return new Date(d).toDateString() === new Date().toDateString(); }
 function month(d: string) { const x = new Date(d), n = new Date(); return x.getFullYear() === n.getFullYear() && x.getMonth() === n.getMonth(); }
 function printHtml(title: string, body: string) { const w = window.open('', '_blank', 'width=600,height=800'); if (w) { w.document.write(`<!doctype html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;padding:20px;color:#111}.b{font-weight:800}.c{text-align:center}.row{display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding:6px 0}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left}.right{text-align:right}.stamp{border:2px solid #111;padding:8px;text-align:center;font-weight:900;margin-bottom:12px}</style></head><body>${body}<script>window.onload=()=>window.print()</script></body></html>`); w.document.close(); } }
+
+function printAdvanceSalesOrder(payload: {
+  branch: Branch;
+  orderNo: string;
+  customerName: string;
+  mobile: string;
+  deliveryDate: string;
+  deliveryTime?: string;
+  items: BranchBillItem[];
+  orderValue: number;
+  advanceAmount: number;
+  balanceAmount: number;
+  paymentMode: string;
+  staffName: string;
+}) {
+  const now = new Date();
+  const business = payload.branch === 'VRSNB'
+    ? { name: 'VRSNB FOODS LLP - HO', lines: ['109/1C, BAGALUR MAIN ROAD, BERIGAI', 'Hosur-635106', 'Phone: 9095445444'], gstin: '33AAZFV1266C1ZZ' }
+    : { name: 'Sri Nanjundeshwara Bakery', lines: ['404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk', 'Krishnagiri, Tamil Nadu, Hosur-635105', 'Phone: 9942266779, 9095445444'], gstin: '33AMTPR1760M1ZE' };
+  const itemRows = payload.items.map((item, idx) => `<tr><td>${idx + 1}</td><td>${item.itemName}</td><td class="num">${item.quantity.toFixed(item.unit === 'kg' ? 2 : 0)}</td><td class="num">${item.price.toFixed(2)}</td><td class="num">${item.lineTotal.toFixed(2)}</td></tr>`).join('');
+  const qtyTotal = payload.items.reduce((sum, item) => sum + item.quantity, 0);
+  const html = `<!doctype html><html><head><title>${payload.orderNo}</title><style>
+    @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}</style></head><body>
+    <div class="c brand">${business.name}</div><div class="c small">${business.lines.join('<br/>')}</div><div class="c">GSTIN : ${business.gstin}</div><div class="c doc">SALES ORDER</div>
+    <div class="row"><span>Bill No : ${payload.orderNo}</span><span>Date : ${now.toLocaleDateString('en-GB')}</span></div>
+    <div class="row"><span>${payload.mobile}</span><span>${now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
+    <div class="row"><span>Customer</span><span>${payload.customerName}</span></div>
+    <div class="row"><span>Delivery</span><span>${payload.deliveryDate} ${payload.deliveryTime || ''}</span></div>
+    <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${itemRows}<tr class="total-row"><td></td><td>Total</td><td class="num">${qtyTotal.toFixed(2)}</td><td></td><td class="num">${payload.orderValue.toFixed(2)}</td></tr></tbody></table>
+    <div class="summary"><div class="row"><span>Discount :</span><span>0.00</span></div><div class="row"><span>Round-Off :</span><span>0.00</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${payload.orderValue.toFixed(2)}</span></div><div class="row"><span>Tender Amount :</span><span>${payload.advanceAmount.toFixed(2)}</span></div><div class="row"><span>Change Due :</span><span>${payload.balanceAmount.toFixed(2)}</span></div></div>
+    <div class="paybox"><div class="paytitle">Payment Details</div><div class="pay"><span>${payload.paymentMode.toUpperCase()}</span><span>${payload.advanceAmount.toFixed(2)}</span></div><div class="pay"><span>Advances from Sales Order</span><span>${payload.advanceAmount.toFixed(2)}</span></div></div>
+    <table class="gst"><thead><tr><th>Taxable Value</th><th>CGST %</th><th>CGST Amt</th><th>SGST %</th><th>SGST Amt</th><th>Total GST</th></tr></thead><tbody><tr><td>${payload.orderValue.toFixed(2)}</td><td>0</td><td>0.00</td><td>0</td><td>0.00</td><td>0.00</td></tr></tbody></table>
+    <div class="c small">Staff Name : ${payload.staffName}</div><div class="footer">Thank you, Visit Again</div><div class="c small">www.billmaxo.com</div><script>window.onload=()=>window.print()</script></body></html>`;
+  const win = window.open('', '_blank', 'width=420,height=680');
+  if (win) { win.document.write(html); win.document.close(); }
+}
+
+function printBranchBillReceipt(bill: BranchBillRecord, duplicate = false) {
+  const business = bill.branch === 'VRSNB'
+    ? { name: 'VRSNB FOODS LLP - HO', lines: ['109/1C, BAGALUR MAIN ROAD, BERIGAI', 'Hosur-635106', 'Phone: 9095445444'], gstin: '33AAZFV1266C1ZZ' }
+    : { name: 'Sri Nanjundeshwara Bakery', lines: ['404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk', 'Krishnagiri, Tamil Nadu, Hosur-635105', 'Phone: 9942266779, 9095445444'], gstin: '33AMTPR1760M1ZE' };
+  const printedAt = new Date(bill.createdAt);
+  const paymentRows = bill.paymentMode === 'split' && bill.split
+    ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${Number(amount).toFixed(2)}</span></div>`).join('')
+    : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${(bill.paymentMode === 'credit' ? bill.tendered : bill.total).toFixed(2)}</span></div>`;
+  const itemRows = bill.items.map((item, idx) => `<tr><td>${idx + 1}</td><td>${item.itemName}</td><td class="num">${item.quantity.toFixed(item.unit === 'kg' ? 2 : 0)}</td><td class="num">${item.price.toFixed(2)}</td><td class="num">${item.lineTotal.toFixed(2)}</td></tr>`).join('');
+  const html = `<!doctype html><html><head><title>${bill.billNo}</title><style>@page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}</style></head><body>${duplicate ? '<div class="copy">DUPLICATE BILL</div>' : ''}<div class="c brand">${business.name}</div><div class="c small">${business.lines.join('<br/>')}</div><div class="c">GSTIN : ${business.gstin}</div><div class="c doc">TAX INVOICE</div><div class="row"><span>Bill No : ${bill.billNo}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div><div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div><table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${itemRows}<tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, item) => s + item.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr></tbody></table><div class="summary"><div class="row"><span>Discount :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>0.00</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div><div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}</div><div class="c small">Staff Name : ${bill.biller}</div><div class="footer">Thank you, Visit Again</div><div class="c small">www.billmaxo.com</div><script>window.onload=()=>window.print()</script></body></html>`;
+  const win = window.open('', '_blank', 'width=420,height=680');
+  if (win) { win.document.write(html); win.document.close(); }
+}
 
 export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const { bills, markBillDuplicate } = useBranchOpsStore();
@@ -174,94 +226,143 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement } = useBranchOpsStore();
+  const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
   const items = catalog(branch);
-  const [mode, setMode] = useState<'store' | 'cake'>('store');
-  const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
-  const [form, setForm] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
-  const [storeForm, setStoreForm] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', itemName: items[0]?.name || '', quantity:'1', advanceAmount:'', paymentMode:'cash' });
-  const [error, setError] = useState('');
   const people = isVRSNB ? [] : salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
+  const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
+  const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
+  const [common, setCommon] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
+  const [storePick, setStorePick] = useState({ itemName: items[0]?.name || '', quantity:'1' });
+  const [storeLines, setStoreLines] = useState<BranchBillItem[]>([]);
+  const [custom, setCustom] = useState({ itemName:'', quantity:'1', unit:'pcs' as 'pcs' | 'kg', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' });
+  const [cake, setCake] = useState({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+  const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
-  const update = (k: string, v: string) => { setForm((f)=>({...f,[k]:v})); setError(''); };
-  const updateStore = (k: string, v: string) => { setStoreForm((f)=>({...f,[k]:v})); setError(''); };
+  const staff = isVRSNB ? user : common.salesperson;
 
-  const saveStoreAdvance = () => {
-    const item = items.find((i)=>i.name===storeForm.itemName);
-    const qty = Number(storeForm.quantity || 0);
-    const adv = Number(storeForm.advanceAmount || 0);
-    if (!storeForm.customerName.trim() || !storeForm.mobile.trim() || !storeForm.deliveryDate || !item || qty <= 0) {
-      setError('Please fill customer name, mobile, delivery date, item and quantity.');
-      return;
-    }
+  const updateCommon = (k: string, v: string) => { setCommon((f)=>({...f,[k]:v})); setError(''); };
+  const handleAttachment = (file: File | undefined, target: 'custom' | 'cake') => {
+    if (!file) return;
+    if (file.size > 750_000) { setError('Attachment should be below 750 KB to avoid using too much browser storage.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const payload = { attachmentName: file.name, attachmentDataUrl: String(reader.result || '') };
+      if (target === 'custom') setCustom((f)=>({...f,...payload}));
+      else setCake((f)=>({...f,...payload}));
+    };
+    reader.readAsDataURL(file);
+  };
+  const addStoreLine = () => {
+    const item = items.find((i)=>i.name===storePick.itemName);
+    const qty = Number(storePick.quantity || 0);
+    if (!item || qty <= 0) { setError('Select item and quantity.'); return; }
     const available = stockQty(branchStock, item.name);
-    if (qty > available) { setError(`Only ${available} available for ${item.name}.`); return; }
-    const orderValue = qty * item.price;
-    if (adv < 0 || adv > orderValue) { setError('Advance amount cannot be more than order value.'); return; }
-    const order = addAdvanceCakeOrder({ branch, customerName: storeForm.customerName, mobile: storeForm.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: storeForm.deliveryDate, deliveryTime: storeForm.deliveryTime, cakeKg: String(qty), flavor: item.name, shape: item.uom, messageOnCake: 'Existing branch stock item', designNotes: 'Existing branch stock advance order', attachmentName: '', orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: user, paymentMode: storeForm.paymentMode as 'cash'|'upi'|'card' });
-    printHtml(`Advance ${order.orderNo}`, `<div class="stamp">ADVANCE ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Item</span><b>${item.name}</b></div><div class="row"><span>Qty</span><b>${qty} ${item.uom}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>Rs ${order.orderValue}</b></div><div class="row"><span>Advance</span><b>Rs ${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>Rs ${order.balanceAmount}</b></div><p>Stock will reduce only on full payment/final invoice.</p>`);
-    setStoreForm({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', itemName: items[0]?.name || '', quantity:'1', advanceAmount:'', paymentMode:'cash' });
+    const existingQty = storeLines.filter((line)=>line.itemName===item.name).reduce((s,line)=>s+line.quantity,0);
+    if (qty + existingQty > available) { setError(`Only ${available} available for ${item.name}.`); return; }
+    const unit: 'pcs' | 'kg' = item.uom === 'Kgs' ? 'kg' : 'pcs';
+    const line: BranchBillItem = { itemName:item.name, quantity:qty, unit, price:item.price, tax:0, discount:0, lineTotal:qty * item.price };
+    setStoreLines((lines)=>[...lines, line]);
+    setStorePick((f)=>({...f, quantity:'1'}));
+    setError('');
   };
-
-  const save = () => {
-    const required = isVRSNB
-      ? ['customerName','mobile','deliveryDate','cakeKg','flavor','shape','orderValue','advanceAmount']
-      : ['customerName','mobile','deliveryDate','cakeKg','flavor','shape','orderValue','advanceAmount','salesperson'];
-    const missing = required.find((k)=>!String(form[k as keyof typeof form]).trim());
-    if (missing) { setError(isVRSNB ? 'Please fill customer name, mobile, delivery date, cake, value and advance details.' : 'Please fill customer name, mobile, delivery date, cake, value, advance and salesperson.'); return; }
-    const orderValue = Number(form.orderValue), adv = Number(form.advanceAmount);
-    if (!orderValue || adv < 0 || adv > orderValue) { setError('Check order value and advance amount.'); return; }
-    const orderStaff = isVRSNB ? user : form.salesperson;
-    const order = addAdvanceCakeOrder({ branch, customerName: form.customerName, mobile: form.mobile, orderDate: new Date().toISOString().split('T')[0], deliveryDate: form.deliveryDate, deliveryTime: form.deliveryTime, cakeKg: form.cakeKg, flavor: form.flavor, shape: form.shape, messageOnCake: form.messageOnCake, designNotes: form.designNotes, attachmentName: form.attachmentName, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: orderStaff, paymentMode: form.paymentMode as 'cash'|'upi'|'card' });
-    printHtml(`Sales Order ${order.orderNo}`, `<div class="stamp">SALES ORDER SLIP</div><h2>${order.orderNo}</h2><div class="row"><span>Customer</span><b>${order.customerName}</b></div><div class="row"><span>Mobile</span><b>${order.mobile}</b></div><div class="row"><span>Cake</span><b>${order.cakeKg}kg ${order.flavor} ${order.shape}</b></div><div class="row"><span>Delivery</span><b>${order.deliveryDate} ${order.deliveryTime}</b></div><div class="row"><span>Total</span><b>Rs ${order.orderValue}</b></div><div class="row"><span>Advance</span><b>Rs ${order.advanceAmount}</b></div><div class="row"><span>Balance</span><b>Rs ${order.balanceAmount}</b></div><div class="row"><span>${isVRSNB ? 'Cashier' : 'Salesperson'}</span><b>${orderStaff}</b></div>`);
-    setForm({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', advanceAmount:'', salesperson:'', paymentMode:'cash', attachmentName:'' });
+  const removeStoreLine = (idx: number) => setStoreLines((lines)=>lines.filter((_, i)=>i!==idx));
+  const storeValue = storeLines.reduce((s,l)=>s+l.lineTotal,0);
+  const validateCommon = (value: number) => {
+    const adv = Number(common.advanceAmount || 0);
+    if (!common.customerName.trim() || !common.mobile.trim() || !common.deliveryDate) return 'Customer name, mobile number and delivery date are mandatory.';
+    if (!isVRSNB && !common.salesperson) return 'Salesperson is mandatory.';
+    if (value <= 0 || adv < 0 || adv > value) return 'Check order value and advance amount.';
+    return '';
   };
-
+  const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
+    if (!isVRSNB || mode === 'store') return;
+    const bakeryItems: BakeryOrderItem[] = lines.map((line, idx) => ({
+      itemId: `${order.orderNo}-${idx}`,
+      itemName: line.itemName,
+      quantity: line.quantity,
+      isCustom: true,
+      dispatchUnit: line.unit,
+    }));
+    const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
+    await submitBakeryOrder(bakeryItems, `${user} - VRSNB advance`, 'VRSNB', notes);
+  };
+  const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
+    const sourceLines = orderType === 'store'
+      ? storeLines
+      : orderType === 'custom'
+        ? [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }]
+        : [{ itemName: `${cake.cakeKg}kg ${cake.flavor} ${cake.shape}`.trim(), quantity: Number(cake.cakeKg || 0) || 1, unit:'kg' as const, price: Number(cake.orderValue || 0), tax:0, discount:0, lineTotal: Number(cake.orderValue || 0) }];
+    const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
+    const message = validateCommon(orderValue);
+    if (message) { setError(message); return; }
+    if (sourceLines.length === 0 || sourceLines.some((line)=>!line.itemName || line.quantity <= 0)) { setError('Add at least one valid item.'); return; }
+    const adv = Number(common.advanceAmount || 0);
+    const first = sourceLines[0];
+    const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
+    const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
+    const order = addAdvanceCakeOrder({
+      branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: new Date().toISOString().split('T')[0],
+      deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: first.itemName, shape: first.unit,
+      messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order',
+      attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
+    });
+    await sendToStoreDashboard(order, sourceLines);
+    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount: orderValue - adv, paymentMode: common.paymentMode, staffName: staff });
+    setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
+    setStoreLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+  };
   const finalInvoice = async (o: CakeAdvanceOrder) => {
     const { billNo } = nextBranchInvoice(branch);
-    if (o.designNotes === 'Existing branch stock advance order') {
-      const qty = Number(o.cakeKg || 0);
-      await manualUpdateStock(branch, o.flavor, Math.max(0, stockQty(branchStock, o.flavor) - qty), currentUser?.displayName || 'Staff');
+    const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
+    if ((o.orderType || (o.designNotes === 'Existing branch stock advance order' ? 'store' : 'cake')) === 'store') {
+      for (const line of orderLines) await manualUpdateStock(branch, line.itemName, Math.max(0, stockQty(branchStock, line.itemName) - line.quantity), currentUser?.displayName || 'Staff');
       await fetchBranchData(branch);
     }
-    if (o.balanceAmount > 0) {
-      addCashMovement({ branch, amount: o.balanceAmount, paymentMode: finalPaymentMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
-    }
+    if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: finalPaymentMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
     updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
-    const itemLabel = o.designNotes === 'Existing branch stock advance order' ? `${o.flavor} - ${o.cakeKg} ${o.shape}` : `${o.cakeKg}kg ${o.flavor} ${o.shape}`;
-    printHtml(`Final Invoice ${billNo}`, `<div class="stamp">ORIGINAL BILL</div><h2>Final Tax Invoice</h2><p class="b">${billNo}</p><div class="row"><span>Customer</span><b>${o.customerName}</b></div><div class="row"><span>Mobile</span><b>${o.mobile}</b></div><div class="row"><span>Order Number</span><b>${o.orderNo}</b></div><div class="row"><span>Delivery</span><b>${o.deliveryDate} ${o.deliveryTime}</b></div><div class="row"><span>Item</span><b>${itemLabel}</b></div><div class="row"><span>Total Order Amount</span><b>Rs ${o.orderValue}</b></div><div class="row"><span>Advance Received</span><b>Rs ${o.advanceAmount}</b></div><div class="row"><span>Balance Received Today</span><b>Rs ${o.balanceAmount}</b></div><div class="row"><span>Total Received</span><b>Rs ${o.orderValue}</b></div><div class="row"><span>Status</span><b>PAID IN FULL</b></div><p>${isVRSNB ? 'Cashier' : 'Salesperson'}: ${o.salesperson}</p><p>Biller: ${currentUser?.displayName || 'Staff'}</p>`);
+    printAdvanceSalesOrder({ branch, orderNo: billNo, customerName: o.customerName, mobile: o.mobile, deliveryDate: o.deliveryDate, deliveryTime: o.deliveryTime, items: orderLines, orderValue: o.orderValue, advanceAmount: o.orderValue, balanceAmount: 0, paymentMode: finalPaymentMode, staffName: currentUser?.displayName || 'Staff' });
   };
 
-  return <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
+  return <div className="grid gap-5 xl:grid-cols-[480px_minmax(0,1fr)]">
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
-      <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
-        <button onClick={()=>setMode('store')} className={cn('rounded-xl px-3 py-2 text-sm font-black', mode==='store'?'bg-slate-950 text-white':'text-slate-600')}>Store Items</button>
-        <button onClick={()=>setMode('cake')} className={cn('rounded-xl px-3 py-2 text-sm font-black', mode==='cake'?'bg-slate-950 text-white':'text-slate-600')}>Cake Orders</button>
+      <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
+        {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
       </div>
-      {mode === 'store' ? <div className="grid gap-3">
-        <Field label="Customer Name *"><Input value={storeForm.customerName} onChange={(e)=>updateStore('customerName',e.target.value)}/></Field>
-        <Field label="Mobile Number *"><Input value={storeForm.mobile} onChange={(e)=>updateStore('mobile',e.target.value)}/></Field>
-        <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={storeForm.deliveryDate} onChange={(e)=>updateStore('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={storeForm.deliveryTime} onChange={(e)=>updateStore('deliveryTime',e.target.value)}/></Field></div>
-        <Field label="Item"><Select value={storeForm.itemName} onChange={(e)=>updateStore('itemName',e.target.value)}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field>
-        <div className="grid grid-cols-2 gap-3"><Field label="Quantity"><Input type="number" min="0" value={storeForm.quantity} onChange={(e)=>updateStore('quantity',e.target.value)}/></Field><Field label="Advance Amount"><Input type="number" min="0" value={storeForm.advanceAmount} onChange={(e)=>updateStore('advanceAmount',e.target.value)}/></Field></div>
-        <Field label="Payment Mode"><Select value={storeForm.paymentMode} onChange={(e)=>updateStore('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>
+      <div className="grid gap-3">
+        <Field label="Customer Name *"><Input value={common.customerName} onChange={(e)=>updateCommon('customerName',e.target.value)}/></Field>
+        <Field label="Mobile Number *"><Input value={common.mobile} onChange={(e)=>updateCommon('mobile',e.target.value)}/></Field>
+        <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={common.deliveryDate} onChange={(e)=>updateCommon('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={common.deliveryTime} onChange={(e)=>updateCommon('deliveryTime',e.target.value)}/></Field></div>
+        {mode === 'store' && <>
+          <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="Item"><Select value={storePick.itemName} onChange={(e)=>setStorePick({...storePick,itemName:e.target.value})}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Qty"><Input type="number" min="0" value={storePick.quantity} onChange={(e)=>setStorePick({...storePick,quantity:e.target.value})}/></Field></div>
+          <SoftButton onClick={addStoreLine}><Plus className="size-4"/>Add Item</SoftButton>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
+          <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(storeValue)}</div>
+        </>}
+        {mode === 'custom' && <>
+          <Field label="Custom Item Name *"><Input value={custom.itemName} onChange={(e)=>setCustom({...custom,itemName:e.target.value})}/></Field>
+          <div className="grid grid-cols-3 gap-2"><Field label="Qty *"><Input type="number" value={custom.quantity} onChange={(e)=>setCustom({...custom,quantity:e.target.value})}/></Field><Field label="Unit"><Select value={custom.unit} onChange={(e)=>setCustom({...custom,unit:e.target.value as 'pcs'|'kg'})}><option value="pcs">Pcs</option><option value="kg">Kgs</option></Select></Field><Field label="Rate *"><Input type="number" value={custom.price} onChange={(e)=>setCustom({...custom,price:e.target.value})}/></Field></div>
+          <Field label="Custom Notes"><Textarea value={custom.notes} onChange={(e)=>setCustom({...custom,notes:e.target.value})}/></Field>
+          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'custom')}/></Field>
+          {custom.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {custom.attachmentName}</p>}
+        </>}
+        {mode === 'cake' && <>
+          <div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={cake.cakeKg} onChange={(e)=>setCake({...cake,cakeKg:e.target.value})}/></Field><Field label="Flavor *"><Input value={cake.flavor} onChange={(e)=>setCake({...cake,flavor:e.target.value})}/></Field><Field label="Shape *"><Input value={cake.shape} onChange={(e)=>setCake({...cake,shape:e.target.value})}/></Field></div>
+          <Field label="Message on cake"><Input value={cake.messageOnCake} onChange={(e)=>setCake({...cake,messageOnCake:e.target.value})}/></Field>
+          <Field label="Design notes"><Textarea value={cake.designNotes} onChange={(e)=>setCake({...cake,designNotes:e.target.value})}/></Field>
+          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'cake')}/></Field>
+          {cake.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {cake.attachmentName}</p>}
+          <Field label="Order Value *"><Input type="number" value={cake.orderValue} onChange={(e)=>setCake({...cake,orderValue:e.target.value})}/></Field>
+        </>}
+        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}<Field label="Advance Amount *"><Input type="number" value={common.advanceAmount} onChange={(e)=>updateCommon('advanceAmount',e.target.value)}/></Field><Field label="Payment Mode"><Select value={common.paymentMode} onChange={(e)=>updateCommon('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
         {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
-        <PrimaryButton onClick={saveStoreAdvance}><Printer className="size-4"/>Save Store Item Advance</PrimaryButton>
-      </div> : <div className="grid gap-3">
-        <Field label="Customer Name *"><Input value={form.customerName} onChange={(e)=>update('customerName',e.target.value)}/></Field><Field label="Mobile Number *"><Input value={form.mobile} onChange={(e)=>update('mobile',e.target.value)}/></Field>
-        <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={form.deliveryDate} onChange={(e)=>update('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={form.deliveryTime} onChange={(e)=>update('deliveryTime',e.target.value)}/></Field></div>
-        <div className="grid grid-cols-3 gap-3"><Field label="Cake KG *"><Input value={form.cakeKg} onChange={(e)=>update('cakeKg',e.target.value)}/></Field><Field label="Flavor *"><Input value={form.flavor} onChange={(e)=>update('flavor',e.target.value)}/></Field><Field label="Shape *"><Input value={form.shape} onChange={(e)=>update('shape',e.target.value)}/></Field></div>
-        <Field label="Message on cake"><Input value={form.messageOnCake} onChange={(e)=>update('messageOnCake',e.target.value)}/></Field><Field label="Design notes"><Textarea value={form.designNotes} onChange={(e)=>update('designNotes',e.target.value)}/></Field><Field label="Attachment/Image filename"><Input value={form.attachmentName} onChange={(e)=>update('attachmentName',e.target.value)} placeholder="Attach through real file storage later"/></Field>
-        <div className="grid grid-cols-2 gap-3"><Field label="Order Value *"><Input type="number" value={form.orderValue} onChange={(e)=>update('orderValue',e.target.value)}/></Field><Field label="Advance Amount *"><Input type="number" value={form.advanceAmount} onChange={(e)=>update('advanceAmount',e.target.value)}/></Field></div>
-        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={form.salesperson} onChange={(e)=>update('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}<Field label="Payment Mode"><Select value={form.paymentMode} onChange={(e)=>update('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
-        {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
-        <PrimaryButton onClick={save}><Printer className="size-4"/>Generate Sales Order Slip & Send to Store</PrimaryButton>
-      </div>}
+        <PrimaryButton onClick={()=>void saveAdvance(mode)}><Printer className="size-4"/>Generate Sales Order Slip{mode !== 'store' ? ' & Send to Store Orders' : ''}</PrimaryButton>
+      </div>
     </Section>
     <Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>} action={<Select value={finalPaymentMode} onChange={(e)=>setFinalPaymentMode(e.target.value as typeof finalPaymentMode)} className="w-40"><option value="cash">Final Cash</option><option value="upi">Final UPI</option><option value="card">Final Card</option></Select>}>
-      <div className="space-y-3">{orders.map(o=><div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {o.designNotes === 'Existing branch stock advance order' ? `${o.flavor} ${o.cakeKg} ${o.shape}` : `${o.cakeKg}kg ${o.flavor} ${o.shape}`} - Delivery {o.deliveryDate} {o.deliveryTime}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>void finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>)}</div>
+      <div className="space-y-3">{orders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2"><SoftButton onClick={()=>void finalInvoice(o)} disabled={o.status === 'Paid In Full'}><Printer className="size-4"/>Final Invoice</SoftButton></div></div></div>; })}</div>
     </Section>
   </div>;
 }

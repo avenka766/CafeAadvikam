@@ -102,6 +102,47 @@ function printBranchBill(bill: BranchBillRecord, duplicate = false) {
   if (win) { win.document.write(html); win.document.close(); }
 }
 
+function printCounterBill(bill: BranchBillRecord, duplicate = false) {
+  const title = duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
+  const business = bill.branch === 'VRSNB'
+    ? {
+        name: 'VRSNB FOODS LLP - HO',
+        lines: ['109/1C, BAGALUR MAIN ROAD, BERIGAI', 'Hosur-635106', 'Phone: 9095445444'],
+        gstin: '33AAZFV1266C1ZZ',
+      }
+    : {
+        name: 'Sri Nanjundeshwara Bakery',
+        lines: ['404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk', 'Krishnagiri, Tamil Nadu, Hosur-635105', 'Phone: 9942266779, 9095445444'],
+        gstin: '33AMTPR1760M1ZE',
+      };
+  const printedAt = new Date(bill.createdAt);
+  const paymentRows = bill.paymentMode === 'split' && bill.split
+    ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${Number(amount).toFixed(2)}</span></div>`).join('')
+    : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${(bill.paymentMode === 'credit' ? bill.tendered : bill.total).toFixed(2)}</span></div>`;
+  const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
+    @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:6px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}</style></head><body>
+    ${duplicate ? `<div class="copy">${title}</div>` : ''}
+    <div class="c brand">${business.name}</div>
+    <div class="c small">${business.lines.join('<br/>')}</div>
+    <div class="c">GSTIN : ${business.gstin}</div>
+    <div class="c doc">TAX INVOICE</div>
+    <div class="row"><span>Bill No : ${bill.billNo}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div>
+    <div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
+    <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
+      ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
+      <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
+    </tbody></table>
+    <div class="summary"><div class="row"><span>Discount :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Delivery Charges :</span><span>0.00</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>0.00</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
+    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}</div>
+    ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
+    <table class="gst"><thead><tr><th>Taxable Value</th><th>CGST %</th><th>CGST Amt</th><th>SGST %</th><th>SGST Amt</th><th>Total GST</th></tr></thead><tbody><tr><td>${bill.total.toFixed(2)}</td><td>0</td><td>0.00</td><td>0</td><td>0.00</td><td>0.00</td></tr></tbody></table>
+    <div class="c small">Staff Name : ${bill.biller}</div>
+    <div class="footer">Thank you, Visit Again</div><div class="c small">www.billmaxo.com</div>
+    <script>window.onload=()=>window.print()</script></body></html>`;
+  const win = window.open('', '_blank', 'width=420,height=680');
+  if (win) { win.document.write(html); win.document.close(); }
+}
+
 export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
   const { currentUser } = useAuthStore();
   const { recordSnbSale, recordSale, recordCreditSale, fetchBranchData } = useBranchStore();
@@ -354,7 +395,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
         salesperson: billingStaff,
         biller: userName,
       });
-      printBranchBill(saved, false);
+      printCounterBill(saved, false);
       setLastBill(saved);
       setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       await fetchBranchData(branch);
@@ -394,8 +435,8 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   }, [addItem, branch, cart, clear, holdBill, isVRSNB, onOpenTab, selectedIndex, subtotal, total, visibleItems]);
 
   return (
-    <div className="branch-billmaxo h-full min-h-[calc(100dvh-var(--header-h,4rem)-10rem)] overflow-hidden rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70">
-      <div className="grid h-full max-h-[calc(100dvh-var(--header-h,4rem)-8rem)] grid-cols-1 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
+    <div className="branch-billmaxo min-h-[760px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 xl:h-[calc(100dvh-var(--header-h,4rem)-13.5rem)] xl:min-h-[680px] xl:overflow-hidden">
+      <div className="grid min-h-[760px] grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="border-b border-slate-200 bg-slate-950 p-5 text-white">
             <div className="flex items-center justify-between gap-3">
@@ -459,7 +500,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
             </div>
           </div>
 
-          <div className="border-t border-slate-200 bg-white p-4 shadow-[0_-12px_35px_rgba(15,23,42,.08)]">
+          <div className="shrink-0 border-t border-slate-200 bg-white p-4 shadow-[0_-12px_35px_rgba(15,23,42,.08)]">
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="rounded-2xl bg-slate-100 p-3"><p className="text-xs font-bold text-slate-500">Subtotal</p><p className="text-xl font-black">{money(subtotal)}</p></div>
               <div className="rounded-2xl bg-slate-100 p-3"><p className="text-xs font-bold text-slate-500">Discount</p><input value={discount} onChange={(e)=>setDiscount(e.target.value)} placeholder="0" className="w-full bg-transparent text-xl font-black outline-none"/></div>
@@ -505,11 +546,11 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <button onClick={()=>onOpenTab?.('returns')} className="rounded-2xl bg-blue-100 px-3 py-3 text-sm font-black text-blue-800"><RotateCcw className="mx-auto mb-1 size-4"/>Return</button>
               <button onClick={checkout} disabled={saving || cart.length === 0} className="rounded-2xl bg-orange-500 px-3 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"><Printer className="mx-auto mb-1 size-4"/>{saving ? 'Saving' : 'Final Bill'}</button>
             </div>
-            {lastBill && <button onClick={() => printBranchBill(lastBill, true)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white py-2 text-sm font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
+            {lastBill && <button onClick={() => printCounterBill(lastBill, true)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white py-2 text-sm font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
           </div>
         </aside>
 
-        <main className="flex min-h-0 flex-col bg-slate-100">
+        <main className="flex min-h-[640px] flex-col bg-slate-100 xl:min-h-0">
           <div className="border-b border-slate-200 bg-white p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div><h1 className="text-3xl font-black tracking-tight text-slate-950">{BRANCH_LABELS[branch]} Fast Billing</h1></div>
