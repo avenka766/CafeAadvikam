@@ -393,11 +393,10 @@ function PaymentSplitCard({
 
 export default function AdminVRSNBDashboard() {
   const { currentUser } = useAuthStore();
-  const { stock, sales, fetchBranchData, manualUpdateStock } = useBranchStore();
+  const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
     bills,
     returns,
-    creditSales,
     salespeople,
     purchases,
     purchasePayments,
@@ -437,7 +436,10 @@ export default function AdminVRSNBDashboard() {
 
   useEffect(() => {
     fetchBranchData(BRANCH);
-  }, [fetchBranchData]);
+    fetchBranchData("Cafe");
+    fetchCreditPayments(BRANCH);
+    fetchCreditPayments("Cafe");
+  }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = stock[BRANCH] || [];
   const branchSalesRows = sales[BRANCH] || [];
@@ -569,26 +571,10 @@ export default function AdminVRSNBDashboard() {
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
 
-  const pendingCredit = creditSales
-    .filter(
-      (c) =>
-        c.branch === BRANCH &&
-        c.status !== "Paid" &&
-        c.status !== "Written Off",
-    )
-    .reduce((sum, c) => sum + c.balanceDue, 0);
-  const clearedCredit = creditSales
-    .filter(
-      (c) => c.branch === BRANCH && inRange(c.updatedAt, fromDate, toDate),
-    )
-    .reduce(
-      (sum, c) =>
-        sum +
-        c.payments
-          .filter((p) => inRange(p.createdAt, fromDate, toDate))
-          .reduce((x, p) => x + p.amount, 0),
-      0,
-    );
+  const scopedCredits = [...(dbCreditSales.Cafe || []), ...(dbCreditSales[BRANCH] || [])];
+  const scopedCreditPayments = [...(dbCreditPayments.Cafe || []), ...(dbCreditPayments[BRANCH] || [])];
+  const pendingCredit = scopedCredits.filter((c) => c.status !== "settled").reduce((sum, c) => sum + c.creditAmount, 0);
+  const clearedCredit = scopedCreditPayments.filter((p) => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + p.amount, 0);
   const purchasePaid = purchasePayments
     .filter(
       (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
@@ -2937,14 +2923,10 @@ function DailyClosureTab({ userName, ...props }: any) {
 }
 
 function ReportsTab(props: any) {
-  const dueCredits = useBranchOpsStore
-    .getState()
-    .creditSales.filter(
-      (c) =>
-        c.branch === BRANCH &&
-        c.status !== "Paid" &&
-        c.status !== "Written Off",
-    );
+  const { creditSales } = useBranchStore();
+  const dueCredits = (["Cafe", BRANCH] as const)
+    .flatMap((branch) => creditSales[branch] || [])
+    .filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
   const disputeRows = useBranchOpsStore
@@ -3036,9 +3018,9 @@ function ReportsTab(props: any) {
               rows={dueCredits.map((c) => [
                 c.customerName,
                 c.billNo,
-                money(c.total),
-                money(c.paidAmount),
-                money(c.balanceDue),
+                money(c.subtotal),
+                money(c.amountPaid),
+                money(c.creditAmount),
                 c.dueDate,
                 c.status,
               ])}

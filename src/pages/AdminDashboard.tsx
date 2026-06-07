@@ -300,7 +300,6 @@ function AdminDashboard() {
     returns,
     purchases,
     purchasePayments,
-    creditSales: opsCreditSales,
     cashMovements,
     bankDeposits,
     cashierClosures,
@@ -550,9 +549,8 @@ function AdminDashboard() {
 
   const creditPendingTotal = useMemo(() => {
     const branchCredit = BRANCHES.reduce((sum, branch) => sum + (creditSales[branch] || []).filter((c) => c.status !== 'settled').reduce((s, c) => s + Number(c.creditAmount || 0), 0), 0);
-    const opsCredit = opsCreditSales.filter((c) => c.status !== 'Paid' && c.status !== 'Written Off').reduce((s, c) => s + Number(c.balanceDue || 0), 0);
-    return branchCredit + opsCredit;
-  }, [creditSales, opsCreditSales]);
+    return branchCredit;
+  }, [creditSales]);
 
   const purchaseTotal = useMemo(() => purchases.filter((p) => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + Number(p.total || 0), 0), [purchases, fromDate, toDate]);
   const expenseTotal = useMemo(() => cashMovements.filter((m) => inRange(m.dateTime, fromDate, toDate) && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0), [cashMovements, fromDate, toDate]);

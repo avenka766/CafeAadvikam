@@ -1547,7 +1547,6 @@ function BranchOverviewTab() {
     const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
     const openCredit = [
       ...(creditSales[branch] || []).map(c => moneyNumber(c.creditAmount)),
-      ...useBranchOpsStore.getState().creditSales.filter(c => c.branch === branch && c.status !== 'Paid' && c.status !== 'Written Off').map(c => moneyNumber(c.balanceDue)),
     ].reduce((a, b) => a + b, 0);
     const lastClosure = cashierClosures.find(c => c.branch === branch && ownerInRange(c.createdAt, from, to));
     const cash = localBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.cash) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('cash') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
@@ -1818,7 +1817,7 @@ function OwnerDailyClosureTab() {
 function OwnerAlertsTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { stock, creditSales, fetchBranchData } = useBranchStore();
-  const { creditSales: branchCredits, purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
+  const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
   const { invoices, load } = useInvoiceStore();
   const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
 
@@ -1839,8 +1838,6 @@ function OwnerAlertsTab() {
       const closedToday = cashierClosures.some(c => c.branch === branch && ownerLocalDay(c.createdAt) === today);
       if (branch !== 'Cafe' && !closedToday) list.push({ title: 'Daily closure pending', value: '1', note: `${ownerBranchDisplay(branch)} closure not submitted for today`, tone: 'warning', branch });
     });
-    const localCreditOverdue = branchCredits.filter(c => c.status !== 'Paid' && c.status !== 'Written Off' && c.dueDate && new Date(c.dueDate) < new Date());
-    if (localCreditOverdue.length) list.push({ title: 'Customer credit overdue', value: String(localCreditOverdue.length), note: `${formatCurrency(localCreditOverdue.reduce((s, c) => s + c.balanceDue, 0))} needs collection`, tone: 'danger' });
     const pendingPurchases = purchases.filter(p => (p.syncStatus || 'Not Synced') !== 'Synced');
     if (pendingPurchases.length) list.push({ title: 'Purchase stock sync pending', value: String(pendingPurchases.length), note: 'Purchased quantities not fully reflected in stock', tone: 'warning' });
     const pendingInvoice = invoices.filter(i => i.status === 'pending_review');
@@ -1853,7 +1850,7 @@ function OwnerAlertsTab() {
     if (cancelled.length) list.push({ title: 'Cafe cancelled orders', value: String(cancelled.length), note: 'Check wastage or service gaps', tone: 'neutral' });
     notifications.filter(n => n.status !== 'Resolved').slice(0, 6).forEach(n => list.push({ title: n.title, value: n.status, note: `${ownerBranchDisplay(n.branch)} · ${n.details}`, tone: n.type === 'Stock Dispute' ? 'danger' : 'neutral', branch: n.branch }));
     return list;
-  }, [orders, stock, creditSales, branchCredits, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
+  }, [orders, stock, creditSales, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
 
   const visible = alerts.filter(a => tone === 'all' || a.tone === tone);
 

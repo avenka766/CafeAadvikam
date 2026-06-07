@@ -155,7 +155,7 @@ export default function DailyClosure() {
       loadOrders: s.loadOrders,
     }))
   );
-  const { creditSales: branchCreditSales, fetchCreditSales } = useBranchStore();
+  const { creditSales: branchCreditSales, creditPayments: branchCreditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
@@ -164,8 +164,9 @@ export default function DailyClosure() {
   useEffect(() => {
     startPolling(60);
     fetchCreditSales('Cafe');
+    fetchCreditPayments('Cafe');
     return () => stopPolling();
-  }, [startPolling, stopPolling, fetchCreditSales]);
+  }, [startPolling, stopPolling, fetchCreditSales, fetchCreditPayments]);
 
   const closure = useMemo(() => {
     const dayOrders = orders
@@ -237,9 +238,10 @@ export default function DailyClosure() {
     const advanceOpen = dayOrders.filter(order => order.paymentType === 'advance' && safeNumber(order.balanceDue) > 0);
     const advanceClosedToday = orders.filter(order => sameBusinessDate(order.fullyPaidAt, selectedDate));
     const cafeCreditSales = branchCreditSales.Cafe || [];
-    creditCollected = cafeCreditSales
-      .filter(sale => sameBusinessDate(sale.settledAt ?? undefined, selectedDate))
-      .reduce((sum, sale) => sum + safeNumber(sale.amountPaid), 0);
+    const cafeCreditPayments = branchCreditPayments.Cafe || [];
+    creditCollected = cafeCreditPayments
+      .filter(payment => sameBusinessDate(payment.createdAt, selectedDate))
+      .reduce((sum, payment) => sum + safeNumber(payment.amount), 0);
     creditPending = cafeCreditSales
       .filter(sale => sale.status !== 'settled')
       .reduce((sum, sale) => sum + safeNumber(sale.creditAmount), 0);
@@ -273,7 +275,7 @@ export default function DailyClosure() {
       paymentModeCount,
       billers,
     };
-  }, [orders, selectedDate, branchCreditSales]);
+  }, [orders, selectedDate, branchCreditSales, branchCreditPayments]);
 
   const closingCashValue = Number(closingCash || 0);
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - closure.payments.cash : 0;

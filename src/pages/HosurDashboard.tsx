@@ -349,27 +349,28 @@ function mapBillItem(row: any): HosurBillItem {
 function mapCredit(row: any): HosurCreditLedger {
   return {
     id: row.id,
-    billId: row.bill_id,
+    billId: row.source_id ?? row.id,
     billNo: row.bill_no ?? '',
-    shopId: row.shop_id,
-    shopName: row.shop_name ?? '',
-    openingAmount: Number(row.opening_amount ?? 0),
-    paidAmount: Number(row.paid_amount ?? 0),
-    balanceAmount: Number(row.balance_amount ?? 0),
+    shopId: row.customer_ref ?? '',
+    shopName: row.customer_name ?? '',
+    openingAmount: Number(row.subtotal ?? 0),
+    paidAmount: Number(row.amount_paid ?? 0),
+    balanceAmount: Number(row.credit_amount ?? 0),
     dueDate: row.due_date ?? null,
-    status: (row.status ?? 'open') as HosurCreditLedger['status'],
+    status: row.status === 'settled' ? 'cleared' : row.status === 'partial' ? 'partial' : 'open',
     createdAt: row.created_at ?? new Date().toISOString(),
-    clearedAt: row.cleared_at ?? null,
+    clearedAt: row.settled_at ?? null,
   };
 }
 
 function mapPayment(row: any): HosurCreditPayment {
+  const linked = Array.isArray(row.branch_credit_sales) ? row.branch_credit_sales[0] : row.branch_credit_sales;
   return {
     id: row.id,
-    ledgerId: row.ledger_id,
-    billId: row.bill_id,
-    shopId: row.shop_id,
-    amountCollected: Number(row.amount_collected ?? 0),
+    ledgerId: row.credit_sale_id,
+    billId: linked?.source_id ?? row.credit_sale_id,
+    shopId: linked?.customer_ref ?? '',
+    amountCollected: Number(row.amount ?? 0),
     paymentMode: row.payment_mode ?? 'cash',
     remarks: row.remarks ?? null,
     collectedBy: row.collected_by ?? 'Staff',
@@ -398,7 +399,7 @@ function mapWhatsapp(row: any): HosurWhatsappLog {
 function mapReminder(row: any): HosurReminder {
   return {
     id: row.id,
-    ledgerId: row.ledger_id,
+    ledgerId: row.credit_sale_id ?? row.ledger_id,
     billId: row.bill_id,
     shopId: row.shop_id,
     shopName: row.shop_name ?? '',
@@ -701,8 +702,8 @@ export default function HosurDashboard() {
         supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(3000),
         supabase.from('hosur_bills').select('*').order('created_at', { ascending: false }).limit(250),
         supabase.from('hosur_bill_items').select('*').order('created_at', { ascending: true }).limit(3000),
-        supabase.from('hosur_credit_ledger').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_credit_payments').select('*').order('created_at', { ascending: false }).limit(500),
+        supabase.from('branch_credit_sales').select('*').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
+        supabase.from('branch_credit_payments').select('*, branch_credit_sales!inner(source_id, customer_ref)').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
@@ -939,24 +940,50 @@ export default function HosurDashboard() {
 
     if (bill.orderId) await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
 
+    const items = billItems[bill.id] ?? [];
     if (credit > 0) {
-      const { error: ledgerError } = await supabase.from('hosur_credit_ledger').insert({
-        bill_id: bill.id,
+      const { data: creditSale, error: ledgerError } = await supabase.from('branch_credit_sales').insert({
+        branch: BRANCH,
+        source: 'hosur',
+        source_id: bill.id,
+        customer_ref: bill.shopId,
+        customer_name: bill.shopName,
+        customer_phone: bill.shopWhatsapp,
+        items: items.map((item) => ({
+          itemName: item.itemName,
+          quantity: item.quantity,
+          sellUnit: item.unit,
+          price: item.unitPrice,
+          lineTotal: item.lineTotal,
+        })),
+        subtotal: total,
+        amount_paid: paid,
+        credit_amount: credit,
+        sold_by: userName,
         bill_no: bill.billNo,
-        shop_id: bill.shopId,
-        shop_name: bill.shopName,
-        opening_amount: credit,
-        paid_amount: 0,
-        balance_amount: credit,
         due_date: draft.dueDate,
-        status: 'open',
-      });
+        status: paid > 0 ? 'partial' : 'pending',
+        notes: 'Hosur credit bill',
+      }).select('id').single();
       if (ledgerError) throw ledgerError;
+      if (paid > 0 && creditSale?.id) {
+        const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
+          credit_sale_id: creditSale.id,
+          branch: BRANCH,
+          bill_no: bill.billNo,
+          amount: paid,
+          payment_mode: draft.paymentMode,
+          remarks: 'Hosur partial payment at billing',
+          collected_by: userName,
+          collected_role: userRole,
+          created_at: now,
+        });
+        if (paymentError) throw paymentError;
+      }
       await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on bill ${bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.billNo, { billId: bill.id, amount: credit });
     }
 
     const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
-    const items = billItems[bill.id] ?? [];
     const body = buildBillMessage(finalBill, items);
     const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body });
     if (whatsapp.status === 'failed') {
@@ -975,23 +1002,25 @@ export default function HosurDashboard() {
     const cleared = newBalance <= 0.01;
     const now = new Date().toISOString();
 
-    const { error: paymentError } = await supabase.from('hosur_credit_payments').insert({
-      ledger_id: ledger.id,
-      bill_id: ledger.billId,
-      shop_id: ledger.shopId,
-      amount_collected: amount,
+    const { error: paymentError } = await supabase.from('branch_credit_payments').insert({
+      credit_sale_id: ledger.id,
+      branch: BRANCH,
+      bill_no: ledger.billNo,
+      amount,
       payment_mode: draft.paymentMode,
+      reference: null,
       remarks: draft.remarks || null,
       collected_by: userName,
       collected_role: userRole,
+      created_at: now,
     });
     if (paymentError) throw paymentError;
 
-    const { error: ledgerError } = await supabase.from('hosur_credit_ledger').update({
-      paid_amount: newPaid,
-      balance_amount: newBalance,
-      status: cleared ? 'cleared' : 'partial',
-      cleared_at: cleared ? now : null,
+    const { error: ledgerError } = await supabase.from('branch_credit_sales').update({
+      amount_paid: newPaid,
+      credit_amount: newBalance,
+      status: cleared ? 'settled' : 'partial',
+      settled_at: cleared ? now : null,
     }).eq('id', ledger.id);
     if (ledgerError) throw ledgerError;
 
@@ -1022,7 +1051,8 @@ export default function HosurDashboard() {
       const body = buildReminderMessage(ledger);
       const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body });
       const { error: reminderError } = await supabase.from('hosur_payment_reminders').insert({
-        ledger_id: ledger.id,
+        credit_sale_id: ledger.id,
+        ledger_id: null,
         bill_id: ledger.billId,
         shop_id: ledger.shopId,
         shop_name: ledger.shopName,
