@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -281,12 +282,14 @@ function AdminDashboard() {
   const [stockStatusFilter, setStockStatusFilter] = useState<StockAlertStatus | 'all'>('all');
   const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
 
-  const { orders, polling, startPolling, stopPolling } = useOrderStore((s) => ({
-    orders: s.orders,
-    polling: s.polling,
-    startPolling: s.startPolling,
-    stopPolling: s.stopPolling,
-  }));
+  const { orders, polling, startPolling, stopPolling } = useOrderStore(
+    useShallow((s) => ({
+      orders: s.orders,
+      polling: s.polling,
+      startPolling: s.startPolling,
+      stopPolling: s.stopPolling,
+    }))
+  );
 
   const {
     stock,
