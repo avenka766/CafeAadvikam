@@ -1101,17 +1101,17 @@ export default function HosurDashboard() {
       </div>
 
       <div className="flex min-h-[calc(100dvh-230px)]">
-        <aside className="hidden w-72 shrink-0 border-r bg-white p-3 lg:block">
+        <aside className="hidden w-72 shrink-0 border-r border-slate-800 bg-slate-950 p-3 text-white lg:block">
           <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
         </aside>
 
         {sidebarOpen && (
           <div className="fixed inset-0 z-50 lg:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setSidebarOpen(false)} />
-            <div className="absolute bottom-0 left-0 top-0 w-[86vw] max-w-xs bg-white p-3 shadow-2xl">
+            <div className="absolute bottom-0 left-0 top-0 w-[86vw] max-w-xs bg-slate-950 p-3 text-white shadow-2xl">
               <div className="mb-3 flex items-center justify-between">
-                <p className="font-black text-emerald-700">Hosur Menu</p>
-                <button className="rounded-xl border p-2" onClick={() => setSidebarOpen(false)}><X className="size-4" /></button>
+                <p className="font-black text-emerald-300">Hosur Menu</p>
+                <button className="rounded-xl border border-white/20 p-2" onClick={() => setSidebarOpen(false)}><X className="size-4" /></button>
               </div>
               <Sidebar tabs={filteredTabs} active={tab} setActive={(id) => { setTab(id); setSidebarOpen(false); }} />
             </div>
@@ -1150,7 +1150,7 @@ function Sidebar({ tabs, active, setActive }: { tabs: { id: HosurTab; label: str
     <nav className="space-y-1">
       {tabs.map((item) => (
         <button key={item.id} onClick={() => setActive(item.id)}
-          className={cn('group flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left text-sm font-black transition', active === item.id ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-700')}>
+          className={cn('group flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left text-sm font-black transition', active === item.id ? 'bg-emerald-600 text-white shadow-md' : 'bg-white/5 text-white/70 ring-1 ring-white/10 hover:bg-white/10 hover:text-white')}>
           <item.icon className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{item.label}</span>
           {(item.badge ?? 0) > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[10px]', active === item.id ? 'bg-white text-emerald-700' : 'bg-red-100 text-red-700')}>{item.badge}</span>}
@@ -1326,7 +1326,7 @@ function NewOrderTab({ shops, busy, withBusy, priceFor, userName }: {
     <div className="space-y-4">
       <SectionTitle icon={<ShoppingCart className="size-5" />} title="New Order" subtitle="Select shop first. Item prices automatically come from that shop’s assigned price list." />
       {shops.length === 0 ? <EmptyState icon={<Store className="size-6" />} title="Add shops before creating orders" subtitle="Go to Shop Master and add the shop name, WhatsApp number, address and item prices." /> : (
-        <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
+        <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_380px]">
           <Card className="space-y-4">
             <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
               <Field label="Shop"><select className={inputClass} value={shop?.id ?? ''} onChange={(e) => setShopId(e.target.value)}>{shops.map((s) => <option key={s.id} value={s.id}>{s.shopName}</option>)}</select></Field>
@@ -1347,7 +1347,7 @@ function NewOrderTab({ shops, busy, withBusy, priceFor, userName }: {
               })}
             </div>
           </Card>
-          <Card className="sticky top-36 h-fit space-y-4">
+          <Card className="h-fit space-y-4 2xl:sticky 2xl:top-36">
             <h3 className="font-black">Order Summary</h3>
             {cartItems.length === 0 ? <EmptyState icon={<ShoppingCart className="size-6" />} title="No items added" /> : <div className="max-h-[48dvh] space-y-2 overflow-auto pr-1">{cartItems.map((item) => <div key={item.itemName} className="rounded-2xl border bg-muted/20 p-3"><div className="flex justify-between gap-2"><p className="text-sm font-black">{item.itemName}</p><button className="text-red-600" onClick={() => setCart((prev) => { const next = { ...prev }; delete next[item.itemName]; return next; })}><X className="size-4" /></button></div><div className="mt-1 flex justify-between text-xs text-muted-foreground"><span>{num(item.quantity)} {item.unit} × {money(item.unitPrice)}</span><b className="text-foreground">{money(item.lineTotal)}</b></div></div>)}</div>}
             <Field label="Order notes"><textarea className={cn(inputClass, 'min-h-20 resize-none')} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional notes for packing/branch" /></Field>

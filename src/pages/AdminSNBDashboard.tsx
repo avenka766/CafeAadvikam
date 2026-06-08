@@ -205,6 +205,25 @@ function normal(name: string) {
     .trim();
 }
 
+function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number }>(rows: T[]) {
+  const map = new Map<string, T>();
+  rows.forEach((row) => {
+    const key = normal(row.itemName);
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, row);
+      return;
+    }
+    map.set(key, {
+      ...existing,
+      ...row,
+      quantity: Number(existing.quantity || 0) + Number(row.quantity || 0),
+      minThreshold: existing.minThreshold ?? row.minThreshold,
+    } as T);
+  });
+  return Array.from(map.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
+}
+
 function csvDownload(
   filename: string,
   rows: Array<Record<string, string | number | null | undefined>>,
@@ -438,7 +457,7 @@ export default function AdminSNBDashboard() {
     fetchCreditPayments(BRANCH);
   }, [fetchBranchData, fetchCreditPayments]);
 
-  const branchStock = stock[BRANCH] || [];
+  const branchStock = useMemo(() => dedupeStockRows(stock[BRANCH] || []), [stock]);
   const branchSalesRows = sales[BRANCH] || [];
   const branchBills = useMemo(
     () =>
@@ -879,11 +898,11 @@ export default function AdminSNBDashboard() {
       <div className="grid gap-4 px-3 py-4 lg:grid-cols-[300px_minmax(0,1fr)] lg:px-5">
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-200 bg-white p-3 shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
+            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-3 text-white shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
             mobileOpen && "translate-x-0",
           )}
         >
-          <div className="mb-3 rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white">
+          <div className="mb-3 rounded-[1.75rem] bg-white/5 p-4 text-white ring-1 ring-white/10">
             <div className="flex items-center justify-between gap-2">
               <StatusBadge tone="amber">
                 <Store className="size-3" /> SNB Admin
@@ -926,7 +945,7 @@ export default function AdminSNBDashboard() {
                     "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-black transition",
                     tab === item.id
                       ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
-                      : "bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-white",
+                      : "bg-white/5 text-white/70 ring-1 ring-white/10 hover:bg-white/10 hover:text-white",
                   )}
                 >
                   <Icon className="size-4 shrink-0" />
@@ -961,7 +980,7 @@ export default function AdminSNBDashboard() {
         </aside>
 
         <main className="min-w-0 space-y-4">
-          <header className="hidden rounded-[2rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-5 text-white shadow-sm lg:block">
+          <header className="hidden">
             <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-300">
@@ -1590,18 +1609,34 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
     expectedDeliveryDate: dateInput(),
     remarks: "",
   });
+  const [lines, setLines] = useState<Array<{ itemName: string; quantity: number; expectedRate: number; totalAmount: number }>>([]);
   const rows = purchaseOrders.filter((p) => p.branch === BRANCH);
-  const create = () => {
+  const addLine = () => {
     const qty = Number(form.quantity);
     const rate = Number(form.expectedRate);
-    if (!form.supplier.trim() || !qty || !rate) return;
+    if (!qty || !rate) return;
+    setLines((current) => [
+      ...current,
+      { itemName: form.itemName, quantity: qty, expectedRate: rate, totalAmount: qty * rate },
+    ]);
+    setForm({ ...form, quantity: "", expectedRate: "" });
+  };
+  const create = () => {
+    const draftLines = lines.length
+      ? lines
+      : Number(form.quantity) && Number(form.expectedRate)
+        ? [{ itemName: form.itemName, quantity: Number(form.quantity), expectedRate: Number(form.expectedRate), totalAmount: Number(form.quantity) * Number(form.expectedRate) }]
+        : [];
+    if (!form.supplier.trim() || draftLines.length === 0) return;
+    const first = draftLines[0];
     addPurchaseOrder({
       branch: BRANCH,
       supplier: form.supplier,
-      itemName: form.itemName,
-      quantity: qty,
-      expectedRate: rate,
-      totalAmount: qty * rate,
+      itemName: draftLines.length > 1 ? `${draftLines.length} items` : first.itemName,
+      quantity: draftLines.reduce((sum, line) => sum + line.quantity, 0),
+      expectedRate: draftLines.length > 1 ? 0 : first.expectedRate,
+      items: draftLines,
+      totalAmount: draftLines.reduce((sum, line) => sum + line.totalAmount, 0),
       expectedDeliveryDate: form.expectedDeliveryDate,
       remarks: form.remarks,
       createdBy: userName,
@@ -1613,6 +1648,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
       expectedRate: "",
       remarks: "",
     });
+    setLines([]);
   };
   return (
     <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
@@ -1659,6 +1695,25 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
               />
             </Field>
           </div>
+          <button
+            onClick={addLine}
+            className={cn(btnCls, "w-full bg-white text-slate-700 ring-1 ring-slate-200")}
+          >
+            <Plus className="size-4" />
+            Add Item To Order
+          </button>
+          {lines.length > 0 && (
+            <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">
+              {lines.map((line, index) => (
+                <div key={`${line.itemName}-${index}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold">
+                  <span>{line.itemName} - {line.quantity} x {money(line.expectedRate)}</span>
+                  <button className="text-red-600" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <Field label="Expected Delivery">
             <input
               type="date"
@@ -1806,26 +1861,40 @@ function PurchaseInvoicesTab({
     paymentMethod: "cash",
     remarks: "",
   });
+  const [lines, setLines] = useState<Array<{ itemName: string; quantity: number; unit: any; cost: number; tax: number; discount: number; total: number }>>([]);
   const rows = purchases.filter((p) => p.branch === BRANCH);
-  const create = () => {
+  const addLine = () => {
     const qty = Number(form.quantity);
     const rate = Number(form.rate);
     const tax = Number(form.tax || 0);
     const discount = Number(form.discount || 0);
     const total = Math.max(0, qty * rate + tax - discount);
+    if (!qty || !rate) return;
+    setLines((current) => [...current, { itemName: form.itemName, quantity: qty, unit: form.unit, cost: rate, tax, discount, total }]);
+    setForm({ ...form, quantity: "", rate: "", tax: "0", discount: "0" });
+  };
+  const create = () => {
+    const draftLines = lines.length
+      ? lines
+      : Number(form.quantity) && Number(form.rate)
+        ? [{ itemName: form.itemName, quantity: Number(form.quantity), unit: form.unit, cost: Number(form.rate), tax: Number(form.tax || 0), discount: Number(form.discount || 0), total: Math.max(0, Number(form.quantity) * Number(form.rate) + Number(form.tax || 0) - Number(form.discount || 0)) }]
+        : [];
+    const total = draftLines.reduce((sum, line) => sum + line.total, 0);
     const paid = Math.min(Number(form.paidAmount || 0), total);
-    if (!form.supplier.trim() || !form.invoiceNo.trim() || !qty || !rate)
+    if (!form.supplier.trim() || !form.invoiceNo.trim() || draftLines.length === 0)
       return;
+    const first = draftLines[0];
     const purchase = addPurchase({
       branch: BRANCH,
       supplier: form.supplier,
       invoiceNo: form.invoiceNo,
-      itemName: form.itemName,
-      quantity: qty,
-      unit: form.unit as any,
-      cost: rate,
-      tax,
-      discount,
+      itemName: draftLines.length > 1 ? `${draftLines.length} items` : first.itemName,
+      quantity: draftLines.reduce((sum, line) => sum + line.quantity, 0),
+      unit: first.unit,
+      cost: draftLines.length > 1 ? 0 : first.cost,
+      items: draftLines,
+      tax: draftLines.reduce((sum, line) => sum + line.tax, 0),
+      discount: draftLines.reduce((sum, line) => sum + line.discount, 0),
       total,
       enteredBy: userName,
       paymentMethod: paid > 0 ? (form.paymentMethod as any) : "credit",
@@ -1852,6 +1921,7 @@ function PurchaseInvoicesTab({
       paidAmount: "0",
       remarks: "",
     });
+    setLines([]);
   };
   const sync = async (p: PurchaseRecord) => {
     if (p.syncedToStock || p.syncStatus === "Synced") {
@@ -1860,27 +1930,32 @@ function PurchaseInvoicesTab({
       );
       return;
     }
-    const existing = branchStock.find(
-      (s) => normal(s.itemName) === normal(p.itemName),
-    );
-    const currentQty = Number(existing?.quantity ?? 0);
-    const err = await manualUpdateStock(
-      BRANCH,
-      existing?.itemName || p.itemName,
-      currentQty + Number(p.quantity),
-      userName,
-    );
-    if (err) {
-      setNotice(err);
-      return;
+    const syncLines = p.items?.length
+      ? p.items
+      : [{ itemName: p.itemName, quantity: p.quantity }];
+    for (const line of syncLines) {
+      const existing = branchStock.find(
+        (s) => normal(s.itemName) === normal(line.itemName),
+      );
+      const currentQty = Number(existing?.quantity ?? 0);
+      const err = await manualUpdateStock(
+        BRANCH,
+        existing?.itemName || line.itemName,
+        currentQty + Number(line.quantity),
+        userName,
+      );
+      if (err) {
+        setNotice(err);
+        return;
+      }
     }
     markPurchaseSynced(p.id, userName, "Synced");
     addAuditLog({
       branch: BRANCH,
       user: userName,
       action: "SNB Purchase Sync To Stock",
-      previousValue: `${p.itemName}: ${currentQty}`,
-      newValue: `${p.itemName}: ${currentQty + Number(p.quantity)} from ${p.invoiceNo}`,
+      previousValue: p.itemName,
+      newValue: `${syncLines.length} item(s) synced from ${p.invoiceNo}`,
     });
     await fetchBranchData(BRANCH);
     setNotice(`${p.invoiceNo} synced to SNB stock successfully.`);
@@ -1970,6 +2045,25 @@ function PurchaseInvoicesTab({
               />
             </Field>
           </div>
+          <button
+            onClick={addLine}
+            className={cn(btnCls, "w-full bg-white text-slate-700 ring-1 ring-slate-200")}
+          >
+            <Plus className="size-4" />
+            Add Item To Invoice
+          </button>
+          {lines.length > 0 && (
+            <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">
+              {lines.map((line, index) => (
+                <div key={`${line.itemName}-${index}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold">
+                  <span>{line.itemName} - {line.quantity} {line.unit} x {money(line.cost)}</span>
+                  <button className="text-red-600" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Paid Amount">
               <input
@@ -2607,6 +2701,10 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
 }
 
 function SalespersonReportTab(props: any) {
+  const [selectedPerson, setSelectedPerson] = useState("All");
+  const filteredRows = selectedPerson === "All"
+    ? props.salespersonRows
+    : props.salespersonRows.filter((r: any) => r.name === selectedPerson);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -2632,28 +2730,34 @@ function SalespersonReportTab(props: any) {
         title="Salesperson Performance"
         icon={<BarChart3 className="size-4" />}
         action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload(
-                "SNB_Salesperson_Report.csv",
-                props.salespersonRows.map((r: any) => ({
-                  Salesperson: r.name,
-                  GrossSales: r.grossSales,
-                  ReturnAmount: r.returns,
-                  NetSales: r.netSales,
-                  Bills: r.bills,
-                  AvgBill: r.avgBillValue,
-                  Cash: r.cash,
-                  UPI: r.upi,
-                  Card: r.card,
-                })),
-              )
-            }
-          >
-            <Download className="size-4" />
-            Export
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <select className={inputCls} value={selectedPerson} onChange={(e) => setSelectedPerson(e.target.value)}>
+              <option value="All">All Salespersons</option>
+              {props.salespersonRows.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
+            </select>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={() =>
+                csvDownload(
+                  "SNB_Salesperson_Report.csv",
+                  filteredRows.map((r: any) => ({
+                    Salesperson: r.name,
+                    GrossSales: r.grossSales,
+                    ReturnAmount: r.returns,
+                    NetSales: r.netSales,
+                    Bills: r.bills,
+                    AvgBill: r.avgBillValue,
+                    Cash: r.cash,
+                    UPI: r.upi,
+                    Card: r.card,
+                  })),
+                )
+              }
+            >
+              <Download className="size-4" />
+              Export
+            </button>
+          </div>
         }
       >
         <DataTable
@@ -2668,7 +2772,7 @@ function SalespersonReportTab(props: any) {
             "UPI",
             "Card",
           ]}
-          rows={props.salespersonRows.map((r: any) => [
+          rows={filteredRows.map((r: any) => [
             r.name,
             money(r.grossSales),
             money(r.returns),

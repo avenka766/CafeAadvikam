@@ -206,6 +206,25 @@ function normal(name: string) {
     .trim();
 }
 
+function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number }>(rows: T[]) {
+  const map = new Map<string, T>();
+  rows.forEach((row) => {
+    const key = normal(row.itemName);
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, row);
+      return;
+    }
+    map.set(key, {
+      ...existing,
+      ...row,
+      quantity: Number(existing.quantity || 0) + Number(row.quantity || 0),
+      minThreshold: existing.minThreshold ?? row.minThreshold,
+    } as T);
+  });
+  return Array.from(map.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
+}
+
 function csvDownload(
   filename: string,
   rows: Array<Record<string, string | number | null | undefined>>,
@@ -441,7 +460,7 @@ export default function AdminVRSNBDashboard() {
     fetchCreditPayments("Cafe");
   }, [fetchBranchData, fetchCreditPayments]);
 
-  const branchStock = stock[BRANCH] || [];
+  const branchStock = useMemo(() => dedupeStockRows(stock[BRANCH] || []), [stock]);
   const branchSalesRows = sales[BRANCH] || [];
   const branchBills = useMemo(
     () =>
@@ -783,7 +802,17 @@ export default function AdminVRSNBDashboard() {
     { name: "Credit", value: creditBillAmount, color: CHART_COLORS[0] },
   ].filter((row) => row.value > 0);
 
-  const scopedTabs = TABS.filter((item) => !item.adminOnly || canManage);
+  const hiddenVrsnbTabs: TabId[] = [
+    "po",
+    "invoices",
+    "payments",
+    "bank",
+    "salespersons",
+    "salesperson-report",
+  ];
+  const scopedTabs = TABS.filter(
+    (item) => !hiddenVrsnbTabs.includes(item.id) && (!item.adminOnly || canManage),
+  );
   const unreadNotifications = notifications.filter(
     (n) => n.branch === BRANCH && n.status === "Unread",
   ).length;
@@ -884,11 +913,11 @@ export default function AdminVRSNBDashboard() {
       <div className="grid gap-4 px-3 py-4 lg:grid-cols-[300px_minmax(0,1fr)] lg:px-5">
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-200 bg-white p-3 shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
+            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-3 text-white shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
             mobileOpen && "translate-x-0",
           )}
         >
-          <div className="mb-3 rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white">
+          <div className="mb-3 rounded-[1.75rem] bg-white/5 p-4 text-white ring-1 ring-white/10">
             <div className="flex items-center justify-between gap-2">
               <StatusBadge tone="amber">
                 <Store className="size-3" /> VRSNB Admin
@@ -931,7 +960,7 @@ export default function AdminVRSNBDashboard() {
                     "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-black transition",
                     tab === item.id
                       ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
-                      : "bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-white",
+                      : "bg-white/5 text-white/70 ring-1 ring-white/10 hover:bg-white/10 hover:text-white",
                   )}
                 >
                   <Icon className="size-4 shrink-0" />
@@ -966,7 +995,7 @@ export default function AdminVRSNBDashboard() {
         </aside>
 
         <main className="min-w-0 space-y-4">
-          <header className="hidden rounded-[2rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-5 text-white shadow-sm lg:block">
+          <header className="hidden">
             <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-300">
