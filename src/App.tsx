@@ -106,8 +106,8 @@ function AppRoutes() {
         <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
         <Route path="/bakery/recipes" element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 
-        <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin']}><VRSNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin']}><SNBDashboard /></ProtectedRoute>} />
+        <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin','admin_vrsnb','owner']}><VRSNBDashboard /></ProtectedRoute>} />
+        <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin','admin_snb','owner']}><SNBDashboard /></ProtectedRoute>} />
         <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','admin']}><HosurDashboard /></ProtectedRoute>} />
 
         <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><AdminVRSNBDashboard /></ProtectedRoute>} />
