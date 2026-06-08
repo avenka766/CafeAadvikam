@@ -100,6 +100,7 @@ interface Props { branch: Branch }
 
 export default function BranchDashboard({ branch }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [opsHydrated, setOpsHydrated] = useState(() => useBranchOpsStore.persist.hasHydrated());
   const { currentUser } = useAuthStore();
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
@@ -142,6 +143,16 @@ export default function BranchDashboard({ branch }: Props) {
     if (next === 'bill') setSearchParams({});
     else setSearchParams({ tab: next });
   };
+
+  useEffect(() => {
+    if (useBranchOpsStore.persist.hasHydrated()) {
+      setOpsHydrated(true);
+      return;
+    }
+    const unsubscribe = useBranchOpsStore.persist.onFinishHydration(() => setOpsHydrated(true));
+    void useBranchOpsStore.persist.rehydrate();
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     fetchBranchData(branch);
@@ -217,16 +228,36 @@ export default function BranchDashboard({ branch }: Props) {
   const todayCreditCollections = useMemo(
     () => (branchCreditPayments[branch] || [])
       .filter((m) => new Date(m.createdAt).toDateString() === todayString)
-      .reduce((s, m) => s + m.amount, 0),
-    [branchCreditPayments, branch, todayString],
+      .filter((m) => !cashMovements.some((cm) =>
+        cm.branch === branch
+        && cm.referenceNumber === m.billNo
+        && cm.paymentMode === m.paymentMode
+        && cm.amount === m.amount
+        && cm.purpose === 'Credit upfront collection'
+      )),
+    [branchCreditPayments, branch, todayString, cashMovements],
   );
   const totalTodayRevenue = useMemo(
-    () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn + todayCreditCollections,
-    [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn, todayCreditCollections],
+    () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
+    [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn],
   );
-  const currentCash = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
-  const currentUpi = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
-  const currentCard = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
+  const currentCash = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const currentUpi = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
+  const currentCard = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+
+  if (!opsHydrated) {
+    return (
+      <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
+        <div className="grid min-h-0 place-items-center px-3 py-10 md:px-5">
+          <div className="rounded-[2rem] border border-slate-200 bg-white p-8 text-center shadow-lg">
+            <Package className="mx-auto size-10 animate-pulse text-amber-500" />
+            <h2 className="mt-3 text-xl font-black text-slate-950">Loading saved branch records</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-500">Bills, advance orders and cash movements are being loaded from Supabase.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
