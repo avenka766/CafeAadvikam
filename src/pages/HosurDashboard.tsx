@@ -1070,7 +1070,9 @@ export default function HosurDashboard() {
   const stats = {
     todayBills: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).length,
     todayCollection: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).reduce((sum, bill) => sum + bill.paidAmount, 0)
-      + payments.filter((p) => p.createdAt.slice(0, 10) === TODAY_ISO()).reduce((sum, p) => sum + p.amountCollected, 0),
+      + payments
+        .filter((p) => p.createdAt.slice(0, 10) === TODAY_ISO() && p.remarks !== 'Hosur partial payment at billing')
+        .reduce((sum, p) => sum + p.amountCollected, 0),
     pendingCredit: openCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
     overdue: overdueCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
   };
@@ -1562,7 +1564,7 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   const creditBills = dayBills.filter((b) => b.paymentType === 'credit').reduce((s, b) => s + b.creditAmount, 0);
   const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
   const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
-  const clearedCredit = dayPayments.reduce((s, p) => s + p.amountCollected, 0);
+  const clearedCredit = dayPayments.filter((p) => p.remarks !== 'Hosur partial payment at billing').reduce((s, p) => s + p.amountCollected, 0);
   const print = () => window.print();
   return (
     <div className="space-y-4 print:bg-white">
