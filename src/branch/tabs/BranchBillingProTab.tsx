@@ -66,6 +66,19 @@ function formatQty(qty: number, unit: 'pcs' | 'kg') {
   return `${clean(qty)} pcs`;
 }
 
+function normalizeQtyInput(value: string, unit: 'pcs' | 'kg') {
+  const text = value.trim().toLowerCase();
+  if (!text) return 0;
+  const numberText = text.replace(/[^0-9.]/g, '');
+  const numeric = Number(numberText);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  if (unit === 'kg') {
+    const inGrams = text.includes('g') && !text.includes('kg');
+    return Number((inGrams ? numeric / 1000 : numeric).toFixed(3));
+  }
+  return Math.max(1, Math.floor(numeric));
+}
+
 function recalcLine(item: BranchBillItem, qty: number): BranchBillItem {
   const quantity = Number(qty.toFixed(3));
   const subtotal = item.price * quantity;
@@ -213,6 +226,21 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     const next = Number((c.quantity - delta).toFixed(3));
     return next > 0 ? [recalcLine(c, next)] : [];
   }));
+
+  const setCartQuantity = (itemName: string, rawValue: string) => {
+    setError('');
+    setCart((current) => current.flatMap((c) => {
+      if (c.itemName !== itemName) return [c];
+      const nextQty = normalizeQtyInput(rawValue, c.unit);
+      if (nextQty <= 0) return [];
+      const available = stockFor(branchStock, c.itemName);
+      if (nextQty > available) {
+        setError(`Only ${formatQty(available, c.unit)} available for ${c.itemName}.`);
+        return [c];
+      }
+      return [recalcLine(c, nextQty)];
+    }));
+  };
 
   const clear = useCallback(() => {
     setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
@@ -441,11 +469,38 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                         <p className="shrink-0 text-sm font-black text-slate-950">{money(i.lineTotal)}</p>
                         <button onClick={() => setCart((c) => c.filter((x) => x.itemName !== i.itemName))} className="shrink-0 rounded-lg bg-red-50 p-1 text-red-500 hover:bg-red-100"><XCircle className="size-4"/></button>
                       </div>
-                      <div className="mt-1.5 flex items-center gap-1.5">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                         <button onClick={() => reduceItem(i.itemName)} className="size-7 rounded-lg bg-slate-100 font-black text-slate-700 flex items-center justify-center"><Minus className="size-3"/></button>
-                        <span className="min-w-16 rounded-lg bg-slate-950 px-2 py-1 text-center text-xs font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
+                        <input
+                          value={i.unit === 'kg' ? parseFloat(i.quantity.toFixed(3)).toString() : String(i.quantity)}
+                          onChange={(e) => setCartQuantity(i.itemName, e.target.value)}
+                          inputMode="decimal"
+                          placeholder={i.unit === 'kg' ? '100g / 0.1' : '1'}
+                          className="h-8 w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-xs font-black tabular-nums text-slate-950 outline-none focus:border-amber-400 focus:bg-white"
+                          aria-label={`Quantity for ${i.itemName}`}
+                        />
+                        <span className="rounded-lg bg-slate-950 px-2 py-1 text-center text-[11px] font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
                         <button onClick={() => { const catalogItem = items.find((it) => it.name === i.itemName); if (catalogItem) addItem(catalogItem); }} className="size-7 rounded-lg bg-amber-400 font-black text-slate-950 flex items-center justify-center"><Plus className="size-3"/></button>
                       </div>
+                      {i.unit === 'kg' && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {[
+                            ['100g', '100g'],
+                            ['250g', '250g'],
+                            ['500g', '500g'],
+                            ['1kg', '1'],
+                          ].map(([label, value]) => (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() => setCartQuantity(i.itemName, value)}
+                              className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600 hover:bg-amber-100 hover:text-amber-800"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
