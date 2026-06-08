@@ -48,6 +48,7 @@ type TabId =
   | 'history'
   | 'credit-sales'
   | 'closure'
+  | 'daily-closure'
   | 'alerts'
   | 'salesperson'
   | 'notifications'
@@ -67,6 +68,7 @@ const BASE_TABS = [
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
   { id: 'credit-sales' as const, label: 'Credit', icon: CreditCard, adminOnly: false },
   { id: 'closure' as const, label: 'Cashier Closure', icon: WalletCards, adminOnly: false },
+  { id: 'daily-closure' as const, label: 'Daily Closure', icon: ClipboardCheck, adminOnly: false },
   { id: 'alerts' as const, label: 'Alerts', icon: Bell, adminOnly: false },
   { id: 'store-orders' as const, label: 'Store Orders', icon: Store, adminOnly: false },
   { id: 'salesperson' as const, label: 'Salesperson Report', icon: UserRound, adminOnly: true },
@@ -79,6 +81,19 @@ const BASE_TABS = [
   { id: 'notifications' as const, label: 'Admin Notifications', icon: Bell, adminOnly: true },
   { id: 'audit' as const, label: 'Audit Logs', icon: ShieldCheck, adminOnly: true },
   { id: 'settings' as const, label: 'Thresholds', icon: Settings, adminOnly: true },
+];
+
+const VRSNB_HIDDEN_TABS: TabId[] = [
+  'quotation',
+  'salesperson',
+  'store-orders',
+  'reports',
+  'purchase',
+  'purchase-pay',
+  'po',
+  'current-cash',
+  'bank',
+  'notifications',
 ];
 
 interface Props { branch: Branch }
@@ -115,7 +130,7 @@ export default function BranchDashboard({ branch }: Props) {
       : isAdminUser;
   const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : isAdminUser;
   const tabs = BASE_TABS.filter((t) => {
-    if (branch === 'VRSNB' && ['quotation', 'salesperson', 'store-orders', 'reports', 'purchase', 'purchase-pay', 'po', 'current-cash', 'bank', 'notifications'].includes(t.id)) return false;
+    if (branch === 'VRSNB' && VRSNB_HIDDEN_TABS.includes(t.id)) return false;
     if (t.id === 'reports') return canViewReports;
     if (t.id === 'salesperson') return canViewSalespersonReport;
     return !t.adminOnly || isAdminUser;
@@ -258,6 +273,7 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'history' && <BranchBillHistoryProTab branch={branch} branchStock={branchStock} />}
             {tab === 'credit-sales' && <CreditSalesTab branch={branch} branchStock={branchStock} />}
             {tab === 'closure' && <CashierClosureTab branch={branch} branchStock={branchStock} />}
+            {tab === 'daily-closure' && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}
             {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
             {tab === 'salesperson' && branch !== 'VRSNB' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
