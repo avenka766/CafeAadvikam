@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
+import { persist } from "zustand/middleware";
+import type { PersistStorage, StorageValue } from "zustand/middleware";
+import { supabase } from "@/lib/supabase";
 import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit";
@@ -456,13 +458,82 @@ interface BranchOpsState {
   addAuditLog: (log: Omit<AuditLogRecord, "id" | "createdAt">) => void;
 }
 
+const BRANCH_OPS_STATE_KEY = "cafe-aadvikam-branch-ops-v1";
+
+const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
+  getItem: async (name) => {
+    const { data, error } = await supabase
+      .from("app_state")
+      .select("value")
+      .eq("key", name)
+      .maybeSingle();
+    if (error) {
+      console.error("[branchOpsStore] Supabase load failed:", error.message);
+      return null;
+    }
+    return (data?.value as StorageValue<BranchOpsState> | null) ?? null;
+  },
+  setItem: async (name, value) => {
+    const { error } = await supabase.from("app_state").upsert(
+      {
+        key: name,
+        value,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "key" },
+    );
+    if (error) console.error("[branchOpsStore] Supabase save failed:", error.message);
+  },
+  removeItem: async (name) => {
+    const { error } = await supabase.from("app_state").delete().eq("key", name);
+    if (error) console.error("[branchOpsStore] Supabase remove failed:", error.message);
+  },
+};
+
+function persistedBranchOps(state: BranchOpsState) {
+  return {
+    bills: state.bills,
+    creditSales: state.creditSales,
+    holds: state.holds,
+    salespeople: state.salespeople,
+    advanceCakeOrders: state.advanceCakeOrders,
+    quotations: state.quotations,
+    returns: state.returns,
+    purchases: state.purchases,
+    purchasePayments: state.purchasePayments,
+    purchaseOrders: state.purchaseOrders,
+    cashMovements: state.cashMovements,
+    bankDeposits: state.bankDeposits,
+    cashierClosures: state.cashierClosures,
+    notifications: state.notifications,
+    storeOrders: state.storeOrders,
+    auditLogs: state.auditLogs,
+  };
+}
+
 const uid = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const seq = (key: string, max = 99999) => {
-  const current = Number(localStorage.getItem(key) || "0");
-  const next = current >= max ? 1 : current + 1;
-  localStorage.setItem(key, String(next));
-  return next;
+  const state = useBranchOpsStore.getState();
+  const suffix = (value: string) => {
+    const n = Number(value.split("-").pop() || "0");
+    return Number.isFinite(n) ? n : 0;
+  };
+  let current = 0;
+  if (key.startsWith("adv-")) {
+    const branch = key.replace("adv-", "") as Branch;
+    current = Math.max(0, ...state.advanceCakeOrders.filter((o) => o.branch === branch).map((o) => suffix(o.orderNo)));
+  } else if (key.startsWith("quote-")) {
+    const branch = key.replace("quote-", "") as Branch;
+    current = Math.max(0, ...state.quotations.filter((q) => q.branch === branch).map((q) => suffix(q.quoteNo)));
+  } else if (key.startsWith("return-")) {
+    const branch = key.replace("return-", "") as Branch;
+    current = Math.max(0, ...state.returns.filter((r) => r.branch === branch).map((r) => suffix(r.returnNo)));
+  } else if (key.startsWith("po-")) {
+    const branch = key.replace("po-", "") as Branch;
+    current = Math.max(0, ...state.purchaseOrders.filter((p) => p.branch === branch).map((p) => suffix(p.poNo)));
+  }
+  return current >= max ? 1 : current + 1;
 };
 const audit = (
   branch: Branch,
@@ -1355,18 +1426,15 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         }),
     }),
     {
-      name: "cafe-aadvikam-branch-ops-v1",
-      storage: createJSONStorage(() => localStorage),
+      name: BRANCH_OPS_STATE_KEY,
+      storage: branchOpsSupabaseStorage,
       version: 1,
+      partialize: (state) => persistedBranchOps(state) as unknown as BranchOpsState,
     },
   ),
 );
 
 export function nextBranchInvoice(branch: Branch) {
-  // Derive the next invoice number from the highest existing bill for this branch.
-  // This survives localStorage clears / logout because the bills array is persisted
-  // in the same Zustand store. Falls back to the localStorage seq counter if no
-  // bills exist yet, so first-time usage still works.
   const existingBills = useBranchOpsStore.getState().bills.filter((b) => b.branch === branch);
   let maxNo = 0;
   for (const b of existingBills) {
@@ -1375,12 +1443,7 @@ export function nextBranchInvoice(branch: Branch) {
     const n = Number(parts[parts.length - 1]);
     if (!isNaN(n) && n > maxNo) maxNo = n;
   }
-  // Also check the localStorage seq in case it is ahead (e.g. bills were pruned)
-  const lsKey = `branch-invoice-${branch}`;
-  const lsNo = Number(localStorage.getItem(lsKey) || '0');
-  const next = Math.max(maxNo, lsNo) + 1;
-  // Keep localStorage in sync so seq() stays consistent
-  localStorage.setItem(lsKey, String(next));
+  const next = maxNo + 1;
   const invoiceNo = next;
   return {
     invoiceNo,
