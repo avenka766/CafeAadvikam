@@ -225,6 +225,7 @@ export default function VrsnbItemsTab() {
   const { currentUser: user } = useAuthStore();
   const [search, setSearch]                 = useState('');
   const [activeCategory, setActiveCategory] = useState<VrsnbCategory | 'All'>('All');
+  const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]     = useState(false);
   const [customItems, setCustomItems]       = useState<CustomVrsnbItem[]>([]);
   const [editTarget, setEditTarget]         = useState<(typeof VRSNB_ITEMS[0]) | CustomVrsnbItem | null>(null);
@@ -244,6 +245,7 @@ export default function VrsnbItemsTab() {
   }, [customItems]);
 
   const mismatchSummary = useMemo(() => {
+    return [] as Array<{ itemName: string; branch: string; totalShortage: number; lastDate: string }>;
     const map: Record<string, { branch: string; totalShortage: number; lastDate: string }> = {};
     stockMismatches
       .filter((m) => m.branch === 'VRSNB')
@@ -384,6 +386,25 @@ export default function VrsnbItemsTab() {
           )}
         </div>
       )}
+
+      <div className="hidden">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-emerald-700">Available</p>
+          <p className="text-xl font-bold text-emerald-800 tabular-nums">{alertCounts.available}</p>
+        </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-amber-700">Low Stock</p>
+          <p className="text-xl font-bold text-amber-800 tabular-nums">{alertCounts.low}</p>
+        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-red-700">Out of Stock</p>
+          <p className="text-xl font-bold text-red-800 tabular-nums">{alertCounts.out}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-[10px] font-bold uppercase text-slate-600">Stock Missing</p>
+          <p className="text-xl font-bold text-slate-800 tabular-nums">{alertCounts.missing}</p>
+        </div>
+      </div>
 
       {/* ── Header row ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-3">
