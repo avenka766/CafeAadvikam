@@ -227,7 +227,6 @@ export default function SnbItemsTab() {
   const { currentUser: user } = useAuthStore();
   const [search, setSearch]               = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
-  const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]   = useState(false);
   const [customItems, setCustomItems]     = useState<CustomSnbItem[]>([]);
   const [saveError, setSaveError]         = useState<string | null>(null);
@@ -405,25 +404,6 @@ export default function SnbItemsTab() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-          <p className="text-[10px] font-bold uppercase text-emerald-700">Available</p>
-          <p className="text-xl font-bold text-emerald-800 tabular-nums">{alertCounts.available}</p>
-        </div>
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-          <p className="text-[10px] font-bold uppercase text-amber-700">Low Stock</p>
-          <p className="text-xl font-bold text-amber-800 tabular-nums">{alertCounts.low}</p>
-        </div>
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3">
-          <p className="text-[10px] font-bold uppercase text-red-700">Out of Stock</p>
-          <p className="text-xl font-bold text-red-800 tabular-nums">{alertCounts.out}</p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-          <p className="text-[10px] font-bold uppercase text-slate-600">Stock Missing</p>
-          <p className="text-xl font-bold text-slate-800 tabular-nums">{alertCounts.missing}</p>
-        </div>
-      </div>
-
       {/* ── Header row ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-3">
         <div>
@@ -547,7 +527,6 @@ export default function SnbItemsTab() {
                       {status && status.minLevel > 0 && <span>Min: {status.minLevel} {status.unit}</span>}
                       {status?.missingBranches.length ? <span>Missing: {status.missingBranches.join(', ')}</span> : null}
                       {status?.lowBranches.length ? <span>Low: {status.lowBranches.join(', ')}</span> : null}
-                      {status?.outBranches.length ? <span>Out: {status.outBranches.join(', ')}</span> : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
