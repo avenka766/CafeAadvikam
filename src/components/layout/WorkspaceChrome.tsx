@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Banknote,
   BarChart3,
   Bell,
   CalendarCheck,
@@ -21,7 +20,6 @@ import {
   CreditCard,
   Settings2,
   ShoppingCart,
-  Store,
   Trash2,
   Truck,
   Users,
@@ -29,6 +27,8 @@ import {
   WalletCards,
   Sparkles,
   ShieldCheck,
+  Banknote,
+  Store,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -52,7 +52,7 @@ interface PageMeta {
 }
 
 const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
-  { match: /^\/admin-dashboard/, meta: { title: 'Admin Command Center', eyebrow: 'Owner operations', description: 'Sales, cash, UPI, card, purchases, stock, staff activity and pending actions in one clean view.', accent: 'Sales • Stock • Reports' } },
+  // CHANGE 1: admin-dashboard entry removed so no header card renders for that route
   { match: /^\/billing/, meta: { title: 'Fast Billing Counter', eyebrow: 'POS desk', description: 'Rush-hour friendly billing workspace with visible orders, payments, totals, credit and quick settlement tools.', accent: 'Orders • Payments • Print' } },
   { match: /^\/order-pad/, meta: { title: 'Order Pad', eyebrow: 'Service counter', description: 'Take dine-in, takeaway and table orders quickly with cleaner order entry and dispatch tracking.', accent: 'Menu • Cart • Tables' } },
   { match: /^\/kitchen/, meta: { title: 'Kitchen', eyebrow: 'Production screen', description: 'A high-contrast preparation board for chefs to see urgent, cooking and ready orders clearly.', accent: 'Prepare • Ready • Waste' } },
@@ -90,15 +90,10 @@ const DEFAULT_META: PageMeta = {
 function navForRole(role?: string): NavItem[] {
   switch (role) {
     case 'admin':
+      // CHANGE 2: Removed Billing, Orders, Daily Closure, Bakery Store, Packing, Recipes
       return [
         { label: 'Dashboard', path: '/admin-dashboard', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
-        { label: 'Billing', path: '/billing', icon: <Receipt className="size-4" />, group: 'Operations' },
-        { label: 'Orders', path: '/order-history', icon: <History className="size-4" />, group: 'Operations' },
-        { label: 'Daily Closure', path: '/daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
-        { label: 'Bakery Store', path: '/bakery/store', icon: <Store className="size-4" />, group: 'Operations' },
-        { label: 'Packing', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'Recipes', path: '/bakery/recipes', icon: <ChefHat className="size-4" />, group: 'Admin' },
         { label: 'Reports', path: '/sales-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Attendance', path: '/attendance-salary', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
         { label: 'Staff', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
@@ -219,7 +214,12 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const meta = routeMeta(location.pathname);
-  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname) || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname) || /^\/branch\//.test(location.pathname) || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
+  // CHANGE 1: also hide workspace hero for /admin-dashboard
+  const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
+    || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname)
+    || /^\/branch\//.test(location.pathname)
+    || /^\/admin-dashboard/.test(location.pathname)
+    || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
@@ -236,7 +236,6 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
             <h2 className="font-display text-2xl font-black leading-none text-white">Cafe OS</h2>
           </div>
         </div>
-
 
         <nav className="workspace-nav-scroll">
           {groups.map((group) => (
@@ -269,8 +268,8 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         <div className="workspace-sidebar-footer">
           <ShieldCheck className="size-4 text-emerald-300" />
           <div>
-            <p className="text-xs font-bold text-white">Protected workspace</p>
-            <p className="text-[11px] text-white/45">Role based access active</p>
+            <p className="text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+            <p className="text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
           </div>
         </div>
       </aside>
