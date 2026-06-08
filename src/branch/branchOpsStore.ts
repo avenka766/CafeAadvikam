@@ -180,6 +180,15 @@ export interface PurchaseRecord {
   quantity: number;
   unit?: "pcs" | "kg" | "ltr" | "nos" | "bunch";
   cost: number;
+  items?: Array<{
+    itemName: string;
+    quantity: number;
+    unit?: "pcs" | "kg" | "ltr" | "nos" | "bunch";
+    cost: number;
+    tax: number;
+    discount?: number;
+    total: number;
+  }>;
   tax: number;
   discount?: number;
   total: number;
@@ -215,6 +224,12 @@ export interface PurchaseOrderRecord {
   itemName: string;
   quantity: number;
   expectedRate: number;
+  items?: Array<{
+    itemName: string;
+    quantity: number;
+    expectedRate: number;
+    totalAmount: number;
+  }>;
   totalAmount: number;
   expectedDeliveryDate: string;
   remarks: string;
