@@ -531,16 +531,23 @@ export function CashierClosureTab({ branch }: ModuleProps) {
 
   const totalSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
   const advanceCollectedToday = todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
-  const cash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
-  const upi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
-  const card = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
+  const normalCash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
+  const normalUpi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
+  const normalCard = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
   const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
-  const creditCollectionDigital = todayCreditCollections.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const creditCollectionUpi = todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
+  const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+  const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
   const creditCollectionTotal = creditCollectionCash + creditCollectionDigital;
-  const totalSalesIncAdvance = totalSales + advanceCollectedToday + creditCollectionTotal;
+  const totalSalesIncAdvance = totalSales + advanceCollectedToday;
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
+  const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const cash = normalCash + creditCollectionCash + advanceCash;
+  const upi = normalUpi + creditCollectionUpi + advanceUpi;
+  const card = normalCard + creditCollectionCard + advanceCard;
   const advancePaid = todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
   const advanceFull = todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
@@ -548,7 +555,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
   const discounts = counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
-  const expected = Number(opening || 0) + cash + creditCollectionCash + advanceCash - refunds - expenses;
+  const expected = Number(opening || 0) + cash - refunds - expenses;
   const countedCash = Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -560,7 +567,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     setTimeout(() => setSavedMessage(''), 3000);
   };
 
-  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${counterTodayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance/Credit)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Sales</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Sales</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Sales</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${creditCollectionTotal.toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
+  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${counterTodayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Collected</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Collected</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Collected</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${creditCollectionTotal.toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
 
   const exportClosure = () => {
     const rows = [
@@ -569,9 +576,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       ['Normal Bills', totalSales],
       ['Advance Collected Today', advanceCollectedToday],
       ['Total Sales (inc. Advance)', totalSalesIncAdvance],
-      ['Cash Sales', cash],
-      ['UPI Sales', upi],
-      ['Card Sales', card],
+      ['Cash Collected', cash],
+      ['UPI Collected', upi],
+      ['Card Collected', card],
       ['Split Payments', splitTotal],
       ['Credit Sales', creditSalesTotal],
       ['Credit Collection Cash', creditCollectionCash],
@@ -597,7 +604,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
       <Kpi label="Opening Cash" value={money(Number(opening || 0))} icon={<Banknote/>}/>
       <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<Receipt/>} tone="green"/>
-      <Kpi label="Cash Sales" value={money(cash)} icon={<Banknote/>} tone="green"/>
+      <Kpi label="Cash Collected" value={money(cash)} icon={<Banknote/>} tone="green"/>
       <Kpi label="UPI/Card" value={money(upi + card)} icon={<CreditCard/>} tone="blue"/>
       <Kpi label="Credit Due" value={money(branchCredits.filter((c)=>c.status !== 'settled').reduce((sum,c)=>sum+c.creditAmount,0))} icon={<WalletCards/>} tone="amber"/>
       <Kpi label="Expenses/Refunds" value={money(expenses + refunds)} icon={<RotateCcw/>} tone="red"/>
@@ -614,9 +621,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <tr className="border-t"><td className="p-3 font-black">Normal Bills</td><td className="p-3 text-right font-black text-emerald-700">{money(totalSales)}</td><td className="p-3 text-slate-500">Revenue from regular counter bills today.</td></tr>
               <tr className="border-t bg-emerald-50/60"><td className="p-3 font-black text-emerald-800">Advance Collected Today</td><td className="p-3 text-right font-black text-emerald-700">{money(advanceCollectedToday)}</td><td className="p-3 text-slate-500">Advance + balance amounts received today for advance orders.</td></tr>
               <tr className="border-t bg-emerald-50"><td className="p-3 font-black">Total Sales (inc. Advance)</td><td className="p-3 text-right font-black text-emerald-700">{money(totalSalesIncAdvance)}</td><td className="p-3 text-slate-500">Normal bills + advance collected today.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Cash Sales</td><td className="p-3 text-right font-black text-emerald-700">{money(cash)}</td><td className="p-3 text-slate-500">Cash part of normal and split bills.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">UPI Sales</td><td className="p-3 text-right font-black">{money(upi)}</td><td className="p-3 text-slate-500">UPI part of normal and split bills.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Card Sales</td><td className="p-3 text-right font-black">{money(card)}</td><td className="p-3 text-slate-500">Card part of normal and split bills.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Cash Collected</td><td className="p-3 text-right font-black text-emerald-700">{money(cash)}</td><td className="p-3 text-slate-500">Cash from bills, credit collections and advance payments.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">UPI Collected</td><td className="p-3 text-right font-black">{money(upi)}</td><td className="p-3 text-slate-500">UPI from bills, credit collections and advance payments.</td></tr>
+              <tr className="border-t"><td className="p-3 font-black">Card Collected</td><td className="p-3 text-right font-black">{money(card)}</td><td className="p-3 text-slate-500">Card from bills, credit collections and advance payments.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Split Payments</td><td className="p-3 text-right font-black">{money(splitTotal)}</td><td className="p-3 text-slate-500">Bills collected through more than one payment mode.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Credit Sales</td><td className="p-3 text-right font-black text-amber-700">{money(creditSalesTotal)}</td><td className="p-3 text-slate-500">Credit bills made today. This is sale value, not drawer cash.</td></tr>
               <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionTotal)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
