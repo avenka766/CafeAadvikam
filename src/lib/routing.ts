@@ -21,6 +21,7 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'branch_hosur':   return '/branch/hosur';
     case 'admin_vrsnb':    return '/admin-vrsnb';
     case 'admin_snb':      return '/admin-snb';
+    case 'admin_hosur':    return '/admin-hosur';
     case 'owner':          return '/owner';
     case 'billing':
     default:               return '/billing';
