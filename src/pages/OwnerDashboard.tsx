@@ -20,6 +20,7 @@ import type { Branch } from '@/branch/types';
 import { BRANCH_LABELS } from '@/branch/types';
 import { useInvoiceStore } from '@/bakery/invoiceStore';
 import { usePurchaseOrderStore } from '@/bakery/purchaseOrderStore';
+import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -1058,6 +1059,9 @@ function BranchOverviewTab() {
     }
     return ownerEndOfToday();
   }, [preset]);
+  const fromKey = useMemo(() => ownerDateInput(from), [from]);
+  const toKey = useMemo(() => ownerDateInput(to), [to]);
+  const ownerLedger = useBranchLedger(fromKey, toKey, ['VRSNB', 'SNB', 'Hosur']);
 
   const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
     if (unit === 'Cafe') {
@@ -1110,6 +1114,25 @@ function BranchOverviewTab() {
     }
 
     const branch = unit.replace(' Branch', '') as Branch;
+    const ledgerRows = ownerLedger.closureRows.filter(row => row.branch === branch);
+    if (ledgerRows.length > 0) {
+      const gross = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.sales_total) + ownerLedger.toNumber(row.advance_collected) + ownerLedger.toNumber(row.advance_balance_collected), 0);
+      const cash = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.cash_total), 0);
+      const upi = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.upi_total), 0);
+      const card = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.card_total), 0);
+      const credit = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.credit_billed), 0);
+      const savedClosure = ownerLedger.savedClosures.find(c => c.branch === branch);
+      const lowStock = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
+      const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
+      const openCredit = (creditSales[branch] || []).reduce((sum, sale) => sum + moneyNumber(sale.creditAmount), 0);
+      return {
+        unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
+        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: 0, pendingPayments: openCredit,
+        stockAlerts: lowStock + outStock + (incoming[branch] || []).filter(i => !i.confirmed).length,
+        closureStatus: savedClosure ? (Math.abs(ownerLedger.toNumber(savedClosure.difference)) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
+        keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
+      };
+    }
     const dbSales = (sales[branch] || []).filter(s => ownerInRange(s.soldAt, from, to));
     const localBills = bills.filter(b => b.branch === branch && ownerInRange(b.createdAt, from, to) && b.status !== 'Returned');
     const branchReturns = returns.filter(r => r.branch === branch && ownerInRange(r.createdAt, from, to));
@@ -1133,7 +1156,7 @@ function BranchOverviewTab() {
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
     };
-  }), [orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
+  }), [ownerLedger.closureRows, ownerLedger.savedClosures, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
 
   // CHANGE 4a: filter by selected view
   const visibleRows = branchRows.filter(r =>
@@ -1261,6 +1284,7 @@ function OwnerDailyClosureTab() {
   const { bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements } = useBranchOpsStore();
   const [date, setDate] = useState(ownerDateInput());
   const [branch, setBranch] = useState<'all' | Branch>('all');
+  const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
 
   useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
 
@@ -1273,6 +1297,26 @@ function OwnerDailyClosureTab() {
       const card = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'card' ? moneyNumber(o.total) : o.paymentType === 'part_payment' ? moneyNumber(o.paymentBreakdown?.card) : 0), 0);
       const credit = dayOrders.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
       return { branch: ownerBranchDisplay(b), opening: 0, grossSales: gross, returns: 0, netSales: gross, cash, upi, card, credit, expenses: 0, purchases: 0, bankDeposits: 0, expectedCash: cash, countedCash: 0, difference: 0, status: 'Pending' as OwnerClosureRow['status'], closedBy: 'Cafe cashier', closedAt: '', remarks: 'Cafe closure is verified in Daily Closure module.' };
+    }
+    const ledger = ownerLedger.closureByBranchDate.get(`${b}:${date}`);
+    const savedLedgerClosure = ownerLedger.savedClosureByBranchDate.get(`${b}:${date}`);
+    if (ledger) {
+      const gross = ownerLedger.toNumber(ledger.sales_total) + ownerLedger.toNumber(ledger.advance_collected) + ownerLedger.toNumber(ledger.advance_balance_collected);
+      const ret = ownerLedger.toNumber(savedLedgerClosure?.refunds || 0);
+      const cash = ownerLedger.toNumber(ledger.cash_total);
+      const upi = ownerLedger.toNumber(ledger.upi_total);
+      const card = ownerLedger.toNumber(ledger.card_total);
+      const credit = ownerLedger.toNumber(ledger.credit_billed);
+      const expenses = ownerLedger.toNumber(savedLedgerClosure?.expenses || 0);
+      const expectedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.expected_cash) : Math.max(0, cash - expenses);
+      const countedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.actual_cash) : 0;
+      const difference = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.difference) : 0;
+      return {
+        branch: ownerBranchDisplay(b), opening: ownerLedger.toNumber(savedLedgerClosure?.opening_cash || 0), grossSales: gross, returns: ret, netSales: Math.max(0, gross - ret), cash, upi, card, credit,
+        expenses, purchases: expenses, bankDeposits: 0, expectedCash, countedCash, difference,
+        status: (savedLedgerClosure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
+        closedBy: savedLedgerClosure?.cashier || 'Pending', closedAt: savedLedgerClosure?.created_at || '', remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed from Supabase' : 'Closure not submitted'),
+      };
     }
     const dayBills = bills.filter(bill => bill.branch === b && ownerLocalDay(bill.createdAt) === date && bill.status !== 'Returned');
     const dayReturns = returns.filter(ret => ret.branch === b && ownerLocalDay(ret.createdAt) === date);
@@ -1295,7 +1339,7 @@ function OwnerDailyClosureTab() {
       status: (closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
       closedBy: closure?.cashier || 'Pending', closedAt: closure?.createdAt || '', remarks: closure?.notes || (closure ? 'Closed' : 'Closure not submitted'),
     };
-  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
+  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [ownerLedger.closureByBranchDate, ownerLedger.savedClosureByBranchDate, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
 
   const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
 

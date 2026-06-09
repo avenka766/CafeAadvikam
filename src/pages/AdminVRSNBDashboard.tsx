@@ -9,6 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useBranchLedger } from "@/hooks/useBranchLedger";
+import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
 import {
@@ -447,6 +449,7 @@ export default function AdminVRSNBDashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
+  const adminLedger = useBranchLedger(fromDate, toDate, ["VRSNB", "Cafe"]);
 
   const userName =
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
@@ -496,13 +499,13 @@ export default function AdminVRSNBDashboard() {
     (sum, row) => sum + (row.unitPrice ?? 0) * row.quantitySold,
     0,
   );
-  const grossSales = grossFromBills + grossFromLegacy;
+  const rawGrossSales = grossFromBills + grossFromLegacy;
   const returnAmount = branchReturns.reduce((sum, ret) => sum + ret.total, 0);
-  const netSales = Math.max(0, grossSales - returnAmount);
-  const billsCount =
+  const rawNetSales = Math.max(0, rawGrossSales - returnAmount);
+  const rawBillsCount =
     branchBills.length +
     new Set(legacySalesRows.map((s) => s.billNo || s.id)).size;
-  const avgBillValue = billsCount > 0 ? netSales / billsCount : 0;
+  const rawAvgBillValue = rawBillsCount > 0 ? rawNetSales / rawBillsCount : 0;
 
   const cashSales =
     branchBills.reduce(
@@ -553,6 +556,22 @@ export default function AdminVRSNBDashboard() {
     legacySalesRows
       .filter((s) => amountForLegacyPayment(s.paymentMethod, "credit"))
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
+  const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
+  const hasLedgerRows = ledgerRows.length > 0;
+  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total) + adminLedger.toNumber(row.advance_collected) + adminLedger.toNumber(row.advance_balance_collected), 0);
+  const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
+  const ledgerUpiSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
+  const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
+  const ledgerCreditBillAmount = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.credit_billed), 0);
+  const ledgerBillsCount = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.bill_count), 0);
+  const grossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
+  const netSales = Math.max(0, grossSales - returnAmount);
+  const billsCount = hasLedgerRows ? ledgerBillsCount : rawBillsCount;
+  const avgBillValue = billsCount > 0 ? netSales / billsCount : rawAvgBillValue;
+  const finalCashSales = hasLedgerRows ? ledgerCashSales : cashSales;
+  const finalUpiSales = hasLedgerRows ? ledgerUpiSales : upiSales;
+  const finalCardSales = hasLedgerRows ? ledgerCardSales : cardSales;
+  const finalCreditBillAmount = hasLedgerRows ? ledgerCreditBillAmount : creditBillAmount;
 
   const lowStockRows = useMemo(() => {
     const query = lowSearch.trim().toLowerCase();
@@ -796,10 +815,10 @@ export default function AdminVRSNBDashboard() {
   }, [branchBills, legacySalesRows, branchReturns, bills]);
 
   const paymentPie = [
-    { name: "Cash", value: cashSales, color: CHART_COLORS[1] },
-    { name: "UPI", value: upiSales, color: CHART_COLORS[3] },
-    { name: "Card", value: cardSales, color: CHART_COLORS[4] },
-    { name: "Credit", value: creditBillAmount, color: CHART_COLORS[0] },
+    { name: "Cash", value: finalCashSales, color: CHART_COLORS[1] },
+    { name: "UPI", value: finalUpiSales, color: CHART_COLORS[3] },
+    { name: "Card", value: finalCardSales, color: CHART_COLORS[4] },
+    { name: "Credit", value: finalCreditBillAmount, color: CHART_COLORS[0] },
   ].filter((row) => row.value > 0);
 
   const hiddenVrsnbTabs: TabId[] = [
@@ -839,10 +858,10 @@ export default function AdminVRSNBDashboard() {
     netSales,
     billsCount,
     avgBillValue,
-    cashSales,
-    upiSales,
-    cardSales,
-    creditBillAmount,
+    cashSales: finalCashSales,
+    upiSales: finalUpiSales,
+    cardSales: finalCardSales,
+    creditBillAmount: finalCreditBillAmount,
     lowStockRows,
     branchBills,
     branchReturns,
@@ -2750,7 +2769,36 @@ function DailyClosureTab({ userName, ...props }: any) {
     );
   const expectedCash = Number(form.openingCash || 0) + cashMovementsNet;
   const diff = Number(form.closingCash || 0) - expectedCash;
-  const save = () => {
+  const save = async () => {
+    const closureDate = dateInput();
+    const payload = {
+      branch: BRANCH,
+      closure_date: closureDate,
+      cashier: userName,
+      opening_cash: Number(form.openingCash || 0),
+      cash_total: props.cashSales,
+      upi_total: props.upiSales,
+      card_total: props.cardSales,
+      credit_billed: props.creditBillAmount,
+      credit_collected: props.clearedCredit,
+      refunds: props.returnAmount,
+      expenses: props.purchasePaid,
+      discounts: 0,
+      bill_count: props.billsCount,
+      duplicate_prints: 0,
+      expected_cash: expectedCash,
+      actual_cash: Number(form.closingCash || 0),
+      difference: diff,
+      notes: form.remarks || null,
+      status: "finalized",
+    };
+    const { error } = await supabase
+      .from("branch_daily_closures")
+      .upsert(payload, { onConflict: "branch,closure_date,cashier" });
+    if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
+      window.alert(`Failed to save closure in Supabase: ${error.message}`);
+      return;
+    }
     addCashierClosure({
       branch: BRANCH,
       cashier: userName,

@@ -12,6 +12,7 @@ import SnbItemsTab from '@/components/admin/SnbItemsTab';
 import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
+import { useBranchLedger } from '@/hooks/useBranchLedger';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -191,6 +192,7 @@ function AdminDashboard() {
   );
   const { stock, sales, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, auditLogs } = useBranchOpsStore();
+  const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
@@ -331,6 +333,41 @@ function AdminDashboard() {
 
   const closureRows = useMemo<ClosureRow[]>(() => {
     return BRANCHES.map(branch => {
+      const ledger = adminLedger.closureByBranchDate.get(`${branch}:${closureDate}`);
+      const savedLedgerClosure = adminLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
+      if (branch !== 'Cafe' && ledger) {
+        const openingBalance = Number(savedLedgerClosure?.opening_cash || 0);
+        const totalSales = adminLedger.toNumber(ledger.sales_total) + adminLedger.toNumber(ledger.advance_collected) + adminLedger.toNumber(ledger.advance_balance_collected);
+        const cashSales = adminLedger.toNumber(ledger.cash_total);
+        const upiSales = adminLedger.toNumber(ledger.upi_total);
+        const cardSales = adminLedger.toNumber(ledger.card_total);
+        const creditSalesDay = adminLedger.toNumber(ledger.credit_billed);
+        const returnsDay = adminLedger.toNumber(savedLedgerClosure?.refunds || 0);
+        const expensesDay = adminLedger.toNumber(savedLedgerClosure?.expenses || 0);
+        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay;
+        const differenceAmount = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.difference) : 0;
+        const status: ClosureRow['status'] = savedLedgerClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
+        return {
+          branch,
+          openingBalance,
+          totalSales,
+          cashSales,
+          upiSales,
+          cardSales,
+          creditSales: creditSalesDay,
+          returns: returnsDay,
+          netSales: Math.max(0, totalSales - returnsDay),
+          expenses: expensesDay,
+          purchasePayments: expensesDay,
+          bankDeposits: 0,
+          closingBalance,
+          differenceAmount,
+          remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
+          status,
+          closedBy: savedLedgerClosure?.cashier || '-',
+          closedAt: savedLedgerClosure ? fmtDateTime(savedLedgerClosure.created_at) : '-',
+        };
+      }
       const closureRecords = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) === closureDate);
       const latestClosure = closureRecords[0] || null;
       const txns = branch === 'Cafe' ? [] : branchTransactions.filter(t => t.branch === branch && localDateKey(t.soldAt) === closureDate);
@@ -353,7 +390,7 @@ function AdminDashboard() {
       const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
       return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-' };
     });
-  }, [cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+  }, [adminLedger.closureByBranchDate, adminLedger.savedClosureByBranchDate, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
 
   const closureStatusChart = useMemo(() => [
     { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },
