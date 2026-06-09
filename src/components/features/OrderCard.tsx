@@ -8,6 +8,7 @@ import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck
 import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 import { AdvancePaymentPanel } from '@/pages/BillingDashboard';
+import { useToast } from '@/hooks/use-toast';
 
 const CANCEL_REASONS = [
   'Customer changed mind',
@@ -39,6 +40,7 @@ type SplitMethod = 'cash' | 'upi' | 'card';
 export default function OrderCard({ order, showActions = false }: OrderCardProps) {
   const { updateOrderStatus, applyDiscount, setPaymentType } = useOrderStore();
   const { currentUser } = useAuthStore();
+  const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [showDiscount, setShowDiscount] = useState(false);
@@ -125,7 +127,12 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
       return;
     }
     setDiscountError('');
-    applyDiscount(order.id, discType, val).catch(() => {});
+    applyDiscount(order.id, discType, val).catch((err) => {
+      // HYGIENE FIX: surface the error instead of silently swallowing it — the UI already
+      // shows the discount applied (optimistic update) but the DB update failed.
+      console.error('[OrderCard] applyDiscount failed:', err);
+      toast({ title: 'Discount failed', description: 'Could not save discount — please refresh and try again.', variant: 'destructive' });
+    });
     setShowDiscount(false);
     setDiscValue('');
   };
@@ -429,7 +436,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                 Collect Payment
               </button>
             )}
-            {order.status !== 'ready' && (
+            {order.status !== 'ready' && order.paymentType === 'unpaid' && (
               <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-2.5 rounded-lg bg-accent/20 text-accent-foreground text-sm font-body font-semibold active:scale-95">💰</button>
             )}
             <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
