@@ -42,6 +42,8 @@ interface WasteEntry {
   food_item: string;
   quantity: string;
   logged_at: string;
+  voided_at?: string | null;
+  void_reason?: string | null;
 }
 
 function WasteTab() {
@@ -64,6 +66,7 @@ function WasteTab() {
         .from('kitchen_waste_log')
         .select('*')
         .gte('logged_at', historyStart.toISOString())
+        .is('voided_at', null)
         .order('logged_at', { ascending: false });
       setEntries((data as WasteEntry[]) ?? []);
       setLoading(false);
@@ -96,7 +99,13 @@ function WasteTab() {
 
   const handleDelete = async (id: string) => {
     setDeleting(id);
-    await supabase.from('kitchen_waste_log').delete().eq('id', id);
+    const reason = window.prompt('Enter reason to void this waste log. The record will stay in Supabase for audit.');
+    if (!reason?.trim()) { setDeleting(null); return; }
+    const { error: err } = await supabase
+      .from('kitchen_waste_log')
+      .update({ voided_at: new Date().toISOString(), void_reason: reason.trim() })
+      .eq('id', id);
+    if (err) { setError(err.message); setDeleting(null); return; }
     setEntries(prev => prev.filter(e => e.id !== id));
     setDeleting(null);
   };

@@ -246,15 +246,10 @@ async function deactivateEmployee(id: string): Promise<void> {
 }
 
 async function deleteOldAttendance(currentYear: number, currentMonth: number): Promise<void> {
-  try {
-    let cutoffMonth = currentMonth - 2;
-    let cutoffYear = currentYear;
-    if (cutoffMonth <= 0) { cutoffMonth += 12; cutoffYear--; }
-    await supabase.from('attendance').delete().lt('year', cutoffYear);
-    await supabase.from('attendance').delete().eq('year', cutoffYear).lt('month', cutoffMonth);
-    await supabase.from('deduction_decisions').delete().lt('year', cutoffYear);
-    await supabase.from('deduction_decisions').delete().eq('year', cutoffYear).lt('month', cutoffMonth);
-  } catch (e) { console.warn('Old data cleanup failed:', e); }
+  void currentYear;
+  void currentMonth;
+  // Payroll/attendance records are business records. Keep them in Supabase;
+  // retention/archival should be a deliberate admin operation, not automatic deletion.
 }
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
