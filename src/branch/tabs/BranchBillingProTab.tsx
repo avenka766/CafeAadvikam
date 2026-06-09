@@ -9,15 +9,25 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore, type StockItem } from '../branchStore';
+import { supabase } from '@/lib/supabase';
 import { BRANCH_LABELS, type Branch } from '../types';
 import { SNB_CATEGORIES, SNB_ITEMS, type SnbItem } from '../snbItems';
 import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '../vrsnbItems';
 import {
-  money, nextBranchInvoice, useBranchOpsStore,
+  money, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
 } from '../branchOpsStore';
 
 type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'credit';
+type CheckoutRpcResult = {
+  billId: string;
+  billNo: string;
+  invoiceNo: number;
+  total: number;
+  tendered: number;
+  balance: number;
+  creditSaleId?: string | null;
+};
 type BillingItem = {
   barcode: number;
   name: string;
@@ -105,7 +115,7 @@ function toBillItem(item: BillingItem, qty: number): BranchBillItem {
 
 export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
   const { currentUser } = useAuthStore();
-  const { recordSnbSale, recordSale, recordCreditSale, fetchBranchData } = useBranchStore();
+  const { fetchBranchData } = useBranchStore();
   const {
     bills, holds, salespeople, addBill, addHold, removeHold, addNotification,
   } = useBranchOpsStore();
@@ -318,47 +328,49 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     if (validationError) { setError(validationError); return; }
     setSaving(true);
     setError('');
-    const { billNo, invoiceNo } = nextBranchInvoice(branch);
-    const modeLabel = paymentMode === 'split'
-      ? `split:cash=${Number(split.cash || 0)},upi=${Number(split.upi || 0)},card=${Number(split.card || 0)}`
-      : paymentMode;
     try {
-      for (const item of cart) {
-        const err = branch === 'SNB' || branch === 'Hosur' || branch === 'VRSNB'
-          ? await recordSnbSale(branch, item.itemName, item.quantity, billingStaff, modeLabel, item.price, billNo)
-          : { error: await recordSale(branch, item.itemName, item.quantity, billingStaff, modeLabel, billNo, item.price), mismatch: false };
-        if (err.error) throw new Error(err.error);
+      const paymentRows =
+        paymentMode === 'credit'
+          ? (creditPaid > 0 ? [{ mode: creditPaidMode, amount: creditPaid, remarks: creditRemarks.trim() || 'Credit upfront collection' }] : [])
+          : paymentMode === 'split'
+            ? [
+                { mode: 'cash', amount: Number(split.cash || 0) },
+                { mode: 'upi', amount: Number(split.upi || 0) },
+                { mode: 'card', amount: Number(split.card || 0) },
+              ].filter((row) => row.amount > 0)
+            : [{ mode: paymentMode, amount: total }];
+
+      const { data, error: rpcError } = await supabase.rpc('complete_branch_checkout', {
+        p_branch: branch,
+        p_items: cart.map((item) => ({
+          itemName: item.itemName,
+          quantity: item.quantity,
+          unit: item.unit,
+          price: item.price,
+          discount: item.discount || 0,
+          tax: item.tax || 0,
+          lineTotal: item.lineTotal,
+        })),
+        p_payments: paymentRows,
+        p_customer_name: paymentMode === 'credit' ? creditCustomerName.trim() : null,
+        p_customer_phone: paymentMode === 'credit' ? creditCustomerMobile.trim() : null,
+        p_salesperson: billingStaff,
+        p_biller: userName,
+        p_discount: discountValue,
+        p_tax: tax,
+        p_round_off: 0,
+        p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
+        p_due_date: paymentMode === 'credit' ? creditDueDate : null,
+        p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
+      });
+      if (rpcError) {
+        const missingRpc = /complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
+        throw new Error(missingRpc ? 'Atomic checkout is not installed in Supabase. Run the 20260609_branch_atomic_ledger.sql migration first.' : rpcError.message);
       }
-      if (paymentMode === 'credit') {
-        const creditErr = await recordCreditSale(branch, {
-          branch,
-          customerName: creditCustomerName.trim(),
-          customerPhone: creditCustomerMobile.trim(),
-          items: cart.map((item) => ({
-            itemName: item.itemName,
-            quantity: item.quantity,
-            sellUnit: item.unit,
-            price: item.price,
-            lineTotal: item.lineTotal,
-          })),
-          subtotal: total,
-          amountPaid: creditPaid,
-          creditAmount: Math.max(0, total - creditPaid),
-          soldBy: billingStaff,
-          dueDate: creditDueDate,
-          notes: creditRemarks.trim() || null,
-          billNo,
-        }, {
-          writeSalesRows: false,
-          upfrontPaymentMode: creditPaidMode,
-          collectedBy: userName,
-          collectedRole: currentUser?.role,
-          remarks: creditRemarks.trim() || 'Credit upfront collection',
-        });
-        if (creditErr) throw new Error(creditErr);
-      }
+      const result = data as CheckoutRpcResult;
+      if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
       const saved = addBill({
-        branch, billNo, invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
+        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
         tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,

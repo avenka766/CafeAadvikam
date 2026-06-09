@@ -97,11 +97,7 @@ function normalizeItemName(name: string) {
 async function fetchNextBillNo(): Promise<string> {
   const { data, error } = await supabase.rpc('get_next_bill_number');
   if (error || data == null) {
-    // Fallback to local random if RPC fails — avoids blocking the biller
-    const d = new Date();
-    const datePart = `${d.getFullYear().toString().slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
-    return `${datePart}-${suffix}`;
+    throw new Error('Unable to generate bill number, please retry.');
   }
   return String(data);
 }
@@ -1634,7 +1630,6 @@ function BranchCreditPanel({ branch, creditSales }: {
 }
 
 export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
-  const { recordSale, recordSnbSale, recordCreditSale } = useBranchStore();
   const { currentUser } = useAuthStore();
   const colors = BRANCH_COLORS[branch];
   const soldBy = currentUser?.displayName || currentUser?.username || 'Staff';
@@ -1647,7 +1642,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const [activeCategory, setActiveCategory] = useState<SnbCategory | VrsnbCategory | 'All'>('All');
   const billNo = useRef<string>('…');
   // Fetch the first bill number on mount
-  useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }); }, []);
+  useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.')); }, []);
 
   // ── Tab state ───────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'bill' | 'advance' | 'alert' | 'credit'>('bill');
@@ -1704,7 +1699,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const clearCart = useCallback(() => {
     setCart([]); resetPayment();
     setDiscountValue(''); setShowDiscount(false);
-    fetchNextBillNo().then(n => { billNo.current = n; });
+    fetchNextBillNo().then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.'));
   }, [resetPayment]);
 
   useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
@@ -1870,15 +1865,6 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     if (idx === 0 && allPriced) setSplitAmounts(['','']);
   };
 
-  const buildMethodLabel = () => {
-    if (payMode === 'single') return singleMethod ?? 'cash';
-    // Store as "method1+method2" — allowed by DB check constraint (see migration)
-    const parts: string[] = [];
-    if (splitMethods[0]) parts.push(splitMethods[0]);
-    if (splitMethods[1]) parts.push(splitMethods[1]);
-    return parts.join('+');
-  };
-
   // ── Checkout ─────────────────────────────────────────────────────────────────
 
   const doCheckout = async () => {
@@ -1891,70 +1877,48 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       } else { setError('Select a payment method.'); return; }
     }
     setError(''); setSubmitting(true);
-    const methodLabel = payMode === 'credit' ? 'credit' : buildMethodLabel();
-    // BILL-FIX: wrap entire checkout in try/finally so setSubmitting(false) is
-    // guaranteed even if recordSale/recordSnbSale throws unexpectedly.
+    // Atomic checkout: one Supabase transaction records bill, items, payments, stock movement, credit and audit rows.
     try {
-
-    // ── Credit sale path ──────────────────────────────────────────────────────
-    if (payMode === 'credit') {
       const amtPaid = parseFloat(creditAmountPaid) || 0;
-      const creditItems = cart.map(c => ({
-        itemName: c.itemName, quantity: c.quantity,
-        sellUnit: (c.sellUnit ?? 'pcs') as 'kg' | 'pcs',
-        price: c.price ?? 0, lineTotal: c.lineTotal ?? 0,
-      }));
-      const creditErr = await recordCreditSale(branch, {
-        branch, customerName: customerName.trim() || 'Customer',
-        customerPhone: customerPhone.trim() || null, items: creditItems,
-        subtotal: finalTotal, amountPaid: amtPaid,
-        creditAmount: Math.max(0, finalTotal - amtPaid),
-        soldBy, dueDate: creditDueDate || null, notes: creditNotes.trim() || null,
-        billNo: billNo.current,
-      }, { writeSalesRows: false, upfrontPaymentMode: 'cash', collectedBy: soldBy });
-      if (creditErr) { setError(creditErr); return; }
-      // Still record each sale for history/stock
-      if (isSNB) {
-        for (const item of cart) {
-          const { error: stockErr } = await recordSnbSale(branch, item.itemName, item.quantity, soldBy, 'credit', item.price ?? 0, billNo.current);
-          if (stockErr) throw new Error(stockErr);
-        }
-      } else {
-        for (const item of cart) {
-          await recordSale(branch, item.itemName, item.quantity, soldBy, 'credit', billNo.current, item.price ?? 0);
-        }
-      }
-    } else if (isSNB) {
-      // SNB / Hosur / VRSNB — price-list sale with strict stock validation
-      // C-04 NOTE: items are committed one-by-one (no DB-level rollback).
-      // TODO: replace with a single atomic complete_checkout() RPC once backend is ready.
-      const snbSucceeded: string[] = [];
-      for (const item of cart) {
-        const { error: err } = await recordSnbSale(
-          branch, item.itemName, item.quantity, soldBy, methodLabel, item.price ?? 0, billNo.current,
-        );
-        if (err) {
-          setError(
-            `Failed on "${item.itemName}": ${err}.` +
-            (snbSucceeded.length > 0 ? ` Already saved: ${snbSucceeded.join(', ')} — notify manager to reverse.` : ''),
-          );
-          return;
-        }
-        snbSucceeded.push(item.itemName);
-      }
-    } else {
-      // Cafe / stock-based sale with strict stock validation
-      const succeeded: string[] = [];
-      for (const item of cart) {
-        const err = await recordSale(branch, item.itemName, item.quantity, soldBy, methodLabel, billNo.current, item.price ?? 0);
-        if (err) {
-          setError(`Failed on "${item.itemName}": ${err}.${succeeded.length > 0 ? ` (Saved: ${succeeded.join(', ')})` : ''}`);
-          return;
-        }
-        succeeded.push(item.itemName);
-      }
-    }
+      const paymentRows = payMode === 'credit'
+        ? (amtPaid > 0 ? [{ mode: 'cash', amount: amtPaid, remarks: creditNotes.trim() || 'Credit upfront collection' }] : [])
+        : payMode === 'split'
+          ? [
+              { mode: splitMethods[0], amount: parseFloat(splitAmounts[0]) || 0 },
+              { mode: splitMethods[1], amount: parseFloat(splitAmounts[1]) || 0 },
+            ].filter((row) => row.mode && row.amount > 0)
+          : [{ mode: singleMethod, amount: finalTotal }];
 
+      const { data, error: rpcError } = await supabase.rpc('complete_branch_checkout', {
+        p_branch: branch,
+        p_items: cart.map((item) => ({
+          itemName: item.itemName,
+          quantity: item.quantity,
+          unit: item.sellUnit ?? 'pcs',
+          price: item.price ?? 0,
+          discount: 0,
+          tax: 0,
+          lineTotal: item.lineTotal ?? 0,
+        })),
+        p_payments: paymentRows,
+        p_customer_name: payMode === 'credit' ? customerName.trim() || 'Customer' : null,
+        p_customer_phone: payMode === 'credit' ? customerPhone.trim() || null : null,
+        p_salesperson: soldBy,
+        p_biller: soldBy,
+        p_discount: discount,
+        p_tax: cafeCgst + cafeSgst,
+        p_round_off: roundOff,
+        p_payment_type: payMode === 'credit' ? 'credit' : 'counter',
+        p_due_date: payMode === 'credit' ? creditDueDate || null : null,
+        p_notes: payMode === 'credit' ? creditNotes.trim() || null : null,
+      });
+      if (rpcError) {
+        const missingRpc = /complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
+        throw new Error(missingRpc ? 'Atomic checkout is not installed in Supabase. Run the 20260609_branch_atomic_ledger.sql migration first.' : rpcError.message);
+      }
+      const result = data as { billNo?: string };
+      if (!result?.billNo) throw new Error('Checkout committed but bill number was not returned.');
+      billNo.current = result.billNo;
       setShowPreview(false); setShowSuccess(true);
       clearCart(); setTimeout(() => setShowSuccess(false), 2500);
       return true; // L-03 FIX: signal success so callers can gate printing
@@ -1983,6 +1947,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
     // L-03 FIX: run checkout first; only print bill/KOT if it succeeds
     const success = await doCheckout();
     if (!success) return;
+    printSnapshot.billNoSnapshot = billNo.current;
     printBill({ branch, billNo: printSnapshot.billNoSnapshot, items: printSnapshot.items,
       subtotal: printSnapshot.subtotal, discount: printSnapshot.discount,
       discountType: printSnapshot.discountType, discountValue: printSnapshot.discountValue,

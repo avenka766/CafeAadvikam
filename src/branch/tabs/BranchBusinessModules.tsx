@@ -7,6 +7,7 @@ import {
   Truck, UserRound, WalletCards, XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBakeryStore } from '@/bakery/bakeryStore';
 import type { BakeryOrderItem } from '@/bakery/types';
@@ -23,6 +24,80 @@ import { VRSNB_ITEMS } from '../vrsnbItems';
 import { printCounterBill, printHtml } from '../printUtils';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void };
+
+type LedgerBillRow = {
+  id: string;
+  bill_no: string;
+  invoice_no: number;
+  bill_type: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  salesperson: string | null;
+  biller: string | null;
+  subtotal: number | string;
+  discount: number | string;
+  tax: number | string;
+  total: number | string;
+  tendered: number | string;
+  balance: number | string;
+  status: string;
+  created_at: string;
+  branch_bill_items?: Array<{
+    item_name: string;
+    quantity: number | string;
+    unit: 'pcs' | 'kg';
+    unit_price: number | string;
+    discount: number | string | null;
+    tax: number | string | null;
+    line_total: number | string;
+  }>;
+  branch_sale_payments?: Array<{
+    payment_mode: 'cash' | 'upi' | 'card' | 'bank' | 'mixed';
+    amount: number | string;
+  }>;
+};
+
+type ClosureLedgerRow = {
+  branch: Branch;
+  closure_date: string;
+  bill_count: number | string;
+  sales_total: number | string;
+  credit_billed: number | string;
+  discounts: number | string;
+  tax_total: number | string;
+  cash_total: number | string;
+  upi_total: number | string;
+  card_total: number | string;
+  credit_collected: number | string;
+  advance_collected: number | string;
+  advance_balance_collected: number | string;
+};
+
+type SavedClosureRow = {
+  id: string;
+  branch: Branch;
+  closure_date: string;
+  cashier: string;
+  opening_cash: number | string;
+  cash_total: number | string;
+  upi_total: number | string;
+  card_total: number | string;
+  credit_billed: number | string;
+  credit_collected: number | string;
+  refunds: number | string;
+  expenses: number | string;
+  discounts: number | string;
+  bill_count: number | string;
+  duplicate_prints: number | string;
+  expected_cash: number | string;
+  actual_cash: number | string;
+  difference: number | string;
+  notes: string | null;
+  created_at: string;
+};
+
+const num = (value: number | string | null | undefined) => Number(value ?? 0);
+const todayIso = () => new Date().toISOString().split('T')[0];
 
 type FieldProps = { label: string; children: React.ReactNode };
 function Field({ label, children }: FieldProps) {
@@ -74,8 +149,96 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   const { bills, markBillDuplicate } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [query, setQuery] = useState('');
+  const [ledgerBills, setLedgerBills] = useState<BranchBillRecord[]>([]);
+  const [loadingLedger, setLoadingLedger] = useState(true);
+  const [ledgerMessage, setLedgerMessage] = useState('');
   const isVRSNB = branch === 'VRSNB';
-  const rows = bills.filter((b) => {
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoadingLedger(true);
+      setLedgerMessage('');
+      const { data, error } = await supabase
+        .from('branch_bill_headers')
+        .select('*, branch_bill_items(*), branch_sale_payments(payment_mode, amount)')
+        .eq('branch', branch)
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (!active) return;
+      if (error) {
+        const missingLedger = /branch_bill_headers|does not exist|schema cache/i.test(error.message);
+        setLedgerBills([]);
+        setLedgerMessage(missingLedger
+          ? 'Supabase bill ledger is not installed yet. Run 20260609_branch_atomic_ledger.sql, then this history will load from Supabase.'
+          : `Could not load Supabase bill history: ${error.message}`);
+        setLoadingLedger(false);
+        return;
+      }
+
+      const mapped = ((data || []) as LedgerBillRow[]).map((row) => {
+        const items = (row.branch_bill_items || []).map((item) => ({
+          itemName: item.item_name,
+          quantity: num(item.quantity),
+          unit: item.unit,
+          price: num(item.unit_price),
+          discount: num(item.discount),
+          tax: num(item.tax),
+          lineTotal: num(item.line_total),
+        }));
+        const payments = row.branch_sale_payments || [];
+        const splitTotals = payments.reduce<Record<string, number>>((acc, payment) => {
+          acc[payment.payment_mode] = (acc[payment.payment_mode] || 0) + num(payment.amount);
+          return acc;
+        }, {});
+        const modes = Object.keys(splitTotals).filter((mode) => splitTotals[mode] > 0);
+        const paymentMode = row.bill_type === 'credit'
+          ? 'credit'
+          : modes.length > 1
+            ? 'split'
+            : ((modes[0] || 'cash') as BranchBillRecord['paymentMode']);
+        const split = {
+          cash: splitTotals.cash || 0,
+          upi: splitTotals.upi || 0,
+          card: splitTotals.card || 0,
+        };
+
+        return {
+          id: row.id,
+          branch,
+          billNo: row.bill_no,
+          invoiceNo: num(row.invoice_no),
+          items,
+          subtotal: num(row.subtotal),
+          discount: num(row.discount),
+          tax: num(row.tax),
+          total: num(row.total),
+          tendered: num(row.tendered),
+          balance: num(row.balance),
+          paymentMode,
+          creditCustomerName: row.customer_name || undefined,
+          creditCustomerMobile: row.customer_phone || undefined,
+          split: paymentMode === 'split' || row.bill_type === 'credit' ? split : undefined,
+          salesperson: row.salesperson || 'Staff',
+          biller: row.biller || 'Staff',
+          createdAt: row.created_at,
+          printCount: row.status === 'duplicate_printed' ? 2 : 1,
+          status: row.status === 'duplicate_printed' ? 'Duplicate Bill' : row.status === 'returned' ? 'Returned' : 'Original Bill',
+          source: row.bill_type === 'advance_final' ? 'advance-final' : 'counter',
+        } as BranchBillRecord;
+      });
+
+      setLedgerBills(mapped);
+      setLoadingLedger(false);
+    };
+
+    void load();
+    return () => { active = false; };
+  }, [branch]);
+
+  const sourceRows = ledgerBills.length > 0 ? ledgerBills : bills.filter((b) => b.branch === branch);
+  const rows = sourceRows.filter((b) => {
     const q = query.trim().toLowerCase();
     return b.branch === branch && (!q || b.billNo.toLowerCase().includes(q) || b.biller.toLowerCase().includes(q) || (!isVRSNB && b.salesperson.toLowerCase().includes(q)));
   });
@@ -83,7 +246,11 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
     markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
     printCounterBill(bill, true);
   };
-  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill or salesperson'} className="pl-9"/></div>}><div className="overflow-x-auto"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[760px]' : 'min-w-[850px]')}><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Time</th>{!isVRSNB && <th className="p-3">Salesperson</th>}<th className="p-3">Cashier</th><th className="p-3">Mode</th><th className="p-3 text-right">Total</th><th className="p-3">Print Status</th><th className="p-3 text-right">Action</th></tr></thead><tbody>{rows.map(b=><tr key={b.id} className="border-t"><td className="p-3 font-black">{b.billNo}</td><td className="p-3">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-3">{b.salesperson}</td>}<td className="p-3">{b.biller}</td><td className="p-3 uppercase">{b.paymentMode}</td><td className="p-3 text-right font-black">{money(b.total)}</td><td className="p-3"><span className={cn('rounded-full px-2 py-1 text-xs font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate Printed' : 'Original Bill'}</span></td><td className="p-3 text-right"><SoftButton onClick={()=>reprint(b)}><Printer className="size-4"/>Duplicate</SoftButton></td></tr>)}</tbody></table></div></Section>;
+  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill or salesperson'} className="pl-9"/></div>}>
+    {ledgerMessage && <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">{ledgerMessage}</p>}
+    {loadingLedger && <p className="mb-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-500">Loading bill history from Supabase...</p>}
+    <div className="overflow-x-auto"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[760px]' : 'min-w-[850px]')}><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Time</th>{!isVRSNB && <th className="p-3">Salesperson</th>}<th className="p-3">Cashier</th><th className="p-3">Mode</th><th className="p-3 text-right">Total</th><th className="p-3">Print Status</th><th className="p-3 text-right">Action</th></tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-6 text-center font-bold text-slate-500">No bills found.</td></tr> : rows.map(b=><tr key={b.id} className="border-t"><td className="p-3 font-black">{b.billNo}</td><td className="p-3">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-3">{b.salesperson}</td>}<td className="p-3">{b.biller}</td><td className="p-3 uppercase">{b.paymentMode}</td><td className="p-3 text-right font-black">{money(b.total)}</td><td className="p-3"><span className={cn('rounded-full px-2 py-1 text-xs font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate Printed' : 'Original Bill'}</span></td><td className="p-3 text-right"><SoftButton onClick={()=>reprint(b)}><Printer className="size-4"/>Duplicate</SoftButton></td></tr>)}</tbody></table></div>
+  </Section>;
 }
 
 
@@ -311,6 +478,36 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order',
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
     });
+    if (adv > 0) {
+      const [{ error: paymentError }, { error: advancePaymentError }] = await Promise.all([
+        supabase.from('branch_sale_payments').insert({
+          branch,
+          bill_no: order.orderNo,
+          payment_mode: common.paymentMode,
+          amount: adv,
+          payment_purpose: 'advance_paid',
+          remarks: `${orderType} advance order - ${common.customerName.trim()}`,
+          collected_by: staff,
+          created_at: new Date().toISOString(),
+        }),
+        supabase.from('branch_advance_payments').insert({
+          branch,
+          order_no: order.orderNo,
+          payment_mode: common.paymentMode,
+          amount: adv,
+          payment_stage: 'advance',
+          collected_by: staff,
+          remarks: `${orderType} advance order - ${common.customerName.trim()}`,
+          created_at: new Date().toISOString(),
+        }),
+      ]);
+      if (paymentError || advancePaymentError) {
+        const msg = paymentError?.message || advancePaymentError?.message || 'Unknown Supabase error';
+        setError(/branch_sale_payments|branch_advance_payments|does not exist|schema cache/i.test(msg)
+          ? 'Advance order saved, but Supabase ledger is not installed. Run 20260609_branch_atomic_ledger.sql so daily closure can include advance payments.'
+          : `Advance order saved, but payment ledger failed: ${msg}`);
+      }
+    }
     if (orderType === 'cake') await sendCakeToStoreDashboard(order);
     else await sendToStoreDashboard(order, sourceLines);
     // Print slip — show "PAID IN FULL" stamp when fully paid
@@ -329,6 +526,30 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       await fetchBranchData(branch);
     }
     if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    if (o.balanceAmount > 0) {
+      await Promise.all([
+        supabase.from('branch_sale_payments').insert({
+          branch,
+          bill_no: billNo,
+          payment_mode: usedMode,
+          amount: o.balanceAmount,
+          payment_purpose: 'advance_balance',
+          remarks: `${o.orderNo} ${o.customerName}`,
+          collected_by: currentUser?.displayName || 'Staff',
+          created_at: new Date().toISOString(),
+        }),
+        supabase.from('branch_advance_payments').insert({
+          branch,
+          order_no: o.orderNo,
+          payment_mode: usedMode,
+          amount: o.balanceAmount,
+          payment_stage: 'balance',
+          collected_by: currentUser?.displayName || 'Staff',
+          remarks: billNo,
+          created_at: new Date().toISOString(),
+        }),
+      ]);
+    }
     const finalBill = addAdvanceFinalBill({
       branch,
       billNo,
@@ -512,12 +733,46 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const [closing, setClosing] = useState('');
   const [notes, setNotes] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
+  const [ledgerToday, setLedgerToday] = useState<ClosureLedgerRow | null>(null);
+  const [savedClosures, setSavedClosures] = useState<SavedClosureRow[]>([]);
+  const [closureMessage, setClosureMessage] = useState('');
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
 
   useEffect(() => {
     void fetchCreditSales(branch);
     void fetchCreditPayments(branch);
   }, [branch, fetchCreditPayments, fetchCreditSales]);
+
+  useEffect(() => {
+    let active = true;
+    const loadClosureLedger = async () => {
+      setClosureMessage('');
+      const date = todayIso();
+      const [{ data: ledgerData, error: ledgerError }, { data: savedData, error: savedError }] = await Promise.all([
+        supabase.from('branch_daily_closure_ledger').select('*').eq('branch', branch).eq('closure_date', date).maybeSingle(),
+        supabase.from('branch_daily_closures').select('*').eq('branch', branch).order('closure_date', { ascending: false }).order('created_at', { ascending: false }).limit(30),
+      ]);
+      if (!active) return;
+      if (ledgerError) {
+        const missingLedger = /branch_daily_closure_ledger|does not exist|schema cache/i.test(ledgerError.message);
+        setClosureMessage(missingLedger
+          ? 'Supabase daily closure ledger is not installed yet. Run 20260609_branch_atomic_ledger.sql before relying on closure totals.'
+          : `Could not load Supabase closure ledger: ${ledgerError.message}`);
+        setLedgerToday(null);
+      } else {
+        setLedgerToday((ledgerData as ClosureLedgerRow | null) || null);
+      }
+      if (savedError) {
+        const missingClosureTable = /branch_daily_closures|does not exist|schema cache/i.test(savedError.message);
+        if (!missingClosureTable) setClosureMessage(`Could not load closure history: ${savedError.message}`);
+        setSavedClosures([]);
+      } else {
+        setSavedClosures((savedData || []) as SavedClosureRow[]);
+      }
+    };
+    void loadClosureLedger();
+    return () => { active = false; };
+  }, [branch]);
 
   const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
   const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
@@ -529,39 +784,81 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt));
   const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
-  const totalSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
-  const advanceCollectedToday = todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
+  const totalSales = ledgerToday ? num(ledgerToday.sales_total) : counterTodayBills.reduce((s, b) => s + b.total, 0);
+  const advanceCollectedToday = ledgerToday
+    ? num(ledgerToday.advance_collected) + num(ledgerToday.advance_balance_collected)
+    : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
   const normalCash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
   const normalUpi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
   const normalCard = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
-  const creditSalesTotal = todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
+  const creditSalesTotal = ledgerToday ? num(ledgerToday.credit_billed) : todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionUpi = todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
-  const creditCollectionTotal = creditCollectionCash + creditCollectionDigital;
+  const creditCollectionTotal = ledgerToday ? num(ledgerToday.credit_collected) : creditCollectionCash + creditCollectionDigital;
   const totalSalesIncAdvance = totalSales + advanceCollectedToday;
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
-  const cash = normalCash + creditCollectionCash + advanceCash;
-  const upi = normalUpi + creditCollectionUpi + advanceUpi;
-  const card = normalCard + creditCollectionCard + advanceCard;
-  const advancePaid = todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
-  const advanceFull = todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
+  const cash = ledgerToday ? num(ledgerToday.cash_total) : normalCash + creditCollectionCash + advanceCash;
+  const upi = ledgerToday ? num(ledgerToday.upi_total) : normalUpi + creditCollectionUpi + advanceUpi;
+  const card = ledgerToday ? num(ledgerToday.card_total) : normalCard + creditCollectionCard + advanceCard;
+  const advancePaid = ledgerToday ? num(ledgerToday.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
+  const advanceFull = ledgerToday ? num(ledgerToday.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
-  const discounts = counterTodayBills.reduce((s, b) => s + b.discount, 0);
+  const discounts = ledgerToday ? num(ledgerToday.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
   const expected = Number(opening || 0) + cash - refunds - expenses;
   const countedCash = Number(closing || 0);
   const diff = countedCash - expected;
 
-  const save = () => {
+  const save = async () => {
+    const closurePayload = {
+      branch,
+      closure_date: todayIso(),
+      cashier: user,
+      opening_cash: Number(opening || 0),
+      cash_total: cash,
+      upi_total: upi,
+      card_total: card,
+      credit_billed: creditSalesTotal,
+      credit_collected: creditCollectionTotal,
+      advance_collected: advancePaid,
+      advance_balance_collected: advanceFull,
+      refunds,
+      expenses,
+      discounts,
+      tax_total: ledgerToday ? num(ledgerToday.tax_total) : counterTodayBills.reduce((s, b) => s + b.tax, 0),
+      bill_count: ledgerToday ? num(ledgerToday.bill_count) : counterTodayBills.length,
+      duplicate_prints: duplicate,
+      expected_cash: expected,
+      actual_cash: countedCash,
+      difference: diff,
+      notes: notes || null,
+      status: 'finalized',
+    };
+    const { data, error } = await supabase
+      .from('branch_daily_closures')
+      .upsert(closurePayload, { onConflict: 'branch,closure_date,cashier' })
+      .select()
+      .single();
+    if (error) {
+      const missingLedger = /branch_daily_closures|does not exist|schema cache/i.test(error.message);
+      setSavedMessage(missingLedger
+        ? 'Supabase closure table is not installed. Run 20260609_branch_atomic_ledger.sql first.'
+        : `Failed to save closure in Supabase: ${error.message}`);
+      return;
+    }
     addCashierClosure({ branch, cashier: user, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
-    setSavedMessage('Closure saved successfully.');
+    setSavedClosures((current) => {
+      const saved = data as SavedClosureRow;
+      return [saved, ...current.filter((row) => row.id !== saved.id)].slice(0, 30);
+    });
+    setSavedMessage('Closure saved in Supabase successfully.');
     setClosing('');
     setNotes('');
     setTimeout(() => setSavedMessage(''), 3000);
@@ -640,11 +937,20 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           <Field label="Counted Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter drawer cash counted"/></Field>
           <Field label="Difference"><div className={cn('flex h-12 items-center rounded-2xl px-4 text-xl font-black', diff===0?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{money(diff)}</div></Field>
           <Field label="Closing Remarks"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Optional notes: shortage reason, expense details, handover note"/></Field>
-          {savedMessage && <p className="rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">{savedMessage}</p>}
-          <PrimaryButton onClick={save} className="w-full">Save Cashier Closure</PrimaryButton>
+          {closureMessage && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
+          {savedMessage && <p className={cn('rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
+          <PrimaryButton onClick={() => void save()} className="w-full">Save Cashier Closure</PrimaryButton>
         </div>
       </div>
     </Section>
+
+    {savedClosures.length > 0 && (
+      <Section title="Supabase Closure History" icon={<History className="size-5"/>}>
+        <div className="space-y-2">
+          {savedClosures.map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.created_at).toLocaleString('en-IN')} - {c.cashier}</p><p className="text-sm text-slate-500">Bills {num(c.bill_count)} - Cash {money(num(c.cash_total))} - UPI {money(num(c.upi_total))} - Card {money(num(c.card_total))} - Expected {money(num(c.expected_cash))} - Counted {money(num(c.actual_cash))} - Difference {money(num(c.difference))}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}
+        </div>
+      </Section>
+    )}
 
     <Section title="Closure History" icon={<History className="size-5"/>}>
       <div className="space-y-2">{cashierClosures.filter(c=>c.branch===branch).map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.createdAt).toLocaleString('en-IN')} · {c.cashier}</p><p className="text-sm text-slate-500">Bills {c.billsCount} · Cash {money(c.cash)} · Expected {money(c.expectedCash)} · Counted {money(c.closingCash)} · Difference {money(c.difference)}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}</div>
