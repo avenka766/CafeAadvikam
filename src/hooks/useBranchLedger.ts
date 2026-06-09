@@ -90,6 +90,11 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // HYGIENE FIX: JSON.stringify(branches) in useEffect deps creates a new string reference on every
+  // render when branches is passed as a new array literal, causing the effect to re-fire continuously.
+  // Use a stable sorted-join string instead, which is identity-stable for the same set of branches.
+  const branchesKey = branches && branches.length > 0 ? [...branches].sort().join(',') : '';
+
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -135,7 +140,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
     void load();
     return () => { active = false; };
-  }, [fromDate, toDate, JSON.stringify(branches || [])]);
+  }, [fromDate, toDate, branchesKey]);
 
   const closureByBranchDate = useMemo(() => {
     const map = new Map<string, LedgerClosureRow>();
