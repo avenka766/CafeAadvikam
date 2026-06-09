@@ -460,18 +460,123 @@ interface BranchOpsState {
 
 const BRANCH_OPS_STATE_KEY = "cafe-aadvikam-branch-ops-v1";
 
+const mirrorOperationRecord = (
+  branch: Branch,
+  recordType: string,
+  recordId: string,
+  payload: unknown,
+  details: { recordNo?: string; amount?: number; status?: string; actor?: string } = {},
+) => {
+  void supabase
+    .from("branch_operation_records")
+    .upsert(
+      {
+        branch,
+        record_type: recordType,
+        record_id: recordId,
+        record_no: details.recordNo ?? null,
+        amount: details.amount ?? null,
+        status: details.status ?? null,
+        actor: details.actor ?? null,
+        payload,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "branch,record_type,record_id" },
+    )
+    .then(({ error }) => {
+      if (error && !/branch_operation_records|does not exist|schema cache/i.test(error.message)) {
+        console.error(`[branchOpsStore] Failed to mirror ${recordType}:`, error.message);
+      }
+    });
+};
+
+type BranchOperationRecordRow = {
+  record_type: string;
+  record_id: string;
+  payload: unknown;
+  created_at: string;
+};
+
+const mergeOperationRecordsIntoState = (
+  saved: StorageValue<BranchOpsState> | null,
+  rows: BranchOperationRecordRow[],
+): StorageValue<BranchOpsState> | null => {
+  const baseState = saved?.state ?? ({
+    bills: [],
+    creditSales: [],
+    holds: [],
+    salespeople: [],
+    advanceCakeOrders: [],
+    quotations: [],
+    returns: [],
+    purchases: [],
+    purchasePayments: [],
+    purchaseOrders: [],
+    cashMovements: [],
+    bankDeposits: [],
+    cashierClosures: [],
+    notifications: [],
+    storeOrders: [],
+    auditLogs: [],
+  } as unknown as BranchOpsState);
+  if (!saved?.state && rows.length === 0) return null;
+  const state = { ...baseState } as BranchOpsState;
+  const buckets: Array<[keyof BranchOpsState, string]> = [
+    ["advanceCakeOrders", "advance_order"],
+    ["quotations", "quotation"],
+    ["returns", "return"],
+    ["purchases", "purchase_invoice"],
+    ["purchasePayments", "purchase_payment"],
+    ["purchaseOrders", "purchase_order"],
+    ["cashMovements", "cash_movement"],
+    ["bankDeposits", "bank_deposit"],
+    ["cashierClosures", "cashier_closure"],
+    ["notifications", "notification"],
+    ["storeOrders", "store_order"],
+  ];
+
+  for (const [stateKey, recordType] of buckets) {
+    const current = Array.isArray(state[stateKey]) ? ([...(state[stateKey] as unknown[])] as Array<{ id?: string; createdAt?: string }>) : [];
+    const existing = new Set(current.map((item) => item.id).filter(Boolean));
+    const recovered = rows
+      .filter((row) => row.record_type === recordType)
+      .map((row) => row.payload as { id?: string; createdAt?: string })
+      .filter((payload) => payload?.id && !existing.has(payload.id));
+    if (recovered.length > 0) {
+      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current]
+        .sort((a, b) => Number(new Date((b as { createdAt?: string }).createdAt || 0)) - Number(new Date((a as { createdAt?: string }).createdAt || 0)))
+        .slice(0, 5000);
+    }
+  }
+
+  return { ...(saved ?? { version: 1 }), state };
+};
+
 const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
   getItem: async (name) => {
-    const { data, error } = await supabase
-      .from("app_state")
-      .select("value")
-      .eq("key", name)
-      .maybeSingle();
+    const [{ data, error }, { data: opRows, error: opError }] = await Promise.all([
+      supabase
+        .from("app_state")
+        .select("value")
+        .eq("key", name)
+        .maybeSingle(),
+      supabase
+        .from("branch_operation_records")
+        .select("record_type, record_id, payload, created_at")
+        .order("created_at", { ascending: false })
+        .limit(5000),
+    ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
       return null;
     }
-    return (data?.value as StorageValue<BranchOpsState> | null) ?? null;
+    if (opError && !/branch_operation_records|does not exist|schema cache/i.test(opError.message)) {
+      console.error("[branchOpsStore] Supabase operation recovery load failed:", opError.message);
+    }
+    return mergeOperationRecordsIntoState(
+      (data?.value as StorageValue<BranchOpsState> | null) ?? null,
+      (opRows || []) as BranchOperationRecordRow[],
+    );
   },
   setItem: async (name, value) => {
     const { error } = await supabase.from("app_state").upsert(
@@ -663,6 +768,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(bill.branch, "bill", newBill.id, newBill, {
+          recordNo: bill.billNo,
+          amount: bill.total,
+          status: newBill.status,
+          actor: bill.biller,
+        });
         return newBill;
       },
       addAdvanceFinalBill: (bill) => {
@@ -687,6 +798,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(bill.branch, "advance_final_bill", newBill.id, newBill, {
+          recordNo: bill.billNo,
+          amount: bill.total,
+          status: newBill.status,
+          actor: bill.biller,
+        });
         return newBill;
       },
       collectCreditPayment: (creditId, payment) => {
@@ -995,11 +1112,33 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(order.branch, "advance_order", newOrder.id, newOrder, {
+          recordNo: orderNo,
+          amount: order.orderValue,
+          status: newOrder.status,
+          actor: order.salesperson,
+        });
+        if (orderType !== "store") {
+          mirrorOperationRecord(order.branch, "store_order", storeOrder.id, storeOrder, {
+            recordNo: orderNo,
+            status: storeOrder.status,
+            actor: order.salesperson,
+          });
+        }
         return newOrder;
       },
       updateAdvanceStatus: (id, status, user, details = {}) =>
         set((s) => {
           const prev = s.advanceCakeOrders.find((o) => o.id === id);
+          if (prev) {
+            const next = { ...prev, status, ...details };
+            mirrorOperationRecord(prev.branch, "advance_order", id, next, {
+              recordNo: prev.orderNo,
+              amount: next.orderValue,
+              status,
+              actor: user,
+            });
+          }
           return {
             advanceCakeOrders: s.advanceCakeOrders.map((o) =>
               o.id === id ? { ...o, status, ...details } : o,
@@ -1040,11 +1179,25 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(quote.branch, "quotation", newQuote.id, newQuote, {
+          recordNo: quoteNo,
+          amount: quote.total,
+          status: newQuote.status,
+          actor: quote.salesperson,
+        });
         return newQuote;
       },
       updateQuotationStatus: (id, status, user) =>
         set((s) => {
           const prev = s.quotations.find((q) => q.id === id);
+          if (prev) {
+            mirrorOperationRecord(prev.branch, "quotation", id, { ...prev, status }, {
+              recordNo: prev.quoteNo,
+              amount: prev.total,
+              status,
+              actor: user,
+            });
+          }
           return {
             quotations: s.quotations.map((q) =>
               q.id === id ? { ...q, status } : q,
@@ -1099,6 +1252,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(ret.branch, "return", newRet.id, newRet, {
+          recordNo: returnNo,
+          amount: ret.total,
+          actor: ret.returnedBy,
+        });
         return newRet;
       },
       addPurchase: (purchase) => {
@@ -1127,6 +1285,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(purchase.branch, "purchase_invoice", newPurchase.id, newPurchase, {
+          recordNo: purchase.invoiceNo,
+          amount: purchase.total,
+          status: newPurchase.syncStatus,
+          actor: purchase.enteredBy,
+        });
         return newPurchase;
       },
       addPurchasePayment: (payment) => {
@@ -1170,6 +1334,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(payment.branch, "purchase_payment", newPayment.id, newPayment, {
+          recordNo: payment.reference,
+          amount: payment.amount,
+          actor: payment.paidBy,
+        });
         return newPayment;
       },
       addPurchaseOrder: (po) => {
@@ -1190,11 +1359,26 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(po.branch, "purchase_order", newPo.id, newPo, {
+          recordNo: poNo,
+          amount: po.totalAmount,
+          status: newPo.status,
+          actor: po.createdBy,
+        });
         return newPo;
       },
       updatePoStatus: (id, status, user) =>
         set((s) => {
           const prev = s.purchaseOrders.find((p) => p.id === id);
+          if (prev) {
+            const next = { ...prev, status, updatedAt: new Date().toISOString() };
+            mirrorOperationRecord(prev.branch, "purchase_order", id, next, {
+              recordNo: prev.poNo,
+              amount: prev.totalAmount,
+              status,
+              actor: user,
+            });
+          }
           return {
             purchaseOrders: s.purchaseOrders.map((p) =>
               p.id === id
@@ -1213,6 +1397,21 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => {
           const prev = s.purchases.find((p) => p.id === purchaseId);
           const now = new Date().toISOString();
+          if (prev) {
+            const next = {
+              ...prev,
+              syncStatus: status,
+              syncedToStock: status === "Synced",
+              syncedAt: now,
+              syncedBy: user,
+            };
+            mirrorOperationRecord(prev.branch, "purchase_invoice", purchaseId, next, {
+              recordNo: prev.invoiceNo,
+              amount: prev.total,
+              status,
+              actor: user,
+            });
+          }
           return {
             purchases: s.purchases.map((p) =>
               p.id === purchaseId
@@ -1258,6 +1457,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(movement.branch, "cash_movement", newMovement.id, newMovement, {
+          recordNo: movement.referenceNumber,
+          amount: movement.amount,
+          status: movement.direction,
+          actor: movement.enteredBy,
+        });
         return newMovement;
       },
       addBankDeposit: (deposit) => {
@@ -1302,6 +1507,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(deposit.branch, "bank_deposit", newDeposit.id, newDeposit, {
+          recordNo: deposit.transactionRef || deposit.slipNo,
+          amount: deposit.amount,
+          actor: deposit.enteredBy,
+        });
         return newDeposit;
       },
       addCashierClosure: (closure) => {
@@ -1323,6 +1533,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
+        mirrorOperationRecord(closure.branch, "cashier_closure", newClosure.id, newClosure, {
+          amount: closure.expectedCash,
+          status: String(closure.difference),
+          actor: closure.cashier,
+        });
         return newClosure;
       },
       addNotification: (notification) => {
@@ -1333,11 +1548,21 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: "Unread" as const,
         };
         set((s) => ({ notifications: [newNotification, ...s.notifications] }));
+        mirrorOperationRecord(notification.branch, "notification", newNotification.id, newNotification, {
+          status: newNotification.status,
+          actor: notification.raisedBy,
+        });
         return newNotification;
       },
       updateNotificationStatus: (id, status, user) =>
         set((s) => {
           const prev = s.notifications.find((n) => n.id === id);
+          if (prev) {
+            mirrorOperationRecord(prev.branch, "notification", id, { ...prev, status }, {
+              status,
+              actor: user,
+            });
+          }
           return {
             notifications: s.notifications.map((n) =>
               n.id === id ? { ...n, status } : n,
@@ -1364,6 +1589,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           createdAt: new Date().toISOString(),
         };
         set((s) => ({ storeOrders: [newOrder, ...s.storeOrders] }));
+        mirrorOperationRecord(order.branch, "store_order", newOrder.id, newOrder, {
+          recordNo: order.orderNo,
+          status: newOrder.status,
+          actor: order.customerName,
+        });
         return newOrder;
       },
       updateStoreOrderStatus: (id, status, user, remarks) =>
@@ -1390,6 +1620,17 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                   ...s.notifications,
                 ]
               : s.notifications;
+          mirrorOperationRecord(order.branch, "store_order", id, {
+            ...order,
+            status,
+            confirmerName: user,
+            confirmedAt,
+            remarks,
+          }, {
+            recordNo: order.orderNo,
+            status,
+            actor: user,
+          });
           return {
             storeOrders: s.storeOrders.map((o) =>
               o.id === id

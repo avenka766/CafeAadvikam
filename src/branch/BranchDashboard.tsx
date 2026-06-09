@@ -8,6 +8,7 @@ import {
   Smartphone, Store, Truck, UserRound, WalletCards,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from './branchStore';
 import { StockTab } from './tabs/StockTab';
@@ -98,9 +99,21 @@ const VRSNB_HIDDEN_TABS: TabId[] = [
 
 interface Props { branch: Branch }
 
+type TodayLedger = {
+  sales_total: number | string;
+  advance_collected: number | string;
+  advance_balance_collected: number | string;
+  cash_total: number | string;
+  upi_total: number | string;
+  card_total: number | string;
+};
+
+const n = (value: number | string | null | undefined) => Number(value ?? 0);
+
 export default function BranchDashboard({ branch }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [opsHydrated, setOpsHydrated] = useState(() => useBranchOpsStore.persist.hasHydrated());
+  const [todayLedger, setTodayLedger] = useState<TodayLedger | null>(null);
   const { currentUser } = useAuthStore();
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
@@ -178,6 +191,26 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch]);
 
   useEffect(() => {
+    let active = true;
+    const loadTodayLedger = async () => {
+      const { data, error } = await supabase
+        .from('branch_daily_closure_ledger')
+        .select('sales_total, advance_collected, advance_balance_collected, cash_total, upi_total, card_total')
+        .eq('branch', branch)
+        .eq('closure_date', new Date().toISOString().slice(0, 10))
+        .maybeSingle();
+      if (!active) return;
+      setTodayLedger(error ? null : (data as TodayLedger | null));
+    };
+    void loadTodayLedger();
+    const id = setInterval(loadTodayLedger, 10_000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [branch]);
+
+  useEffect(() => {
     if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
   }, [requestedTab, tabs]);
 
@@ -237,13 +270,16 @@ export default function BranchDashboard({ branch }: Props) {
       )),
     [branchCreditPayments, branch, todayString, cashMovements],
   );
-  const totalTodayRevenue = useMemo(
+  const localTodayRevenue = useMemo(
     () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
     [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn],
   );
-  const currentCash = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
-  const currentUpi = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
-  const currentCard = cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+  const totalTodayRevenue = todayLedger
+    ? n(todayLedger.sales_total) + n(todayLedger.advance_collected) + n(todayLedger.advance_balance_collected)
+    : localTodayRevenue;
+  const currentCash = todayLedger ? n(todayLedger.cash_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const currentUpi = todayLedger ? n(todayLedger.upi_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
+  const currentCard = todayLedger ? n(todayLedger.card_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
 
   if (!opsHydrated) {
     return (

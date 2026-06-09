@@ -1107,37 +1107,29 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   settleCreditSale: async (branch, saleId, amountCollected, payment = {}) => {
     const sale = get().creditSales[branch].find((s) => s.id === saleId);
     if (!sale) return 'Credit sale not found';
+    if (amountCollected <= 0) return 'Collection amount must be positive';
+    if (amountCollected > sale.creditAmount) return 'Collection amount cannot be more than pending balance';
 
     const newAmountPaid = sale.amountPaid + amountCollected;
     const isSettled = newAmountPaid >= sale.subtotal;
     const now = new Date().toISOString();
 
-    const { error: paymentError } = await supabase
-      .from('branch_credit_payments')
-      .insert({
-        credit_sale_id: saleId,
-        branch,
-        bill_no: sale.billNo,
-        amount: amountCollected,
-        payment_mode: payment.mode ?? 'cash',
-        reference: payment.reference ?? null,
-        remarks: payment.remarks ?? null,
-        collected_by: payment.collectedBy ?? 'Staff',
-        collected_role: payment.collectedRole ?? null,
-        created_at: now,
-      });
-    if (paymentError) return `Failed to record credit payment: ${paymentError.message}`;
-
-    const { error } = await supabase
-      .from('branch_credit_sales')
-      .update({
-        amount_paid:  newAmountPaid,
-        credit_amount: Math.max(0, sale.subtotal - newAmountPaid),
-        status:       isSettled ? 'settled' : 'partial',
-        settled_at:   now,
-      })
-      .eq('id', saleId);
-    if (error) return `Failed to settle: ${error.message}`;
+    const { error } = await supabase.rpc('settle_branch_credit_sale', {
+      p_credit_sale_id: saleId,
+      p_branch: branch,
+      p_amount: amountCollected,
+      p_payment_mode: payment.mode ?? 'cash',
+      p_reference: payment.reference ?? null,
+      p_remarks: payment.remarks ?? null,
+      p_collected_by: payment.collectedBy ?? 'Staff',
+      p_collected_role: payment.collectedRole ?? null,
+    });
+    if (error) {
+      const missingRpc = /settle_branch_credit_sale|could not find the function|function .* does not exist/i.test(error.message);
+      return missingRpc
+        ? 'Credit ledger is not installed in Supabase. Run the 20260609_branch_atomic_ledger.sql migration first.'
+        : `Failed to settle credit sale: ${error.message}`;
+    }
 
     // NOTE: Revenue was already recorded when the credit sale was billed.
     // settled_at is reused as the last collection time so daily closure can show collected credit.
