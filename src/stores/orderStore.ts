@@ -3,6 +3,11 @@ import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 import { generateId } from '@/lib/utils';
 
+// HYGIENE FIX: 3-second polling is very aggressive — with multiple devices/tabs open it creates a
+// large number of DB reads. Increased to 30 seconds. The preferred long-term solution is to
+// migrate to Supabase Realtime subscriptions, but this constant makes it easy to tune.
+const POLL_INTERVAL_MS = 30_000;
+
 interface OrderState {
   orders: Order[];
   cart: CartItem[];
@@ -119,7 +124,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     } catch (e) {
       const failCount = (get()._pollFailCount || 0) + 1;
       set({ _pollFailCount: failCount });
-      const backoffMs = Math.min(3000 * Math.pow(2, failCount - 1), 60_000);
+      const backoffMs = Math.min(POLL_INTERVAL_MS * Math.pow(2, failCount - 1), 60_000);
       console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
 
       const { pollTimer, _pollBackoffTimer } = get();
@@ -132,7 +137,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
           set({ _pollBackoffTimer: null });
-          const newTimer = setInterval(() => { get().loadOrders(days); }, 3000);
+          const newTimer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
@@ -210,6 +215,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const isFullPayment = params.isFullPayment ?? false;
     const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
     const total = isFullPayment ? subtotal : params.advanceAmount;
+
+    // MISSING FIX: runtime guard — deliveryDate must be a valid ISO string and a future datetime
+    if (!params.deliveryDate || Number.isNaN(new Date(params.deliveryDate).getTime())) {
+      throw new Error('Delivery date is required and must be a valid date/time.');
+    }
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
@@ -353,7 +363,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (!order) return;
     const prev = get().orders;
     const now = new Date().toISOString();
-    const balanceDue = Math.max(0, order.total - advanceAmount);
+    // CRITICAL FIX: use fullAmount ?? subtotal as the base so that re-calling this on an
+    // already-advance order (where order.total was set to the previous advance amount) still
+    // computes the balance correctly against the original full bill value.
+    const billBase = order.fullAmount ?? order.subtotal;
+    const balanceDue = Math.max(0, billBase - advanceAmount);
     const updates: Record<string, unknown> = {
       payment_type: 'advance', advance_amount: advanceAmount, advance_paid_by: advancePaidBy,
       balance_due: balanceDue, billed_by: billedBy, updated_at: now,
@@ -372,6 +386,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   collectBalance: async (orderId, balancePaymentType, billedBy, breakdown) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
+    // LOGIC FIX: prevent double-collection if balance was already collected (double-tap, race, etc.)
+    if (!order.balanceDue || order.balanceDue <= 0 || order.fullyPaidAt) {
+      console.warn('[collectBalance] order already settled or no balance due; aborting', orderId);
+      return;
+    }
     const prev = get().orders;
     const now = new Date().toISOString();
     const balanceAmount = order.balanceDue ?? 0;
@@ -466,7 +485,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
-    const timer = setInterval(() => { get().loadOrders(days); }, 3000);
+    const timer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
     get().loadOrders(days);
   },

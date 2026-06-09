@@ -62,6 +62,9 @@ export const useAuthStore = create<AuthState>()(
       logout: () => {
         const timer = get()._sessionTimer;
         if (timer) clearTimeout(timer);
+        // HYGIENE FIX: detach sliding-session listeners on logout so they don't accumulate
+        // across login/logout cycles on a shared terminal.
+        _detachActivityListeners();
         set({ currentUser: null, _sessionTimer: null });
       },
 
@@ -170,13 +173,24 @@ export const useAuthStore = create<AuthState>()(
 // Throttled to at most once per minute to avoid hammering clearTimeout/setTimeout.
 let _activityListenersAttached = false;
 let _lastActivityReset = 0;
+// HYGIENE FIX: keep a reference to the handler so it can be removed on logout,
+// preventing stale listeners from accumulating across login/logout cycles on a shared terminal.
+let _activityHandler: (() => void) | null = null;
+const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'visibilitychange'] as const;
+
+export function _detachActivityListeners() {
+  if (!_activityHandler) return;
+  ACTIVITY_EVENTS.forEach(evt => window.removeEventListener(evt, _activityHandler!));
+  _activityHandler = null;
+  _activityListenersAttached = false;
+  _lastActivityReset = 0;
+}
 
 function _attachActivityListeners() {
   if (_activityListenersAttached) return;
   _activityListenersAttached = true;
 
   const THROTTLE_MS = 60_000; // reset at most once per minute
-  const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'visibilitychange'] as const;
 
   const handleActivity = () => {
     const store = useAuthStore.getState();
@@ -187,5 +201,6 @@ function _attachActivityListeners() {
     store._resetSessionTimer();
   };
 
+  _activityHandler = handleActivity;
   ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
 }
