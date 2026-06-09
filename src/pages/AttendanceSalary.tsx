@@ -62,14 +62,18 @@ interface DeductionDecision {
 }
 type DeductionDecisions = Record<string, DeductionDecision>;
 
-// ESI: 0.75% employee deduction (applicable if gross <= 21000)
-// PF: 12% of gross
+// ESI: 0.75% employee deduction (applicable if gross <= 21000); amount based on earned salary
+// PF: 12% of earned salary (capped at ₹1,800)
 const ESI_RATE = 0.0075;
 const PF_RATE  = 0.12;
 const ESI_WAGE_LIMIT = 21000;
 
-function calcESI(gross: number) { return gross <= ESI_WAGE_LIMIT ? Math.round(gross * ESI_RATE) : 0; }
-function calcPF(gross: number)  { return Math.min(1800, Math.round(gross * PF_RATE)); }
+// gross is used only for the eligibility threshold; earned is the actual base for calculation
+function calcESI(earned: number, gross?: number) {
+  const eligibilityBase = gross ?? earned;
+  return eligibilityBase <= ESI_WAGE_LIMIT ? Math.round(earned * ESI_RATE) : 0;
+}
+function calcPF(earned: number)  { return Math.min(1800, Math.round(earned * PF_RATE)); }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -272,8 +276,12 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   const advanceDed  = decision.deductAdvance ? emp.salaryAdvance : 0;
   const uniformDed  = decision.deductUniform ? emp.uniformDeduction : 0;
   const otherDed    = decision.deductOther   ? emp.otherDeduction : 0;
-  const esiDed      = decision.deductESI     ? calcESI(emp.grossSalary) : 0;
-  const pfDed       = decision.deductPF      ? calcPF(emp.grossSalary)  : 0;
+  // LOGIC FIX: ESI and PF must be calculated on the *earned* (pro-rated) salary, not on gross.
+  // An employee who worked half the month should only have deductions for that half.
+  // Note: ESI *eligibility* check (gross <= ESI_WAGE_LIMIT) still uses gross, which is correct —
+  // the wage ceiling is based on the contracted gross, not the pro-rated amount.
+  const esiDed      = decision.deductESI     ? calcESI(earned) : 0;
+  const pfDed       = decision.deductPF      ? calcPF(earned)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
   return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
 }
@@ -893,8 +901,9 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calcSalary(emp, att, daysInMonth, decision);
-  const esiAmount = calcESI(emp.grossSalary);
-  const pfAmount  = calcPF(emp.grossSalary);
+  // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
+  const esiAmount = calcESI(earned, emp.grossSalary);
+  const pfAmount  = calcPF(earned);
   const hasAdvance = emp.salaryAdvance > 0;
   const hasOther = emp.otherDeduction > 0;
   const hasUniform = emp.uniformDeduction > 0;
@@ -935,8 +944,8 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           {hasAdvance && <DeductToggle label="Salary Advance" amount={emp.salaryAdvance} checked={decision.deductAdvance} onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })} />}
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
-          <DeductToggle label={`ESI (0.75%${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
-          <DeductToggle label={`PF (12% of gross${emp.grossSalary * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
+          <DeductToggle label={`ESI (0.75% of earned${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
+          <DeductToggle label={`PF (12% of earned${earned * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}

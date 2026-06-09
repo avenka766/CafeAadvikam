@@ -175,7 +175,23 @@ export default function DailyClosure() {
 
     const cancelled = dayOrders.filter(order => order.status === 'cancelled');
     const unpaid = dayOrders.filter(order => order.status !== 'cancelled' && order.paymentType === 'unpaid');
-    const billable = dayOrders.filter(order => order.status !== 'cancelled' && order.paymentType !== 'unpaid');
+    // CRITICAL FIX: Exclude balance-collection orders (those that have a balanceOrderId set on the
+    // *original* advance row).  When balance is collected on the same day, the balance-collection
+    // row (paymentType = cash/upi/card) would otherwise be counted in billedValue a second time,
+    // effectively doubling the full bill amount.  Balance-collection rows are identified by the
+    // fact that the *original* order references them via order.balanceOrderId — but here we need
+    // to identify the balance order itself.  We do that by checking whether the order's own id
+    // appears as the balanceOrderId on any advance order in the day's orders.
+    const balanceOrderIds = new Set(
+      dayOrders
+        .filter(o => o.paymentType === 'advance' && o.balanceOrderId)
+        .map(o => o.balanceOrderId as string)
+    );
+    const billable = dayOrders.filter(order =>
+      order.status !== 'cancelled' &&
+      order.paymentType !== 'unpaid' &&
+      !balanceOrderIds.has(order.id)
+    );
 
     const payments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     let creditSales = 0;

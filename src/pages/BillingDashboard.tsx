@@ -771,6 +771,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
     if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
     if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
+    // MISSING FIX: validate delivery date is a valid date and is not in the past
+    const deliveryMs = new Date(deliveryDate).getTime();
+    if (Number.isNaN(deliveryMs)) { setAdvanceError('Delivery date is not a valid date'); return; }
+    if (deliveryMs < Date.now() - 60_000) { setAdvanceError('Delivery date must be a future date/time'); return; }
     if (!billPerson.trim()) { setAdvanceError('Bill person is required'); return; }
     if (!isFullPayment) {
       const amt = parseFloat(advanceAmt);
