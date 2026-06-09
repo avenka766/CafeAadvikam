@@ -124,8 +124,16 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   deleteNotification: async (id) => {
-    await supabase.from('admin_notifications').delete().eq('id', id);
-    set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
+    const current = get().notifications.find(n => n.id === id);
+    const meta = {
+      ...(current?.meta ?? {}),
+      archivedAt: new Date().toISOString(),
+    };
+    const { error } = await supabase
+      .from('admin_notifications')
+      .update({ is_read: true, meta })
+      .eq('id', id);
+    if (!error) set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
   },
 
   // ── Push helpers ─────────────────────────────────────────────────────────

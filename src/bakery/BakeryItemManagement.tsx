@@ -352,7 +352,8 @@ export function BakeryItemsPanel() {
     }
 
     try {
-      await deleteItem(deleteTarget.id);
+      const error = await deleteItem(deleteTarget.id);
+      if (error) { setDeleteError(error); return; }
       setDeleteTarget(null);
     } catch {
       setDeleteError('Failed to delete — please try again.');
