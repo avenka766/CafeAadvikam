@@ -8,6 +8,9 @@ node_modules
 dist
 dist-ssr
 
+# Lockfile — generated locally against an internal registry; let Vercel regenerate it
+package-lock.json
+
 # Logs
 logs
 *.log
