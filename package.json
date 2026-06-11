@@ -92,8 +92,8 @@
     "vite": "^8.0.16"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": "20.x",
     "npm": ">=10.0.0"
   },
-  "packageManager": "npm@10"
+  "packageManager": "npm@10.9.2"
 }
