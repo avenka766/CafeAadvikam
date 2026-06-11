@@ -15,7 +15,7 @@ import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
-  money, nextBranchInvoice, useBranchOpsStore,
+  money, nextBranchInvoiceAtomic, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
@@ -438,8 +438,27 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     if (value <= 0 || adv < 0 || adv > value) return 'Check order value and advance amount.';
     return '';
   };
+  const deductStoreLinesAtomically = async (lines: BranchBillItem[]) => {
+    const deducted: Array<{ itemName: string; quantity: number }> = [];
+    for (const line of lines) {
+      const { data, error } = await supabase.rpc('decrement_branch_stock_strict', {
+        p_branch: branch,
+        p_item_name: line.itemName,
+        p_qty: line.quantity,
+      });
+      if (error || data === null) {
+        for (const item of deducted) {
+          await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: item.itemName, p_qty: item.quantity });
+        }
+        await fetchBranchData(branch);
+        return error?.message || `Insufficient stock for ${line.itemName}`;
+      }
+      deducted.push({ itemName: line.itemName, quantity: line.quantity });
+    }
+    return '';
+  };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
-    if (!isVRSNB || mode === 'store') return;
+    if (mode === 'store') return;
     const bakeryItems: BakeryOrderItem[] = lines.map((line, idx) => ({
       itemId: `${order.orderNo}-${idx}`,
       itemName: line.itemName,
@@ -448,13 +467,12 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       dispatchUnit: line.unit,
     }));
     const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
-    await submitBakeryOrder(bakeryItems, `${user} - VRSNB advance`, 'VRSNB', notes);
+    await submitBakeryOrder(bakeryItems, `${user} - ${branch} advance`, branch, notes);
   };
   const sendCakeToStoreDashboard = async (order: CakeAdvanceOrder) => {
-    if (!isVRSNB) return;
     const bakeryItems: BakeryOrderItem[] = [{ itemId: `${order.orderNo}-0`, itemName: `${order.cakeKg}kg ${cake.flavor} ${cake.shape}`.trim(), quantity: Number(cake.cakeKg || 1), isCustom: true, dispatchUnit: 'kg' }];
     const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | Cake ${cake.cakeKg}kg ${cake.shape} | Flavor: ${cake.flavor} | ${cake.designNotes || ''}${cake.attachmentName ? ` | Attachment: ${cake.attachmentName}` : ''}`;
-    await submitBakeryOrder(bakeryItems, `${user} - VRSNB cake advance`, 'VRSNB', notes);
+    await submitBakeryOrder(bakeryItems, `${user} - ${branch} cake advance`, branch, notes);
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
     const fullyPaid = orderType === 'store' ? storeFullyPaid : orderType === 'custom' ? customFullyPaid : false;
@@ -469,13 +487,17 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     if (sourceLines.length === 0 || sourceLines.some((line)=>!line.itemName || line.quantity <= 0)) { setError('Add at least one valid item.'); return; }
     const adv = fullyPaid ? orderValue : Number(common.advanceAmount || 0);
     const balanceAmount = fullyPaid ? 0 : orderValue - adv;
+    if (fullyPaid && orderType === 'store') {
+      const stockError = await deductStoreLinesAtomically(sourceLines);
+      if (stockError) { setError(`Fully paid advance not saved because stock could not be reserved: ${stockError}`); return; }
+    }
     const first = sourceLines[0];
     const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
     const order = addAdvanceCakeOrder({
       branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: new Date().toISOString().split('T')[0],
       deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: orderType === 'cake' ? cake.flavor : first.itemName, shape: orderType === 'cake' ? cake.shape : first.unit,
-      messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order',
+      messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : (fullyPaid ? 'Existing branch stock advance order [Stock Reserved]' : 'Existing branch stock advance order'),
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
     });
     if (adv > 0) {
@@ -519,10 +541,13 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   };
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
     const usedMode = payMode || finalPaymentMode;
-    const { billNo, invoiceNo } = nextBranchInvoice(branch);
+    const { billNo, invoiceNo } = await nextBranchInvoiceAtomic(branch);
     const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
-    if ((o.orderType || (o.designNotes === 'Existing branch stock advance order' ? 'store' : 'cake')) === 'store') {
-      for (const line of orderLines) await manualUpdateStock(branch, line.itemName, Math.max(0, stockQty(branchStock, line.itemName) - line.quantity), currentUser?.displayName || 'Staff');
+    const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
+    const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
+    if (orderKind === 'store' && !stockAlreadyReserved) {
+      const stockError = await deductStoreLinesAtomically(orderLines);
+      if (stockError) { setError(`Final invoice blocked because stock could not be deducted: ${stockError}`); return; }
       await fetchBranchData(branch);
     }
     if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
@@ -696,10 +721,11 @@ export function PurchaseTab({ branch, branchStock }: ModuleProps) {
 }
 
 export function PurchasePayTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { purchases, purchasePayments, addPurchasePayment } = useBranchOpsStore(); const branchPurchases = purchases.filter(p=>p.branch===branch); const [supplier,setSupplier]=useState(''); const [amount,setAmount]=useState(''); const [mode,setMode]=useState<'cash'|'upi'|'card'|'bank'>('cash'); const [ref,setRef]=useState('');
+  const { currentUser } = useAuthStore(); const { purchases, purchasePayments, addPurchasePayment } = useBranchOpsStore(); const branchPurchases = purchases.filter(p=>p.branch===branch); const [supplier,setSupplier]=useState(''); const [amount,setAmount]=useState(''); const [mode,setMode]=useState<'cash'|'upi'|'card'|'bank'>('cash'); const [ref,setRef]=useState(''); const [payError,setPayError]=useState('');
   const pending = branchPurchases.reduce((s,p)=>s+Math.max(0,p.total-p.paidAmount),0); const paid = purchasePayments.filter(p=>p.branch===branch).reduce((s,p)=>s+p.amount,0);
-  const save=()=>{ if(!supplier||!Number(amount)) return; addPurchasePayment({branch,supplier,amount:Number(amount),mode,reference:ref,remarks:'Supplier payment',paidBy:currentUser?.displayName||'Staff'}); setAmount(''); setRef(''); };
-  return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Paid" value={money(paid)} icon={<CheckCircle2/>} tone="green"/><Kpi label="Pending" value={money(pending)} icon={<AlertTriangle/>} tone="amber"/><Kpi label="Purchases" value={branchPurchases.length} icon={<Receipt/>}/></div><Section title="Purchase Pay" icon={<WalletCards className="size-5"/>}><div className="grid gap-3 lg:grid-cols-5"><Field label="Supplier"><Input value={supplier} onChange={(e)=>setSupplier(e.target.value)}/></Field><Field label="Amount"><Input type="number" value={amount} onChange={(e)=>setAmount(e.target.value)}/></Field><Field label="Mode"><Select value={mode} onChange={(e)=>setMode(e.target.value as typeof mode)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option></Select></Field><Field label="Reference"><Input value={ref} onChange={(e)=>setRef(e.target.value)}/></Field><div className="flex items-end"><PrimaryButton onClick={save}>Pay</PrimaryButton></div></div></Section></div>;
+  const supplierDue = supplier.trim() ? branchPurchases.filter(p=>p.supplier.toLowerCase()===supplier.trim().toLowerCase()).reduce((s,p)=>s+Math.max(0,p.total-p.paidAmount),0) : pending;
+  const save=()=>{ const value=Number(amount); setPayError(''); if(!supplier||!value) return; if(value > supplierDue && supplierDue > 0){ setPayError(`Payment cannot exceed pending due ${money(supplierDue)} for this supplier.`); return; } try { addPurchasePayment({branch,supplier,amount:value,mode,reference:ref,remarks:'Supplier payment',paidBy:currentUser?.displayName||'Staff'}); setAmount(''); setRef(''); } catch (e) { setPayError(e instanceof Error ? e.message : 'Purchase payment failed.'); } };
+  return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Paid" value={money(paid)} icon={<CheckCircle2/>} tone="green"/><Kpi label="Pending" value={money(pending)} icon={<AlertTriangle/>} tone="amber"/><Kpi label="Purchases" value={branchPurchases.length} icon={<Receipt/>}/></div><Section title="Purchase Pay" icon={<WalletCards className="size-5"/>}><div className="grid gap-3 lg:grid-cols-5"><Field label="Supplier"><Input value={supplier} onChange={(e)=>{setSupplier(e.target.value); setPayError('');}}/></Field><Field label="Amount"><Input type="number" max={supplierDue || undefined} value={amount} onChange={(e)=>{setAmount(e.target.value); setPayError('');}}/></Field><Field label="Mode"><Select value={mode} onChange={(e)=>setMode(e.target.value as typeof mode)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option></Select></Field><Field label="Reference"><Input value={ref} onChange={(e)=>setRef(e.target.value)}/></Field><div className="flex items-end"><PrimaryButton onClick={save}>Pay</PrimaryButton></div></div>{payError && <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700">{payError}</p>}</Section></div>;
 }
 
 export function CurrentCashTab({ branch }: ModuleProps) {

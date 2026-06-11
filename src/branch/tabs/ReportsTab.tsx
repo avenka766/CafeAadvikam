@@ -127,7 +127,7 @@ function BranchDailyClosureTab({
   }, [salesToday]);
 
   const handleDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const wb = XLSX.utils.book_new();
     const addSheet = (rows: Record<string, unknown>[], name: string) => {
       const data = rows.length ? rows : [{ Note: 'No data' }];
@@ -418,7 +418,7 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
   const colors = BRANCH_COLORS[branch];
 
   const handleDownloadCSV = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const wb   = XLSX.utils.book_new();
     const aw   = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
       if (!data.length) return;
