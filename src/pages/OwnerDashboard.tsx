@@ -689,6 +689,9 @@ function AttendanceSalaryTab() {
   }, [employees]);
 
   const salaryStats = useMemo(() => {
+    // BUG-C2 NOTE: These figures are based on contracted gross salaries, NOT attendance-prorated
+    // earned amounts. For accurate prorated payroll see the Attendance & Salary page which calls
+    // calcSalary() per employee. This tab shows a quick estimate for owner overview only.
     const total      = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
     const advances   = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
     const deductions = employees.reduce((a, e) => a + (Number(e.uniformDeduction) || 0) + (Number(e.otherDeduction) || 0), 0);
@@ -739,8 +742,8 @@ function AttendanceSalaryTab() {
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}              color="bg-primary/10 text-primary" />
-        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll" value={formatCurrency(salaryStats.total)}      color="bg-blue-50 text-blue-700" />
-        <KPI icon={<TrendingUp  className="size-4" />} label="Net Payable"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" />
+        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll (est.)" value={formatCurrency(salaryStats.total)}      color="bg-blue-50 text-blue-700" />
+        <KPI icon={<TrendingUp  className="size-4" />} label="Est. Net Payable"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" />
         <KPI icon={<IndianRupee className="size-4" />} label="Advances"      value={formatCurrency(salaryStats.advances)}   color="bg-amber-50 text-amber-700" />
       </div>
 

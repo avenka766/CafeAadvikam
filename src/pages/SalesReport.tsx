@@ -67,9 +67,24 @@ export default function SalesReport() {
     });
   }, [orders, filterMode, startDate, endDate]);
 
+  // BUG-C1 FIX: Build the set of balance-collection order IDs so they are excluded from
+  // dayOrders. When collectBalance() runs it inserts a new "balance order" row with
+  // status='served' and paymentType=cash/upi/card — indistinguishable from a normal order
+  // unless we cross-reference the balanceOrderId pointer on the original advance order.
+  // DailyClosure.tsx already does this correctly; now SalesReport matches that logic.
+  const balanceOrderIds = useMemo(() => new Set(
+    filteredOrders
+      .filter(o => o.paymentType === 'advance' && o.balanceOrderId)
+      .map(o => o.balanceOrderId as string)
+  ), [filteredOrders]);
+
   const dayOrders = useMemo(() =>
-    filteredOrders.filter((o) => o.status === 'served' && o.paymentType !== 'advance'),
-    [filteredOrders]
+    filteredOrders.filter((o) =>
+      o.status === 'served' &&
+      o.paymentType !== 'advance' &&
+      !balanceOrderIds.has(o.id)
+    ),
+    [filteredOrders, balanceOrderIds]
   );
   const cancelledOrders = useMemo(() => filteredOrders.filter((o) => o.status === 'cancelled'), [filteredOrders]);
   // Advance orders in the period — used for the Advance sheet in Excel
@@ -79,6 +94,12 @@ export default function SalesReport() {
   );
 
   const totalRevenue = dayOrders.reduce((s, o) => s + o.total, 0);
+  // BUG-M1 FIX: separate "gross billed" (includes credit) from "cash collected" (cash+upi+card only).
+  // The headline shows totalRevenue but cashCollected is available for reconciliation.
+  const cashCollected = dayOrders.reduce((s, o) => {
+    if (o.paymentType === 'credit' || o.paymentType === 'unpaid') return s;
+    return s + o.total;
+  }, 0);
   const orderCount = dayOrders.length;
   const avgOrderValue = orderCount > 0 ? Math.round(totalRevenue / orderCount) : 0;
   const totalDiscount = dayOrders.reduce((s, o) => s + o.discount, 0);
@@ -460,7 +481,7 @@ export default function SalesReport() {
 
       <div className="px-4 py-4 space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <KPICard icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
+          <KPICard icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" sub={cashCollected < totalRevenue ? `Cash collected: ${formatCurrency(cashCollected)}` : undefined} />
           <KPICard icon={<ShoppingBag className="size-4" />} label="Orders" value={String(orderCount)} color="bg-accent/20 text-accent-foreground" />
           <KPICard icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
           <KPICard icon={<IndianRupee className="size-4" />} label="Discounts Given" value={formatCurrency(totalDiscount)} color="bg-red-50 text-red-600" />
@@ -678,12 +699,13 @@ export default function SalesReport() {
   );
 }
 
-function KPICard({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
+function KPICard({ icon, label, value, color, sub }: { icon: React.ReactNode; label: string; value: string; color: string; sub?: string }) {
   return (
     <div className="kpi-card">
       <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
       <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
       <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
+      {sub && <p className="text-[10px] font-body text-muted-foreground mt-0.5">{sub}</p>}
     </div>
   );
 }

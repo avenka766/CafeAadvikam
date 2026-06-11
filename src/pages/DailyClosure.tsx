@@ -489,12 +489,16 @@ export default function DailyClosure() {
                   icon={paymentIcons[key]}
                 />
               ))}
-              <PaymentRow
-                label="Credit collected"
-                value={closure.creditCollected}
-                percent={closure.collectionTotal > 0 ? (closure.creditCollected / closure.collectionTotal) * 100 : 0}
-                icon={<UserCheck className="size-5" />}
-              />
+              {/* BUG-M2 FIX: only show credit-collected row when there's actually something collected,
+                  otherwise a 0% bar is misleading and wastes space */}
+              {closure.creditCollected > 0 && (
+                <PaymentRow
+                  label="Credit collected"
+                  value={closure.creditCollected}
+                  percent={closure.collectionTotal > 0 ? (closure.creditCollected / closure.collectionTotal) * 100 : 0}
+                  icon={<UserCheck className="size-5" />}
+                />
+              )}
             </div>
           </div>
 

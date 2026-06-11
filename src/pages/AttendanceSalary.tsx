@@ -265,7 +265,9 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
     if (a.present) presentDays++;
     if (a.half)    halfDays++;
     if (a.woff)    woffDays++;
-    if (a.present || a.half) {
+    // BUG-M5 FIX: canteen deduction only applies on actual working days (present or half),
+    // never on week-off days — even if meals were accidentally ticked on a woff day.
+    if ((a.present || a.half) && !a.woff) {
       const m = [a.bf, a.lunch, a.dinner].filter(Boolean).length;
       canteenTotal += m === 3 ? 30 : m * 10;
     }
@@ -280,7 +282,9 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   // An employee who worked half the month should only have deductions for that half.
   // Note: ESI *eligibility* check (gross <= ESI_WAGE_LIMIT) still uses gross, which is correct —
   // the wage ceiling is based on the contracted gross, not the pro-rated amount.
-  const esiDed      = decision.deductESI     ? calcESI(earned) : 0;
+  // BUG-C3 FIX: pass emp.grossSalary as second arg so the eligibility threshold is checked
+  // against the contracted gross, not the prorated earned amount.
+  const esiDed      = decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
   const pfDed       = decision.deductPF      ? calcPF(earned)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
   return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
