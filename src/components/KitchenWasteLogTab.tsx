@@ -68,7 +68,7 @@ export default function KitchenWasteLogTab() {
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      const XLSX = await import('xlsx');
+      const XLSX = await import('@/lib/safeSpreadsheet');
       const rows = entries.map(e => ({
         Date: e.logged_at.slice(0, 10),
         Time: new Date(e.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
