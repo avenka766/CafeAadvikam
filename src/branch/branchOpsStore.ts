@@ -522,6 +522,10 @@ const mergeOperationRecordsIntoState = (
   if (!saved?.state && rows.length === 0) return null;
   const state = { ...baseState } as BranchOpsState;
   const buckets: Array<[keyof BranchOpsState, string]> = [
+    ["bills", "bill"],
+    ["bills", "advance_final_bill"],
+    ["creditSales", "credit_sale"],
+    ["holds", "hold_bill"],
     ["advanceCakeOrders", "advance_order"],
     ["quotations", "quotation"],
     ["returns", "return"],
@@ -1294,8 +1298,22 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         return newPurchase;
       },
       addPurchasePayment: (payment) => {
+        const amount = Number(payment.amount || 0);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          throw new Error("Purchase payment amount must be positive.");
+        }
+        const targetPurchase = payment.purchaseId
+          ? useBranchOpsStore.getState().purchases.find((p) => p.id === payment.purchaseId)
+          : undefined;
+        if (targetPurchase) {
+          const due = Math.max(0, Number(targetPurchase.total || 0) - Number(targetPurchase.paidAmount || 0));
+          if (amount > due + 0.001) {
+            throw new Error(`Purchase payment cannot exceed pending due amount (${money(due)}).`);
+          }
+        }
         const newPayment = {
           ...payment,
+          amount,
           id: uid("ppay"),
           createdAt: new Date().toISOString(),
         };
@@ -1690,6 +1708,20 @@ export function nextBranchInvoice(branch: Branch) {
     invoiceNo,
     billNo: `${branch}-${String(invoiceNo).padStart(3, '0')}`,
   };
+}
+
+export async function nextBranchInvoiceAtomic(branch: Branch) {
+  const { data, error } = await supabase.rpc("get_next_bill_number", { p_branch: branch });
+  if (!error && data != null) {
+    const billNo = String(data);
+    const parsed = Number(billNo.split("-").pop());
+    return {
+      invoiceNo: Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now(),
+      billNo,
+    };
+  }
+  console.error("[nextBranchInvoiceAtomic] Supabase sequence failed:", error?.message);
+  return nextBranchInvoice(branch);
 }
 
 export function money(value: number) {
