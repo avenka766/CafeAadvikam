@@ -171,7 +171,7 @@ export default function SalesReport() {
   const takeawayCount = dayOrders.filter((o) => o.orderType === 'takeaway').length;
 
   const handleExportExcel = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
 
     const dateLabel = filterMode === 'today'
       ? new Date().toLocaleDateString('en-IN').replace(/\//g, '-')

@@ -14,7 +14,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell, ResponsiveContainer, RadialBarChart, RadialBar,
 } from 'recharts';
-import * as XLSX from 'xlsx';
+import * as XLSX from '@/lib/safeSpreadsheet';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Branch = 'VRSNB' | 'Cafe Aadvikam' | 'SNB' | 'Hosur';

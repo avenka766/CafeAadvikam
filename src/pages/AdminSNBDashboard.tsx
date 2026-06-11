@@ -2209,16 +2209,26 @@ function SupplierPaymentsTab({ userName }: { userName: string }) {
     const amount = Number(form.amount);
     const supplier = selected?.supplier || form.supplier;
     if (!supplier.trim() || !amount) return;
-    addPurchasePayment({
-      branch: BRANCH,
-      purchaseId: selected?.id,
-      supplier,
-      amount,
-      mode: form.mode as any,
-      reference: form.reference,
-      remarks: form.remarks || "Supplier payment",
-      paidBy: userName,
-    });
+    const due = selected ? Math.max(0, Number(selected.total || 0) - Number(selected.paidAmount || 0)) : 0;
+    if (selected && amount > due) {
+      window.alert(`Payment cannot exceed pending due ${money(due)}.`);
+      return;
+    }
+    try {
+      addPurchasePayment({
+        branch: BRANCH,
+        purchaseId: selected?.id,
+        supplier,
+        amount,
+        mode: form.mode as any,
+        reference: form.reference,
+        remarks: form.remarks || "Supplier payment",
+        paidBy: userName,
+      });
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Purchase payment failed.');
+      return;
+    }
     setForm({
       purchaseId: "",
       supplier: "",
