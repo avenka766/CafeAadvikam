@@ -345,7 +345,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   const showBranchFilter = branches.length > 1;
 
   const handleExcelDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const rows = filtered.map(s => ({
       'Branch':           s.branch,
       'Bill No':          s.billNo ?? '',

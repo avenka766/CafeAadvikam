@@ -92,7 +92,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
   }), [allOrders, branches]);
 
   const handleDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const rows = filtered.map((o, i) => ({
       'S.No':           i + 1,
       'Branch':         o.branch,
