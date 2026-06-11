@@ -9,7 +9,7 @@ import type { BakeryOrder, BakeryOrderItem } from './types';
 import { cn } from '@/lib/utils';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import { supabase } from '@/lib/supabase';
-import * as XLSX from 'xlsx';
+import * as XLSX from '@/lib/safeSpreadsheet';
 
 // ─── Report helpers ───────────────────────────────────────────────────────────
 

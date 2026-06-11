@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
-import * as XLSX from 'xlsx';
+import * as XLSX from '@/lib/safeSpreadsheet';
 import { Calendar, Download, FileText, Loader2, MinusCircle, Package, Receipt, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';

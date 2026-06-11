@@ -386,7 +386,7 @@ export default function BakeryReportsMerged({ branch }: Props) {
 
   // ── Excel Export ──────────────────────────────────────────────────────────
   const handleDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
     const branchLabel = branch === 'all'
       ? (filterBranch === 'all' ? 'All-Branches' : filterBranch)

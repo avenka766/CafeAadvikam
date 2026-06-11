@@ -1,7 +1,7 @@
 // src/bakery/PackingDashboard.tsx (Redesigned — Tabs + Excel Export)
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import * as XLSX from 'xlsx';
+import * as XLSX from '@/lib/safeSpreadsheet';
 import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock,
