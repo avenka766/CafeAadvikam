@@ -53,6 +53,17 @@ function BranchDailyClosureTab({
     return (s.paymentMethod ?? '') !== 'credit_collection';
   }), [branchSales, date]);
 
+  // BUG-M4 FIX: credit_collection rows are excluded from salesToday (to avoid double-counting
+  // as new sales), but the cash they bring in IS real money collected on this day. Track them
+  // separately so the closure summary can show both Sales Revenue and Credit Collected.
+  const creditCollectionsToday = useMemo(() => branchSales.filter(s =>
+    toLocalDateString(s.soldAt) === date && (s.paymentMethod ?? '') === 'credit_collection'
+  ), [branchSales, date]);
+
+  const creditCollectedRevenue = creditCollectionsToday.reduce(
+    (s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0
+  );
+
   const suppliesToday = useMemo(() => branchIncoming.filter(i => toLocalDateString(i.receivedAt) === date), [branchIncoming, date]);
 
   const stockMap = useMemo(() => {
@@ -141,6 +152,8 @@ function BranchDailyClosureTab({
       { Metric: 'Branch', Value: branch },
       { Metric: 'Sold Quantity', Value: totalSoldQty },
       { Metric: 'Sales Value', Value: totalRevenue },
+      { Metric: 'Credit Collected', Value: creditCollectedRevenue },
+      { Metric: 'Total Cash In', Value: totalRevenue + creditCollectedRevenue },
       { Metric: 'Supplied Quantity', Value: totalSuppliedQty },
       { Metric: 'Stock Items', Value: branchStock.length },
       { Metric: 'Low Stock Items', Value: lowStock },
@@ -222,6 +235,10 @@ function BranchDailyClosureTab({
             <p className="text-2xl font-black tabular-nums text-slate-950">{formatQty(totalSoldQty)}</p>
             <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Sold Today</p>
             <p className="mt-1 text-xs font-semibold text-emerald-700">{formatCurrency(totalRevenue)}</p>
+            {/* BUG-M4 FIX: show credit collections separately so cash-in is not understated */}
+            {creditCollectedRevenue > 0 && (
+              <p className="mt-0.5 text-xs font-semibold text-blue-600">+{formatCurrency(creditCollectedRevenue)} credit collected</p>
+            )}
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <Truck className="mb-2 size-5 text-blue-600" />

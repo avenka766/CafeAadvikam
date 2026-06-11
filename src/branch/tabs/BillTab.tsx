@@ -94,8 +94,14 @@ function normalizeItemName(name: string) {
 
 // Fetch a shared sequential bill number from the DB so all branches
 // (VRSNB, SNB, Hosur) share the same incrementing counter.
-async function fetchNextBillNo(): Promise<string> {
-  const { data, error } = await supabase.rpc('get_next_bill_number');
+// BUG-C4 FIX: branchOpsStore calls get_next_bill_number with { p_branch } but this
+// function was calling it with no args — counter drift / RPC mismatch.
+// Now passes p_branch: undefined so the DB uses a single global counter (matches
+// the branchOpsStore behaviour when called via the legacy BillTab path).
+// If the DB RPC requires p_branch, update both callers to pass it.
+async function fetchNextBillNo(branch?: string): Promise<string> {
+  const params = branch ? { p_branch: branch } : undefined;
+  const { data, error } = await supabase.rpc('get_next_bill_number', params ?? {});
   if (error || data == null) {
     throw new Error('Unable to generate bill number, please retry.');
   }
@@ -1641,8 +1647,8 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | VrsnbCategory | 'All'>('All');
   const billNo = useRef<string>('…');
-  // Fetch the first bill number on mount
-  useEffect(() => { fetchNextBillNo().then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.')); }, []);
+  // Fetch the first bill number on mount — pass branch so the counter matches branchOpsStore (BUG-C4 FIX)
+  useEffect(() => { fetchNextBillNo(branch).then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.')); }, []);
 
   // ── Tab state ───────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'bill' | 'advance' | 'alert' | 'credit'>('bill');
@@ -1699,8 +1705,9 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const clearCart = useCallback(() => {
     setCart([]); resetPayment();
     setDiscountValue(''); setShowDiscount(false);
-    fetchNextBillNo().then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.'));
-  }, [resetPayment]);
+    // BUG-C4 FIX: pass branch so counter stays in sync with branchOpsStore
+    fetchNextBillNo(branch).then(n => { billNo.current = n; }).catch((e) => setError(e instanceof Error ? e.message : 'Unable to generate bill number, please retry.'));
+  }, [resetPayment, branch]);
 
   useEffect(() => { clearCart(); setSearch(''); setActiveCategory('All'); }, [branch]);
 
