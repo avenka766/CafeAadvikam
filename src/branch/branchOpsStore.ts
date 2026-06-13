@@ -156,7 +156,15 @@ export interface QuotationRecord {
   quoteNo: string;
   customerName: string;
   mobile?: string;
+  companyName?: string;
+  gstNumber?: string;
+  deliveryCharges?: number;
+  packingCharges?: number;
+  extraCharges?: number;
+  discount?: number;
+  customItems?: BranchBillItem[];
   items: BranchBillItem[];
+  subtotal?: number;
   total: number;
   salesperson: string;
   createdAt: string;
@@ -216,8 +224,11 @@ export interface PurchasePayment {
   purchaseId?: string;
   supplier: string;
   amount: number;
-  mode: "cash" | "upi" | "card" | "bank";
+  mode: "cash" | "upi" | "card" | "bank" | "cheque";
   reference: string;
+  chequeNo?: string;
+  chequeDate?: string;
+  chequeBank?: string;
   remarks: string;
   paidBy: string;
   createdAt: string;
@@ -307,7 +318,12 @@ export interface BranchNotification {
     | "Cash Alert"
     | "Advance Order"
     | "Duplicate Print"
-    | "Purchase Approval";
+    | "Purchase Approval"
+    | "Supplier"
+    | "Expense"
+    | "Complaint"
+    | "Waste Log"
+    | "Quotation";
   title: string;
   details: string;
   createdAt: string;
@@ -328,6 +344,106 @@ export interface StoreOrderRecord {
   confirmerName?: string;
   confirmedAt?: string;
   remarks?: string;
+  createdAt: string;
+}
+
+export interface SupplierRecord {
+  id: string;
+  branch: Branch;
+  name: string;
+  address: string;
+  mobile: string;
+  gstNumber: string;
+  itemsProvided: string;
+  notes: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpenseRecord {
+  id: string;
+  branch: Branch;
+  expenseDate: string;
+  category: string;
+  description: string;
+  amount: number;
+  mode: "cash" | "upi" | "card" | "bank";
+  enteredBy: string;
+  createdAt: string;
+}
+
+export interface ComplaintRecord {
+  id: string;
+  branch: Branch;
+  complaintArea: string;
+  title: string;
+  details: string;
+  raisedBy: string;
+  status: "Open" | "In Review" | "Resolved";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WasteLogRecord {
+  id: string;
+  branch: Branch;
+  logType: "Dump" | "Damage" | "Trans Out";
+  itemName: string;
+  quantity: number;
+  unit: string;
+  reason: string;
+  verifiedBy: string;
+  checklist: string[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface CashierProfile {
+  id: string;
+  branch: Branch;
+  name: string;
+  mobile: string;
+  status: "Active" | "Inactive";
+  notes: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BranchStockCountLine {
+  itemName: string;
+  unit?: "pcs" | "kg" | string;
+  systemQty: number;
+  physicalQty: number;
+  difference: number;
+}
+
+export interface BranchStockCountReport {
+  id: string;
+  branch: Branch;
+  reportNo: string;
+  lines: BranchStockCountLine[];
+  status: "Pending Admin Review" | "Confirmed" | "Rejected";
+  reportedBy: string;
+  confirmedBy?: string;
+  confirmedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BranchStockVarianceRecord {
+  id: string;
+  branch: Branch;
+  reportId: string;
+  reportNo: string;
+  itemName: string;
+  unit?: string;
+  systemQty: number;
+  physicalQty: number;
+  difference: number;
+  reportedBy: string;
+  confirmedBy: string;
   createdAt: string;
 }
 
@@ -357,6 +473,13 @@ interface BranchOpsState {
   cashierClosures: CashierClosure[];
   notifications: BranchNotification[];
   storeOrders: StoreOrderRecord[];
+  suppliers: SupplierRecord[];
+  expenses: ExpenseRecord[];
+  complaints: ComplaintRecord[];
+  wasteLogs: WasteLogRecord[];
+  cashiers: CashierProfile[];
+  stockCountReports: BranchStockCountReport[];
+  stockVarianceRecords: BranchStockVarianceRecord[];
   auditLogs: AuditLogRecord[];
   addBill: (
     bill: Omit<BranchBillRecord, "id" | "createdAt" | "printCount" | "status">,
@@ -465,6 +588,38 @@ interface BranchOpsState {
     user: string,
     remarks?: string,
   ) => void;
+  addSupplier: (
+    supplier: Omit<SupplierRecord, "id" | "createdAt" | "updatedAt">,
+  ) => SupplierRecord;
+  addExpense: (
+    expense: Omit<ExpenseRecord, "id" | "createdAt">,
+  ) => ExpenseRecord;
+  addComplaint: (
+    complaint: Omit<ComplaintRecord, "id" | "createdAt" | "updatedAt" | "status">,
+  ) => ComplaintRecord;
+  updateComplaintStatus: (
+    id: string,
+    status: ComplaintRecord["status"],
+    user: string,
+  ) => void;
+  addWasteLog: (
+    log: Omit<WasteLogRecord, "id" | "createdAt">,
+  ) => WasteLogRecord;
+  addCashier: (
+    cashier: Omit<CashierProfile, "id" | "createdAt" | "updatedAt">,
+  ) => CashierProfile;
+  updateCashier: (
+    id: string,
+    updates: Partial<Omit<CashierProfile, "id" | "branch" | "createdAt" | "updatedAt">>,
+    user: string,
+  ) => void;
+  submitStockCountReport: (
+    report: Omit<BranchStockCountReport, "id" | "reportNo" | "status" | "createdAt" | "updatedAt">,
+  ) => BranchStockCountReport;
+  confirmStockCountReport: (
+    reportId: string,
+    confirmedBy: string,
+  ) => BranchStockCountReport | undefined;
   addAuditLog: (log: Omit<AuditLogRecord, "id" | "createdAt">) => void;
 }
 
@@ -527,6 +682,11 @@ const mergeOperationRecordsIntoState = (
     cashierClosures: [],
     notifications: [],
     storeOrders: [],
+    suppliers: [],
+    expenses: [],
+    complaints: [],
+    wasteLogs: [],
+    cashiers: [],
     auditLogs: [],
   } as unknown as BranchOpsState);
   if (!saved?.state && rows.length === 0) return null;
@@ -547,6 +707,11 @@ const mergeOperationRecordsIntoState = (
     ["cashierClosures", "cashier_closure"],
     ["notifications", "notification"],
     ["storeOrders", "store_order"],
+    ["suppliers", "supplier"],
+    ["expenses", "expense"],
+    ["complaints", "complaint"],
+    ["wasteLogs", "waste_log"],
+    ["cashiers", "cashier_profile"],
   ];
 
   for (const [stateKey, recordType] of buckets) {
@@ -626,6 +791,11 @@ function persistedBranchOps(state: BranchOpsState) {
     cashierClosures: state.cashierClosures,
     notifications: state.notifications,
     storeOrders: state.storeOrders,
+    suppliers: state.suppliers,
+    expenses: state.expenses,
+    complaints: state.complaints,
+    wasteLogs: state.wasteLogs,
+    cashiers: state.cashiers,
     auditLogs: state.auditLogs,
   };
 }
@@ -688,6 +858,11 @@ export const useBranchOpsStore = create<BranchOpsState>()(
       cashierClosures: [],
       notifications: [],
       storeOrders: [],
+      suppliers: [],
+      expenses: [],
+      complaints: [],
+      wasteLogs: [],
+      cashiers: [],
       auditLogs: [],
       addAuditLog: (log) =>
         set((s) => ({
@@ -696,6 +871,205 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ].slice(0, 1000),
         })),
+      addSupplier: (supplier) => {
+        const now = new Date().toISOString();
+        const newSupplier: SupplierRecord = {
+          ...supplier,
+          id: uid("sup"),
+          createdAt: now,
+          updatedAt: now,
+        };
+        set((s) => ({
+          suppliers: [newSupplier, ...s.suppliers],
+          auditLogs: [
+            audit(supplier.branch, supplier.createdBy, "Supplier Added", "-", supplier.name),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(supplier.branch, "supplier", newSupplier.id, newSupplier, {
+          recordNo: supplier.mobile,
+          status: "Active",
+          actor: supplier.createdBy,
+        });
+        return newSupplier;
+      },
+      addExpense: (expense) => {
+        const newExpense: ExpenseRecord = {
+          ...expense,
+          amount: Number(expense.amount || 0),
+          id: uid("exp"),
+          createdAt: new Date().toISOString(),
+        };
+        set((s) => ({
+          expenses: [newExpense, ...s.expenses],
+          cashMovements: [
+            {
+              id: uid("cash"),
+              branch: expense.branch,
+              dateTime: newExpense.createdAt,
+              amount: newExpense.amount,
+              paymentMode: expense.mode,
+              direction: "out",
+              purpose: `Expense - ${expense.category}`,
+              enteredBy: expense.enteredBy,
+              referenceNumber: newExpense.id,
+              remarks: expense.description,
+            },
+            ...s.cashMovements,
+          ],
+          auditLogs: [
+            audit(expense.branch, expense.enteredBy, "Expense Added", "-", `${expense.category} ${newExpense.amount}`),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(expense.branch, "expense", newExpense.id, newExpense, {
+          recordNo: newExpense.id,
+          amount: newExpense.amount,
+          actor: expense.enteredBy,
+        });
+        return newExpense;
+      },
+      addComplaint: (complaint) => {
+        const now = new Date().toISOString();
+        const newComplaint: ComplaintRecord = {
+          ...complaint,
+          id: uid("cmp"),
+          status: "Open",
+          createdAt: now,
+          updatedAt: now,
+        };
+        set((s) => ({
+          complaints: [newComplaint, ...s.complaints],
+          notifications: [
+            {
+              id: uid("note"),
+              branch: complaint.branch,
+              type: "Complaint",
+              title: `Complaint raised: ${complaint.title}`,
+              details: `${complaint.complaintArea} - ${complaint.details}`,
+              createdAt: now,
+              raisedBy: complaint.raisedBy,
+              status: "Unread",
+            },
+            ...s.notifications,
+          ],
+          auditLogs: [
+            audit(complaint.branch, complaint.raisedBy, "Complaint Raised", "-", complaint.title),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(complaint.branch, "complaint", newComplaint.id, newComplaint, {
+          status: newComplaint.status,
+          actor: complaint.raisedBy,
+        });
+        return newComplaint;
+      },
+      updateComplaintStatus: (id, status, user) =>
+        set((s) => {
+          const prev = s.complaints.find((c) => c.id === id);
+          if (prev) {
+            mirrorOperationRecord(prev.branch, "complaint", id, { ...prev, status, updatedAt: new Date().toISOString() }, {
+              status,
+              actor: user,
+            });
+          }
+          return {
+            complaints: s.complaints.map((c) =>
+              c.id === id ? { ...c, status, updatedAt: new Date().toISOString() } : c,
+            ),
+            notifications: prev
+              ? [
+                  {
+                    id: uid("note"),
+                    branch: prev.branch,
+                    type: "Complaint",
+                    title: `Complaint ${status}`,
+                    details: `${prev.title} updated by ${user}`,
+                    createdAt: new Date().toISOString(),
+                    raisedBy: user,
+                    status: "Unread",
+                  },
+                  ...s.notifications,
+                ]
+              : s.notifications,
+            auditLogs: prev
+              ? [audit(prev.branch, user, "Complaint Status", prev.status, status), ...s.auditLogs]
+              : s.auditLogs,
+          };
+        }),
+      addWasteLog: (log) => {
+        const newLog: WasteLogRecord = {
+          ...log,
+          quantity: Number(log.quantity || 0),
+          id: uid("waste"),
+          createdAt: new Date().toISOString(),
+        };
+        set((s) => ({
+          wasteLogs: [newLog, ...s.wasteLogs],
+          notifications: [
+            {
+              id: uid("note"),
+              branch: log.branch,
+              type: "Waste Log",
+              title: `${log.logType} logged`,
+              details: `${log.itemName} - ${log.quantity} ${log.unit}. ${log.reason}`,
+              createdAt: newLog.createdAt,
+              raisedBy: log.createdBy,
+              status: "Unread",
+            },
+            ...s.notifications,
+          ],
+          auditLogs: [
+            audit(log.branch, log.createdBy, "Waste Log", "-", `${log.logType} ${log.itemName}`),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(log.branch, "waste_log", newLog.id, newLog, {
+          recordNo: newLog.logType,
+          status: log.verifiedBy,
+          actor: log.createdBy,
+        });
+        return newLog;
+      },
+      addCashier: (cashier) => {
+        const now = new Date().toISOString();
+        const newCashier: CashierProfile = {
+          ...cashier,
+          id: uid("cashier"),
+          createdAt: now,
+          updatedAt: now,
+        };
+        set((s) => ({
+          cashiers: [newCashier, ...s.cashiers],
+          auditLogs: [
+            audit(cashier.branch, cashier.createdBy, "Cashier Added", "-", cashier.name),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(cashier.branch, "cashier_profile", newCashier.id, newCashier, {
+          status: cashier.status,
+          actor: cashier.createdBy,
+        });
+        return newCashier;
+      },
+      updateCashier: (id, updates, user) =>
+        set((s) => {
+          const prev = s.cashiers.find((c) => c.id === id);
+          if (prev) {
+            mirrorOperationRecord(prev.branch, "cashier_profile", id, { ...prev, ...updates, updatedAt: new Date().toISOString() }, {
+              status: updates.status ?? prev.status,
+              actor: user,
+            });
+          }
+          return {
+            cashiers: s.cashiers.map((c) =>
+              c.id === id ? { ...c, ...updates, updatedAt: new Date().toISOString() } : c,
+            ),
+            auditLogs: prev
+              ? [audit(prev.branch, user, "Cashier Updated", prev.name, updates.name ?? prev.name), ...s.auditLogs]
+              : s.auditLogs,
+          };
+        }),
       addBill: (bill) => {
         const newBill: BranchBillRecord = {
           ...bill,
@@ -1387,7 +1761,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               branch: payment.branch,
               dateTime: newPayment.createdAt,
               amount: payment.amount,
-              paymentMode: payment.mode,
+              paymentMode: payment.mode === "cheque" ? "bank" : payment.mode,
               direction: "out",
               purpose: "Purchase payment",
               enteredBy: payment.paidBy,
