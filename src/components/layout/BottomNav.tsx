@@ -189,6 +189,21 @@ export default function BottomNav() {
         icon: <Bell className="size-5" />,
         path: "/bakery/receive/snb?tab=alerts",
       },
+      {
+        label: "Stock",
+        icon: <Package className="size-5" />,
+        path: "/bakery/receive/snb?tab=stock",
+      },
+      {
+        label: "PO",
+        icon: <ShoppingCart className="size-5" />,
+        path: "/bakery/receive/snb?tab=po",
+      },
+      {
+        label: "Count",
+        icon: <ClipboardList className="size-5" />,
+        path: "/bakery/receive/snb?tab=stock-count",
+      },
     );
   } else if (currentUser.role === "receiver_hosur") {
     navItems.push(

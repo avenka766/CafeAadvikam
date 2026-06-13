@@ -156,6 +156,9 @@ function navForRole(role?: string): NavItem[] {
         { label: 'SNB Order', path: '/bakery/receive/snb', icon: <Inbox className="size-4" />, group: 'Main' },
         { label: 'History', path: '/bakery/receive/snb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+        { label: 'Stock / Incoming', path: '/bakery/receive/snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Order', path: '/bakery/receive/snb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
     case 'receiver_hosur':
       return [
