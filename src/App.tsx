@@ -46,6 +46,21 @@ import SNBHistoryPage      from '@/pages/SNBHistoryPage';
 import AdminInvoicesPage   from '@/pages/AdminInvoicesPage';
 import AdminAlertsPage     from '@/pages/AdminAlertsPage';
 
+// ── INFRASTRUCTURE NOTE (MD Bug #4) ──────────────────────────────────────────
+// The following Supabase RPCs and tables are required but NOT present in
+// supabase/migrations/. A fresh deployment will fail with:
+//   "Atomic checkout is not installed. Run the 20260609_branch_atomic_ledger.sql migration first."
+// Required RPCs: complete_branch_checkout, get_next_bill_number, get_next_order_number,
+//   settle_branch_credit_sale, decrement_branch_stock_strict, decrement_branch_stock,
+//   increment_branch_stock, confirm_incoming_stock, archive_old_branch_sales,
+//   verify_staff_password
+// Required tables: branch_bill_headers, branch_daily_closure_ledger, branch_daily_closures,
+//   branch_operation_records, app_state, branch_credit_sales, branch_credit_payments,
+//   branch_stock_mismatches, store_invoices, branch_stock_adjustments (new — Bug #13)
+// TODO: Export all migrations from live Supabase and commit to supabase/migrations/.
+// ─────────────────────────────────────────────────────────────────────────────
+
+
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
