@@ -741,7 +741,12 @@ const mergeOperationRecordsIntoState = (
 
 const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
   getItem: async (name) => {
-    const [{ data, error }, { data: opRows, error: opError }] = await Promise.all([
+    const [
+      { data, error },
+      { data: opRows, error: opError },
+      { data: stockCountRows, error: stockCountError },
+      { data: varianceRows, error: varianceError },
+    ] = await Promise.all([
       supabase
         .from("app_state")
         .select("value")
@@ -752,6 +757,16 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         .select("record_type, record_id, payload, created_at")
         .order("created_at", { ascending: false })
         .limit(5000),
+      supabase
+        .from("branch_stock_count_reports")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(1000),
+      supabase
+        .from("branch_stock_variance_records")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(2000),
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -760,9 +775,53 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     if (opError && !/branch_operation_records|does not exist|schema cache/i.test(opError.message)) {
       console.error("[branchOpsStore] Supabase operation recovery load failed:", opError.message);
     }
+    if (stockCountError && !/branch_stock_count_reports|does not exist|schema cache/i.test(stockCountError.message)) {
+      console.error("[branchOpsStore] Supabase stock count load failed:", stockCountError.message);
+    }
+    if (varianceError && !/branch_stock_variance_records|does not exist|schema cache/i.test(varianceError.message)) {
+      console.error("[branchOpsStore] Supabase stock variance load failed:", varianceError.message);
+    }
+    const dedicatedRows: BranchOperationRecordRow[] = [
+      ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
+        record_type: "stock_count_report",
+        record_id: String(row.id),
+        created_at: String(row.created_at),
+        payload: ({
+          id: String(row.id),
+          branch: row.branch as Branch,
+          reportNo: String(row.report_no),
+          lines: (row.lines as BranchStockCountLine[]) ?? [],
+          status: row.status as BranchStockCountReport["status"],
+          reportedBy: String(row.reported_by ?? ""),
+          confirmedBy: row.confirmed_by ? String(row.confirmed_by) : undefined,
+          confirmedAt: row.confirmed_at ? String(row.confirmed_at) : undefined,
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at ?? row.created_at),
+        } satisfies BranchStockCountReport),
+      })),
+      ...((varianceRows || []) as Array<Record<string, unknown>>).map((row) => ({
+        record_type: "stock_variance",
+        record_id: String(row.id),
+        created_at: String(row.created_at),
+        payload: ({
+          id: String(row.id),
+          branch: row.branch as Branch,
+          reportId: String(row.report_id),
+          reportNo: String(row.report_no),
+          itemName: String(row.item_name),
+          unit: row.unit ? String(row.unit) : undefined,
+          systemQty: Number(row.system_qty ?? 0),
+          physicalQty: Number(row.physical_qty ?? 0),
+          difference: Number(row.difference ?? 0),
+          reportedBy: String(row.reported_by ?? ""),
+          confirmedBy: String(row.confirmed_by ?? ""),
+          createdAt: String(row.created_at),
+        } satisfies BranchStockVarianceRecord),
+      })),
+    ];
     return mergeOperationRecordsIntoState(
       (data?.value as StorageValue<BranchOpsState> | null) ?? null,
-      (opRows || []) as BranchOperationRecordRow[],
+      [...((opRows || []) as BranchOperationRecordRow[]), ...dedicatedRows],
     );
   },
   setItem: async (name, value) => {
@@ -2066,6 +2125,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
       confirmStockCountReport: (reportId, confirmedBy) => {
         const report = get().stockCountReports.find((r) => r.id === reportId);
         if (!report) return undefined;
+        if (report.status === "Confirmed") return report;
         const now = new Date().toISOString();
         const confirmedReport: BranchStockCountReport = {
           ...report,
