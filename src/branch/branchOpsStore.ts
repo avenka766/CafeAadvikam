@@ -143,6 +143,9 @@ export interface CakeAdvanceOrder {
     | "Paid In Full";
   storeConfirmedBy?: string;
   storeConfirmedAt?: string;
+  storeStatus?: "store" | "baking" | "packing" | "dispatched";
+  storeAcceptedBy?: string;
+  storeStatusHistory?: Array<{ status: string; by: string; at: string }>;
   finalInvoiceBillNo?: string;
   createdAt: string;
 }
@@ -165,10 +168,12 @@ export interface ReturnRecord {
   branch: Branch;
   returnNo: string;
   originalBillNo: string;
+  originalPaymentMode?: "cash" | "upi" | "card";
   items: BranchBillItem[];
   total: number;
   returnedBy: string;
   reason: string;
+  returnPayMode?: string;
   createdAt: string;
 }
 
@@ -391,6 +396,11 @@ interface BranchOpsState {
     user: string,
     details?: Partial<CakeAdvanceOrder>,
   ) => void;
+  updateAdvanceStoreStatus: (
+    id: string,
+    storeStatus: CakeAdvanceOrder["storeStatus"],
+    by: string,
+  ) => void;
   addQuotation: (
     quote: Omit<QuotationRecord, "id" | "quoteNo" | "createdAt" | "status">,
   ) => QuotationRecord;
@@ -401,7 +411,7 @@ interface BranchOpsState {
   ) => void;
   addReturn: (
     ret: Omit<ReturnRecord, "id" | "returnNo" | "createdAt">,
-  ) => ReturnRecord;
+  ) => Promise<ReturnRecord>;
   addPurchase: (
     purchase: Omit<
       PurchaseRecord,
@@ -1050,7 +1060,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           };
         }),
       addAdvanceCakeOrder: (order) => {
-        const orderNo = `${order.branch}-ADV-${String(seq(`adv-${order.branch}`)).padStart(4, "0")}`;
+        const orderNo = `${order.branch}-ADV-${String(seq(`adv-${order.branch}`, 500)).padStart(3, "0")}`;
         const orderType = order.orderType || "cake";
         const newOrder: CakeAdvanceOrder = {
           ...order,
@@ -1076,20 +1086,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         };
         set((s) => ({
           advanceCakeOrders: [newOrder, ...s.advanceCakeOrders],
-          storeOrders: orderType === "store" ? s.storeOrders : [storeOrder, ...s.storeOrders],
-          notifications: orderType === "store" ? s.notifications : [
-            {
-              id: uid("note"),
-              branch: order.branch,
-              type: "Advance Order",
-              title: `New ${orderType} advance order sent to store`,
-              details: `${orderNo} · ${order.customerName} · ${storeOrder.details}`,
-              createdAt: newOrder.createdAt,
-              raisedBy: order.salesperson,
-              status: "Unread",
-            },
-            ...s.notifications,
-          ],
+          storeOrders: s.storeOrders,
+          notifications: s.notifications,
           cashMovements: [
             {
               id: uid("cash"),
@@ -1122,13 +1120,6 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: newOrder.status,
           actor: order.salesperson,
         });
-        if (orderType !== "store") {
-          mirrorOperationRecord(order.branch, "store_order", storeOrder.id, storeOrder, {
-            recordNo: orderNo,
-            status: storeOrder.status,
-            actor: order.salesperson,
-          });
-        }
         return newOrder;
       },
       updateAdvanceStatus: (id, status, user, details = {}) =>
@@ -1159,6 +1150,44 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                   ...s.auditLogs,
                 ]
               : s.auditLogs,
+          };
+        }),
+      updateAdvanceStoreStatus: (id, storeStatus, by) =>
+        set((s) => {
+          const prev = s.advanceCakeOrders.find((o) => o.id === id);
+          if (!prev || !storeStatus) return {};
+          const now = new Date().toISOString();
+          const next = {
+            ...prev,
+            storeStatus,
+            storeAcceptedBy: by,
+            storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
+          };
+          mirrorOperationRecord(prev.branch, "advance_order", id, next, {
+            recordNo: prev.orderNo,
+            amount: prev.orderValue,
+            status: storeStatus,
+            actor: by,
+          });
+          return {
+            advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === id ? next : o)),
+            notifications: [
+              {
+                id: uid("note"),
+                branch: prev.branch,
+                type: "Advance Order" as const,
+                title: `Advance order moved to ${storeStatus}`,
+                details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
+                createdAt: now,
+                raisedBy: by,
+                status: "Unread" as const,
+              },
+              ...s.notifications,
+            ],
+            auditLogs: [
+              audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
+              ...s.auditLogs,
+            ],
           };
         }),
       addQuotation: (quote) => {
@@ -1723,7 +1752,6 @@ export function nextBranchInvoice(branch: Branch) {
   const existingBills = useBranchOpsStore.getState().bills.filter((b) => b.branch === branch);
   let maxNo = 0;
   for (const b of existingBills) {
-    // billNo format: "VRSNB-042" or "SNB-007"
     const parts = b.billNo.split('-');
     const n = Number(parts[parts.length - 1]);
     if (!isNaN(n) && n > maxNo) maxNo = n;
@@ -1732,7 +1760,7 @@ export function nextBranchInvoice(branch: Branch) {
   const invoiceNo = next;
   return {
     invoiceNo,
-    billNo: `${branch}-${String(invoiceNo).padStart(3, '0')}`,
+    billNo: `${branch}-${String(invoiceNo).padStart(4, '0')}`,
   };
 }
 

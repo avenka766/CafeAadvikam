@@ -18,6 +18,7 @@ export function printHtml(title: string, body: string) {
 // ─── VRSNB receipt-style counter bill ─────────────────────────────────────────
 // Matches the physical receipt format from the SNB/VRSNB receipt image.
 function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
+  const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
   const printedAt = new Date(bill.createdAt);
 
   // DD/MM/YY format
@@ -67,7 +68,7 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
     <div class="brand">SNB</div>
     <div class="c sub">SWEETS &amp; BAKES</div>
     <div class="c sub">VRSNB FOODS LLP</div>
-    ${duplicate ? '<div class="stamp">DUPLICATE BILL</div>' : '<div class="c bold" style="font-size:14px;margin:5px 0">PAID</div>'}
+    ${returnBill._isReturn ? '<div class="stamp">RETURN BILL</div>' : duplicate ? '<div class="stamp">DUPLICATE BILL</div>' : '<div class="c bold" style="font-size:14px;margin:5px 0">PAID</div>'}
     <div class="dash"></div>
     <div class="c bold" style="font-size:13px">VRSNB FOODS LLP</div>
     <div class="c sub">#109/1C, Hosur main Road, Berigai,</div>
@@ -81,6 +82,7 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
     <div class="row"><span>Date: ${dateStr}</span><span class="bold">Pick Up</span></div>
     <div>${timeStr}</div>
     <div class="row"><span>Cashier: ${bill.biller}</span><span>Bill No.: ${bill.billNo}</span></div>
+    ${returnBill._isReturn ? `<div class="row"><span>Original Bill</span><span>${returnBill._originalBillNo || '-'}</span></div><div>Reason: ${returnBill._returnReason || '-'}</div>` : ''}
     <div class="dash"></div>
     <table>
       <thead><tr><th style="text-align:left">Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
@@ -102,7 +104,8 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
 
 // ─── Full-format counter bill (SNB style / tax invoice) ───────────────────────
 function printSnbCounterBill(bill: BranchBillRecord, duplicate = false) {
-  const title = duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
+  const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
+  const title = returnBill._isReturn ? 'RETURN BILL' : duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
   const business = {
     name: 'Sri Nanjundeshwara Bakery',
     lines: ['404, Bagalur Main Road, Berigai Bus Stand, Berigai, Shoolagiri Taluk', 'Krishnagiri, Tamil Nadu, Hosur-635105', 'Phone: 9942266779, 9095445444'],
@@ -115,12 +118,13 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false) {
   const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
     @page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900;line-height:1.05}.small{font-size:10px}.doc{font-size:14px;font-weight:900;letter-spacing:.03em;margin:8px 0}.row,.pay{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:6px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.summary{margin-left:auto;width:72%;font-size:12px}.summary .row{padding:2px 0}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:16px;font-weight:900;margin-top:4px;padding:4px 0}.paybox{margin-top:8px;text-align:center}.paytitle{border-top:1px solid #111;border-bottom:1px solid #111;display:inline-block;min-width:64%;padding:2px 0}.gst{font-size:9px;margin-top:8px}.gst th,.gst td{border:1px solid #111;padding:2px;text-align:right}.gst th:first-child,.gst td:first-child{text-align:left}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}.copy{border:1px solid #111;font-weight:900;margin-bottom:5px;padding:3px;text-align:center}
   </style></head><body>
-    ${duplicate ? `<div class="copy">${title}</div>` : ''}
+    ${(duplicate || returnBill._isReturn) ? `<div class="copy">${title}</div>` : ''}
     <div class="c brand">${business.name}</div>
     <div class="c small">${business.lines.join('<br/>')}</div>
     <div class="c">GSTIN : ${business.gstin}</div>
     <div class="c doc">TAX INVOICE</div>
     <div class="row"><span>Bill No : ${bill.billNo}</span><span>Date : ${printedAt.toLocaleDateString('en-GB')}</span></div>
+    ${returnBill._isReturn ? `<div class="row"><span>Original Bill :</span><span>${returnBill._originalBillNo || '-'}</span></div><div class="row"><span>Reason :</span><span>${returnBill._returnReason || '-'}</span></div>` : ''}
     <div class="row"><span>${bill.invoiceNo}</span><span>Time : ${printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span></div>
     <table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
       ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}

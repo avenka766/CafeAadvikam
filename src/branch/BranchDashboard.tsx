@@ -11,7 +11,6 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from './branchStore';
-import { StockTab } from './tabs/StockTab';
 import { SettingsTab } from './tabs/SettingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
 import BranchBillingProTab from './tabs/BranchBillingProTab';
@@ -23,12 +22,10 @@ import {
   BranchAdminKpiStrip,
   BranchBillHistoryProTab,
   CashierClosureTab,
-  CreditSalesTab,
   CurrentCashTab,
   PurchaseOrderTab,
   PurchasePayTab,
   PurchaseTab,
-  QuotationTab,
   ReturnsTab,
   SalespersonReportTab,
   StoreOrdersTab,
@@ -40,16 +37,12 @@ import { useBranchOpsStore, money } from './branchOpsStore';
 type TabId =
   | 'bill'
   | 'advance'
-  | 'quotation'
   | 'returns'
   | 'purchase'
   | 'purchase-pay'
   | 'po'
-  | 'stock'
   | 'history'
-  | 'credit-sales'
   | 'closure'
-  | 'daily-closure'
   | 'alerts'
   | 'salesperson'
   | 'notifications'
@@ -63,13 +56,9 @@ type TabId =
 const BASE_TABS = [
   { id: 'bill' as const, label: 'New Bill', icon: Receipt, adminOnly: false },
   { id: 'advance' as const, label: 'Advance Orders', icon: FileClock, adminOnly: false },
-  { id: 'quotation' as const, label: 'Quotation', icon: FileText, adminOnly: false },
   { id: 'returns' as const, label: 'Returns', icon: RotateCcw, adminOnly: false },
-  { id: 'stock' as const, label: 'Stock / Incoming', icon: Package, adminOnly: false },
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
-  { id: 'credit-sales' as const, label: 'Credit', icon: CreditCard, adminOnly: false },
   { id: 'closure' as const, label: 'Cashier Closure', icon: WalletCards, adminOnly: false },
-  { id: 'daily-closure' as const, label: 'Daily Closure', icon: ClipboardCheck, adminOnly: false },
   { id: 'alerts' as const, label: 'Alerts', icon: Bell, adminOnly: false },
   { id: 'store-orders' as const, label: 'Store Orders', icon: Store, adminOnly: false },
   { id: 'salesperson' as const, label: 'Salesperson Report', icon: UserRound, adminOnly: true },
@@ -85,7 +74,6 @@ const BASE_TABS = [
 ];
 
 const VRSNB_HIDDEN_TABS: TabId[] = [
-  'quotation',
   'salesperson',
   'store-orders',
   'reports',
@@ -126,6 +114,7 @@ export default function BranchDashboard({ branch }: Props) {
 
   const initializedRef = useRef<Branch | null>(null);
   const alertShownRef = useRef<string>('');
+  const [showDeliveryAlert, setShowDeliveryAlert] = useState(false);
 
   const branchStock      = stock[branch]           || [];
   const branchIncoming   = incoming[branch]        || [];
@@ -235,7 +224,7 @@ export default function BranchDashboard({ branch }: Props) {
     const key = `${branch}-${todayIso}-${todayDeliveryCount}`;
     if (todayDeliveryCount > 0 && alertShownRef.current !== key) {
       alertShownRef.current = key;
-      window.alert(`${todayDeliveryCount} advance deliver${todayDeliveryCount > 1 ? 'ies are' : 'y is'} due today for ${BRANCH_LABELS[branch]}.`);
+      setShowDeliveryAlert(true);
     }
   }, [branch, todayDeliveryCount, todayIso]);
 
@@ -298,49 +287,16 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
       <div className="grid min-h-0 gap-4 px-3 py-3 md:px-5">
-        {tab !== 'bill' && (
-        <div className="shrink-0 rounded-[2rem] border border-slate-200 bg-white/95 p-3 shadow-lg shadow-slate-200/50 backdrop-blur md:p-4">
-            <div className="rounded-[1.75rem] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-4 text-white shadow-lg shadow-slate-300/50">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {pendingIncoming > 0 && <Badge tone="green"><Package className="size-3" /> {pendingIncoming} incoming</Badge>}
-                    {pendingAdvance > 0 && <Badge tone="amber"><FileClock className="size-3" /> {pendingAdvance} legacy advance</Badge>}
-                    {branch !== 'VRSNB' && pendingStoreOrders > 0 && <Badge tone="blue"><Store className="size-3" /> {pendingStoreOrders} store confirms</Badge>}
-                    {pendingCreditSales > 0 && <Badge tone="amber"><CreditCard className="size-3" /> {pendingCreditSales} credit due</Badge>}
-                    {todayDeliveryCount > 0 && <Badge tone="red"><Bell className="size-3" /> {todayDeliveryCount} delivery today</Badge>}
-                    {unreadNotifications > 0 && <Badge tone="red"><Bell className="size-3" /> {unreadNotifications} admin alerts</Badge>}
-                  </div>
-                  <h1 className="mt-3 text-2xl font-black tracking-tight md:text-4xl">Branch Billing Command Center</h1>
-                </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 xl:min-w-[740px]">
-                  <HeroKpi label="Today Sales" value={money(totalTodayRevenue)} icon={<Receipt className="size-4" />} />
-                  <HeroKpi label="Advance" value={money(todayAdvanceIn)} icon={<CalendarClock className="size-4" />} />
-                  <HeroKpi label="Cash" value={money(currentCash)} icon={<Banknote className="size-4" />} />
-                  <HeroKpi label="UPI" value={money(currentUpi)} icon={<Smartphone className="size-4" />} />
-                  <HeroKpi label="Card" value={money(currentCard)} icon={<CreditCard className="size-4" />} />
-                  <HeroKpi label="Credit Due" value={money(creditDue)} icon={<WalletCards className="size-4" />} />
-                </div>
-              </div>
-              {isAdminUser && <div className="mt-4"><BranchAdminKpiStrip branch={branch} /></div>}
-            </div>
-          </div>
-        )}
-
         <main className="min-w-0 min-h-0 overflow-visible rounded-[2rem] border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50">
           <div className={cn('min-h-0 px-3 py-3 md:px-4', tab !== 'bill' && 'max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
-            {tab === 'quotation' && branch !== 'VRSNB' && <QuotationTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase' && isAdminUser && <PurchaseTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase-pay' && isAdminUser && <PurchasePayTab branch={branch} branchStock={branchStock} />}
             {tab === 'po' && isAdminUser && <PurchaseOrderTab branch={branch} branchStock={branchStock} />}
-            {tab === 'stock' && <StockTab branch={branch} branchStock={branchStock} branchIncoming={branchIncoming} branchThresholds={branchThresholds} loading={loading} stockMismatches={stockMismatches.filter((m) => m.branch === branch)} />}
             {tab === 'history' && <BranchBillHistoryProTab branch={branch} branchStock={branchStock} />}
-            {tab === 'credit-sales' && <CreditSalesTab branch={branch} branchStock={branchStock} />}
             {tab === 'closure' && <CashierClosureTab branch={branch} branchStock={branchStock} />}
-            {tab === 'daily-closure' && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}
             {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
             {tab === 'salesperson' && branch !== 'VRSNB' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
@@ -353,6 +309,34 @@ export default function BranchDashboard({ branch }: Props) {
           </div>
         </main>
       </div>
+      {showDeliveryAlert && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-md rounded-[2rem] bg-white p-8 shadow-2xl">
+            <div className="text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-red-100">
+                <Bell className="size-8 animate-bounce text-red-600" />
+              </div>
+              <h2 className="mt-4 text-2xl font-black text-slate-950">
+                {todayDeliveryCount} Delivery{todayDeliveryCount > 1 ? 's' : ''} Due Today
+              </h2>
+              <p className="mt-2 text-sm font-bold text-slate-500">
+                {BRANCH_LABELS[branch]} has advance orders scheduled for delivery today.
+              </p>
+              <div className="mt-4 space-y-2">
+                {[...todayLegacyDeliveries, ...todayCakeDeliveries].map((o: any) => (
+                  <div key={o.id} className="rounded-2xl bg-amber-50 px-4 py-3 text-left text-sm font-bold">
+                    {o.customerName} - {o.orderNo || o.id}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button onClick={() => { setShowDeliveryAlert(false); openTab('alerts'); }} className="rounded-2xl bg-slate-950 py-3 font-black text-white">View Alerts</button>
+              <button onClick={() => setShowDeliveryAlert(false)} className="rounded-2xl bg-slate-100 py-3 font-black text-slate-700">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
