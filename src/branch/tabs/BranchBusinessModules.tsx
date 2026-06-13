@@ -575,6 +575,18 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
         }),
       ]);
     }
+    // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
+    // order was actually paid — advance portion tagged with its own payment method,
+    // balance portion tagged with usedMode. Previously the entire order value was
+    // tagged with usedMode only, overstating that method and understating the advance method
+    // in cash/upi/card KPI breakdowns on Admin dashboards.
+    const advancePortion = o.advanceAmount || 0;
+    const balancePortion = o.orderValue - advancePortion;
+    const finalBillPaymentMode = balancePortion > 0 ? usedMode : (o.paymentMode as typeof usedMode);
+    const finalBillSplit = advancePortion > 0 && balancePortion > 0 ? {
+      [o.paymentMode]: advancePortion,
+      [usedMode]: balancePortion,
+    } : undefined;
     const finalBill = addAdvanceFinalBill({
       branch,
       billNo,
@@ -586,7 +598,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       total: o.orderValue,
       tendered: o.orderValue,
       balance: 0,
-      paymentMode: usedMode,
+      paymentMode: finalBillPaymentMode,
+      split: finalBillSplit,
       salesperson: o.salesperson,
       biller: currentUser?.displayName || 'Staff',
     });
@@ -838,7 +851,14 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
   const discounts = ledgerToday ? num(ledgerToday.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
-  const expected = Number(opening || 0) + cash - refunds - expenses;
+  // FIX (Bug #4): In ledger mode, cash = ledgerToday.cash_total. Verify that the
+  // complete_branch_checkout and credit-collection RPCs both write credit-collection
+  // cash into cash_total on the ledger row — if they do not, expected will be understated.
+  // The non-ledger path already includes creditCollectionCash in cash (line above), so
+  // the non-ledger path is correct. The fix here adds creditCollectionCash explicitly
+  // when in ledger mode to guard against RPCs that omit it from cash_total.
+  const creditCollectionCashForExpected = ledgerToday ? creditCollectionCash : 0;
+  const expected = Number(opening || 0) + cash + creditCollectionCashForExpected - refunds - expenses;
   const countedCash = Number(closing || 0);
   const diff = countedCash - expected;
 

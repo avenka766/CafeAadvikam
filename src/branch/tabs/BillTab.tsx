@@ -1845,11 +1845,15 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
   const splitSum     = Math.round((splitTotal0 + splitTotal1) * 100) / 100;
   const splitPending = allPriced ? Math.round((finalTotal - splitSum) * 100) / 100 : 0;
 
+  // FIX (MD Bug #5): split payment is only allowed when all items are priced.
+  // Previously, when !allPriced, the sum check was skipped entirely, allowing two
+  // arbitrary amounts that don't reconcile to the real total to pass validation.
   const splitReady = payMode === 'credit'
     ? true // credit always "ready" — amount paid can be 0 (full credit)
     : payMode === 'split'
-      ? splitMethods[0] != null && splitMethods[1] != null && splitMethods[0] !== splitMethods[1] &&
-        (allPriced ? Math.abs(splitSum - finalTotal) < 0.01 : splitTotal0 > 0 && splitTotal1 > 0)
+      ? allPriced && // require all items priced before allowing split checkout
+        splitMethods[0] != null && splitMethods[1] != null && splitMethods[0] !== splitMethods[1] &&
+        Math.abs(splitSum - finalTotal) < 0.01
       : singleMethod != null;
 
   const handleSplitAmount = (idx: 0|1, raw: string) => {

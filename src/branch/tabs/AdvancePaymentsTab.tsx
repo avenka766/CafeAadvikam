@@ -73,8 +73,10 @@ export function AdvancePaymentsTab({ branch, advanceOrders }: Props) {
 
   const totalAdvanceCollected = advanceOrders.reduce((s, o) => s + o.advanceAmount, 0);
   const totalBalanceCollected = completed.reduce((s, o) => {
-    const balancePaid = o.subtotal - o.advanceAmount;
-    return s + Math.max(0, balancePaid);
+    // FIX: use recorded balanceDue instead of deriving from subtotal-advance,
+    // which breaks when the advance already covered the full amount or a custom partial was taken.
+    const balancePaid = Math.max(0, o.subtotal - o.advanceAmount - (o.balanceDue ?? 0));
+    return s + balancePaid;
   }, 0);
   const totalOutstanding = pending.reduce((s, o) => s + o.balanceDue, 0);
   const totalOrderValue  = advanceOrders.reduce((s, o) => s + o.subtotal, 0);

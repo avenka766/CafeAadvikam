@@ -577,7 +577,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <button onClick={() => raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', disputedIncoming[inc.id] ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
                         <AlertTriangle className="size-3.5" /> {disputedIncoming[inc.id] ? 'Disputed' : 'Dispute'}
                       </button>
-                      <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />
+                      {/* FIX (MD Bug #15): hide Confirm when item is disputed so a disputed
+                          quantity cannot be confirmed into stock before admin reviews it.
+                          TODO: persist dispute status server-side (branch_incoming.disputed)
+                          so the block survives page refresh. */}
+                      {!disputedIncoming[inc.id] && <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />}
+                      {disputedIncoming[inc.id] && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
                     </div>
                   </div>
                 );

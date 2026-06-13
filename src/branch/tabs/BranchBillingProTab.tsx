@@ -93,7 +93,15 @@ function recalcLine(item: BranchBillItem, qty: number): BranchBillItem {
   const quantity = Number(qty.toFixed(3));
   const subtotal = item.price * quantity;
   const tax = subtotal * TAX_RATE;
-  return { ...item, quantity, tax, lineTotal: subtotal + tax - (item.discount || 0) };
+  // FIX (Bug #6): per-item discount must scale proportionally with quantity.
+  // Previously the stored fixed discount amount was applied regardless of qty,
+  // so changing qty from 1 to 5 still only subtracted the 1-unit discount.
+  // NOTE: item.discount is currently always 0 (set in toBillItem), so this has
+  // no live impact today — but the correct formula is applied here so that if
+  // per-item discounts are added in future, recalcLine will work correctly.
+  const originalQty = item.quantity > 0 ? item.quantity : 1;
+  const scaledDiscount = (item.discount || 0) * (quantity / originalQty);
+  return { ...item, quantity, tax, lineTotal: subtotal + tax - scaledDiscount };
 }
 
 function toBillItem(item: BillingItem, qty: number): BranchBillItem {
@@ -297,10 +305,18 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     const remaining = Math.max(0, Number((total - value).toFixed(2)));
     const remainingText = remaining > 0 ? String(remaining) : '';
     setSplit((current) => {
-      const next = { ...current, [field]: valueText };
-      if (field === 'cash') return { ...next, upi: remainingText, card: '' };
-      if (field === 'upi') return { ...next, cash: remainingText, card: '' };
-      return { ...next, cash: remainingText, upi: '' };
+      // FIX: only auto-distribute remainder when the other fields are already empty,
+      // so the user can type freely without their partially-entered values being overwritten.
+      if (field === 'cash') {
+        const autoFill = !current.upi && !current.card;
+        return { ...current, cash: valueText, upi: autoFill ? remainingText : current.upi, card: '' };
+      }
+      if (field === 'upi') {
+        const autoFill = !current.cash && !current.card;
+        return { ...current, upi: valueText, cash: autoFill ? remainingText : current.cash, card: '' };
+      }
+      const autoFill = !current.cash && !current.upi;
+      return { ...current, card: valueText, cash: autoFill ? remainingText : current.cash, upi: '' };
     });
   };
 
@@ -369,7 +385,11 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
       }
       const result = data as CheckoutRpcResult;
       if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
-      const saved = addBill({
+      // FIX (MD Bug #2): guard against dual-write desync. If the RPC succeeds but addBill()
+      // fails (network drop, tab close), a retry would call addBill() again. By checking
+      // for an existing bill with the same billNo first, the write is idempotent.
+      const existingBill = bills.find(b => b.billNo === result.billNo);
+      const saved = existingBill ?? addBill({
         branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
         tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
