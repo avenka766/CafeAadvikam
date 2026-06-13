@@ -1,9 +1,9 @@
 // src/components/admin/SnbItemsTab.tsx
 // Admin → Items → Bakery → SNB Items
-// Shows all 196 SNB price-list items + stock mismatch alerts from SNB & Hosur branches.
+// Shows all SNB price-list items for admin item management.
 
 import { useEffect, useState, useMemo } from 'react';
-import { AlertTriangle, AlertCircle, Search, X, Scale, Hash, ChevronDown, ChevronUp, Plus, Pencil, Check } from 'lucide-react';
+import { AlertCircle, Search, X, Scale, Hash, Plus, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranchStore } from '@/branch/branchStore';
 import { useItemPriceStore } from '@/stores/itemPriceStore';
@@ -69,7 +69,7 @@ function AddItemModal({
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div>
             <p className="font-display font-bold text-foreground text-base">Add SNB Item</p>
-            <p className="text-[10px] text-muted-foreground mt-0.5">Barcode #{nextBarcode} · SNB &amp; Hosur</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">Barcode #{nextBarcode}</p>
           </div>
           <button onClick={onClose} className="size-8 rounded-xl hover:bg-muted flex items-center justify-center transition">
             <X className="size-4 text-muted-foreground" />
@@ -222,12 +222,11 @@ function EditItemModal({
 
 
 export default function SnbItemsTab() {
-  const { stockMismatches, fetchStockMismatches, stock, fetchBranchData } = useBranchStore();
+  const { stock, fetchBranchData } = useBranchStore();
   const { fetchOverrides, saveOverride, overrides } = useItemPriceStore();
   const { currentUser: user } = useAuthStore();
   const [search, setSearch]               = useState('');
   const [activeCategory, setActiveCategory] = useState<SnbCategory | 'All'>('All');
-  const [mismatchExpanded, setMismatchExpanded] = useState(true);
   const [showAddModal, setShowAddModal]   = useState(false);
   const [customItems, setCustomItems]     = useState<CustomSnbItem[]>([]);
   const [saveError, setSaveError]         = useState<string | null>(null);
@@ -235,36 +234,14 @@ export default function SnbItemsTab() {
   // priceOverrides are read from itemPriceStore (Supabase-backed) — not local state
 
   useEffect(() => {
-    fetchStockMismatches();
     fetchOverrides('SNB');
     fetchBranchData('SNB');
-    fetchBranchData('Hosur');
   }, []);
 
   const nextBarcode = useMemo(() => {
     const allBarcodes = [...SNB_ITEMS.map(i => i.barcode), ...customItems.map(i => i.barcode)];
     return Math.max(...allBarcodes) + 1;
   }, [customItems]);
-
-  // Deduplicate mismatches by item — sum shortage per item
-  const mismatchSummary = useMemo(() => {
-    return [] as Array<{ itemName: string; branch: string; totalShortage: number; lastDate: string }>;
-    const map: Record<string, { branch: string; totalShortage: number; lastDate: string }> = {};
-    stockMismatches.forEach((m) => {
-      const key = `${m.branch}::${m.itemName}`;
-      if (!map[key]) {
-        map[key] = { branch: m.branch, totalShortage: 0, lastDate: m.soldAt };
-      }
-      map[key].totalShortage += m.shortage;
-      if (m.soldAt > map[key].lastDate) map[key].lastDate = m.soldAt;
-    });
-    return Object.entries(map).map(([key, v]) => ({
-      itemName: key.split('::')[1],
-      branch: v.branch,
-      totalShortage: Math.round(v.totalShortage * 1000) / 1000,
-      lastDate: new Date(v.lastDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
-    }));
-  }, [stockMismatches]);
 
   const snbOverrides = overrides['SNB'];
   const allItems = useMemo(() => [
@@ -277,7 +254,7 @@ export default function SnbItemsTab() {
   ], [customItems, snbOverrides]);
 
   const stockStatus = useMemo(() => {
-    const branches = ['SNB', 'Hosur'] as const;
+    const branches = ['SNB'] as const;
     const map = new Map<string, {
       totalQty: number;
       minLevel: number;
@@ -361,51 +338,6 @@ export default function SnbItemsTab() {
         </div>
       )}
 
-      {/* ── Mismatch alerts ─────────────────────────────────────────────────── */}
-      {mismatchSummary.length > 0 && (
-        <div className="rounded-xl border border-red-200 overflow-hidden">
-          <button
-            onClick={() => setMismatchExpanded((v) => !v)}
-            className="w-full flex items-center gap-3 px-4 py-3 bg-red-50 hover:bg-red-100 transition text-left"
-          >
-            <div className="size-8 rounded-xl bg-red-100 flex items-center justify-center shrink-0">
-              <AlertCircle className="size-4 text-red-600" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-red-800">
-                Stock mismatch alerts — SNB &amp; Hosur
-              </p>
-              <p className="text-xs text-red-600 mt-0.5">
-                {mismatchSummary.length} item{mismatchSummary.length > 1 ? 's' : ''} sold without sufficient stock (last 30 days)
-              </p>
-            </div>
-            <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full mr-1">
-              {mismatchSummary.length}
-            </span>
-            {mismatchExpanded
-              ? <ChevronUp className="size-4 text-red-400 shrink-0" />
-              : <ChevronDown className="size-4 text-red-400 shrink-0" />}
-          </button>
-
-          {mismatchExpanded && (
-            <div className="divide-y divide-red-50 bg-white">
-              {mismatchSummary.map((m, i) => (
-                <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                  <AlertTriangle className="size-3.5 text-red-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{m.itemName}</p>
-                    <p className="text-[10px] text-muted-foreground">{m.branch} · Last: {m.lastDate}</p>
-                  </div>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap">
-                    −{m.totalShortage} short
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       <div className="hidden">
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
           <p className="text-[10px] font-bold uppercase text-emerald-700">Available</p>
@@ -429,7 +361,7 @@ export default function SnbItemsTab() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs text-muted-foreground">
-            {allItems.length} items · SNB &amp; Hosur branches · same price list
+            {allItems.length} items
             {customItems.length > 0 && (
               <span className="ml-1.5 text-[9px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
                 +{customItems.length} added
@@ -494,9 +426,6 @@ export default function SnbItemsTab() {
         ) : (
           <div className="divide-y">
             {filtered.map((item) => {
-              const hasMismatch = mismatchSummary.some(
-                (m) => m.itemName.toLowerCase() === item.name.toLowerCase(),
-              );
               const status = stockStatus.get(item.name);
               const isMissing = Boolean(status?.missingBranches.length);
               const isOut = !isMissing && Boolean((status?.totalQty ?? 0) <= 0 || status?.outBranches.length);
@@ -504,15 +433,10 @@ export default function SnbItemsTab() {
               const isCustom = 'isCustom' in item;
               return (
                 <div key={item.barcode}
-                  className={cn('flex items-center gap-3 px-4 py-3', (hasMismatch || isOut || isMissing) && 'bg-red-50/40', isLow && 'bg-amber-50/40', isCustom && 'bg-blue-50/30')}>
+                  className={cn('flex items-center gap-3 px-4 py-3', (isOut || isMissing) && 'bg-red-50/40', isLow && 'bg-amber-50/40', isCustom && 'bg-blue-50/30')}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium">{item.name}</p>
-                      {hasMismatch && (
-                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
-                          <AlertTriangle className="size-2.5" /> Stock alert
-                        </span>
-                      )}
                       {isMissing && (
                         <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded-full">
                           Stock Not Available
