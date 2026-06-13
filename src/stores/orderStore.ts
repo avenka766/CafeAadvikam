@@ -150,6 +150,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
   submitOrder: async (params) => {
     const { cart } = get();
+    // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
+    // A sophisticated user could mutate in-memory prices before adding to cart and submit
+    // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
+    // RPC-side re-validation of item prices at insert time — this is a backend schema change.
+    // Frontend mitigation: staff billing review before payment collection is the current guard.
+    // TODO: add a Supabase trigger on orders INSERT that validates items[].price against menu_items.price.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const parcelCharges = params.parcelCharges ?? 0;
     const total = subtotal + parcelCharges;
@@ -209,6 +215,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
   submitAdvanceOrder: async (params) => {
     const { cart } = get();
+    // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
+    // A sophisticated user could mutate in-memory prices before adding to cart and submit
+    // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
+    // RPC-side re-validation of item prices at insert time — this is a backend schema change.
+    // Frontend mitigation: staff billing review before payment collection is the current guard.
+    // TODO: add a Supabase trigger on orders INSERT that validates items[].price against menu_items.price.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
@@ -279,6 +291,19 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const prev = get().orders;
     const now = new Date().toISOString();
     const order = get().orders.find(o => o.id === orderId);
+
+    // FIX (MD Bug #23): block cancellation if any payment has already been collected.
+    // Cancelling a paid/advance order drops it from Daily Closure revenue entirely,
+    // leaving physically-collected cash untracked — a direct skimming vector reachable
+    // by order_taker, admin, and kitchen roles via the Order History screen.
+    // A paid order must go through the refund/return flow first, never a bare cancel.
+    if (status === 'cancelled' && order && order.paymentType !== 'unpaid') {
+      throw new Error(
+        'Cannot cancel: payment has already been collected for this order. ' +
+        'Process a refund first, then cancel.'
+      );
+    }
+
     const effectiveStatus: OrderStatus =
       status === 'ready' && order && order.paymentType !== 'unpaid'
         ? 'served'
@@ -293,10 +318,11 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update(updates).eq('id', orderId);
-    if (error) {
+    // FIX (MD Bug #9): optimistic lock on updated_at prevents silent last-write-wins
+    const { data: statusLock, error } = await supabase.from('orders').update(updates).eq('id', orderId).eq('updated_at', order?.updatedAt ?? now).select('id');
+    if (error || !statusLock || statusLock.length === 0) {
       set({ orders: prev });
-      throw new Error('Failed to update order status');
+      throw new Error(!statusLock || statusLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to update order status');
     }
   },
 
@@ -322,10 +348,15 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update({
+    // FIX (MD Bug #9): apply optimistic-lock check via updated_at so concurrent edits
+    // (e.g. one staff applies discount while another updates status) are detected.
+    const { data: discountLock, error } = await supabase.from('orders').update({
       discount_type: discountType, discount_value: discountValue, discount, total, updated_at: now,
-    }).eq('id', orderId);
-    if (error) { set({ orders: prev }); throw new Error('Failed to apply discount'); }
+    }).eq('id', orderId).eq('updated_at', order.updatedAt).select('id');
+    if (error || !discountLock || discountLock.length === 0) {
+      set({ orders: prev });
+      throw new Error(!discountLock || discountLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to apply discount');
+    }
   },
 
   setPaymentType: async (orderId, paymentType, billedBy, breakdown) => {
@@ -379,8 +410,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update(updates).eq('id', orderId);
-    if (error) { set({ orders: prev }); throw new Error('Failed to set advance payment'); }
+    // FIX (MD Bug #9): optimistic lock on updated_at
+    const { data: advanceLock, error } = await supabase.from('orders').update(updates).eq('id', orderId).eq('updated_at', order.updatedAt).select('id');
+    if (error || !advanceLock || advanceLock.length === 0) {
+      set({ orders: prev });
+      throw new Error(!advanceLock || advanceLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to set advance payment');
+    }
   },
 
   collectBalance: async (orderId, balancePaymentType, billedBy, breakdown) => {
