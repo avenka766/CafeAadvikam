@@ -3829,18 +3829,37 @@ function StockAuditTab({
   const confirmReport = async (reportId: string) => {
     const report = reports.find((row) => row.id === reportId);
     if (!report) return;
+    if (report.status !== "Pending Admin Review") {
+      setNotice(`${report.reportNo} is already ${report.status}.`);
+      return;
+    }
     const ok = window.confirm(
       `Confirm ${report.reportNo} and update SNB stock to the physical counted quantities?`,
     );
     if (!ok) return;
     setSavingId(reportId);
     try {
-      for (const line of report.lines) {
-        const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName);
-        if (error) {
-          setNotice(error);
-          setSavingId("");
+      const { error: rpcError } = await supabase.rpc("confirm_branch_stock_count_report", {
+        p_report_id: report.id,
+        p_confirmed_by: userName,
+      });
+      if (rpcError) {
+        const missingRpc =
+          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache/i.test(
+            rpcError.message || "",
+          );
+        if (!missingRpc) {
+          setNotice(`Stock count confirmation failed: ${rpcError.message}`);
           return;
+        }
+        for (const line of report.lines) {
+          const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName);
+          if (error) {
+            setNotice(
+              `${report.reportNo} stopped at ${line.itemName}: ${error}. Re-check Stock Audit before confirming again.`,
+            );
+            return;
+          }
         }
       }
       confirmStockCountReport(report.id, userName);
