@@ -24,7 +24,6 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/stores/authStore';
 
 export type PriceBranch = 'SNB' | 'VRSNB';
 
@@ -137,24 +136,27 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
       if (nameChanged)  changes.push(`name: "${oldName}" -> "${name}"`);
       if (priceChanged) changes.push(`price: Rs.${oldPrice} -> Rs.${price}`);
 
-      // VRSNB Admin or SNB Admin -> notify 'admin' (super admin must be informed)
-      // Super Admin changing any branch items -> notify 'admin' as a self-audit log.
-      const changerRole = useAuthStore.getState().currentUser?.role ?? 'admin';
-      let recipientRole: string;
-      if (changerRole === 'admin_vrsnb' || changerRole === 'admin_snb') {
-        recipientRole = 'admin';
-      } else {
-        recipientRole = 'admin';
-      }
+      const recipientRole = branch === 'SNB' ? 'admin_snb' : 'admin_vrsnb';
+      const notifications = [
+        {
+          type:           'price_change',
+          title:          `${branch} Price Updated - ${name}`,
+          body:           `${changes.join(' | ')} | Changed by ${updatedBy}`,
+          ref_label:      `${branch} | Barcode #${barcode}`,
+          meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+          recipient_role: recipientRole,
+        },
+        {
+          type:           'price_change',
+          title:          `${branch} Price Updated - ${name}`,
+          body:           `${changes.join(' | ')} | Changed by ${updatedBy}`,
+          ref_label:      `${branch} | Barcode #${barcode}`,
+          meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+          recipient_role: 'admin',
+        },
+      ];
 
-      const { error: notifError } = await supabase.from('admin_notifications').insert({
-        type:           'price_change',
-        title:          `${branch} Price Updated - ${name}`,
-        body:           `${changes.join(' | ')} | Changed by ${updatedBy}`,
-        ref_label:      `${branch} | Barcode #${barcode}`,
-        meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
-        recipient_role: recipientRole,
-      });
+      const { error: notifError } = await supabase.from('admin_notifications').insert(notifications);
       if (notifError) {
         console.error('[itemPriceStore] notification insert failed:', notifError.message);
         return `Price saved, but notification failed: ${notifError.message}`;
