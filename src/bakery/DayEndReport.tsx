@@ -1,7 +1,7 @@
 // src/bakery/DayEndReport.tsx
 // Day-end summary — orders vs dispatched per branch per item for any selected date.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, Calendar, Download, ArrowDown, ArrowUp, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
@@ -54,39 +54,37 @@ export default function DayEndReport() {
   const [orders,  setOrders]  = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const fetchForDate = async () => {
-      setLoading(true);
-      // M-11 FIX: use try/finally so loading is always reset to false even on
-      // network exceptions (previously an uncaught throw left an infinite spinner).
-      try {
-        const from = `${date}T00:00:00`;
-        const to   = `${date}T23:59:59`;
-        const { data, error } = await supabase
-          .from('bakery_orders')
-          .select('order_number, target_branch, status, items, dispatch_log, created_at')
-          .gte('created_at', from)
-          .lte('created_at', to)
-          .order('created_at', { ascending: true });
-        if (cancelled) return; // discard stale responses when date changed rapidly
-        if (!error && data) {
-          setOrders(data.map(r => ({
-            orderNumber:  r.order_number as number,
-            targetBranch: r.target_branch as string,
-            status:       r.status as string,
-            items:        (r.items as OrderRow['items']) ?? [],
-            dispatchLog:  (r.dispatch_log as OrderRow['dispatchLog']) ?? [],
-            createdAt:    r.created_at as string,
-          })));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+  // FIX: extracted from useEffect so the "Load" button can also call it without ReferenceError
+  const fetchForDate = useCallback(async () => {
+    setLoading(true);
+    try {
+      // FIX: IST offset ensures Supabase (UTC storage) returns the correct IST day boundary
+      const from = `${date}T00:00:00+05:30`;
+      const to   = `${date}T23:59:59+05:30`;
+      const { data, error } = await supabase
+        .from('bakery_orders')
+        .select('order_number, target_branch, status, items, dispatch_log, created_at')
+        .gte('created_at', from)
+        .lte('created_at', to)
+        .order('created_at', { ascending: true });
+      if (!error && data) {
+        setOrders(data.map(r => ({
+          orderNumber:  r.order_number as number,
+          targetBranch: r.target_branch as string,
+          status:       r.status as string,
+          items:        (r.items as OrderRow['items']) ?? [],
+          dispatchLog:  (r.dispatch_log as OrderRow['dispatchLog']) ?? [],
+          createdAt:    r.created_at as string,
+        })));
       }
-    };
-    fetchForDate();
-    return () => { cancelled = true; };
+    } finally {
+      setLoading(false);
+    }
   }, [date]);
+
+  useEffect(() => {
+    fetchForDate();
+  }, [fetchForDate]);
 
   const branchSummaries: BranchSummary[] = useMemo(() => {
     const branches = [...new Set(orders.map(o => o.targetBranch))].sort();

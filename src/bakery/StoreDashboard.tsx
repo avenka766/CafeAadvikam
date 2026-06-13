@@ -230,6 +230,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
           >
             <div className="flex items-center gap-1.5">
               <Calculator className="size-3.5" />
+              {mats.length === 0 && <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold bg-amber-100 text-amber-700 mb-1">⚠ No recipe — stock will not be deducted for this item</span>}
               Raw materials ({mats.length} ingredients)
               {anyOut && <span className="text-[9px] font-bold">— check stock!</span>}
             </div>

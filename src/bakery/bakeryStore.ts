@@ -199,10 +199,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .single();
     if (fetchErr || !freshOrder) return;
 
-    const updatedLog: DispatchEntry[] = [
-      ...((freshOrder.dispatch_log as DispatchEntry[]) || []),
-      newEntry,
-    ];
+    const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];
+    // FIX (MD Bug #18): check if this entry was already appended (idempotency guard for retries).
+    // The root race condition (two different devices dispatching different items of the same order
+    // concurrently) still exists at the DB level — the proper fix is a server-side RPC using
+    // jsonb_array_append in a single atomic UPDATE. This guard at minimum prevents double-appending
+    // on retries within a single session.
+    // TODO: move dispatch_log append to a server-side RPC for true concurrency safety.
+    const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
+    const updatedLog: DispatchEntry[] = alreadyAppended
+      ? existingLog
+      : [...existingLog, newEntry];
 
     // Only mark 'dispatched' when every prepared item is fully covered by the log.
     // FIX B7: for pcs items, compare totalDispatched (pcs) against flooredPcs

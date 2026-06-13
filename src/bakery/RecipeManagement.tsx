@@ -110,9 +110,14 @@ function RecipeEditor({
   const handleSave = async () => {
     const validMats = materials.filter(m => m.material.trim());
     if (validMats.length === 0) { setError('Add at least one material'); return; }
+    // FIX (MD Bug #16): outputQty is required and must be > 0. A missing/blank outputQty
+    // causes calculateMaterials() to return [] (no deductions) for any production order,
+    // silently overstating raw material stock and masking real ingredient consumption.
+    const parsedOutputQty = outputQty ? parseFloat(outputQty) : null;
+    if (!parsedOutputQty || parsedOutputQty <= 0) { setError('Batch Output Qty is required and must be greater than 0'); return; }
     setError('');
     await onSave({
-      outputQty: outputQty ? parseFloat(outputQty) : null,
+      outputQty: parsedOutputQty,
       outputUnit,
       materials: validMats,
     });
