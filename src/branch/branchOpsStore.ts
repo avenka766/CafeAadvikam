@@ -323,7 +323,9 @@ export interface BranchNotification {
     | "Expense"
     | "Complaint"
     | "Waste Log"
-    | "Quotation";
+    | "Quotation"
+    | "Stock Count"
+    | "Stock Variance";
   title: string;
   details: string;
   createdAt: string;
@@ -687,10 +689,14 @@ const mergeOperationRecordsIntoState = (
     complaints: [],
     wasteLogs: [],
     cashiers: [],
+    stockCountReports: [],
+    stockVarianceRecords: [],
     auditLogs: [],
   } as unknown as BranchOpsState);
   if (!saved?.state && rows.length === 0) return null;
   const state = { ...baseState } as BranchOpsState;
+  state.stockCountReports = Array.isArray(state.stockCountReports) ? state.stockCountReports : [];
+  state.stockVarianceRecords = Array.isArray(state.stockVarianceRecords) ? state.stockVarianceRecords : [];
   const buckets: Array<[keyof BranchOpsState, string]> = [
     ["bills", "bill"],
     ["bills", "advance_final_bill"],
@@ -712,6 +718,8 @@ const mergeOperationRecordsIntoState = (
     ["complaints", "complaint"],
     ["wasteLogs", "waste_log"],
     ["cashiers", "cashier_profile"],
+    ["stockCountReports", "stock_count_report"],
+    ["stockVarianceRecords", "stock_variance"],
   ];
 
   for (const [stateKey, recordType] of buckets) {
@@ -796,6 +804,8 @@ function persistedBranchOps(state: BranchOpsState) {
     complaints: state.complaints,
     wasteLogs: state.wasteLogs,
     cashiers: state.cashiers,
+    stockCountReports: state.stockCountReports,
+    stockVarianceRecords: state.stockVarianceRecords,
     auditLogs: state.auditLogs,
   };
 }
@@ -821,6 +831,9 @@ const seq = (key: string, max = 99999) => {
   } else if (key.startsWith("po-")) {
     const branch = key.replace("po-", "") as Branch;
     current = Math.max(0, ...state.purchaseOrders.filter((p) => p.branch === branch).map((p) => suffix(p.poNo)));
+  } else if (key.startsWith("stock-count-")) {
+    const branch = key.replace("stock-count-", "") as Branch;
+    current = Math.max(0, ...state.stockCountReports.filter((r) => r.branch === branch).map((r) => suffix(r.reportNo)));
   }
   return current >= max ? 1 : current + 1;
 };
@@ -863,6 +876,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
       complaints: [],
       wasteLogs: [],
       cashiers: [],
+      stockCountReports: [],
+      stockVarianceRecords: [],
       auditLogs: [],
       addAuditLog: (log) =>
         set((s) => ({
@@ -1986,6 +2001,175 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           actor: closure.cashier,
         });
         return newClosure;
+      },
+      submitStockCountReport: (report) => {
+        const now = new Date().toISOString();
+        const reportNo = `${report.branch}-SC-${String(seq(`stock-count-${report.branch}`)).padStart(4, "0")}`;
+        const normalizedLines = report.lines.map((line) => ({
+          ...line,
+          systemQty: Math.round(Number(line.systemQty || 0) * 1000) / 1000,
+          physicalQty: Math.round(Number(line.physicalQty || 0) * 1000) / 1000,
+          difference:
+            Math.round((Number(line.systemQty || 0) - Number(line.physicalQty || 0)) * 1000) / 1000,
+        }));
+        const newReport: BranchStockCountReport = {
+          ...report,
+          id: uid("stock-count"),
+          reportNo,
+          lines: normalizedLines,
+          status: "Pending Admin Review",
+          createdAt: now,
+          updatedAt: now,
+        };
+        const notification: BranchNotification = {
+          id: uid("note"),
+          branch: report.branch,
+          type: "Stock Count",
+          title: "Daily stock count submitted",
+          details: `${reportNo} submitted by ${report.reportedBy}. ${normalizedLines.filter((l) => l.difference !== 0).length} item differences found.`,
+          createdAt: now,
+          raisedBy: report.reportedBy,
+          status: "Unread",
+        };
+        set((s) => ({
+          stockCountReports: [newReport, ...s.stockCountReports],
+          notifications: [notification, ...s.notifications],
+          auditLogs: [
+            audit(report.branch, report.reportedBy, "Stock Count Submitted", "-", reportNo),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(report.branch, "stock_count_report", newReport.id, newReport, {
+          recordNo: reportNo,
+          status: newReport.status,
+          actor: report.reportedBy,
+        });
+        mirrorOperationRecord(report.branch, "notification", notification.id, notification, {
+          status: notification.status,
+          actor: report.reportedBy,
+        });
+        void supabase.from("branch_stock_count_reports").upsert(
+          {
+            id: newReport.id,
+            branch: newReport.branch,
+            report_no: newReport.reportNo,
+            lines: newReport.lines,
+            status: newReport.status,
+            reported_by: newReport.reportedBy,
+            created_at: newReport.createdAt,
+            updated_at: newReport.updatedAt,
+          },
+          { onConflict: "id" },
+        );
+        return newReport;
+      },
+      confirmStockCountReport: (reportId, confirmedBy) => {
+        const report = get().stockCountReports.find((r) => r.id === reportId);
+        if (!report) return undefined;
+        const now = new Date().toISOString();
+        const confirmedReport: BranchStockCountReport = {
+          ...report,
+          status: "Confirmed",
+          confirmedBy,
+          confirmedAt: now,
+          updatedAt: now,
+        };
+        const varianceRows: BranchStockVarianceRecord[] = report.lines
+          .filter((line) => Math.abs(Number(line.difference || 0)) > 0.0001)
+          .map((line) => ({
+            id: uid("variance"),
+            branch: report.branch,
+            reportId: report.id,
+            reportNo: report.reportNo,
+            itemName: line.itemName,
+            unit: line.unit,
+            systemQty: line.systemQty,
+            physicalQty: line.physicalQty,
+            difference: line.difference,
+            reportedBy: report.reportedBy,
+            confirmedBy,
+            createdAt: now,
+          }));
+        const varianceNotification: BranchNotification | null =
+          varianceRows.length > 0
+            ? {
+                id: uid("note"),
+                branch: report.branch,
+                type: "Stock Variance",
+                title: "Stock variance confirmed",
+                details: `${report.reportNo} confirmed by ${confirmedBy}. ${varianceRows.length} item differences sent to Owner/Admin.`,
+                createdAt: now,
+                raisedBy: confirmedBy,
+                status: "Unread",
+              }
+            : null;
+        set((s) => ({
+          stockCountReports: s.stockCountReports.map((r) =>
+            r.id === reportId ? confirmedReport : r,
+          ),
+          stockVarianceRecords: [...varianceRows, ...s.stockVarianceRecords],
+          notifications: varianceNotification
+            ? [varianceNotification, ...s.notifications]
+            : s.notifications,
+          auditLogs: [
+            audit(report.branch, confirmedBy, "Stock Count Confirmed", report.status, report.reportNo),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(report.branch, "stock_count_report", confirmedReport.id, confirmedReport, {
+          recordNo: confirmedReport.reportNo,
+          status: confirmedReport.status,
+          actor: confirmedBy,
+        });
+        varianceRows.forEach((row) => {
+          mirrorOperationRecord(row.branch, "stock_variance", row.id, row, {
+            recordNo: row.reportNo,
+            amount: row.difference,
+            status: row.difference > 0 ? "Short" : "Excess",
+            actor: confirmedBy,
+          });
+        });
+        if (varianceNotification) {
+          mirrorOperationRecord(report.branch, "notification", varianceNotification.id, varianceNotification, {
+            status: varianceNotification.status,
+            actor: confirmedBy,
+          });
+        }
+        void supabase.from("branch_stock_count_reports").upsert(
+          {
+            id: confirmedReport.id,
+            branch: confirmedReport.branch,
+            report_no: confirmedReport.reportNo,
+            lines: confirmedReport.lines,
+            status: confirmedReport.status,
+            reported_by: confirmedReport.reportedBy,
+            confirmed_by: confirmedReport.confirmedBy,
+            confirmed_at: confirmedReport.confirmedAt,
+            created_at: confirmedReport.createdAt,
+            updated_at: confirmedReport.updatedAt,
+          },
+          { onConflict: "id" },
+        );
+        if (varianceRows.length > 0) {
+          void supabase.from("branch_stock_variance_records").upsert(
+            varianceRows.map((row) => ({
+              id: row.id,
+              branch: row.branch,
+              report_id: row.reportId,
+              report_no: row.reportNo,
+              item_name: row.itemName,
+              unit: row.unit ?? null,
+              system_qty: row.systemQty,
+              physical_qty: row.physicalQty,
+              difference: row.difference,
+              reported_by: row.reportedBy,
+              confirmed_by: row.confirmedBy,
+              created_at: row.createdAt,
+            })),
+            { onConflict: "id" },
+          );
+        }
+        return confirmedReport;
       },
       addNotification: (notification) => {
         const newNotification = {
