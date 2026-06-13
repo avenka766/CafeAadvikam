@@ -87,6 +87,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         setCancelPasswordError('Incorrect password. Try again.');
         return;
       }
+      // FIX (MD Bug #23): block cancellation if advance payment was already collected.
+      // Cancelling such an order hides collected cash from the Daily Closure — the advance
+      // amount vanishes from cashMovements without a corresponding refund or reversal entry.
+      // A biller must manually process the refund/reversal before the order can be cancelled.
+      if (order.paymentType === 'advance' && (order.advanceAmount ?? 0) > 0) {
+        setCancelPasswordError('Cannot cancel: advance payment already collected. Process a refund first, then cancel.');
+        return;
+      }
       await updateOrderStatus(order.id, 'cancelled', finalReason);
       setShowCancelPrompt(false);
       setCancelReason('');
@@ -442,7 +450,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
             <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
               <Printer className="size-4" />
             </button>
-            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+            {/* FIX (MD Bug #23): hide cancel button once any payment has been collected.
+                A paid order must go through refund/return flow — bare cancel hides cash. */}
+            {order.paymentType === 'unpaid' && (
+              <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+            )}
+            {order.paymentType !== 'unpaid' && (
+              <span className="px-3 py-2.5 rounded-lg bg-amber-100 text-amber-700 text-xs font-body font-semibold select-none" title="Payment collected — process a refund before cancelling">💳 Paid</span>
+            )}
           </div>
         )}
 
