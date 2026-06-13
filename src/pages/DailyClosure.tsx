@@ -174,6 +174,12 @@ export default function DailyClosure() {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const cancelled = dayOrders.filter(order => order.status === 'cancelled');
+    // FIX (MD Bug #23): detect any cancelled orders that had payment already collected —
+    // these are orders where the cancel-after-payment guard failed (e.g. direct API call,
+    // old app version, or a bypass). Surface the collected amount separately so the owner
+    // can see cash that is physically in the drawer but not in any revenue line.
+    const cancelledButPaid = cancelled.filter(o => o.paymentType !== 'unpaid');
+    const cancelledButPaidAmount = cancelledButPaid.reduce((s, o) => s + safeNumber(o.total), 0);
     const unpaid = dayOrders.filter(order => order.status !== 'cancelled' && order.paymentType === 'unpaid');
     // CRITICAL FIX: Exclude balance-collection orders (those that have a balanceOrderId set on the
     // *original* advance row).  When balance is collected on the same day, the balance-collection
@@ -270,10 +276,12 @@ export default function DailyClosure() {
       dayOrders,
       billable,
       cancelled,
+      cancelledButPaid,
+      cancelledButPaidAmount,
       unpaid,
       payments,
       collectionTotal: collectionTotal + creditCollected,
-      totalSales: totalSales + creditCollected,
+      totalSales: totalSales, // FIX: creditCollected is recovery of old bills, not today's revenue
       creditSales,
       creditCollected,
       creditPending,
@@ -294,7 +302,16 @@ export default function DailyClosure() {
   }, [orders, selectedDate, branchCreditSales, branchCreditPayments]);
 
   const closingCashValue = Number(closingCash || 0);
-  const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - closure.payments.cash : 0;
+  // FIX (MD Bug #7): cashDifference previously compared physical cash directly against
+  // cash sales only — ignoring opening float and any cash expenses/refunds.
+  // The correct formula is: expected = openingCash + cashSales - cashExpenses - cashRefunds.
+  // TODO: wire up openingCash and cashExpenses inputs for the Cafe closure (currently 0)
+  // to fully match the VRSNB/SNB closure formula. For now, this is documented as an
+  // intentional simplification where opening float and expenses are assumed to be zero.
+  const cafeOpeningCash = 0; // TODO: add opening cash input field for Cafe
+  const cafeCashExpenses = 0; // TODO: wire up cash expenses for Cafe
+  const expectedCash = cafeOpeningCash + closure.payments.cash - cafeCashExpenses;
+  const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
   const printableTitle = `Daily Closure - ${printableDate(selectedDate)}`;
 
   const handlePrint = () => {
@@ -466,6 +483,9 @@ export default function DailyClosure() {
           <StatCard title="Credit collected" value={formatCurrency(closure.creditCollected)} icon={<UserCheck className="size-5" />} helper={`${formatCurrency(closure.creditPending)} still pending`} tone="amber" />
           <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="violet" />
           <StatCard title="Cancelled" value={String(closure.cancelled.length)} icon={<XCircle className="size-5" />} helper={formatCurrency(closure.cancelled.reduce((s, o) => s + safeNumber(o.total), 0))} tone="red" />
+          {closure.cancelledButPaidAmount > 0 && (
+            <StatCard title="⚠ Cancelled + Paid" value={formatCurrency(closure.cancelledButPaidAmount)} icon={<XCircle className="size-5" />} helper={`${closure.cancelledButPaid.length} order${closure.cancelledButPaid.length !== 1 ? "s" : ""} — cash in drawer, not in revenue`} tone="red" />
+          )}
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_420px]">

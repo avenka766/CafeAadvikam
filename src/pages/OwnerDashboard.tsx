@@ -266,7 +266,7 @@ function SalesOverviewTab() {
   const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
   const cafeOrders = useMemo(() =>
-    orders.filter(o => new Date(o.createdAt) >= cutoff && new Date(o.createdAt) <= cutoffEnd && o.status === 'served'),
+    orders.filter(o => new Date(o.createdAt) >= cutoff && new Date(o.createdAt) <= cutoffEnd && o.status === 'served' && o.paymentType !== 'advance'), // FIX: exclude advance orders (partial totals would distort cafeRevenue)
     [orders, cutoff, cutoffEnd]);
 
   const todayOrders = useMemo(() =>
@@ -327,6 +327,11 @@ function SalesOverviewTab() {
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
       const snbRev = (sales['SNB'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
+      // NOTE (MD Bug #19): hosurRev here only includes branch_sales rows for Hosur (retail/counter sales).
+      // Hosur wholesale shop-supply revenue (hosur_bills) is NOT included — it lives in a separate
+      // table and is never fetched or summed here. To fix: fetch hosur_bills for the date range
+      // and add their totals to hosurRev. This requires a Supabase query addition in OwnerDashboard.
+      // TODO: include hosur_bills revenue in the Owner Dashboard Hosur revenue figures.
       const hosurRev = (sales['Hosur'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
       const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
@@ -742,8 +747,10 @@ function AttendanceSalaryTab() {
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}              color="bg-primary/10 text-primary" />
-        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll (est.)" value={formatCurrency(salaryStats.total)}      color="bg-blue-50 text-blue-700" />
-        <KPI icon={<TrendingUp  className="size-4" />} label="Est. Net Payable"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" />
+        {/* FIX (MD Bug #10): labels clarified to emphasise these are contracted-salary estimates,
+            not attendance-prorated actuals. See Attendance & Salary page for the real figures. */}
+        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll (contracted est.)" value={formatCurrency(salaryStats.total)}      color="bg-blue-50 text-blue-700" title="Based on contracted gross salaries — not attendance-prorated. See Attendance & Salary for accurate figures." />
+        <KPI icon={<TrendingUp  className="size-4" />} label="Est. Net Payable (see A&S)"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" title="Estimate only. For the attendance-prorated payable amount, open the Attendance & Salary page." />
         <KPI icon={<IndianRupee className="size-4" />} label="Advances"      value={formatCurrency(salaryStats.advances)}   color="bg-amber-50 text-amber-700" />
       </div>
 
@@ -1612,8 +1619,11 @@ function OwnerPurchasesTab() {
           unit: String(line.unit || 'unit'),
           rate: Number(line.pricePerUnit || line.price_per_unit || 0),
           total: Number(line.totalPrice || line.total_price || 0),
-          paidAmount: lineItems.length ? paidAmount * (Number(line.totalPrice || line.total_price || 0) / Math.max(grandTotal, 1)) : paidAmount,
-          balanceAmount: lineItems.length ? Math.max(0, (Number(line.totalPrice || line.total_price || 0)) - (paidAmount * (Number(line.totalPrice || line.total_price || 0) / Math.max(grandTotal, 1)))) : Math.max(0, grandTotal - paidAmount),
+          // FIX (MD Bug #6): when grandTotal === 0 (malformed invoice), don't prorate per-line —
+          // treat paidAmount as applying to the invoice as a whole to avoid wildly overstating
+          // paid amounts (paidAmount * lineTotal / 1 >> actual payment).
+          paidAmount: (lineItems.length && grandTotal > 0) ? paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal) : (lineItems.length ? 0 : paidAmount),
+          balanceAmount: (lineItems.length && grandTotal > 0) ? Math.max(0, (Number(line.totalPrice || line.total_price || 0)) - (paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal))) : (lineItems.length ? Number(line.totalPrice || line.total_price || 0) : Math.max(0, grandTotal - paidAmount)),
           paymentMethod: String(invoice.payment_method || 'Not recorded'),
           purchaseStatus: String(invoice.purchase_status || invoice.status || 'pending_review'),
           stockSyncStatus: invoice.synced_to_stock ? 'Synced' : String(invoice.stock_sync_status || 'Not Synced'),

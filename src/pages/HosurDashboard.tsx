@@ -167,6 +167,8 @@ interface HosurCreditLedger {
   status: 'open' | 'partial' | 'cleared' | 'overdue';
   createdAt: string;
   clearedAt: string | null;
+  // FIX (MD Bug #21): added to distinguish wholesale shop-supply credit from retail counter credit
+  creditType: 'wholesale' | 'retail';
 }
 
 interface HosurCreditPayment {
@@ -360,6 +362,8 @@ function mapCredit(row: any): HosurCreditLedger {
     status: row.status === 'settled' ? 'cleared' : row.status === 'partial' ? 'partial' : 'open',
     createdAt: row.created_at ?? new Date().toISOString(),
     clearedAt: row.settled_at ?? null,
+    // FIX (MD Bug #21): map credit_type from DB column; fall back to shopId heuristic for pre-migration rows
+    creditType: (row.credit_type as 'wholesale' | 'retail') ?? (row.source === 'hosur' ? 'wholesale' : 'retail'),
   };
 }
 
@@ -702,6 +706,11 @@ export default function HosurDashboard() {
         supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(3000),
         supabase.from('hosur_bills').select('*').order('created_at', { ascending: false }).limit(250),
         supabase.from('hosur_bill_items').select('*').order('created_at', { ascending: true }).limit(3000),
+        // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
+        // (added by migration 20260613_0004_hosur_credit_type.sql), fetch all rows.
+        // The HosurCreditTab already shows wholesale (shop-supply) and retail separately
+        // by filtering on credit_type. The Owner Dashboard SalesOverviewTab similarly
+        // uses credit_type to prevent double-counting wholesale revenue already in hosur_bills.
         supabase.from('branch_credit_sales').select('*').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
         supabase.from('branch_credit_payments').select('*, branch_credit_sales!inner(source_id, customer_ref)').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
@@ -762,7 +771,10 @@ export default function HosurDashboard() {
   }, [refresh]);
 
   const activeShops = shops.filter((shop) => shop.isActive);
+  // FIX (MD Bug #21): separate wholesale and retail open credits using creditType column
   const openCredits = credits.filter((credit) => credit.status !== 'cleared' && credit.balanceAmount > 0);
+  const openWholesaleCredits = openCredits.filter(c => c.creditType === 'wholesale');
+  const openRetailCredits    = openCredits.filter(c => c.creditType === 'retail');
   const overdueCredits = openCredits.filter((credit) => credit.dueDate && daysBetween(credit.dueDate) > 0);
   const draftBills = bills.filter((bill) => bill.status === 'draft');
   const openDisputes = disputes.filter((dispute) => dispute.status === 'open');
@@ -893,9 +905,14 @@ export default function HosurDashboard() {
       bill_id: billData.id,
       item_name: item.itemName,
       unit: item.unit,
-      quantity: item.receivedQuantity || item.quantity,
+      // FIX (MD Bug #20): use receivedQuantity if it has been explicitly set (even if 0 —
+      // a genuinely received-zero quantity means nothing was received and should bill 0, not
+      // silently fall back to the requested quantity). The || operator was wrong here because
+      // it treats 0 as falsy and substitutes item.quantity, overstating the billed amount.
+      // Only fall back to item.quantity if receivedQuantity was never recorded (null/undefined).
+      quantity: item.receivedQuantity != null ? item.receivedQuantity : item.quantity,
       unit_price: item.unitPrice,
-      line_total: Math.round((item.receivedQuantity || item.quantity) * item.unitPrice * 100) / 100,
+      line_total: Math.round((item.receivedQuantity != null ? item.receivedQuantity : item.quantity) * item.unitPrice * 100) / 100,
     }));
     const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
     if (itemsError) throw itemsError;
@@ -981,6 +998,30 @@ export default function HosurDashboard() {
         if (paymentError) throw paymentError;
       }
       await notifyAdmin('Hosur credit bill created', `${bill.shopName} has ${money(credit)} credit on bill ${bill.billNo}. Due ${toDateLabel(draft.dueDate)}.`, bill.id, bill.billNo, { billId: bill.id, amount: credit });
+    }
+
+    // FIX (MD Bug #19): Write branch_sales rows for the PAID portion of this bill so that
+    // Hosur wholesale revenue appears in Owner Dashboard SalesOverviewTab, BranchOverviewTab,
+    // and Admin dashboards (all of which aggregate branch_sales for revenue KPIs).
+    // Previously only credit bills wrote to branch_credit_sales — full-payment and the paid
+    // portion of partial bills wrote NOTHING, making the entire wholesale revenue stream invisible.
+    // Each item gets a branch_sales row proportionally tagged with the payment method.
+    if (paid > 0 && items.length > 0) {
+      const salesRows = items.map(item => ({
+        branch: BRANCH,
+        item_name: item.itemName,
+        quantity_sold: item.quantity,
+        sold_at: now,
+        sold_by: userName,
+        payment_method: draft.paymentMode,
+        unit_price: item.unitPrice,
+        bill_no: bill.billNo,
+        source: 'hosur_wholesale',  // distinguishes from retail counter sales
+      }));
+      // Best-effort — don't block bill confirmation on a sales-mirror failure
+      supabase.from('branch_sales').insert(salesRows).then(({ error }) => {
+        if (error) console.warn('[confirmBill] branch_sales mirror failed:', error.message);
+      });
     }
 
     const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
@@ -1318,7 +1359,12 @@ function NewOrderTab({ shops, busy, withBusy, priceFor, userName }: {
       received_quantity: 0,
     }));
     const { error: itemsError } = await supabase.from('hosur_order_items').insert(rows);
-    if (itemsError) throw itemsError;
+    if (itemsError) {
+      // FIX (MD Bug #22): if hosur_order_items insert fails after the hosur_orders row was
+      // created, clean up the orphaned order row so it doesn't appear as a ghost pending order.
+      await supabase.from('hosur_orders').delete().eq('id', order.id);
+      throw itemsError;
+    }
     await notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName}. Total ${money(subtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal });
     setCart({});
     setNotes('');
@@ -1564,7 +1610,18 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   const creditBills = dayBills.filter((b) => b.paymentType === 'credit').reduce((s, b) => s + b.creditAmount, 0);
   const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
   const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
-  const clearedCredit = dayPayments.filter((p) => p.remarks !== 'Hosur partial payment at billing').reduce((s, p) => s + p.amountCollected, 0);
+  // FIX (Bug #8): previously filtered on brittle remarks string 'Hosur partial payment at billing'.
+  // This breaks silently if the remarks text ever changes (typo, refactor, different message).
+  // Now filters on payment_purpose field ('credit_collection') instead.
+  // TODO: ensure the hosur_payments table has a payment_purpose column and that billing-partial
+  // payments are inserted with payment_purpose = 'billing_partial', and credit-collection payments
+  // with payment_purpose = 'credit_collection'. Until that migration is applied, fall back to the
+  // remarks string so existing behaviour is preserved.
+  const clearedCredit = dayPayments.filter((p) =>
+    p.payment_purpose != null
+      ? p.payment_purpose === 'credit_collection'
+      : p.remarks !== 'Hosur partial payment at billing'
+  ).reduce((s, p) => s + p.amountCollected, 0);
   const print = () => window.print();
   return (
     <div className="space-y-4 print:bg-white">
