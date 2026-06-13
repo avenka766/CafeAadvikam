@@ -108,7 +108,7 @@ function POCard({ po, onStatusChange, onDelete }: {
   );
 }
 
-function CreatePOForm({ onClose }: { onClose: () => void }) {
+function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: 'SNB' }) {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers }         = useSupplierStore();
   const { currentUser }       = useAuthStore();
@@ -138,6 +138,7 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
     const err = await createPO({
       supplierId,
       supplierName: supplier.businessName,
+      branch: branchScope,
       items: lines,
       status: 'draft',
       notes,
@@ -203,17 +204,20 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-export default function PurchaseOrderTab() {
+export default function PurchaseOrderTab({ branchScope }: { branchScope?: 'SNB' } = {}) {
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
-  const filtered = orders.filter(o => filterStatus === 'all' || o.status === filterStatus);
-  const draftCount    = orders.filter(o => o.status === 'draft').length;
-  const sentCount     = orders.filter(o => o.status === 'sent').length;
-  const receivedCount = orders.filter(o => o.status === 'received').length;
+  const scopedOrders = branchScope
+    ? orders.filter(o => o.branch === branchScope)
+    : orders.filter(o => !o.branch);
+  const filtered = scopedOrders.filter(o => filterStatus === 'all' || o.status === filterStatus);
+  const draftCount    = scopedOrders.filter(o => o.status === 'draft').length;
+  const sentCount     = scopedOrders.filter(o => o.status === 'sent').length;
+  const receivedCount = scopedOrders.filter(o => o.status === 'received').length;
 
   return (
     <div className="space-y-4">
@@ -264,7 +268,7 @@ export default function PurchaseOrderTab() {
         </div>
       )}
 
-      {showCreate && <CreatePOForm onClose={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreatePOForm branchScope={branchScope} onClose={() => { setShowCreate(false); load(); }} />}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import type { Branch } from '@/branch/types';
 
 export type POStatus = 'draft' | 'sent' | 'received';
 
@@ -17,6 +18,7 @@ export interface PurchaseOrder {
   orderNumber: string;
   supplierId: string;
   supplierName: string;
+  branch?: Branch;
   items: POItem[];
   status: POStatus;
   notes: string;
@@ -42,6 +44,7 @@ function mapRow(r: Record<string, unknown>): PurchaseOrder {
     orderNumber:  r.order_number as string,
     supplierId:   r.supplier_id as string,
     supplierName: r.supplier_name as string,
+    branch:       (r.branch as Branch | null) ?? undefined,
     items:        (r.items as POItem[]) ?? [],
     status:       r.status as POStatus,
     notes:        (r.notes as string) ?? '',
@@ -79,6 +82,7 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
       .insert({
         supplier_id:   data.supplierId,
         supplier_name: data.supplierName,
+        branch:        data.branch ?? null,
         items:         data.items,
         status:        data.status,
         notes:         data.notes,

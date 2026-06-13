@@ -33,6 +33,10 @@ import { useAuthStore } from "@/stores/authStore";
 import { useNotificationStore } from "./notificationStore";
 import type { BakeryOrder, BakeryOrderItem, Branch } from "./types";
 import BranchStockForm from "./BranchStockForm";
+import PurchaseOrderTab from "./PurchaseOrderTab";
+import { useBranchStore, type StockItem } from "@/branch/branchStore";
+import { StockTab } from "@/branch/tabs/StockTab";
+import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
@@ -84,7 +88,7 @@ const BRANCH_META: Record<string, BranchMeta> = {
   },
 };
 
-type TabKey = "order" | "placed" | "notifications";
+type TabKey = "order" | "placed" | "notifications" | "stock" | "po" | "stock-count";
 type DatePreset = "today" | "yesterday" | "7d" | "15d" | "1m" | "custom";
 
 interface HosurShop {
@@ -500,6 +504,27 @@ function statusBadgeClass(status: BakeryOrder["status"]): string {
   }
 }
 
+function orderLocationLabel(status: BakeryOrder["status"]) {
+  switch (status) {
+    case "pending":
+    case "processing":
+      return "In Store";
+    case "baking":
+      return "In Baker";
+    case "packed":
+      return "In Packing";
+    case "dispatched":
+      return "Dispatched";
+    default:
+      return "In Store";
+  }
+}
+
+function orderAcceptedBy(order: BakeryOrder) {
+  const legacy = order as unknown as { accepted_by?: string; approved_by?: string };
+  return order.acceptedBy || order.approvedBy || legacy.accepted_by || legacy.approved_by || "";
+}
+
 function PlacedOrdersPanel({
   branch,
   orders,
@@ -562,6 +587,8 @@ function PlacedOrdersPanel({
         "Time",
         "Branch",
         "Status",
+        "Location",
+        "Accepted / Approved By",
         "Item Name",
         "Quantity",
         "Unit",
@@ -578,6 +605,8 @@ function PlacedOrdersPanel({
           }),
           branch,
           order.status,
+          orderLocationLabel(order.status),
+          orderAcceptedBy(order) || "-",
           item.itemName,
           displayQty(item),
           displayUnit(item),
@@ -747,6 +776,18 @@ function PlacedOrdersPanel({
                       dateStyle: "medium",
                       timeStyle: "short",
                     })}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-body font-black text-blue-700">
+                    <MapPin className="size-3" />
+                    {orderLocationLabel(order.status)}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-body font-black text-slate-700">
+                    <CheckCircle2 className="size-3" />
+                    {orderAcceptedBy(order)
+                      ? `Accepted by ${orderAcceptedBy(order)}`
+                      : "Awaiting approval"}
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1182,9 +1223,163 @@ function HosurAlertsPanel({ orders, orderItems }: { orders: HosurOrder[]; orderI
   );
 }
 
+function StockCountPanel({
+  branchStock,
+  userName,
+}: {
+  branchStock: StockItem[];
+  userName: string;
+}) {
+  const { submitStockCountReport } = useBranchOpsStore();
+  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState("");
+
+  const rows = useMemo(() => {
+    const stockMap = new Map(branchStock.map((item) => [item.itemName, item]));
+    return SNB_ITEMS.map((item) => {
+      const stockItem = stockMap.get(item.name);
+      const unit = stockItem?.unit ?? (item.uom === "Kgs" || item.uom === "kg" ? "kg" : "pcs");
+      return {
+        itemName: item.name,
+        unit,
+        systemQty: Number(stockItem?.quantity ?? 0),
+      };
+    });
+  }, [branchStock]);
+
+  useEffect(() => {
+    setCounts((prev) => {
+      const next = { ...prev };
+      rows.forEach((row) => {
+        if (next[row.itemName] === undefined) next[row.itemName] = String(row.systemQty);
+      });
+      return next;
+    });
+  }, [rows]);
+
+  const differenceCount = rows.filter((row) => {
+    const physical = Number(counts[row.itemName] || 0);
+    return Math.abs(row.systemQty - physical) > 0.0001;
+  }).length;
+
+  const submit = () => {
+    const report = submitStockCountReport({
+      branch: "SNB",
+      reportedBy: userName,
+      lines: rows.map((row) => {
+        const physicalQty = Math.max(0, Number(counts[row.itemName] || 0));
+        return {
+          itemName: row.itemName,
+          unit: row.unit,
+          systemQty: row.systemQty,
+          physicalQty,
+          difference: Math.round((row.systemQty - physicalQty) * 1000) / 1000,
+        };
+      }),
+    });
+    setNotice(`${report.reportNo} sent to SNB Admin for confirmation.`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-3xl border border-border bg-white p-4 shadow-soft">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[11px] font-body font-black uppercase tracking-[0.18em] text-muted-foreground">
+              End-of-day physical count
+            </p>
+            <h2 className="font-display text-2xl font-black text-foreground">
+              Daily Stock Take
+            </h2>
+            <p className="text-sm font-body font-bold text-muted-foreground">
+              Enter counted stock. Difference is System Qty minus Physical Qty.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={submit}
+            className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200"
+          >
+            Send to SNB Admin
+          </button>
+        </div>
+        {notice && (
+          <div className="mt-3 rounded-2xl bg-emerald-50 px-4 py-2 text-sm font-body font-black text-emerald-700">
+            {notice}
+          </div>
+        )}
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl bg-slate-50 p-3">
+            <p className="text-2xl font-black tabular-nums">{rows.length}</p>
+            <p className="text-[10px] font-black uppercase text-slate-500">Items</p>
+          </div>
+          <div className="rounded-2xl bg-amber-50 p-3">
+            <p className="text-2xl font-black tabular-nums text-amber-700">{differenceCount}</p>
+            <p className="text-[10px] font-black uppercase text-amber-700">Differences</p>
+          </div>
+          <div className="rounded-2xl bg-blue-50 p-3">
+            <p className="text-2xl font-black tabular-nums text-blue-700">{new Date().toLocaleDateString("en-IN")}</p>
+            <p className="text-[10px] font-black uppercase text-blue-700">Count Date</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-3xl border border-border bg-white shadow-soft">
+        <div className="grid grid-cols-[minmax(180px,1fr)_90px_120px_100px] gap-3 border-b bg-slate-50 px-4 py-3 text-[11px] font-black uppercase text-slate-500">
+          <span>Item</span>
+          <span>System</span>
+          <span>Physical</span>
+          <span>Diff</span>
+        </div>
+        <div className="max-h-[65vh] overflow-y-auto divide-y divide-border/60">
+          {rows.map((row) => {
+            const physical = Number(counts[row.itemName] || 0);
+            const diff = Math.round((row.systemQty - physical) * 1000) / 1000;
+            return (
+              <div
+                key={row.itemName}
+                className="grid grid-cols-[minmax(180px,1fr)_90px_120px_100px] items-center gap-3 px-4 py-2.5 text-sm"
+              >
+                <div>
+                  <p className="font-body font-black text-foreground">{row.itemName}</p>
+                  <p className="text-[11px] font-bold text-slate-500">{row.unit}</p>
+                </div>
+                <span className="font-black tabular-nums">{row.systemQty}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step={row.unit === "kg" ? "0.001" : "1"}
+                  value={counts[row.itemName] ?? ""}
+                  onChange={(e) => setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }))}
+                  className="h-10 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-200"
+                />
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-1 text-center text-xs font-black tabular-nums",
+                    diff === 0
+                      ? "bg-emerald-100 text-emerald-700"
+                      : diff > 0
+                        ? "bg-red-100 text-red-700"
+                        : "bg-blue-100 text-blue-700",
+                  )}
+                >
+                  {diff}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function tabFromParams(value: string | null): TabKey {
   if (value === "history" || value === "placed" || value === "orders") return "placed";
   if (value === "alert" || value === "alerts" || value === "notifications") return "notifications";
+  if (value === "stock" || value === "incoming") return "stock";
+  if (value === "po" || value === "purchase" || value === "purchase-order") return "po";
+  if (value === "stock-count" || value === "count" || value === "daily-stock-take") return "stock-count";
   return "order";
 }
 
@@ -1193,6 +1388,16 @@ function tabFromParams(value: string | null): TabKey {
 export default function OrderReceiverDashboard() {
   const { fetchOrders, orders, loading } = useBakeryStore();
   const { currentUser } = useAuthStore();
+  const {
+    stock,
+    incoming,
+    thresholds,
+    stockMismatches,
+    loading: branchLoading,
+    fetchBranchData,
+    fetchStockMismatches,
+    subscribeToStock,
+  } = useBranchStore();
   const { notifications, loaded, load, markRead, markAllRead } =
     useNotificationStore();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1209,6 +1414,8 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const tab = tabFromParams(searchParams.get("tab"));
+  const userName =
+    currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
 
   const stableFetch = useCallback(() => {
     fetchOrders();
@@ -1257,6 +1464,14 @@ export default function OrderReceiverDashboard() {
     loadHosurReceiverData();
   }, [loadHosurReceiverData, refreshKey]);
 
+  useEffect(() => {
+    if (branch !== "SNB") return;
+    fetchBranchData("SNB");
+    fetchStockMismatches();
+    const unsubscribe = subscribeToStock("SNB");
+    return unsubscribe;
+  }, [branch, fetchBranchData, fetchStockMismatches, subscribeToStock]);
+
   // Guard — should never happen if routing is correct
   if (!meta || !branch) {
     return (
@@ -1293,13 +1508,37 @@ export default function OrderReceiverDashboard() {
       ? "Placed Orders"
       : tab === "notifications"
         ? "Packing Alerts"
-        : "Place New Order";
+        : tab === "stock"
+          ? "Stock / Incoming"
+          : tab === "po"
+            ? "Purchase Order"
+            : tab === "stock-count"
+              ? "Daily Stock Take"
+              : "Place New Order";
   const subheading =
     tab === "placed"
       ? "Filter by date range and download your branch order history."
       : tab === "notifications"
         ? "Shortage, excess and remainder alerts from packing are shown here."
-        : "Create today’s bakery requirement without the old history/search clutter.";
+        : tab === "stock"
+          ? "Confirm incoming stock, update stock manually and maintain thresholds for SNB."
+          : tab === "po"
+            ? "Create and track SNB purchase orders from the receiver dashboard."
+            : tab === "stock-count"
+              ? "Record the physical end-of-day count and send differences to SNB Admin."
+              : "Create today’s bakery requirement without the old history/search clutter.";
+  const receiverTabs: Array<{ key: TabKey; label: string }> = [
+    { key: "order", label: "Order" },
+    { key: "placed", label: "Placed Orders" },
+    { key: "notifications", label: "Notifications" },
+    ...(branch === "SNB"
+      ? ([
+          { key: "stock", label: "Stock / Incoming" },
+          { key: "po", label: "Purchase Order" },
+          { key: "stock-count", label: "Stock Count" },
+        ] as Array<{ key: TabKey; label: string }>)
+      : []),
+  ];
 
   return (
     <div className="dashboard-screen min-h-screen bg-transparent pb-6 font-semibold">
@@ -1404,6 +1643,24 @@ export default function OrderReceiverDashboard() {
         </div>
       </div>
 
+      <div className="mb-4 flex flex-wrap gap-2 rounded-3xl border border-border bg-white/90 p-2 shadow-soft">
+        {receiverTabs.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setSearchParams({ tab: item.key })}
+            className={cn(
+              "rounded-2xl px-4 py-2 text-xs font-body font-black transition-all",
+              tab === item.key
+                ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
       {/* Content */}
       <div>
         {tab === "order" && (
@@ -1411,7 +1668,7 @@ export default function OrderReceiverDashboard() {
             <HosurOrderPanel
               shops={hosurShops}
               prices={hosurPrices}
-              userName={currentUser?.displayName || currentUser?.username || "Hosur Receiver"}
+              userName={userName}
               onSaved={() => {
                 setRefreshKey((k) => k + 1);
                 setSearchParams({ tab: "history" });
@@ -1511,6 +1768,23 @@ export default function OrderReceiverDashboard() {
             )}
           </div>
           )
+        )}
+
+        {tab === "stock" && branch === "SNB" && (
+          <StockTab
+            branch="SNB"
+            branchStock={stock.SNB}
+            branchIncoming={incoming.SNB}
+            branchThresholds={thresholds.SNB}
+            loading={branchLoading}
+            stockMismatches={stockMismatches}
+          />
+        )}
+
+        {tab === "po" && branch === "SNB" && <PurchaseOrderTab branchScope="SNB" />}
+
+        {tab === "stock-count" && branch === "SNB" && (
+          <StockCountPanel branchStock={stock.SNB} userName={userName} />
         )}
       </div>
     </div>

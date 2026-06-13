@@ -29,6 +29,10 @@ export interface BakeryOrder {
   status: WorkflowStatus;
   createdBy: string;
   createdAt: string;
+  acceptedBy?: string;
+  approvedBy?: string;
+  acceptedAt?: string;
+  approvedAt?: string;
   expectedOutput?: number;
   materialsCalculatedAt?: string;
   preparedItems?: PreparedItem[];
