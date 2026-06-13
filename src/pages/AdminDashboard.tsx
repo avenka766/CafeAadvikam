@@ -30,7 +30,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'audit';
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-variance' | 'audit';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -54,6 +54,7 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
   { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
   { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
+  { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
 ];
 
@@ -191,7 +192,7 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, auditLogs } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs } = useBranchOpsStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
@@ -840,6 +841,76 @@ function AdminDashboard() {
     </div>
   );
 
+  const StockVarianceTab = (
+    <div className="space-y-5">
+      <Panel
+        title="Stock Variance"
+        subtitle="Physical stock-count differences confirmed by branch admin"
+        action={
+          <button
+            onClick={() =>
+              csvDownload(
+                'Admin_StockVariance.csv',
+                stockVarianceRecords.map(row => ({
+                  Date: fmtDateTime(row.createdAt),
+                  Branch: row.branch,
+                  Report: row.reportNo,
+                  Item: row.itemName,
+                  Unit: row.unit || '',
+                  'System Qty': row.systemQty,
+                  'Physical Qty': row.physicalQty,
+                  Difference: row.difference,
+                  'Reported By': row.reportedBy,
+                  'Confirmed By': row.confirmedBy,
+                })),
+              )
+            }
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"
+          >
+            <FileSpreadsheet className="size-3.5" />Excel
+          </button>
+        }
+      >
+        {stockVarianceRecords.length === 0 ? (
+          <EmptyState label="No stock variance records yet. Differences will appear after SNB Admin confirms a stock-count report." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Date</th>
+                  <th className="p-3">Branch</th>
+                  <th className="p-3">Report</th>
+                  <th className="p-3">Item</th>
+                  <th className="p-3 text-right">System</th>
+                  <th className="p-3 text-right">Physical</th>
+                  <th className="p-3 text-right">Difference</th>
+                  <th className="p-3">Reported By</th>
+                  <th className="p-3">Confirmed By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {stockVarianceRecords.slice(0, 300).map(row => (
+                  <tr key={row.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(row.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={row.branch} /></td>
+                    <td className="p-3 font-bold">{row.reportNo}</td>
+                    <td className="p-3 font-semibold">{row.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
+                    <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : 'blue'}>{row.difference}</Badge></td>
+                    <td className="p-3 text-slate-500">{row.reportedBy}</td>
+                    <td className="p-3 text-slate-500">{row.confirmedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
   // CHANGE 12: Improved AuditTab with filters, search, refresh, empty message, Excel export
   const AuditTab = (
     <div className="space-y-5">
@@ -907,6 +978,7 @@ function AdminDashboard() {
     'daily-closure': DailyClosureTab,
     credits: CreditsTab,
     advance: AdvanceTab,
+    'stock-variance': StockVarianceTab,
     audit: AuditTab,
   };
 

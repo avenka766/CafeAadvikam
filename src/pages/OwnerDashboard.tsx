@@ -1786,6 +1786,97 @@ function OwnerPurchasesTab() {
   );
 }
 
+function OwnerStockVarianceTab() {
+  const { stockVarianceRecords } = useBranchOpsStore();
+  const rows = stockVarianceRecords
+    .slice()
+    .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
+  const shortCount = rows.filter(row => row.difference > 0).length;
+  const excessCount = rows.filter(row => row.difference < 0).length;
+
+  return (
+    <section className="owner-section">
+      <div className="mb-4">
+        <p className="text-xs font-black uppercase tracking-[0.16em] text-muted-foreground">
+          Difference between system stock and physical stock count after SNB Admin confirmation
+        </p>
+        <h2 className="mt-1 font-display text-2xl font-black text-foreground">Stock Variance</h2>
+      </div>
+      <OwnerToolbar>
+        <button
+          type="button"
+          onClick={() =>
+            ownerCsvDownload(
+              'owner-stock-variance.csv',
+              rows.map(row => ({
+                Date: ownerFmtDateTime(row.createdAt),
+                Branch: row.branch,
+                Report: row.reportNo,
+                Item: row.itemName,
+                Unit: row.unit || '',
+                SystemQty: row.systemQty,
+                PhysicalQty: row.physicalQty,
+                Difference: row.difference,
+                ReportedBy: row.reportedBy,
+                ConfirmedBy: row.confirmedBy,
+              })),
+            )
+          }
+        >
+          <Download className="size-4" />Export
+        </button>
+      </OwnerToolbar>
+      <section className="owner-metric-grid">
+        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Variance Lines" value={rows.length} tone="amber" />
+        <OwnerMetricCard icon={<ArrowDownRight className="size-5" />} label="Short Count" value={shortCount} tone="red" />
+        <OwnerMetricCard icon={<ArrowUpRight className="size-5" />} label="Excess Count" value={excessCount} tone="blue" />
+      </section>
+      <section className="owner-table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Branch</th>
+              <th>Report</th>
+              <th>Item</th>
+              <th>System</th>
+              <th>Physical</th>
+              <th>Difference</th>
+              <th>Reported By</th>
+              <th>Confirmed By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(row => (
+              <tr key={row.id}>
+                <td>{ownerFmtDateTime(row.createdAt)}</td>
+                <td>{ownerBranchDisplay(row.branch)}</td>
+                <td><strong>{row.reportNo}</strong></td>
+                <td>{row.itemName}</td>
+                <td>{row.systemQty} {row.unit}</td>
+                <td>{row.physicalQty} {row.unit}</td>
+                <td><em className={cn('owner-status', row.difference === 0 ? 'ok' : row.difference > 0 ? 'danger' : 'warn')}>{row.difference}</em></td>
+                <td>{row.reportedBy}</td>
+                <td>{row.confirmedBy}</td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={9}>
+                  <EmptyOwnerState
+                    title="No stock variance yet"
+                    message="Variance lines will appear here once SNB Admin confirms a receiver stock-count report."
+                  />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+    </section>
+  );
+}
+
 // ── Main Export ───────────────────────────────────────────────────────────────
 type OwnerDashboardTab =
   | 'branches'
@@ -1793,6 +1884,7 @@ type OwnerDashboardTab =
   | 'credit'
   | 'purchases'
   | 'closure'
+  | 'variance'
   | 'alerts'
   | 'attendance'
   | 'waste';
@@ -1806,6 +1898,7 @@ export default function OwnerDashboard() {
     { id: 'credit',     label: 'Credit Tracking',    icon: <IndianRupee   className="size-4" />, hint: 'Pending collections' },
     { id: 'purchases',  label: 'Store Purchases',    icon: <ShoppingBag   className="size-4" />, hint: 'Supplier and invoice view' },
     { id: 'closure',    label: 'Daily Closure',      icon: <WalletCards   className="size-4" />, hint: 'All unit closing status' },
+    { id: 'variance',   label: 'Stock Variance',     icon: <AlertTriangle className="size-4" />, hint: 'Physical stock differences' },
     { id: 'alerts',     label: 'Owner Alerts',       icon: <Bell          className="size-4" />, hint: 'Actionable risks' },
     { id: 'attendance', label: 'Staff & Payroll',    icon: <CalendarCheck className="size-4" />, hint: 'Attendance and advances' },
     { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
@@ -1841,6 +1934,7 @@ export default function OwnerDashboard() {
           {tab === 'credit'     && <OwnerCreditTab />}
           {tab === 'purchases'  && <OwnerPurchasesTab />}
           {tab === 'closure'    && <OwnerDailyClosureTab />}
+          {tab === 'variance'   && <OwnerStockVarianceTab />}
           {tab === 'alerts'     && <OwnerAlertsTab />}
           {tab === 'attendance' && <AttendanceSalaryTab />}
           {tab === 'waste'      && <WasteLogsTab />}
