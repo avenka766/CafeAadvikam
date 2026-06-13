@@ -365,7 +365,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, addCashMovement, addAdvanceFinalBill } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, updateAdvanceStoreStatus, addCashMovement, addAdvanceFinalBill } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
@@ -377,6 +377,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const [pipelineView, setPipelineView] = useState<'active' | 'history'>('active');
   const [collectingId, setCollectingId] = useState<string | null>(null);
   const [collectMode, setCollectMode] = useState<'cash' | 'upi' | 'card'>('cash');
+  const [sendingToStore, setSendingToStore] = useState<string | null>(null);
   const [common, setCommon] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
   const [storePick, setStorePick] = useState({ itemName: items[0]?.name || '', quantity:'1' });
   const [storeLines, setStoreLines] = useState<BranchBillItem[]>([]);
@@ -406,9 +407,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const item = items.find((i)=>i.name===storePick.itemName);
     const qty = Number(storePick.quantity || 0);
     if (!item || qty <= 0) { setError('Select item and quantity.'); return; }
-    const available = stockQty(branchStock, item.name);
-    const existingQty = storeLines.filter((line)=>line.itemName===item.name).reduce((s,line)=>s+line.quantity,0);
-    if (qty + existingQty > available) { setError(`Only ${available} available for ${item.name}.`); return; }
     const unit: 'pcs' | 'kg' = item.uom === 'Kgs' ? 'kg' : 'pcs';
     const line: BranchBillItem = { itemName:item.name, quantity:qty, unit, price:item.price, tax:0, discount:0, lineTotal:qty * item.price };
     setStoreLines((lines)=>[...lines, line]);
@@ -458,7 +456,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     return '';
   };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
-    if (mode === 'store') return;
     const bakeryItems: BakeryOrderItem[] = lines.map((line, idx) => ({
       itemId: `${order.orderNo}-${idx}`,
       itemName: line.itemName,
@@ -530,8 +527,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
           : `Advance order saved, but payment ledger failed: ${msg}`);
       }
     }
-    if (orderType === 'cake') await sendCakeToStoreDashboard(order);
-    else await sendToStoreDashboard(order, sourceLines);
     // Print slip — show "PAID IN FULL" stamp when fully paid
     printAdvanceSalesOrder({ branch, orderNo: order.orderNo, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid });
     setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
@@ -620,7 +615,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
         {mode === 'store' && <>
           <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="Item"><Select value={storePick.itemName} onChange={(e)=>setStorePick({...storePick,itemName:e.target.value})}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Qty"><Input type="number" min="0" value={storePick.quantity} onChange={(e)=>setStorePick({...storePick,quantity:e.target.value})}/></Field></div>
           <SoftButton onClick={addStoreLine}><Plus className="size-4"/>Add Item</SoftButton>
-          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(storeValue)}</div>
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
@@ -667,7 +662,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
           {!storeFullyPaid && !customFullyPaid && <Field label="Advance Amount *"><Input type="number" value={common.advanceAmount} onChange={(e)=>updateCommon('advanceAmount',e.target.value)}/></Field>}
           <Field label="Payment Mode"><Select value={common.paymentMode} onChange={(e)=>updateCommon('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
         {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
-        <PrimaryButton onClick={()=>void saveAdvance(mode)}><Printer className="size-4"/>Generate Sales Order Slip{mode !== 'store' ? ' & Send to Store Orders' : ''}</PrimaryButton>
+        <PrimaryButton onClick={()=>void saveAdvance(mode)}><Printer className="size-4"/>Generate Sales Order Slip</PrimaryButton>
       </div>
     </Section>
     <Section title="Advance Order Pipeline" icon={<CalendarClock className="size-5"/>} action={
@@ -680,7 +675,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div></div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.storeStatus && <SoftButton onClick={async()=>{setSendingToStore(o.id); updateAdvanceStoreStatus(o.id,'store',user); if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); setSendingToStore(null);}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.storeStatus && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(['store','baking','packing','dispatched'] as const).map((stage, idx, arr)=>{ const done = arr.indexOf(stage) <= arr.indexOf(o.storeStatus!); const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><button onClick={()=>updateAdvanceStoreStatus(o.id,stage,user)} className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</button>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; })}<span className="ml-auto text-slate-500">{o.storeAcceptedBy && `Accepted: ${o.storeAcceptedBy}`}{o.storeStatusHistory?.at(-1) && ` - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`}</span></div>}</div>; })}</div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[600px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Customer</th><th className="p-3">Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={5} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3">{o.deliveryDate}</td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
@@ -713,17 +708,40 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const [selected, setSelected] = useState<BranchBillRecord | null>(null);
   const [qtys, setQtys] = useState<Record<string, string>>({});
   const [reason, setReason] = useState('Customer return');
+  const [returnPayMode, setReturnPayMode] = useState<'cash'|'upi'|'card'>('cash');
   const find = () => setSelected(bills.find((b)=>b.branch===branch && b.billNo.toLowerCase()===billNo.toLowerCase()) || null);
   const doReturn = async () => {
     if (!selected) return;
     const lines = selected.items.flatMap((i)=>{ const q = Number(qtys[i.itemName] || 0); return q > 0 ? [{ ...i, quantity: q, lineTotal: q * i.price }] : []; });
     if (!lines.length) return;
     for (const l of lines) await manualUpdateStock(branch, l.itemName, stockQty(branchStock,l.itemName)+l.quantity, currentUser?.displayName || 'Staff');
-    const ret = addReturn({ branch, originalBillNo: selected.billNo, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), returnedBy: currentUser?.displayName || 'Staff', reason });
+    const ret = await addReturn({ branch, originalBillNo: selected.billNo, originalPaymentMode: returnPayMode, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), returnedBy: currentUser?.displayName || 'Staff', reason, returnPayMode });
     await fetchBranchData(branch);
-    printHtml(ret.returnNo, `<div class="stamp">RETURN BILL</div><h2>${ret.returnNo}</h2><p>Original Bill: ${ret.originalBillNo}</p><table>${ret.items.map(i=>`<tr><td>${i.itemName}</td><td>${i.quantity}</td><td class="right">₹${i.lineTotal}</td></tr>`).join('')}</table><h2>Return Amount: ₹${ret.total}</h2><p>${ret.reason}</p>`);
+    printCounterBill({
+      id: ret.id,
+      branch,
+      billNo: ret.returnNo,
+      invoiceNo: 0,
+      items: ret.items,
+      subtotal: ret.total,
+      discount: 0,
+      tax: 0,
+      total: ret.total,
+      tendered: ret.total,
+      balance: 0,
+      paymentMode: returnPayMode,
+      salesperson: selected.salesperson || '',
+      biller: currentUser?.displayName || 'Staff',
+      createdAt: new Date().toISOString(),
+      printCount: 1,
+      status: 'Returned',
+      source: 'counter',
+      _isReturn: true,
+      _originalBillNo: selected.billNo,
+      _returnReason: reason,
+    } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, false);
   };
-  return <div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]"><Section title="Return Bill" icon={<RotateCcw className="size-5"/>}><div className="space-y-3"><Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} placeholder="SNB-001"/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>{selected && <div className="rounded-3xl bg-slate-50 p-4"><p className="font-black">{selected.billNo} · {money(selected.total)}</p>{selected.items.map(i=><div key={i.itemName} className="mt-3 grid grid-cols-[1fr_90px] gap-2"><p className="font-bold">{i.itemName}<br/><span className="text-xs text-slate-500">Max {i.quantity}</span></p><Input type="number" max={i.quantity} value={qtys[i.itemName] || ''} onChange={(e)=>setQtys({...qtys,[i.itemName]:e.target.value})}/></div>)}<Field label="Reason"><Textarea value={reason} onChange={(e)=>setReason(e.target.value)}/></Field><PrimaryButton onClick={doReturn}><Printer className="size-4"/>Print Return Bill & Sync Stock</PrimaryButton></div>}</div></Section><Section title="Return History" icon={<History className="size-5"/>}><div className="space-y-3">{returns.filter(r=>r.branch===branch).map(r=><div key={r.id} className="rounded-2xl border p-4"><p className="font-black">{r.returnNo} · {money(r.total)}</p><p className="text-sm text-slate-500">Against {r.originalBillNo} · {new Date(r.createdAt).toLocaleString('en-IN')}</p></div>)}</div></Section></div>;
+  return <div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]"><Section title="Return Bill" icon={<RotateCcw className="size-5"/>}><div className="space-y-3"><Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} placeholder="SNB-001"/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>{selected && <div className="rounded-3xl bg-slate-50 p-4"><p className="font-black">{selected.billNo} · {money(selected.total)}</p>{selected.items.map(i=><div key={i.itemName} className="mt-3 grid grid-cols-[1fr_90px] gap-2"><p className="font-bold">{i.itemName}<br/><span className="text-xs text-slate-500">Max {i.quantity}</span></p><Input type="number" max={i.quantity} value={qtys[i.itemName] || ''} onChange={(e)=>setQtys({...qtys,[i.itemName]:e.target.value})}/></div>)}<Field label="Reason for Return"><select value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field><Field label="Return Payment Mode"><div className="grid grid-cols-3 gap-2">{(['cash','upi','card'] as const).map(mode=><button key={mode} onClick={()=>setReturnPayMode(mode)} className={cn('rounded-2xl border-2 py-3 text-sm font-black capitalize', returnPayMode===mode?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode}</button>)}</div></Field><PrimaryButton onClick={()=>void doReturn()}><Printer className="size-4"/>Print Return Bill & Sync Stock</PrimaryButton></div>}</div></Section><Section title="Return History" icon={<History className="size-5"/>}><div className="space-y-3">{returns.filter(r=>r.branch===branch).map(r=><div key={r.id} className="rounded-2xl border p-4"><p className="font-black">{r.returnNo} · {money(r.total)}</p><p className="text-sm text-slate-500">Against {r.originalBillNo} · {new Date(r.createdAt).toLocaleString('en-IN')} {r.returnPayMode ? `· ${r.returnPayMode.toUpperCase()}` : ''}</p></div>)}</div></Section></div>;
 }
 
 export function PurchaseTab({ branch, branchStock }: ModuleProps) {
@@ -775,7 +793,28 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const [ledgerToday, setLedgerToday] = useState<ClosureLedgerRow | null>(null);
   const [savedClosures, setSavedClosures] = useState<SavedClosureRow[]>([]);
   const [closureMessage, setClosureMessage] = useState('');
+  const [closureTab, setClosureTab] = useState<'open'|'close'>('open');
+  const [openDate, setOpenDate] = useState(new Date().toISOString().split('T')[0]);
+  const [openTime, setOpenTime] = useState(() => new Date().toTimeString().slice(0,5));
+  const [openCashier, setOpenCashier] = useState('');
+  const [openDenominations, setOpenDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
+  const [closeDenominations, setCloseDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
+  const [counterOpened, setCounterOpened] = useState(false);
+  const [openSavedMessage, setOpenSavedMessage] = useState('');
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const denominations = [500,200,100,50,20,10,5,2,1];
+  const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
+  const openTotal = denomTotal(openDenominations);
+  const closeTotal = denomTotal(closeDenominations);
+
+  useEffect(() => {
+    setOpenCashier(user);
+  }, [user]);
+
+  useEffect(() => {
+    const key = `cafeaadvikam_counter_open_${branch}_${todayIso()}`;
+    setCounterOpened(localStorage.getItem(key) === 'true');
+  }, [branch]);
 
   useEffect(() => {
     void fetchCreditSales(branch);
@@ -944,6 +983,55 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   };
 
   return <div className="space-y-5">
+    <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
+      {(['open','close'] as const).map(t => (
+        <button key={t} onClick={() => setClosureTab(t)}
+          className={cn('rounded-xl py-3 text-sm font-black capitalize', closureTab === t ? (t === 'open' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white') : 'text-slate-600')}>
+          {t === 'open' ? 'Counter Open' : 'Counter Close'}
+        </button>
+      ))}
+    </div>
+    {closureTab === 'open' && (
+      <Section title="Counter Open" icon={<CheckCircle2 className="size-5"/>}>
+        <div className="space-y-5">
+          {counterOpened && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 font-black text-emerald-800">Counter already opened today. You can re-open to update cash count.</div>}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Date"><Input type="date" value={openDate} onChange={(e)=>setOpenDate(e.target.value)}/></Field>
+            <Field label="Time"><Input type="time" value={openTime} onChange={(e)=>setOpenTime(e.target.value)}/></Field>
+          </div>
+          <Field label="Cashier Name"><Input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)}/></Field>
+          <div className="overflow-hidden rounded-2xl border border-slate-200">
+            <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={openDenominations[denom]} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(openDenominations[denom]||0)>0 ? money(denom*Number(openDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Opening Cash Total</td><td className="p-3 text-right text-xl font-black">{money(openTotal)}</td></tr></tbody></table>
+          </div>
+          {openSavedMessage && <div className="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700">{openSavedMessage}</div>}
+          <PrimaryButton onClick={() => { const key = `cafeaadvikam_counter_open_${branch}_${todayIso()}`; setOpening(String(openTotal)); localStorage.setItem(key, 'true'); setCounterOpened(true); setOpenSavedMessage(`Counter opened at ${openTime} by ${openCashier || user}. Opening cash: ${money(openTotal)}`); }} className="w-full bg-orange-500 shadow-orange-200">
+            <CheckCircle2 className="size-4"/> Confirm Counter Open & Start Billing
+          </PrimaryButton>
+        </div>
+      </Section>
+    )}
+    {closureTab === 'close' && (
+      <Section title="Closing Cash Count" icon={<WalletCards className="size-5"/>}>
+        <div className="overflow-hidden rounded-2xl border border-slate-200">
+          <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={closeDenominations[denom]} onChange={(e)=>{ const next = {...closeDenominations,[denom]:e.target.value}; setCloseDenominations(next); setClosing(String(denomTotal(next))); }} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(closeDenominations[denom]||0)>0 ? money(denom*Number(closeDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Closing Cash Total</td><td className="p-3 text-right text-xl font-black">{money(closeTotal)}</td></tr></tbody></table>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl bg-slate-100 p-4">
+            <p className="text-xs font-black uppercase text-slate-500">Expected Cash</p>
+            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(expected)}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-100 p-4">
+            <p className="text-xs font-black uppercase text-slate-500">Counted Cash</p>
+            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(closeTotal)}</p>
+          </div>
+          <div className={cn('rounded-2xl p-4', closeTotal - expected === 0 ? 'bg-emerald-100 text-emerald-700' : closeTotal - expected > 0 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700')}>
+            <p className="text-xs font-black uppercase opacity-80">Difference shown to cashier</p>
+            <p className="mt-1 text-2xl font-black tabular-nums">{closeTotal - expected > 0 ? '+' : ''}{money(closeTotal - expected)}</p>
+            <p className="mt-1 text-xs font-black">{closeTotal - expected === 0 ? 'Balanced' : closeTotal - expected > 0 ? 'Excess cash' : 'Cash shortage'}</p>
+          </div>
+        </div>
+      </Section>
+    )}
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
       <Kpi label="Opening Cash" value={money(Number(opening || 0))} icon={<Banknote/>}/>
       <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<Receipt/>} tone="green"/>
@@ -985,7 +1073,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           <Field label="Closing Remarks"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Optional notes: shortage reason, expense details, handover note"/></Field>
           {closureMessage && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
           {savedMessage && <p className={cn('rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
-          <PrimaryButton onClick={() => void save()} className="w-full">Save Cashier Closure</PrimaryButton>
+          <PrimaryButton onClick={() => { if (closureTab === 'close') setClosing(String(closeTotal)); void save(); }} className="w-full bg-orange-500 text-white shadow-lg shadow-orange-200">Save Cashier Closure</PrimaryButton>
         </div>
       </div>
     </Section>
@@ -1034,4 +1122,3 @@ export function BranchAdminKpiStrip({ branch }: { branch: Branch }) {
   const b = bills.filter(x=>x.branch===branch&&today(x.createdAt));
   return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6"><Kpi label="Today's Sales" value={money(b.reduce((s,x)=>s+x.total,0))} icon={<Receipt/>} tone="green"/><Kpi label="Pending Advance" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status!=='Paid In Full').length} icon={<CalendarClock/>} tone="amber"/><Kpi label="Store Confirm" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status==='Store Confirmed').length} icon={<Store/>} tone="blue"/><Kpi label="Purchase Pay" value={money(purchasePayments.filter(p=>p.branch===branch&&today(p.createdAt)).reduce((s,p)=>s+p.amount,0))} icon={<WalletCards/>}/><Kpi label="Deposits" value={money(bankDeposits.filter(d=>d.branch===branch&&today(d.createdAt)).reduce((s,d)=>s+d.amount,0))} icon={<Landmark/>} tone="blue"/><Kpi label="Returns" value={money(returns.filter(r=>r.branch===branch&&today(r.createdAt)).reduce((s,r)=>s+r.total,0))} icon={<RotateCcw/>} tone="red"/><Kpi label="Disputes" value={notifications.filter(n=>n.branch===branch&&n.type==='Stock Dispute'&&n.status!=='Resolved').length} icon={<AlertTriangle/>} tone="red"/></div>;
 }
-
