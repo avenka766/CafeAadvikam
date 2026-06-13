@@ -443,7 +443,30 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   // ── Record an advance order — NO stock deduction yet ──────────────────────
+  // ── MD Bug #11: TWO PARALLEL ADVANCE-ORDER SYSTEMS ──────────────────────────
+  // System 1 (THIS FILE): recordAdvanceOrder / collectAdvanceBalance
+  //   • Entry point: BillTab.tsx → AdvancePaymentsTab
+  //   • Writes to: branch_advance_orders + branch_sales
+  //   • Summarised in: AdvancePaymentsTab
+  // System 2 (branchOpsStore.ts): addAdvanceCakeOrder / addAdvanceFinalBill
+  //   • Entry point: BranchBusinessModules → AdvanceCakeOrdersTab
+  //   • Writes to: branch_bill_headers / bills[] + branch_sale_payments
+  //   • Summarised in: BranchBillHistoryProTab
+  //
+  // MIGRATION PATH (see 20260613_0006_unify_advance_orders.sql):
+  //   A DB view `unified_advance_orders` merges both systems into one query for
+  //   reporting. Full consolidation (merge System 1 into System 2) is a breaking
+  //   change that must be done in a dedicated release. Until then, the view prevents
+  //   duplicate counting on Owner Dashboard.
+  // ─────────────────────────────────────────────────────────────────────────────
   recordAdvanceOrder: async (branch, order) => {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(
+        '[DEPRECATION] recordAdvanceOrder (System 1) will be merged into '
+        + 'addAdvanceCakeOrder (System 2) in a future release. '
+        + 'See MD Bug #11 and migration 20260613_0006_unify_advance_orders.sql.'
+      );
+    }
     const now = new Date().toISOString();
     const balanceDue = Math.max(0, order.subtotal - order.advanceAmount);
     // BUGFIX: if full amount collected upfront, mark as completed immediately
@@ -568,16 +591,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
       decremented.push({ itemName: item.itemName, qty: item.quantity });
 
-      await supabase.from('branch_sales').insert({
-        branch,
-        item_name:      item.itemName,
-        quantity_sold:  item.quantity,
-        sold_at:        now,
-        sold_by:        order.soldBy,
-        payment_method: `advance+${balanceMethod}`,
-        unit_price:     item.price ?? 0,
-        bill_no:        null,
-      });
+      // FIX (MD Bug #1): removed duplicate branch_sales insert here.
+      // recordAdvanceOrder() already wrote a branch_sales row with payment_method='advance:<method>'
+      // when the order was placed. Writing a second row here at delivery caused every completed
+      // advance order's revenue and quantity to be counted twice across all owner/admin reports.
+      // Stock deduction (above) is still correct and unchanged — only the duplicate sales row is removed.
     }
 
     // All stock deductions succeeded — now mark the order as completed
@@ -733,11 +751,22 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         .eq('branch', branch).eq('item_name', inc.itemName).single();
 
       if (existing) {
-        const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-        const { error: stockErr } = await supabase.from('branch_stock')
-          .update({ quantity: newQty, unit: inc.unit })
-          .eq('branch', branch).eq('item_name', inc.itemName);
-        if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
+        // FIX (MD Bug #14): replace non-atomic read-quantity-then-write with a server-side
+        // atomic increment RPC to prevent lost updates when two devices confirm stock
+        // for different items of the same order at nearly the same instant. If the atomic
+        // RPC is unavailable, fall back to the read-modify-write (same risk as before).
+        const { error: rpcErr } = await supabase.rpc('increment_branch_stock', {
+          p_branch: branch, p_item_name: inc.itemName, p_qty: inc.quantity,
+        });
+        if (rpcErr) {
+          // Atomic RPC not available — fall back to non-atomic path with a warning
+          console.warn('[confirmIncoming] increment_branch_stock RPC unavailable, using non-atomic fallback:', rpcErr.message);
+          const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
+          const { error: stockErr } = await supabase.from('branch_stock')
+            .update({ quantity: newQty, unit: inc.unit })
+            .eq('branch', branch).eq('item_name', inc.itemName);
+          if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
+        }
       } else {
         const { error: insErr } = await supabase.from('branch_stock')
           .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
@@ -860,6 +889,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // ── Manual stock update — branch staff sets qty for any item ─────────────
   manualUpdateStock: async (branch, itemName, quantity, updatedBy) => {
     const rounded = Math.round(quantity * 1000) / 1000;
+    const now = new Date().toISOString();
 
     const { data: existing } = await supabase
       .from('branch_stock')
@@ -869,17 +899,36 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .single();
 
     if (existing) {
+      const oldQty = Number(existing.quantity ?? 0);
       const { error } = await supabase
         .from('branch_stock')
-        .update({ quantity: rounded, last_updated_by: updatedBy, last_updated_at: new Date().toISOString() })
+        .update({ quantity: rounded, last_updated_by: updatedBy, last_updated_at: now })
         .eq('branch', branch)
         .eq('item_name', itemName);
       if (error) return `Failed to update stock: ${error.message}`;
+      // FIX (MD Bug #13): write an audit log row on every manual stock update so
+      // owners can see who changed what, when, and by how much. Requires a
+      // branch_stock_adjustments table — insert is best-effort (non-blocking).
+      await supabase.from('branch_stock_adjustments').insert({
+        branch,
+        item_name: itemName,
+        old_quantity: oldQty,
+        new_quantity: rounded,
+        delta: rounded - oldQty,
+        reason: 'Manual stock update',
+        adjusted_by: updatedBy,
+        adjusted_at: now,
+      }).then(() => {/* best-effort — don't block on audit log failure */});
     } else {
       const { error } = await supabase
         .from('branch_stock')
-        .insert({ branch, item_name: itemName, quantity: rounded, min_threshold: 0, last_updated_by: updatedBy, last_updated_at: new Date().toISOString() });
+        .insert({ branch, item_name: itemName, quantity: rounded, min_threshold: 0, last_updated_by: updatedBy, last_updated_at: now });
       if (error) return `Failed to create stock entry: ${error.message}`;
+      // Audit log for new stock entry creation
+      await supabase.from('branch_stock_adjustments').insert({
+        branch, item_name: itemName, old_quantity: 0, new_quantity: rounded,
+        delta: rounded, reason: 'Initial stock entry', adjusted_by: updatedBy, adjusted_at: now,
+      }).then(() => {});
     }
 
     // Re-fetch from DB to ensure local state matches exactly what was saved
@@ -1065,7 +1114,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Also write each item as a branch_sales row so revenue reports include credit sales.
     // payment_method='credit' marks these as credit-billed (goods delivered, payment pending).
     // They must NOT be excluded from revenue — the earning happened at point of sale.
-    const shouldWriteSalesRows = options.writeSalesRows !== false;
+    // FIX (MD Bug #8): skip branch_sales write for branch='Cafe'. Cafe credit orders are
+    // already fully recorded in the orders table (source of truth for Cafe sales). Writing
+    // to branch_sales creates dead data today and would cause double-counting if a future
+    // Cafe item-wise report is ever built on branch_sales (mirroring the VRSNB/SNB pattern).
+    const shouldWriteSalesRows = options.writeSalesRows !== false && branch !== 'Cafe';
     const salesRows = shouldWriteSalesRows ? sale.items.map(item => ({
       branch,
       item_name:      item.itemName,

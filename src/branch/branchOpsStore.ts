@@ -1220,7 +1220,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               : s.auditLogs,
           };
         }),
-      addReturn: (ret) => {
+      addReturn: async (ret) => {
         const returnNo = `${ret.branch}-RET-${String(seq(`return-${ret.branch}`)).padStart(4, "0")}`;
         const newRet = {
           ...ret,
@@ -1228,6 +1228,32 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           returnNo,
           createdAt: new Date().toISOString(),
         };
+        // FIX (MD Bug #3): use the original bill's payment mode for the refund cash movement,
+        // not always 'cash'. A UPI/card return previously created a cash outflow with no
+        // matching cash inflow, directly distorting Expected Cash at Daily Closure.
+        const refundMode = ret.originalPaymentMode ?? "cash";
+
+        // FIX (MD Bug #3 continued): call the ledger RPC so branch_daily_closure_ledger
+        // totals (cash_total, upi_total, card_total, sales_total) are reduced by the return
+        // amount. Without this, the ledger still shows the pre-return revenue figures and
+        // Expected Cash at closure is overstated by the refund amount.
+        try {
+          await supabase.rpc('process_branch_return', {
+            p_branch: ret.branch,
+            p_bill_no: ret.originalBillNo,
+            p_return_no: returnNo,
+            p_amount: ret.total,
+            p_payment_mode: refundMode,
+            p_returned_by: ret.returnedBy,
+            p_reason: ret.reason,
+            p_items: ret.items ?? [],
+          });
+        } catch (rpcErr) {
+          // process_branch_return RPC not yet deployed — log and continue so the
+          // local cashMovements entry is still created. TODO: deploy the RPC migration.
+          console.warn('[addReturn] process_branch_return RPC unavailable — ledger not updated:', rpcErr);
+        }
+
         set((s) => ({
           returns: [newRet, ...s.returns],
           cashMovements: [
@@ -1236,7 +1262,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               branch: ret.branch,
               dateTime: newRet.createdAt,
               amount: ret.total,
-              paymentMode: "cash",
+              paymentMode: refundMode,
               direction: "out",
               purpose: "Return refund",
               enteredBy: ret.returnedBy,
