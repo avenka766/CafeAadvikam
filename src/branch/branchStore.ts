@@ -1190,7 +1190,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (error) {
       const missingRpc = /settle_branch_credit_sale|could not find the function|function .* does not exist/i.test(error.message);
       return missingRpc
-        ? 'Credit ledger is not installed in Supabase. Run the 20260609_branch_atomic_ledger.sql migration first.'
+        ? 'Credit ledger is not installed in Supabase. Run the 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql migration first.'
         : `Failed to settle credit sale: ${error.message}`;
     }
 
@@ -1272,3 +1272,4 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     return () => { supabase.removeChannel(channel); };
   },
 }));
+

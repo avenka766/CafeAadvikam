@@ -1746,9 +1746,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             p_items: ret.items ?? [],
           });
         } catch (rpcErr) {
-          // process_branch_return RPC not yet deployed — log and continue so the
-          // local cashMovements entry is still created. TODO: deploy the RPC migration.
-          console.warn('[addReturn] process_branch_return RPC unavailable — ledger not updated:', rpcErr);
+          console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
+          throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');
         }
 
         set((s) => ({
