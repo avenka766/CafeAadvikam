@@ -421,7 +421,7 @@
     padding-bottom: calc(var(--staff-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
   }
 
-  @media (min-width: 1024px) {
+  @media (min-width: 768px) {
     .workspace-redesign {
       padding-top: var(--staff-header-h);
       padding-bottom: 0;
@@ -441,6 +441,33 @@
       radial-gradient(circle at top, rgba(244, 169, 66, 0.18), transparent 22rem);
     border-right: 1px solid rgba(255,255,255,0.10);
     box-shadow: 16px 0 50px rgba(31, 16, 6, 0.18);
+  }
+
+  @media (min-width: 768px) and (max-width: 1279px) {
+    .workspace-sidebar {
+      width: 248px;
+      padding: .85rem;
+      gap: .75rem;
+    }
+    .workspace-brand-card {
+      padding: .75rem;
+      border-radius: 1.15rem;
+    }
+    .workspace-brand-mark {
+      width: 2.4rem;
+      height: 2.4rem;
+      border-radius: .9rem;
+    }
+    .workspace-nav-item {
+      gap: .55rem;
+      padding: .68rem .7rem;
+      font-size: .84rem;
+    }
+    .workspace-nav-icon {
+      width: 1.8rem;
+      height: 1.8rem;
+      border-radius: .65rem;
+    }
   }
 
   .workspace-brand-card {
@@ -547,7 +574,14 @@
     padding: var(--staff-shell-gap) 1rem calc(var(--staff-bottom-nav-h) + 1rem + env(safe-area-inset-bottom, 0px));
   }
 
-  @media (min-width: 1024px) {
+  @media (min-width: 768px) {
+    .workspace-main-shell {
+      margin-left: 248px;
+      padding: 1rem 1rem 1.5rem;
+    }
+  }
+
+  @media (min-width: 1280px) {
     .workspace-main-shell {
       margin-left: 288px;
       padding: 1.15rem 1.5rem 2rem;
@@ -653,7 +687,7 @@
 
   .workspace-content-frame {
     border-radius: 1.7rem;
-    overflow: clip;
+    overflow: visible;
     min-height: 52dvh;
     background: rgba(255,255,255,.38);
     border: 1px solid rgba(116, 82, 37, 0.10);
@@ -681,7 +715,7 @@
     padding-bottom: calc(var(--staff-bottom-nav-h) + .75rem + env(safe-area-inset-bottom, 0px)) !important;
   }
 
-  @media (min-width: 1024px) {
+  @media (min-width: 768px) {
     .workspace-redesign .workspace-content-frame > .min-h-screen,
     .workspace-redesign .workspace-content-frame > .min-h-\[100dvh\],
     .workspace-redesign .workspace-content-frame > div[class*="min-h-screen"],
@@ -2279,6 +2313,50 @@
 }
 
 @layer components {
+  /* Branch POS: tablet-first two-pane billing, phone-safe stacked billing. */
+  .workspace-redesign .branch-billmaxo {
+    max-width: 100%;
+  }
+
+  .workspace-redesign .branch-billmaxo aside,
+  .workspace-redesign .branch-billmaxo main {
+    min-width: 0;
+  }
+
+  @media (min-width: 768px) and (max-width: 1180px) {
+    .workspace-redesign .branch-billmaxo {
+      border-radius: 1.35rem;
+    }
+    .workspace-redesign .branch-billmaxo aside {
+      max-height: 100%;
+    }
+    .workspace-redesign .branch-billmaxo main h1 {
+      font-size: 1.45rem;
+      line-height: 1.05;
+    }
+    .workspace-redesign .branch-billmaxo main [class*="grid-cols-"] {
+      min-width: 0;
+    }
+  }
+
+  @media (max-width: 767px) {
+    .workspace-redesign .branch-billmaxo {
+      min-height: auto;
+      border-radius: 1.25rem;
+      overflow: visible;
+    }
+    .workspace-redesign .branch-billmaxo > div {
+      min-height: auto;
+    }
+    .workspace-redesign .branch-billmaxo aside {
+      border-right: 0;
+      border-bottom: 1px solid rgba(226,232,240,.95);
+    }
+    .workspace-redesign .branch-billmaxo main {
+      min-height: auto;
+    }
+  }
+
   /* Biller dashboard cart and responsive billing workspace fixes */
   .workspace-redesign [data-billing-dashboard] {
     overflow-x: hidden;
@@ -2882,7 +2960,7 @@
   .workspace-redesign .owner-data-table strong { display: block; color: var(--owner-ink); font-weight: 950; }
   .workspace-redesign .owner-data-table span { display: block; margin-top: .2rem; color: rgba(28,18,8,.48); font-size: .75rem; font-weight: 750; }
 
-  @media (max-width: 1180px) {
+  @media (max-width: 900px) {
     .workspace-redesign .owner-dashboard-shell { grid-template-columns: 1fr; }
     .workspace-redesign .owner-sidebar {
       position: static;
