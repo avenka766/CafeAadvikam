@@ -210,17 +210,17 @@ export default function BottomNav() {
       {
         label: "Order",
         icon: <Inbox className="size-5" />,
-        path: "/bakery/receive/hosur",
+        path: "/branch/hosur?tab=newOrder",
       },
       {
-        label: "Placed",
+        label: "Receive",
         icon: <FileText className="size-5" />,
-        path: "/bakery/receive/hosur?tab=placed",
+        path: "/branch/hosur?tab=receiving",
       },
       {
         label: "Alerts",
         icon: <Bell className="size-5" />,
-        path: "/bakery/receive/hosur?tab=alerts",
+        path: "/branch/hosur?tab=disputes",
       },
     );
   } else if (currentUser.role === "store") {
@@ -268,12 +268,14 @@ export default function BottomNav() {
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
       { label: "Daily", icon: <ClipboardList className="size-5" />, path: "/branch/snb?tab=daily-closure" },
     );
-  } else if (currentUser.role === "branch_hosur") {
-    navItems.push({
-      label: "Hosur",
-      icon: <ShoppingCart className="size-5" />,
-      path: "/branch/hosur",
-    });
+  } else if (currentUser.role === "branch_hosur" || currentUser.role === "admin_hosur") {
+    navItems.push(
+      { label: "Shops", icon: <Store className="size-5" />, path: "/branch/hosur?tab=shops" },
+      { label: "Order", icon: <ShoppingCart className="size-5" />, path: "/branch/hosur?tab=newOrder" },
+      { label: "Receive", icon: <Package className="size-5" />, path: "/branch/hosur?tab=receiving" },
+      { label: "Billing", icon: <FileText className="size-5" />, path: "/branch/hosur?tab=billing" },
+      { label: "Reports", icon: <History className="size-5" />, path: "/branch/hosur?tab=reports" },
+    );
   } else if (currentUser.role === "admin_vrsnb") {
     navItems.push(
       {
@@ -314,6 +316,12 @@ export default function BottomNav() {
         label: "History",
         icon: <History className="size-5" />,
         path: "/admin-snb/history",
+      },
+      {
+        label: "Alerts",
+        icon: <Bell className="size-5" />,
+        path: "/admin/alerts",
+        badge: unread || undefined,
       },
     );
   } else if (currentUser.role === "owner") {
