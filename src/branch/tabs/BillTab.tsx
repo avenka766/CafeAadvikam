@@ -1925,7 +1925,7 @@ export function BillTab({ branch, branchStock, advanceOrders = [] }: Props) {
       });
       if (rpcError) {
         const missingRpc = /complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
-        throw new Error(missingRpc ? 'Atomic checkout is not installed in Supabase. Run the 20260609_branch_atomic_ledger.sql migration first.' : rpcError.message);
+        throw new Error(missingRpc ? 'Atomic checkout is not installed in Supabase. Run the 20260614_branch_atomic_checkout_rpc.sql migration first.' : rpcError.message);
       }
       const result = data as { billNo?: string };
       if (!result?.billNo) throw new Error('Checkout committed but bill number was not returned.');

@@ -171,7 +171,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
         const missingLedger = /branch_bill_headers|does not exist|schema cache/i.test(error.message);
         setLedgerBills([]);
         setLedgerMessage(missingLedger
-          ? 'Supabase bill ledger is not installed yet. Run 20260609_branch_atomic_ledger.sql, then this history will load from Supabase.'
+          ? 'Supabase bill ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql, then this history will load from Supabase.'
           : `Could not load Supabase bill history: ${error.message}`);
         setLoadingLedger(false);
         return;
@@ -523,7 +523,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       if (paymentError || advancePaymentError) {
         const msg = paymentError?.message || advancePaymentError?.message || 'Unknown Supabase error';
         setError(/branch_sale_payments|branch_advance_payments|does not exist|schema cache/i.test(msg)
-          ? 'Advance order saved, but Supabase ledger is not installed. Run 20260609_branch_atomic_ledger.sql so daily closure can include advance payments.'
+          ? 'Advance order saved, but Supabase ledger is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql so daily closure can include advance payments.'
           : `Advance order saved, but payment ledger failed: ${msg}`);
       }
     }
@@ -838,7 +838,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       if (ledgerError) {
         const missingLedger = /branch_daily_closure_ledger|does not exist|schema cache/i.test(ledgerError.message);
         setClosureMessage(missingLedger
-          ? 'Supabase daily closure ledger is not installed yet. Run 20260609_branch_atomic_ledger.sql before relying on closure totals.'
+          ? 'Supabase daily closure ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql before relying on closure totals.'
           : `Could not load Supabase closure ledger: ${ledgerError.message}`);
         setLedgerToday(null);
       } else {
@@ -938,7 +938,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     if (error) {
       const missingLedger = /branch_daily_closures|does not exist|schema cache/i.test(error.message);
       setSavedMessage(missingLedger
-        ? 'Supabase closure table is not installed. Run 20260609_branch_atomic_ledger.sql first.'
+        ? 'Supabase closure table is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql first.'
         : `Failed to save closure in Supabase: ${error.message}`);
       return;
     }
@@ -1142,3 +1142,4 @@ export function BranchAdminKpiStrip({ branch }: { branch: Branch }) {
   const b = bills.filter(x=>x.branch===branch&&today(x.createdAt));
   return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6"><Kpi label="Today's Sales" value={money(b.reduce((s,x)=>s+x.total,0))} icon={<Receipt/>} tone="green"/><Kpi label="Pending Advance" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status!=='Paid In Full').length} icon={<CalendarClock/>} tone="amber"/><Kpi label="Store Confirm" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status==='Store Confirmed').length} icon={<Store/>} tone="blue"/><Kpi label="Purchase Pay" value={money(purchasePayments.filter(p=>p.branch===branch&&today(p.createdAt)).reduce((s,p)=>s+p.amount,0))} icon={<WalletCards/>}/><Kpi label="Deposits" value={money(bankDeposits.filter(d=>d.branch===branch&&today(d.createdAt)).reduce((s,d)=>s+d.amount,0))} icon={<Landmark/>} tone="blue"/><Kpi label="Returns" value={money(returns.filter(r=>r.branch===branch&&today(r.createdAt)).reduce((s,r)=>s+r.total,0))} icon={<RotateCcw/>} tone="red"/><Kpi label="Disputes" value={notifications.filter(n=>n.branch===branch&&n.type==='Stock Dispute'&&n.status!=='Resolved').length} icon={<AlertTriangle/>} tone="red"/></div>;
 }
+
