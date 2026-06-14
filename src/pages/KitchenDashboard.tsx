@@ -526,7 +526,14 @@ export default function KitchenDashboard() {
                           {updatingId === order.id ? <Loader2 className="size-5 animate-spin" /> : <CheckCircle2 className="size-5" />} Mark Ready
                         </button>
                       )}
-                      {order.status === 'ready' && <div className="ready-state"><CheckCircle2 className="size-5" /> Ready for Pickup</div>}
+                      {order.status === 'ready' && (
+                        <>
+                          <div className="ready-state"><CheckCircle2 className="size-5" /> Ready for Pickup</div>
+                          <button type="button" disabled={updatingId === order.id} onClick={() => handleStatusUpdate(order.id, 'served')} className="ready">
+                            {updatingId === order.id ? <Loader2 className="size-5 animate-spin" /> : <CheckCircle2 className="size-5" />} Mark Served
+                          </button>
+                        </>
+                      )}
                       {order.status === 'cancelled' && <div className="cancel-state"><ShieldAlert className="size-5" /> Cancelled / stopped</div>}
                       <button type="button" onClick={() => printKot(order)} className="print"><Printer className="size-5" /> Print</button>
                     </footer>

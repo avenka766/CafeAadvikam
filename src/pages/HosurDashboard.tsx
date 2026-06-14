@@ -3,6 +3,7 @@
 // billing, credit, WhatsApp logs, reminders, disputes, daily closure and reports.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -40,6 +41,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { SNB_CATEGORIES, SNB_ITEMS } from '@/branch/snbItems';
 import type { SnbItem } from '@/branch/snbItems';
+import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
 const BRANCH = 'Hosur' as const;
 const TODAY_ISO = () => new Date().toISOString().slice(0, 10);
@@ -249,6 +251,15 @@ interface DraftOrderItem {
   category: string;
 }
 
+interface HosurCatalogItem {
+  barcode: number;
+  name: string;
+  price: number;
+  uom: 'Nos' | 'Kgs';
+  category: SnbItem['category'];
+  source: 'master' | 'shop';
+}
+
 interface PaymentDraft {
   paidAmount: string;
   dueDate: string;
@@ -257,6 +268,61 @@ interface PaymentDraft {
 }
 
 const EMPTY_PAYMENT: PaymentDraft = { paidAmount: '', dueDate: '', paymentMode: 'cash', remarks: '' };
+const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'credit', 'collection', 'whatsapp', 'reminders', 'disputes', 'closure', 'reports', 'notifications'];
+const KG_ITEM_HINTS = ['biscuit', 'cake', 'chips', 'mixture', 'murk', 'nippat', 'boondhi'];
+
+function parseHosurTab(value: string | null): HosurTab {
+  return HOSUR_TABS.includes(value as HosurTab) ? value as HosurTab : 'newOrder';
+}
+
+function masterItemFor(itemName: string) {
+  return SNB_ITEMS.find((item) => normalize(item.name) === normalize(itemName));
+}
+
+function inferHosurItemUnit(itemName: string, price: number): 'Nos' | 'Kgs' {
+  const master = masterItemFor(itemName);
+  if (master) return master.uom;
+  const key = normalize(itemName);
+  return price >= 200 || KG_ITEM_HINTS.some((hint) => key.includes(hint)) ? 'Kgs' : 'Nos';
+}
+
+function inferHosurItemCategory(itemName: string): SnbItem['category'] {
+  const master = masterItemFor(itemName);
+  if (master) return master.category;
+  const key = normalize(itemName);
+  if (key.includes('bread') || key.includes('bun')) return 'Bread & Buns';
+  if (key.includes('cake')) return 'Cakes (by kg)';
+  if (key.includes('biscuit') || key.includes('rusk')) return 'Biscuits & Cookies';
+  if (key.includes('mixture') || key.includes('murk') || key.includes('nippat') || key.includes('boondhi')) return 'Namkeens & Mixtures';
+  if (key.includes('chips') || key.includes('pori')) return 'Packaged Snacks';
+  return 'Buns & Pastries';
+}
+
+function buildHosurCatalogItems(prices: HosurShopPrice[], shopId?: string): HosurCatalogItem[] {
+  const shopRows = shopId ? prices.filter((price) => price.shopId === shopId) : [];
+  const hidden = new Set(shopRows.filter((price) => !price.isActive).map((price) => normalize(price.itemName)));
+  const rows = new Map<string, HosurCatalogItem>();
+
+  SNB_ITEMS.forEach((item) => {
+    const key = normalize(item.name);
+    if (!hidden.has(key)) rows.set(key, { ...item, source: 'master' });
+  });
+
+  shopRows.filter((price) => price.isActive).forEach((price, index) => {
+    const key = normalize(price.itemName);
+    const master = masterItemFor(price.itemName);
+    rows.set(key, {
+      barcode: master?.barcode ?? 90_000 + index,
+      name: price.itemName,
+      price: price.unitPrice,
+      uom: price.itemUnit === 'kg' ? 'Kgs' : 'Nos',
+      category: master?.category ?? inferHosurItemCategory(price.itemName),
+      source: master ? 'master' : 'shop',
+    });
+  });
+
+  return Array.from(rows.values()).sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+}
 
 function mapShop(row: any): HosurShop {
   return {
@@ -660,7 +726,8 @@ export default function HosurDashboard() {
     fetchCreditSales,
   } = useBranchStore();
 
-  const [tab, setTab] = useState<HosurTab>('newOrder');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('tab')));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -701,7 +768,7 @@ export default function HosurDashboard() {
         notificationsRes,
       ] = await Promise.all([
         supabase.from('hosur_shops').select('*').order('shop_name', { ascending: true }),
-        supabase.from('hosur_shop_price_lists').select('*').eq('is_active', true),
+        supabase.from('hosur_shop_price_lists').select('*'),
         supabase.from('hosur_orders').select('*').order('created_at', { ascending: false }).limit(250),
         supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(3000),
         supabase.from('hosur_bills').select('*').order('created_at', { ascending: false }).limit(250),
@@ -770,6 +837,17 @@ export default function HosurDashboard() {
     return () => window.clearInterval(id);
   }, [refresh]);
 
+  useEffect(() => {
+    const nextTab = parseHosurTab(searchParams.get('tab'));
+    setTabState((current) => current === nextTab ? current : nextTab);
+  }, [searchParams]);
+
+  const setTab = (nextTab: HosurTab) => {
+    setTabState(nextTab);
+    setSearchParams(nextTab === 'newOrder' ? {} : { tab: nextTab });
+    setSidebarOpen(false);
+  };
+
   const activeShops = shops.filter((shop) => shop.isActive);
   // FIX (MD Bug #21): separate wholesale and retail open credits using creditType column
   const openCredits = credits.filter((credit) => credit.status !== 'cleared' && credit.balanceAmount > 0);
@@ -781,7 +859,7 @@ export default function HosurDashboard() {
   const failedWhatsapp = whatsappLogs.filter((log) => log.status === 'failed');
   const unreadNotifications = notifications.filter((n) => !n.isRead).length;
 
-  const priceFor = useCallback((shopId: string, item: SnbItem | string) => {
+  const priceFor = useCallback((shopId: string, item: SnbItem | HosurCatalogItem | string) => {
     const itemName = typeof item === 'string' ? item : item.name;
     const exact = prices.find((price) => price.shopId === shopId && normalize(price.itemName) === normalize(itemName) && price.isActive);
     if (exact) return exact.unitPrice;
@@ -1169,7 +1247,7 @@ export default function HosurDashboard() {
           ) : (
             <div className="space-y-4">
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
-              {tab === 'newOrder' && <NewOrderTab shops={activeShops} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
+              {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} branchIncoming={branchIncoming} busy={busy} withBusy={withBusy} confirmIncoming={confirmIncoming} createDraftBill={createDraftBill} userName={userName} />}
               {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
@@ -1209,17 +1287,19 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   prices: HosurShopPrice[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  priceFor: (shopId: string, item: SnbItem | string) => number;
+  priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '' });
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
+  const [customItem, setCustomItem] = useState({ itemName: '', unit: 'pcs' as 'pcs' | 'kg', unitPrice: '' });
   const selectedShop = shops.find((s) => s.id === selectedShopId) ?? shops[0];
 
   useEffect(() => { if (!selectedShopId && shops[0]) setSelectedShopId(shops[0].id); }, [shops, selectedShopId]);
 
-  const filteredItems = SNB_ITEMS.filter((item) => normalize(item.name).includes(normalize(priceSearch))).slice(0, 80);
+  const catalogItems = buildHosurCatalogItems(prices, selectedShop?.id);
+  const filteredItems = catalogItems.filter((item) => normalize(item.name).includes(normalize(priceSearch))).slice(0, 120);
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
@@ -1234,7 +1314,48 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     setForm({ shopName: '', whatsappNumber: '', address: '' });
   };
 
-  const savePrice = async (item: SnbItem) => {
+  const importVrsnbPriceList = async () => {
+    const shopIdByPhone = new Map(shops.filter((shop) => cleanPhone(shop.whatsappNumber)).map((shop) => [cleanPhone(shop.whatsappNumber), shop.id]));
+    const shopIdByName = new Map(shops.map((shop) => [normalize(shop.shopName), shop.id]));
+    const insertedShops: Record<string, string> = {};
+
+    for (const sourceShop of HOSUR_VRSNB_PRICE_LIST) {
+      const key = normalize(`${sourceShop.shopName} ${sourceShop.whatsappNumber}`);
+      let shopId = shopIdByPhone.get(cleanPhone(sourceShop.whatsappNumber)) ?? shopIdByName.get(normalize(sourceShop.shopName));
+      if (!shopId) {
+        const { data, error } = await supabase.from('hosur_shops').insert({
+          shop_name: sourceShop.shopName,
+          whatsapp_number: sourceShop.whatsappNumber,
+          address: '',
+          is_active: true,
+        }).select('id').single();
+        if (error) throw error;
+        shopId = data.id;
+        shopIdByPhone.set(cleanPhone(sourceShop.whatsappNumber), shopId);
+        shopIdByName.set(normalize(sourceShop.shopName), shopId);
+      }
+      insertedShops[key] = shopId;
+    }
+
+    const rows = HOSUR_VRSNB_PRICE_LIST.flatMap((sourceShop) => {
+      const shopId = insertedShops[normalize(`${sourceShop.shopName} ${sourceShop.whatsappNumber}`)];
+      return sourceShop.items.map((item) => ({
+        shop_id: shopId,
+        item_name: item.itemName,
+        item_unit: inferHosurItemUnit(item.itemName, item.unitPrice) === 'Kgs' ? 'kg' : 'pcs',
+        unit_price: item.unitPrice,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      }));
+    });
+
+    if (rows.length > 0) {
+      const { error } = await supabase.from('hosur_shop_price_lists').upsert(rows, { onConflict: 'shop_id,item_name' });
+      if (error) throw error;
+    }
+  };
+
+  const savePrice = async (item: HosurCatalogItem) => {
     if (!selectedShop) throw new Error('Select a shop first.');
     const edited = Number(priceEdits[item.name] ?? priceFor(selectedShop.id, item));
     if (!edited || edited <= 0) throw new Error('Enter a valid item price.');
@@ -1248,6 +1369,42 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     }, { onConflict: 'shop_id,item_name' });
     if (error) throw error;
     setPriceEdits((prev) => ({ ...prev, [item.name]: String(edited) }));
+  };
+
+  const addCustomItem = async () => {
+    if (!selectedShop) throw new Error('Select a shop first.');
+    const name = customItem.itemName.trim();
+    const price = Number(customItem.unitPrice);
+    if (!name) throw new Error('Item name is required.');
+    if (!price || price <= 0) throw new Error('Enter a valid price.');
+    const { error } = await supabase.from('hosur_shop_price_lists').upsert({
+      shop_id: selectedShop.id,
+      item_name: name,
+      item_unit: customItem.unit,
+      unit_price: price,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'shop_id,item_name' });
+    if (error) throw error;
+    setCustomItem({ itemName: '', unit: 'pcs', unitPrice: '' });
+  };
+
+  const deletePrice = async (item: HosurCatalogItem) => {
+    if (!selectedShop) throw new Error('Select a shop first.');
+    const { error } = await supabase.from('hosur_shop_price_lists').upsert({
+      shop_id: selectedShop.id,
+      item_name: item.name,
+      item_unit: item.uom === 'Kgs' ? 'kg' : 'pcs',
+      unit_price: Number(priceEdits[item.name] ?? priceFor(selectedShop.id, item)),
+      is_active: false,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'shop_id,item_name' });
+    if (error) throw error;
+    setPriceEdits((prev) => {
+      const next = { ...prev };
+      delete next[item.name];
+      return next;
+    });
   };
 
   return (
@@ -1276,7 +1433,16 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
         <Card className="space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div><h3 className="font-black">Shop-wise Item Price List</h3><p className="text-sm text-muted-foreground">{selectedShop ? `Editing prices for ${selectedShop.shopName}` : 'Select a shop to edit prices.'}</p></div>
-            <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+              <button className={softButton} disabled={busy} onClick={() => withBusy(importVrsnbPriceList, 'VRSNB price list imported to Hosur shops.')}>Import VRSNB Price List</button>
+              <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
+            </div>
+          </div>
+          <div className="grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
+            <input className={inputClass} value={customItem.itemName} onChange={(e) => setCustomItem((prev) => ({ ...prev, itemName: e.target.value }))} placeholder="Add custom item name" />
+            <select className={inputClass} value={customItem.unit} onChange={(e) => setCustomItem((prev) => ({ ...prev, unit: e.target.value as 'pcs' | 'kg' }))}><option value="pcs">pcs</option><option value="kg">kg</option></select>
+            <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
+            <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
           <div className="overflow-x-auto rounded-2xl border">
             <table className="min-w-full text-sm">
@@ -1285,7 +1451,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 {filteredItems.map((item) => {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
                   const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
-                  return <tr key={item.barcode} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}<p className="text-[10px] text-muted-foreground">{item.category}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{money(item.price)}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom ? 'Update' : 'Save'}</button></td></tr>;
+                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
                 })}
               </tbody>
             </table>
@@ -1296,11 +1462,12 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   );
 }
 
-function NewOrderTab({ shops, busy, withBusy, priceFor, userName }: {
+function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   shops: HosurShop[];
+  prices: HosurShopPrice[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  priceFor: (shopId: string, item: SnbItem | string) => number;
+  priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
   userName: string;
 }) {
   const [shopId, setShopId] = useState('');
@@ -1312,14 +1479,15 @@ function NewOrderTab({ shops, busy, withBusy, priceFor, userName }: {
 
   useEffect(() => { if (!shopId && shops[0]) setShopId(shops[0].id); }, [shops, shopId]);
 
-  const filteredItems = SNB_ITEMS.filter((item) => {
+  const catalogItems = buildHosurCatalogItems(prices, shop?.id);
+  const filteredItems = catalogItems.filter((item) => {
     if (search.trim()) return normalize(item.name).includes(normalize(search));
     return category === 'All' || item.category === category;
   });
   const cartItems = Object.values(cart);
   const subtotal = cartItems.reduce((sum, item) => sum + item.lineTotal, 0);
 
-  const setQty = (item: SnbItem, qty: number) => {
+  const setQty = (item: HosurCatalogItem, qty: number) => {
     if (!shop) return;
     const unit: 'pcs' | 'kg' = item.uom === 'Kgs' ? 'kg' : 'pcs';
     const safeQty = Math.max(0, Math.round(qty * 1000) / 1000);

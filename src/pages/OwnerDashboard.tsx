@@ -665,20 +665,86 @@ function SalesOverviewTab() {
 
 // ── Attendance & Salary Tab ───────────────────────────────────────────────────
 // CHANGE 10: aggregate branch view (no per-employee list), stacked dept chart
+type OwnerAttendanceRow = { employee_id: string; day: number; present: boolean; half: boolean; woff: boolean; bf: boolean; lunch: boolean; dinner: boolean };
+type OwnerMonthAttendance = Record<string, OwnerAttendanceRow>;
+const OWNER_ESI_RATE = 0.0075;
+const OWNER_PF_RATE = 0.12;
+const OWNER_ESI_WAGE_LIMIT = 21000;
+const ownerAttendanceKey = (employeeId: string, day: number) => `${employeeId}-${day}`;
+const ownerCalcESI = (earned: number, gross: number) => gross <= OWNER_ESI_WAGE_LIMIT ? Math.round(earned * OWNER_ESI_RATE) : 0;
+const ownerCalcPF = (earned: number) => Math.min(1800, Math.round(earned * OWNER_PF_RATE));
+
+function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number) {
+  let presentDays = 0;
+  let halfDays = 0;
+  let woffDays = 0;
+  let canteenTotal = 0;
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const row = attendance[ownerAttendanceKey(emp.id, day)];
+    if (!row) continue;
+    if (row.present) presentDays += 1;
+    if (row.half) halfDays += 1;
+    if (row.woff) woffDays += 1;
+    if ((row.present || row.half) && !row.woff) {
+      const meals = [row.bf, row.lunch, row.dinner].filter(Boolean).length;
+      canteenTotal += meals === 3 ? 30 : meals * 10;
+    }
+  }
+  const worked = presentDays + halfDays * 0.5 + woffDays;
+  const earned = Math.round((Number(emp.grossSalary || 0) / daysInMonth) * worked);
+  const deductions = Number(emp.salaryAdvance || 0) + Number(emp.uniformDeduction || 0) + Number(emp.otherDeduction || 0) + canteenTotal + ownerCalcESI(earned, Number(emp.grossSalary || 0)) + ownerCalcPF(earned);
+  return { earned, deductions, net: Math.max(0, earned - deductions), worked };
+}
+
 function AttendanceSalaryTab() {
   const [employees, setEmployees] = useState<Array<{
     id: string; name: string; branch: string; department: string;
     grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;
   }>>([]);
+  const [attendance, setAttendance] = useState<OwnerMonthAttendance>({});
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const now = new Date();
+  const payrollYear = now.getFullYear();
+  const payrollMonth = now.getMonth() + 1;
+  const daysInMonth = new Date(payrollYear, payrollMonth, 0).getDate();
 
   const loadEmployees = () => {
     setLoading(true); setFetchError(null);
-    supabase.from('employees').select('*').then(({ data, error }) => {
+    Promise.all([
+      supabase.from('employees').select('*'),
+      supabase.from('attendance').select('*').eq('year', payrollYear).eq('month', payrollMonth),
+    ]).then(([employeesRes, attendanceRes]) => {
+      const data = employeesRes.data;
+      const error = employeesRes.error || attendanceRes.error;
       console.debug('[AttendanceSalaryTab] employees:', data?.length, error?.message);
       if (error) setFetchError(error.message || 'Failed to load employee data.');
-      else if (data) setEmployees(data);
+      else if (data) {
+        setEmployees(data.map((row: any) => ({
+          id: row.id,
+          name: row.name,
+          branch: row.branch,
+          department: row.department,
+          grossSalary: Number(row.gross_salary ?? row.grossSalary ?? 0),
+          salaryAdvance: Number(row.salary_advance ?? row.salaryAdvance ?? 0),
+          uniformDeduction: Number(row.uniform_deduction ?? row.uniformDeduction ?? 0),
+          otherDeduction: Number(row.other_deduction ?? row.otherDeduction ?? 0),
+        })));
+        const nextAttendance: OwnerMonthAttendance = {};
+        (attendanceRes.data ?? []).forEach((row: any) => {
+          nextAttendance[ownerAttendanceKey(row.employee_id, Number(row.day))] = {
+            employee_id: row.employee_id,
+            day: Number(row.day),
+            present: Boolean(row.present),
+            half: Boolean(row.half),
+            woff: Boolean(row.woff),
+            bf: Boolean(row.bf),
+            lunch: Boolean(row.lunch),
+            dinner: Boolean(row.dinner),
+          };
+        });
+        setAttendance(nextAttendance);
+      }
       setLoading(false);
     });
   };
@@ -691,14 +757,13 @@ function AttendanceSalaryTab() {
   }, [employees]);
 
   const salaryStats = useMemo(() => {
-    // BUG-C2 NOTE: These figures are based on contracted gross salaries, NOT attendance-prorated
-    // earned amounts. For accurate prorated payroll see the Attendance & Salary page which calls
-    // calcSalary() per employee. This tab shows a quick estimate for owner overview only.
     const total      = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
+    const earned     = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).earned, 0);
     const advances   = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
-    const deductions = employees.reduce((a, e) => a + (Number(e.uniformDeduction) || 0) + (Number(e.otherDeduction) || 0), 0);
-    return { total, advances, deductions, netPayable: total - advances - deductions };
-  }, [employees]);
+    const deductions = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).deductions, 0);
+    const netPayable = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).net, 0);
+    return { total, earned, advances, deductions, netPayable };
+  }, [employees, attendance, daysInMonth]);
 
   const atRiskEmployees = useMemo(() =>
     employees
@@ -746,8 +811,8 @@ function AttendanceSalaryTab() {
         <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}              color="bg-primary/10 text-primary" />
         {/* FIX (MD Bug #10): labels clarified to emphasise these are contracted-salary estimates,
             not attendance-prorated actuals. See Attendance & Salary page for the real figures. */}
-        <KPI icon={<IndianRupee className="size-4" />} label="Gross Payroll (contracted est.)" value={formatCurrency(salaryStats.total)}      color="bg-blue-50 text-blue-700" title="Based on contracted gross salaries — not attendance-prorated. See Attendance & Salary for accurate figures." />
-        <KPI icon={<TrendingUp  className="size-4" />} label="Est. Net Payable (see A&S)"   value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" title="Estimate only. For the attendance-prorated payable amount, open the Attendance & Salary page." />
+        <KPI icon={<IndianRupee className="size-4" />} label="Earned Payroll" value={formatCurrency(salaryStats.earned)} color="bg-blue-50 text-blue-700" title="Attendance-prorated earned salary for this month." />
+        <KPI icon={<TrendingUp  className="size-4" />} label="Net Payable" value={formatCurrency(salaryStats.netPayable)} color="bg-emerald-50 text-emerald-700" title="Earned salary minus advance, canteen, ESI, PF and fixed deductions." />
         <KPI icon={<IndianRupee className="size-4" />} label="Advances"      value={formatCurrency(salaryStats.advances)}   color="bg-amber-50 text-amber-700" />
       </div>
 
@@ -756,7 +821,7 @@ function AttendanceSalaryTab() {
           <Building2 className="size-4 text-primary" />Branch Summary
         </h3>
         {Object.entries(branchGroups).map(([branch, emps]) => {
-          const branchTotal = emps.reduce((s, e) => s + Number(e.grossSalary || 0), 0);
+          const branchTotal = emps.reduce((s, e) => s + ownerCalcSalary(e, attendance, daysInMonth).earned, 0);
           const highRisk    = emps.filter(e => Number(e.grossSalary) > 0 && Number(e.salaryAdvance) / Number(e.grossSalary) >= 0.5).length;
           return (
             <div key={branch} className="rounded-2xl border border-slate-200 p-4">
@@ -771,7 +836,7 @@ function AttendanceSalaryTab() {
                 </div>
                 <div className="text-center">
                   <p className="text-xl font-black text-emerald-700">{formatCurrency(branchTotal)}</p>
-                  <p className="text-[10px] text-slate-500">Gross Payroll</p>
+                  <p className="text-[10px] text-slate-500">Earned Payroll</p>
                 </div>
                 <div className="text-center">
                   <p className={cn('text-xl font-black', highRisk > 0 ? 'text-red-600' : 'text-slate-500')}>{highRisk}</p>
