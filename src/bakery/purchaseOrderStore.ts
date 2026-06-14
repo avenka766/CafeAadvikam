@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from '@/branch/types';
 
-export type POStatus = 'draft' | 'sent' | 'received';
+export type POStatus = 'draft' | 'sent' | 'received' | 'cancelled';
 
 export interface POItem {
   materialName: string;
@@ -26,6 +26,7 @@ export interface PurchaseOrder {
   createdAt: string;
   sentAt?: string;
   receivedAt?: string;
+  cancelledAt?: string;
 }
 
 interface POState {
@@ -52,6 +53,7 @@ function mapRow(r: Record<string, unknown>): PurchaseOrder {
     createdAt:    r.created_at as string,
     sentAt:       (r.sent_at as string) ?? undefined,
     receivedAt:   (r.received_at as string) ?? undefined,
+    cancelledAt:  (r.cancelled_at as string) ?? undefined,
   };
 }
 
@@ -99,6 +101,7 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
     const payload: Record<string, unknown> = { status };
     if (status === 'sent')     payload.sent_at     = new Date().toISOString();
     if (status === 'received') payload.received_at = new Date().toISOString();
+    if (status === 'cancelled') payload.cancelled_at = new Date().toISOString();
     const { error } = await supabase.from('purchase_orders').update(payload).eq('id', id);
     if (error) return error.message;
     set(s => ({
@@ -107,6 +110,7 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
           ...o, status,
           sentAt:     status === 'sent'     ? new Date().toISOString() : o.sentAt,
           receivedAt: status === 'received' ? new Date().toISOString() : o.receivedAt,
+          cancelledAt: status === 'cancelled' ? new Date().toISOString() : o.cancelledAt,
         } : o
       ),
     }));
@@ -114,7 +118,16 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
   },
 
   deletePO: async (id) => {
-    await supabase.from('purchase_orders').delete().eq('id', id);
-    set(s => ({ orders: s.orders.filter(o => o.id !== id) }));
+    const cancelledAt = new Date().toISOString();
+    const { error } = await supabase
+      .from('purchase_orders')
+      .update({ status: 'cancelled', cancelled_at: cancelledAt })
+      .eq('id', id);
+    if (error) return;
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === id ? { ...o, status: 'cancelled', cancelledAt } : o
+      ),
+    }));
   },
 }));

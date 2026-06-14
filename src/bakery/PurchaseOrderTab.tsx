@@ -2,7 +2,7 @@
 // Store dashboard tab - raise and manage purchase orders for raw materials.
 
 import { useState, useEffect } from 'react';
-import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban } from 'lucide-react';
 import { usePurchaseOrderStore, type POItem, type POStatus } from './purchaseOrderStore';
 import { useStoreStockStore } from './storeStockStore';
 import { useSupplierStore } from './supplierStore';
@@ -13,6 +13,7 @@ const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.
   draft:    { label: 'Draft',    color: 'bg-muted text-muted-foreground border-border',          icon: ShoppingCart },
   sent:     { label: 'Sent',     color: 'bg-blue-50 text-blue-700 border-blue-200',              icon: Send         },
   received: { label: 'Received', color: 'bg-emerald-50 text-emerald-700 border-emerald-200',     icon: CheckCircle2 },
+  cancelled:{ label: 'Cancelled',color: 'bg-red-50 text-red-700 border-red-200',                 icon: Ban          },
 };
 
 function POCard({ po, onStatusChange, onDelete }: {
@@ -74,6 +75,7 @@ function POCard({ po, onStatusChange, onDelete }: {
             <span>Created {new Date(po.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
             {po.sentAt && <><span>-</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
             {po.receivedAt && <><span>-</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.cancelledAt && <><span>-</span><span>Cancelled {new Date(po.cancelledAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
           </div>
 
           <div className="flex gap-2">
@@ -93,9 +95,10 @@ function POCard({ po, onStatusChange, onDelete }: {
                 <Truck className="size-3.5" /> Mark as Received
               </button>
             )}
-            {po.status !== 'received' && (
+            {po.status !== 'received' && po.status !== 'cancelled' && (
               <button
                 onClick={() => onDelete(po.id)}
+                title="Cancel purchase order"
                 className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95"
               >
                 <Trash2 className="size-3.5" />
@@ -218,14 +221,16 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: 'SNB' 
   const draftCount    = scopedOrders.filter(o => o.status === 'draft').length;
   const sentCount     = scopedOrders.filter(o => o.status === 'sent').length;
   const receivedCount = scopedOrders.filter(o => o.status === 'received').length;
+  const cancelledCount = scopedOrders.filter(o => o.status === 'cancelled').length;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {[
           { label: 'Draft',    value: draftCount,    color: draftCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground', bg: '' },
           { label: 'Sent',     value: sentCount,     color: sentCount > 0 ? 'text-blue-600' : 'text-muted-foreground',          bg: sentCount > 0 ? 'bg-blue-50 border-blue-200' : '' },
           { label: 'Received', value: receivedCount, color: 'text-emerald-600', bg: receivedCount > 0 ? 'bg-emerald-50 border-emerald-200' : '' },
+          { label: 'Cancelled', value: cancelledCount, color: 'text-red-600', bg: cancelledCount > 0 ? 'bg-red-50 border-red-200' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -236,7 +241,7 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: 'SNB' 
 
       <div className="flex items-center gap-2">
         <div className="flex gap-1.5 flex-1 overflow-x-auto pb-0.5">
-          {(['all', 'draft', 'sent', 'received'] as const).map(s => (
+          {(['all', 'draft', 'sent', 'received', 'cancelled'] as const).map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
               className={cn('shrink-0 text-[11px] font-body font-semibold px-3 py-1.5 rounded-full border transition-all',
                 filterStatus === s ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground')}>

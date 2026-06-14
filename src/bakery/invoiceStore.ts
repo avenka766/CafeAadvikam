@@ -120,8 +120,23 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   deleteInvoice: async (id) => {
-    await supabase.from('store_invoices').delete().eq('id', id);
-    set(s => ({ invoices: s.invoices.filter(x => x.id !== id) }));
+    const reviewedAt = new Date().toISOString();
+    const { error } = await supabase
+      .from('store_invoices')
+      .update({
+        status: 'rejected',
+        reviewed_at: reviewedAt,
+        review_note: 'Cancelled from invoice screen. Record kept for audit.',
+      })
+      .eq('id', id);
+    if (error) return;
+    set(s => ({
+      invoices: s.invoices.map(x =>
+        x.id === id
+          ? { ...x, status: 'rejected', reviewedAt, reviewNote: 'Cancelled from invoice screen. Record kept for audit.' }
+          : x,
+      ),
+    }));
   },
 
   pendingCount: () => get().invoices.filter(i => i.status === 'pending_review').length,

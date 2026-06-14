@@ -15,6 +15,7 @@ export interface StockItem {
   unit: StockUnit;
   quantity: number;
   minThreshold: number;
+  archivedAt?: string;
 }
 
 export interface MaterialDeductionLog {
@@ -106,12 +107,13 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         .order('name', { ascending: true });
       if (!error && data) {
         set({
-          items: data.map(r => ({
+          items: data.filter(r => !r.archived_at).map(r => ({
             id: r.id as string,
             name: r.name as string,
             unit: r.unit as StockUnit,
             quantity: Number(r.quantity),
             minThreshold: Number(r.min_threshold),
+            archivedAt: (r.archived_at as string | null) ?? undefined,
           })),
           loaded: true,
         });
@@ -170,7 +172,9 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   },
 
   deleteItem: async (id) => {
-    await supabase.from('store_raw_stock').delete().eq('id', id);
+    const archivedAt = new Date().toISOString();
+    const { error } = await supabase.from('store_raw_stock').update({ archived_at: archivedAt }).eq('id', id);
+    if (error) return;
     set(s => ({ items: s.items.filter(i => i.id !== id) }));
   },
 

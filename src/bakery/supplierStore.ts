@@ -13,6 +13,7 @@ export interface Supplier {
   address: string;
   itemsSupplied: string; // comma-separated list of items
   createdAt?: string;
+  archivedAt?: string;
 }
 
 interface SupplierState {
@@ -39,7 +40,7 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
         .select('*')
         .order('business_name', { ascending: true });
       if (error) throw error;
-      const suppliers: Supplier[] = (data ?? []).map((r: Record<string, unknown>) => ({
+      const suppliers: Supplier[] = (data ?? []).filter((r: Record<string, unknown>) => !r.archived_at).map((r: Record<string, unknown>) => ({
         id: r.id as string,
         businessName: r.business_name as string,
         contactName: r.contact_name as string,
@@ -48,6 +49,7 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
         address: r.address as string,
         itemsSupplied: r.items_supplied as string,
         createdAt: r.created_at as string,
+        archivedAt: (r.archived_at as string | null) ?? undefined,
       }));
       set({ suppliers, loaded: true });
     } finally {
@@ -98,7 +100,8 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
         'Delete or reassign the invoices first.'
       );
     }
-    const { error } = await supabase.from('store_suppliers').delete().eq('id', id);
+    const archivedAt = new Date().toISOString();
+    const { error } = await supabase.from('store_suppliers').update({ archived_at: archivedAt }).eq('id', id);
     if (error) throw new Error(error.message);
     set(s => ({ suppliers: s.suppliers.filter(x => x.id !== id) }));
   },
