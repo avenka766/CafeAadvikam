@@ -155,7 +155,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
     // RPC-side re-validation of item prices at insert time — this is a backend schema change.
     // Frontend mitigation: staff billing review before payment collection is the current guard.
-    // TODO: add a Supabase trigger on orders INSERT that validates items[].price against menu_items.price.
+    // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const parcelCharges = params.parcelCharges ?? 0;
     const total = subtotal + parcelCharges;
@@ -220,7 +220,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
     // RPC-side re-validation of item prices at insert time — this is a backend schema change.
     // Frontend mitigation: staff billing review before payment collection is the current guard.
-    // TODO: add a Supabase trigger on orders INSERT that validates items[].price against menu_items.price.
+    // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
@@ -450,7 +450,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: order.notes,
       customerName: order.customerName,
       paymentType: balancePaymentType,
-      orderSource: 'staff',
+      orderSource: 'balance',
       parcelCharges: order.parcelCharges ?? 0,
       ...(breakdown ? { paymentBreakdown: breakdown } : {}),
     };
@@ -469,7 +469,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: order.notes || null,
       customer_name: order.customerName || null,
       payment_type: balancePaymentType,
-      order_source: 'staff',
+      order_source: 'balance',
       created_at: now, updated_at: now,
       parcel_charges: order.parcelCharges ?? 0,
       ...(breakdown ? { payment_breakdown: breakdown } : {}),
