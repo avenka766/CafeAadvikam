@@ -37,7 +37,6 @@ import SNBDashboard   from '@/pages/SNBDashboard';
 import HosurDashboard from '@/pages/HosurDashboard';
 import AdminVRSNBDashboard from '@/pages/AdminVRSNBDashboard';
 import AdminSNBDashboard   from '@/pages/AdminSNBDashboard';
-import AdminHosurDashboard from '@/pages/AdminHosurDashboard';
 import OwnerDashboard      from '@/pages/OwnerDashboard';
 import VRSNBItemsPage      from '@/pages/VRSNBItemsPage';
 import SNBItemsPage        from '@/pages/SNBItemsPage';
@@ -47,9 +46,10 @@ import AdminInvoicesPage   from '@/pages/AdminInvoicesPage';
 import AdminAlertsPage     from '@/pages/AdminAlertsPage';
 
 // ── INFRASTRUCTURE NOTE (MD Bug #4) ──────────────────────────────────────────
-// The following Supabase RPCs and tables are required but NOT present in
-// supabase/migrations/. A fresh deployment will fail with:
-//   "Atomic checkout is not installed. Run the 20260609_branch_atomic_ledger.sql migration first."
+// The following Supabase RPCs and tables are required for a clean deployment.
+// Keep supabase/migrations/ in sync with the live project before staging/restore.
+// A fresh deployment still needs the atomic checkout migration installed:
+//   complete_branch_checkout, stock decrement, credit settlement, and sequence RPCs.
 // Required RPCs: complete_branch_checkout, get_next_bill_number, get_next_order_number,
 //   settle_branch_credit_sale, decrement_branch_stock_strict, decrement_branch_stock,
 //   increment_branch_stock, confirm_incoming_stock, archive_old_branch_sales,
@@ -57,7 +57,7 @@ import AdminAlertsPage     from '@/pages/AdminAlertsPage';
 // Required tables: branch_bill_headers, branch_daily_closure_ledger, branch_daily_closures,
 //   branch_operation_records, app_state, branch_credit_sales, branch_credit_payments,
 //   branch_stock_mismatches, store_invoices, branch_stock_adjustments (new — Bug #13)
-// TODO: Export all migrations from live Supabase and commit to supabase/migrations/.
+// TODO: Export full schema from live Supabase and reconcile with supabase/migrations/.
 // ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -115,7 +115,7 @@ function AppRoutes() {
 
         <Route path="/bakery/receive/vrsnb" element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/receive/hosur" element={<ProtectedRoute allowedRoles={['receiver_hosur']}><OrderReceiverDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/receive/hosur" element={<ProtectedRoute allowedRoles={['receiver_hosur']}><Navigate to="/branch/hosur" replace /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/baker"   element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
@@ -124,7 +124,7 @@ function AppRoutes() {
 
         <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin','admin_vrsnb','owner']}><VRSNBDashboard /></ProtectedRoute>} />
         <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin','admin_snb','owner']}><SNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','admin','admin_hosur','owner']}><HosurDashboard /></ProtectedRoute>} />
+        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','receiver_hosur','admin','admin_hosur','owner']}><HosurDashboard /></ProtectedRoute>} />
 
         <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><AdminVRSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-vrsnb/items"   element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><VRSNBItemsPage /></ProtectedRoute>} />
@@ -132,9 +132,9 @@ function AppRoutes() {
         <Route path="/admin-snb"           element={<ProtectedRoute allowedRoles={['admin_snb']}><AdminSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-snb/items"     element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBItemsPage /></ProtectedRoute>} />
         <Route path="/admin-snb/history"   element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBHistoryPage /></ProtectedRoute>} />
-        <Route path="/admin-hosur"         element={<ProtectedRoute allowedRoles={['admin_hosur']}><AdminHosurDashboard /></ProtectedRoute>} />
+        <Route path="/admin-hosur"         element={<ProtectedRoute allowedRoles={['admin_hosur']}><Navigate to="/branch/hosur" replace /></ProtectedRoute>} />
         <Route path="/admin/invoices"      element={<ProtectedRoute allowedRoles={['admin']}><AdminInvoicesPage /></ProtectedRoute>} />
-        <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb']}><AdminAlertsPage /></ProtectedRoute>} />
+        <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb', 'admin_snb']}><AdminAlertsPage /></ProtectedRoute>} />
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
