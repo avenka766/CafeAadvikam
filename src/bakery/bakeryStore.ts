@@ -205,7 +205,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // concurrently) still exists at the DB level — the proper fix is a server-side RPC using
     // jsonb_array_append in a single atomic UPDATE. This guard at minimum prevents double-appending
     // on retries within a single session.
-    // TODO: move dispatch_log append to a server-side RPC for true concurrency safety.
+    // Server-side RPC appends the dispatch entry atomically so concurrent packers do not overwrite each other.
     const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
     const updatedLog: DispatchEntry[] = alreadyAppended
       ? existingLog
@@ -243,10 +243,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     });
     const newStatus: WorkflowStatus = allFullyDispatched ? 'dispatched' : 'packed';
 
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update({ dispatch_log: updatedLog, status: newStatus })
-      .eq('id', orderId);
+    const { error } = await supabase.rpc('append_bakery_dispatch_log', {
+      p_order_id: orderId,
+      p_entry: newEntry,
+      p_status: newStatus,
+    });
     if (error) return;
 
     // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──
