@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 import { generateId } from '@/lib/utils';
+import { useMenuStore } from '@/stores/menuStore';
 
 // HYGIENE FIX: 3-second polling is very aggressive — with multiple devices/tabs open it creates a
 // large number of DB reads. Increased to 30 seconds. The preferred long-term solution is to
@@ -149,7 +150,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
   submitOrder: async (params) => {
-    const { cart } = get();
+    await useMenuStore.getState().loadMenu(true);
+    const latestMenu = useMenuStore.getState().items;
+    const cart = get().cart.map((cartItem) => {
+      const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
+      return latest ? { ...cartItem, menuItem: latest } : cartItem;
+    });
     // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
     // A sophisticated user could mutate in-memory prices before adding to cart and submit
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
@@ -214,7 +220,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
   submitAdvanceOrder: async (params) => {
-    const { cart } = get();
+    await useMenuStore.getState().loadMenu(true);
+    const latestMenu = useMenuStore.getState().items;
+    const cart = get().cart.map((cartItem) => {
+      const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
+      return latest ? { ...cartItem, menuItem: latest } : cartItem;
+    });
     // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
     // A sophisticated user could mutate in-memory prices before adding to cart and submit
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
@@ -228,9 +239,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
     const total = isFullPayment ? subtotal : params.advanceAmount;
 
-    // MISSING FIX: runtime guard — deliveryDate must be a valid ISO string and a future datetime
+    // Runtime guard: deliveryDate must be a valid future date/time before saving.
     if (!params.deliveryDate || Number.isNaN(new Date(params.deliveryDate).getTime())) {
       throw new Error('Delivery date is required and must be a valid date/time.');
+    }
+    if (new Date(params.deliveryDate).getTime() <= Date.now()) {
+      throw new Error('Delivery date must be in the future.');
     }
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
