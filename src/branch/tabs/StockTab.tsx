@@ -1,5 +1,5 @@
 // src/branch/tabs/StockTab.tsx
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
@@ -10,6 +10,7 @@ import { SectionHeader, EmptyState, fmt } from '../components';
 import { useBranchStore } from '../branchStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchOpsStore } from '../branchOpsStore';
+import { supabase } from '@/lib/supabase';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
@@ -407,7 +408,14 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [confirmAllError, setConfirmAllError] = useState('');
   const [syncing, setSyncing]             = useState(false);
-  const [disputedIncoming, setDisputedIncoming] = useState<Record<string, boolean>>({});
+  const [disputedIncoming, setDisputedIncoming] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(branchIncoming.filter((inc) => inc.disputed).map((inc) => [inc.id, true])),
+  );
+  const [disputeError, setDisputeError] = useState('');
+
+  useEffect(() => {
+    setDisputedIncoming(Object.fromEntries(branchIncoming.filter((inc) => inc.disputed).map((inc) => [inc.id, true])));
+  }, [branchIncoming]);
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -484,7 +492,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     setSyncing(false);
   };
 
-  const raiseIncomingDispute = (inc: IncomingStock) => {
+  const raiseIncomingDispute = async (inc: IncomingStock) => {
     const reason = window.prompt('Describe the mismatch/dispute for admin review:', 'Received quantity does not match expected quantity') || 'Received quantity does not match expected quantity';
     addNotification({
       branch,
@@ -494,6 +502,22 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       raisedBy: currentUser?.displayName || currentUser?.username || 'Branch User',
     });
     setDisputedIncoming((prev) => ({ ...prev, [inc.id]: true }));
+    const raisedBy = currentUser?.displayName || currentUser?.username || 'Branch User';
+    setDisputeError('');
+    const { error } = await supabase
+      .from('branch_incoming')
+      .update({
+        disputed: true,
+        dispute_reason: reason,
+        disputed_by: raisedBy,
+        disputed_at: new Date().toISOString(),
+      })
+      .eq('id', inc.id);
+    if (error) {
+      setDisputeError(`Dispute notification was created, but the stock row could not be locked in Supabase: ${error.message}`);
+    } else {
+      await fetchBranchData(branch);
+    }
   };
 
   const SUBTABS: { id: StockSubTab; label: string }[] = [
@@ -555,6 +579,11 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
               {confirmAllError}
             </p>
           )}
+          {disputeError && (
+            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
+              {disputeError}
+            </p>
+          )}
           {todayIncoming.length === 0 ? (
             <EmptyState message="No incoming stock today. Items dispatched from Packing will appear here." />
           ) : (
@@ -574,15 +603,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
                         +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
                       </span>
-                      <button onClick={() => raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', disputedIncoming[inc.id] ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
-                        <AlertTriangle className="size-3.5" /> {disputedIncoming[inc.id] ? 'Disputed' : 'Dispute'}
+                      <button onClick={() => void raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', (disputedIncoming[inc.id] || inc.disputed) ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
+                        <AlertTriangle className="size-3.5" /> {(disputedIncoming[inc.id] || inc.disputed) ? 'Disputed' : 'Dispute'}
                       </button>
-                      {/* FIX (MD Bug #15): hide Confirm when item is disputed so a disputed
-                          quantity cannot be confirmed into stock before admin reviews it.
-                          TODO: persist dispute status server-side (branch_incoming.disputed)
-                          so the block survives page refresh. */}
-                      {!disputedIncoming[inc.id] && <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />}
-                      {disputedIncoming[inc.id] && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
+                      {/* Disputed incoming stock stays blocked until admin review. */}
+                      {!(disputedIncoming[inc.id] || inc.disputed) && <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />}
+                      {(disputedIncoming[inc.id] || inc.disputed) && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
                     </div>
                   </div>
                 );

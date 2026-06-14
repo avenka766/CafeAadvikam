@@ -784,7 +784,7 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
 
 export function CashierClosureTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { bills, returns, cashierClosures, purchasePayments, cashMovements, addCashierClosure } = useBranchOpsStore();
+  const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, addCashierClosure, openCounter } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
   const [closing, setClosing] = useState('');
@@ -812,9 +812,13 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   }, [user]);
 
   useEffect(() => {
-    const key = `cafeaadvikam_counter_open_${branch}_${todayIso()}`;
-    setCounterOpened(localStorage.getItem(key) === 'true');
-  }, [branch]);
+    const opened = counterOpenings.find((record) => record.branch === branch && record.date === todayIso());
+    setCounterOpened(Boolean(opened));
+    if (opened) {
+      setOpening(String(opened.openingCash));
+      setOpenCashier(opened.cashier || user);
+    }
+  }, [branch, counterOpenings, user]);
 
   useEffect(() => {
     void fetchCreditSales(branch);
@@ -949,6 +953,22 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     setTimeout(() => setSavedMessage(''), 3000);
   };
 
+  const confirmCounterOpen = () => {
+    const record = openCounter({
+      branch,
+      date: openDate || todayIso(),
+      cashier: openCashier || user,
+      openingCash: openTotal,
+      denominations: Object.fromEntries(
+        Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
+      ),
+      openedBy: user,
+    });
+    setOpening(String(record.openingCash));
+    setCounterOpened(true);
+    setOpenSavedMessage(`Counter opened at ${openTime} by ${record.cashier}. Opening cash: ${money(record.openingCash)}`);
+  };
+
   const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${counterTodayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Collected</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Collected</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Collected</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${creditCollectionTotal.toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
 
   const exportClosure = () => {
@@ -1004,7 +1024,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
             <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={openDenominations[denom]} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(openDenominations[denom]||0)>0 ? money(denom*Number(openDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Opening Cash Total</td><td className="p-3 text-right text-xl font-black">{money(openTotal)}</td></tr></tbody></table>
           </div>
           {openSavedMessage && <div className="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700">{openSavedMessage}</div>}
-          <PrimaryButton onClick={() => { const key = `cafeaadvikam_counter_open_${branch}_${todayIso()}`; setOpening(String(openTotal)); localStorage.setItem(key, 'true'); setCounterOpened(true); setOpenSavedMessage(`Counter opened at ${openTime} by ${openCashier || user}. Opening cash: ${money(openTotal)}`); }} className="w-full bg-orange-500 shadow-orange-200">
+          <PrimaryButton onClick={confirmCounterOpen} className="w-full bg-orange-500 shadow-orange-200">
             <CheckCircle2 className="size-4"/> Confirm Counter Open & Start Billing
           </PrimaryButton>
         </div>

@@ -146,7 +146,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const { currentUser } = useAuthStore();
   const { fetchBranchData } = useBranchStore();
   const {
-    bills, holds, salespeople, addBill, addHold, removeHold, addNotification,
+    bills, holds, salespeople, counterOpenings, addBill, addHold, removeHold, addNotification,
   } = useBranchOpsStore();
 
   const userName = currentUser?.displayName || currentUser?.username || 'Branch Staff';
@@ -213,8 +213,9 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   useEffect(() => setSelectedIndex(0), [category, query]);
   useEffect(() => setDropdownIndex(0), [query, category]);
 
-  const counterOpenKey = `cafeaadvikam_counter_open_${branch}_${new Date().toISOString().slice(0, 10)}`;
-  const isCounterOpen = () => localStorage.getItem(counterOpenKey) === 'true';
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey);
+  const isCounterOpen = () => counterOpenedToday;
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
     setQtyPopupValue(unitOf(item) === 'kg' ? '0.25' : '1');
@@ -276,7 +277,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
       if (existing) return current.map((c) => c.itemName === item.name ? recalcLine(c, newQty) : c);
       return [toBillItem(item, amount), ...current];
     });
-  }, [branchStock, stockMap, counterOpenKey]);
+  }, [branchStock, stockMap, counterOpenedToday]);
 
   const reduceItem = (itemName: string) => setCart((current) => current.flatMap((c) => {
     if (c.itemName !== itemName) return [c];
@@ -486,8 +487,8 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   }, [cart, holdBill, items, selectedIndex, total, visibleItems]);
 
   return (
-    <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 xl:h-[calc(100dvh-var(--header-h,4rem)-7rem)] xl:overflow-hidden">
-      <div className="grid min-h-[680px] grid-cols-1 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
+    <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 md:h-[calc(100dvh-var(--header-h,4rem)-7rem)] md:overflow-hidden">
+      <div className="grid min-h-[680px] grid-cols-1 md:h-full md:min-h-0 md:grid-cols-[minmax(330px,390px)_minmax(0,1fr)] xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="hidden">
             <div className="flex items-center justify-between gap-3">
@@ -636,7 +637,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
           </div>
         </aside>
 
-        <main className="flex min-h-[640px] flex-col bg-slate-100 xl:min-h-0">
+        <main className="flex min-h-[640px] flex-col bg-slate-100 md:min-h-0">
           <div className="border-b border-slate-200 bg-white p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div><h1 className="text-3xl font-black tracking-tight text-slate-950">{BRANCH_LABELS[branch]} Fast Billing</h1></div>
@@ -691,7 +692,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name));
                 const disabled = stock <= 0;
