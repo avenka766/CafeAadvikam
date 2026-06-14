@@ -270,6 +270,17 @@ export interface CashMovement {
   remarks: string;
 }
 
+export interface CounterOpenRecord {
+  id: string;
+  branch: Branch;
+  date: string;
+  cashier: string;
+  openingCash: number;
+  denominations: Record<string, string>;
+  openedBy: string;
+  openedAt: string;
+}
+
 export interface BankDeposit {
   id: string;
   branch: Branch;
@@ -471,6 +482,7 @@ interface BranchOpsState {
   purchasePayments: PurchasePayment[];
   purchaseOrders: PurchaseOrderRecord[];
   cashMovements: CashMovement[];
+  counterOpenings: CounterOpenRecord[];
   bankDeposits: BankDeposit[];
   cashierClosures: CashierClosure[];
   notifications: BranchNotification[];
@@ -567,6 +579,9 @@ interface BranchOpsState {
   addCashMovement: (
     movement: Omit<CashMovement, "id" | "dateTime">,
   ) => CashMovement;
+  openCounter: (
+    opening: Omit<CounterOpenRecord, "id" | "openedAt">,
+  ) => CounterOpenRecord;
   addBankDeposit: (
     deposit: Omit<BankDeposit, "id" | "createdAt">,
   ) => BankDeposit;
@@ -680,6 +695,7 @@ const mergeOperationRecordsIntoState = (
     purchasePayments: [],
     purchaseOrders: [],
     cashMovements: [],
+    counterOpenings: [],
     bankDeposits: [],
     cashierClosures: [],
     notifications: [],
@@ -695,6 +711,7 @@ const mergeOperationRecordsIntoState = (
   } as unknown as BranchOpsState);
   if (!saved?.state && rows.length === 0) return null;
   const state = { ...baseState } as BranchOpsState;
+  state.counterOpenings = Array.isArray(state.counterOpenings) ? state.counterOpenings : [];
   state.stockCountReports = Array.isArray(state.stockCountReports) ? state.stockCountReports : [];
   state.stockVarianceRecords = Array.isArray(state.stockVarianceRecords) ? state.stockVarianceRecords : [];
   const buckets: Array<[keyof BranchOpsState, string]> = [
@@ -709,6 +726,7 @@ const mergeOperationRecordsIntoState = (
     ["purchasePayments", "purchase_payment"],
     ["purchaseOrders", "purchase_order"],
     ["cashMovements", "cash_movement"],
+    ["counterOpenings", "counter_opening"],
     ["bankDeposits", "bank_deposit"],
     ["cashierClosures", "cashier_closure"],
     ["notifications", "notification"],
@@ -854,6 +872,7 @@ function persistedBranchOps(state: BranchOpsState) {
     purchasePayments: state.purchasePayments,
     purchaseOrders: state.purchaseOrders,
     cashMovements: state.cashMovements,
+    counterOpenings: state.counterOpenings,
     bankDeposits: state.bankDeposits,
     cashierClosures: state.cashierClosures,
     notifications: state.notifications,
@@ -926,6 +945,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
       purchasePayments: [],
       purchaseOrders: [],
       cashMovements: [],
+      counterOpenings: [],
       bankDeposits: [],
       cashierClosures: [],
       notifications: [],
@@ -1985,6 +2005,44 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           actor: movement.enteredBy,
         });
         return newMovement;
+      },
+      openCounter: (opening) => {
+        const now = new Date().toISOString();
+        const existing = get().counterOpenings.find(
+          (record) => record.branch === opening.branch && record.date === opening.date,
+        );
+        const newOpening: CounterOpenRecord = {
+          ...opening,
+          id: existing?.id ?? uid("counter-open"),
+          openingCash: Number(opening.openingCash || 0),
+          denominations: opening.denominations || {},
+          openedAt: now,
+        };
+        set((s) => ({
+          counterOpenings: [
+            newOpening,
+            ...s.counterOpenings.filter(
+              (record) => !(record.branch === opening.branch && record.date === opening.date),
+            ),
+          ],
+          auditLogs: [
+            audit(
+              opening.branch,
+              opening.openedBy,
+              existing ? "Counter Re-opened" : "Counter Opened",
+              existing ? String(existing.openingCash) : "-",
+              `${opening.cashier} ${newOpening.openingCash}`,
+            ),
+            ...s.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(opening.branch, "counter_opening", newOpening.id, newOpening, {
+          recordNo: opening.date,
+          amount: newOpening.openingCash,
+          status: "Opened",
+          actor: opening.openedBy,
+        });
+        return newOpening;
       },
       addBankDeposit: (deposit) => {
         const newDeposit = {

@@ -85,6 +85,10 @@ export interface IncomingStock {
   receivedAt: string;
   dispatchedBy: string;
   confirmed: boolean;
+  disputed?: boolean;
+  disputeReason?: string | null;
+  disputedBy?: string | null;
+  disputedAt?: string | null;
 }
 
 export interface StockMismatch {
@@ -299,6 +303,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           receivedAt:    d.received_at,
           dispatchedBy:  d.dispatched_by,
           confirmed:     d.confirmed ?? false,
+          disputed:      d.disputed ?? false,
+          disputeReason: d.dispute_reason ?? null,
+          disputedBy:    d.disputed_by ?? null,
+          disputedAt:    d.disputed_at ?? null,
         }));
 
         advanceOrders[branch] = (advanceData || []).map((d) => ({
@@ -728,6 +736,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const inc = get().incoming[branch].find((i) => i.id === incomingId);
     if (!inc) return 'Item not found';
     if (inc.confirmed) return null;
+    if (inc.disputed) return 'This incoming stock is disputed and must be reviewed before confirmation.';
 
     // Try atomic RPC first (deployed via migration)
     const { error: rpcErr } = await supabase.rpc('confirm_incoming_stock', {
@@ -742,8 +751,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Re-read the incoming record to guard against a retry where stock was already
     // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
     const { data: freshInc } = await supabase
-      .from('branch_incoming').select('confirmed').eq('id', incomingId).single();
+      .from('branch_incoming').select('confirmed, disputed').eq('id', incomingId).single();
     const alreadyConfirmedInDb = freshInc?.confirmed === true;
+    if (freshInc?.disputed === true) return 'This incoming stock is disputed and must be reviewed before confirmation.';
 
     if (!alreadyConfirmedInDb) {
       const { data: existing } = await supabase
@@ -801,7 +811,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   // Confirm all unconfirmed incoming items at once (not restricted to today)
   confirmAllIncoming: async (branch) => {
-    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed);
+    const toConfirm = get().incoming[branch].filter((i) => !i.confirmed && !i.disputed);
     if (toConfirm.length === 0) return null;
 
     for (const inc of toConfirm) {
