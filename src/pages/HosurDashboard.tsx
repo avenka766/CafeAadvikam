@@ -1121,8 +1121,8 @@ export default function HosurDashboard() {
   return (
     <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
       <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="flex items-center gap-3 px-4 py-3 lg:px-6">
-          <button className="rounded-2xl border bg-card p-2 lg:hidden" onClick={() => setSidebarOpen(true)}><Menu className="size-5" /></button>
+        <div className="flex items-center gap-3 px-4 py-3 md:px-5 xl:px-6">
+          <button className="rounded-2xl border bg-card p-2 md:hidden" onClick={() => setSidebarOpen(true)}><Menu className="size-5" /></button>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate font-display text-2xl font-black text-emerald-700">Hosur Branch Dashboard</h1>
@@ -1135,7 +1135,7 @@ export default function HosurDashboard() {
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-2 px-4 pb-3 md:grid-cols-4 lg:px-6">
+        <div className="grid grid-cols-2 gap-2 px-4 pb-3 md:grid-cols-4 md:px-5 xl:px-6">
           <Metric label="Today Bills" value={stats.todayBills} icon={<Receipt className="size-4" />} tone="emerald" />
           <Metric label="Today Collection" value={money(stats.todayCollection)} icon={<IndianRupee className="size-4" />} tone="blue" />
           <Metric label="Pending Credit" value={money(stats.pendingCredit)} icon={<CreditCard className="size-4" />} tone="amber" />
@@ -1144,12 +1144,12 @@ export default function HosurDashboard() {
       </div>
 
       <div className="flex min-h-[calc(100dvh-230px)]">
-        <aside className="hidden w-72 shrink-0 border-r border-slate-800 bg-slate-950 p-3 text-white lg:block">
+        <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-slate-950 p-3 text-white md:block xl:w-72">
           <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
         </aside>
 
         {sidebarOpen && (
-          <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="fixed inset-0 z-50 md:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setSidebarOpen(false)} />
             <div className="absolute bottom-0 left-0 top-0 w-[86vw] max-w-xs bg-slate-950 p-3 text-white shadow-2xl">
               <div className="mb-3 flex items-center justify-between">
@@ -1161,7 +1161,7 @@ export default function HosurDashboard() {
           </div>
         )}
 
-        <main className="min-w-0 flex-1 p-3 sm:p-4 lg:p-6">
+        <main className="min-w-0 flex-1 p-3 sm:p-4 md:p-5 xl:p-6">
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
           {success && <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{success}</div>}
           {loading ? (

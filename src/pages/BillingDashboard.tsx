@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import type { CreditSale } from '@/branch/branchStore';
 import type { Branch } from '@/branch/types';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { cn, formatCurrency, formatTime } from '@/lib/utils';
 import {
   Inbox, Wifi, Plus, Minus, Search, X,
@@ -54,6 +55,18 @@ const ROLE_BRANCHES: Record<string, Branch[]> = {
   admin:       ALL_BRANCHES,
   admin_vrsnb: ['Cafe', 'VRSNB'],
 };
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function useCafeCounterOpened() {
+  const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
+  useEffect(() => {
+    if (!useBranchOpsStore.persist.hasHydrated()) void useBranchOpsStore.persist.rehydrate();
+  }, []);
+  return counterOpenings.some((record) => record.branch === 'Cafe' && record.date === todayIso());
+}
 
 function BillerCreditTab() {
   const { currentUser } = useAuthStore();
@@ -592,6 +605,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
 export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
   const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
   const [advanceAmt, setAdvanceAmt] = useState('');
   const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [saving, setSaving] = useState(false);
@@ -600,6 +614,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   const billedBy = currentUser?.displayName || currentUser?.username || '';
 
   const handleSave = async () => {
+    if (!counterOpenedToday) { setError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before collecting payment.'); return; }
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
     if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
@@ -662,6 +677,11 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
           </div>
 
           {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
+          {!counterOpenedToday && (
+            <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
+              Counter is not opened today. Open Daily Closure -> Counter Open first.
+            </p>
+          )}
 
           <button onClick={handleSave} disabled={saving}
             className="w-full py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-60"
@@ -693,6 +713,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     }))
   );
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
 
   // Menu picker state
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -768,6 +789,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
+    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before collecting payment.'); return; }
     if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
     if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
     if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
@@ -1261,6 +1283,7 @@ function NewBillPanel() {
     }))
   );
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
@@ -1340,6 +1363,10 @@ function NewBillPanel() {
   };
 
   const openBillModal = () => {
+    if (!counterOpenedToday) {
+      setSubmitError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before billing.');
+      return;
+    }
     if (orderType === 'dine_in' && !tableNumber) {
       setTableError(true);
       setSubmitError('Select table before billing.');
@@ -1353,6 +1380,7 @@ function NewBillPanel() {
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
+    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before billing.'); return; }
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
 
@@ -1538,6 +1566,11 @@ function NewBillPanel() {
 
   return (
     <>
+    {!counterOpenedToday && (
+      <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
+        Counter is not opened today. Open Daily Closure -> Counter Open before billing.
+      </div>
+    )}
     {showBillModal && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
         <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>

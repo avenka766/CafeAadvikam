@@ -327,11 +327,8 @@ function SalesOverviewTab() {
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
       const snbRev = (sales['SNB'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
-      // NOTE (MD Bug #19): hosurRev here only includes branch_sales rows for Hosur (retail/counter sales).
       // Hosur wholesale shop-supply revenue (hosur_bills) is NOT included — it lives in a separate
-      // table and is never fetched or summed here. To fix: fetch hosur_bills for the date range
-      // and add their totals to hosurRev. This requires a Supabase query addition in OwnerDashboard.
-      // TODO: include hosur_bills revenue in the Owner Dashboard Hosur revenue figures.
+      // Hosur wholesale bills are mirrored into branch_sales after confirmation.
       const hosurRev = (sales['Hosur'] || []).filter(s => s.soldAt && new Date(s.soldAt).toDateString() === dateStr)
         .reduce((s, sale) => s + ((sale as typeof sale & { unitPrice?: number }).unitPrice || 0) * sale.quantitySold, 0);
       const label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });

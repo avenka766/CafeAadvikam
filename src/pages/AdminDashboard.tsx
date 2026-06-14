@@ -437,7 +437,7 @@ function AdminDashboard() {
   }, [auditLogs, auditBranchFilter, fromDate, toDate, auditSearch]);
 
   const sidebar = (
-    <aside className="flex h-full flex-col border-r border-slate-200 bg-white/95 shadow-sm lg:w-72">
+    <aside className="flex h-full flex-col border-r border-slate-200 bg-white/95 shadow-sm md:w-64 xl:w-72">
       <div className="border-b border-slate-100 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -445,7 +445,7 @@ function AdminDashboard() {
             <h1 className="mt-1 font-display text-xl font-black text-slate-950">Business Control</h1>
             <p className="mt-1 text-xs text-slate-500">Cafe · SNB · VRSNB · Hosur</p>
           </div>
-          <button className="rounded-xl p-2 hover:bg-slate-100 lg:hidden" onClick={() => setMobileNavOpen(false)}><X className="size-4" /></button>
+          <button className="rounded-xl p-2 hover:bg-slate-100 md:hidden" onClick={() => setMobileNavOpen(false)}><X className="size-4" /></button>
         </div>
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">
@@ -986,7 +986,7 @@ function AdminDashboard() {
 
   return (
     <div className="min-h-[100dvh] bg-slate-50/80">
-      <div className="lg:hidden sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
+      <div className="md:hidden sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
         <div className="flex items-center justify-between gap-3">
           <button onClick={() => setMobileNavOpen(true)} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-sm font-black text-white"><Menu className="size-4" />Menu</button>
           <div className="text-right"><p className="text-xs font-black uppercase tracking-wider text-primary">Admin</p><p className="text-sm font-bold text-slate-950">{activeMeta.label}</p></div>
@@ -994,15 +994,15 @@ function AdminDashboard() {
       </div>
 
       {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <div className="fixed inset-0 z-50 md:hidden">
           <div className="absolute inset-0 bg-slate-950/40" onClick={() => setMobileNavOpen(false)} />
           <div className="relative h-full w-[88vw] max-w-sm">{sidebar}</div>
         </div>
       )}
 
       <div className="mx-auto flex min-h-[100dvh] max-w-[1800px]">
-        <div className="sticky top-0 hidden h-[100dvh] shrink-0 lg:block">{sidebar}</div>
-        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8">
+        <div className="sticky top-0 hidden h-[100dvh] shrink-0 md:block">{sidebar}</div>
+        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
           <div className="mb-5 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/70 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex flex-wrap items-center gap-2">

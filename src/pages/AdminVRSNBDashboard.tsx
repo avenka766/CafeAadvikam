@@ -900,7 +900,7 @@ export default function AdminVRSNBDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-50/70 pb-6">
-      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-3 py-3 backdrop-blur lg:hidden">
+      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-3 py-3 backdrop-blur md:hidden">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={() => setMobileOpen(true)}
@@ -922,16 +922,16 @@ export default function AdminVRSNBDashboard() {
 
       {mobileOpen && (
         <button
-          className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden"
+          className="fixed inset-0 z-40 bg-slate-950/40 md:hidden"
           onClick={() => setMobileOpen(false)}
           aria-label="Close menu backdrop"
         />
       )}
 
-      <div className="grid gap-4 px-3 py-4 lg:grid-cols-[300px_minmax(0,1fr)] lg:px-5">
+      <div className="grid gap-4 px-3 py-4 md:grid-cols-[260px_minmax(0,1fr)] md:px-4 xl:grid-cols-[300px_minmax(0,1fr)] xl:px-5">
         <aside
           className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-3 text-white shadow-2xl transition lg:sticky lg:top-4 lg:z-10 lg:h-[calc(100dvh-2rem)] lg:w-auto lg:max-w-none lg:translate-x-0 lg:rounded-[2rem] lg:border lg:shadow-sm",
+            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-3 text-white shadow-2xl transition md:sticky md:top-4 md:z-10 md:h-[calc(100dvh-2rem)] md:w-auto md:max-w-none md:translate-x-0 md:rounded-[2rem] md:border md:shadow-sm",
             mobileOpen && "translate-x-0",
           )}
         >
@@ -942,7 +942,7 @@ export default function AdminVRSNBDashboard() {
               </StatusBadge>
               <button
                 onClick={() => setMobileOpen(false)}
-                className="rounded-xl p-2 text-white/70 lg:hidden"
+                className="rounded-xl p-2 text-white/70 md:hidden"
               >
                 <X className="size-4" />
               </button>

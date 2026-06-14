@@ -20,6 +20,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useOrderStore } from '@/stores/orderStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { supabase } from '@/lib/supabase';
 import type { Order } from '@/types';
 import { cn, formatCurrency } from '@/lib/utils';
 
@@ -156,17 +158,39 @@ export default function DailyClosure() {
     }))
   );
   const { creditSales: branchCreditSales, creditPayments: branchCreditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
+  const { counterOpenings, openCounter, addCashierClosure } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
+  const [openingCash, setOpeningCash] = useState('');
+  const [cashExpenses, setCashExpenses] = useState('');
   const [notes, setNotes] = useState('');
+  const [openCashier, setOpenCashier] = useState('');
+  const [openDenominations, setOpenDenominations] = useState<Record<number, string>>({ 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
+  const [closureSavedMessage, setClosureSavedMessage] = useState('');
+
+  const cashierName = currentUser?.displayName || currentUser?.username || 'Cafe Cashier';
+  const denominations = [500, 200, 100, 50, 20, 10, 5, 2, 1];
+  const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
+  const cafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
 
   useEffect(() => {
     startPolling(60);
     fetchCreditSales('Cafe');
     fetchCreditPayments('Cafe');
+    if (!useBranchOpsStore.persist.hasHydrated()) void useBranchOpsStore.persist.rehydrate();
     return () => stopPolling();
   }, [startPolling, stopPolling, fetchCreditSales, fetchCreditPayments]);
+
+  useEffect(() => {
+    setOpenCashier(cashierName);
+  }, [cashierName]);
+
+  useEffect(() => {
+    if (!cafeCounterOpenRecord) return;
+    setOpeningCash(String(cafeCounterOpenRecord.openingCash || 0));
+    setOpenCashier(cafeCounterOpenRecord.cashier || cashierName);
+  }, [cafeCounterOpenRecord, cashierName]);
 
   const closure = useMemo(() => {
     const dayOrders = orders
@@ -305,14 +329,83 @@ export default function DailyClosure() {
   // FIX (MD Bug #7): cashDifference previously compared physical cash directly against
   // cash sales only — ignoring opening float and any cash expenses/refunds.
   // The correct formula is: expected = openingCash + cashSales - cashExpenses - cashRefunds.
-  // TODO: wire up openingCash and cashExpenses inputs for the Cafe closure (currently 0)
-  // to fully match the VRSNB/SNB closure formula. For now, this is documented as an
-  // intentional simplification where opening float and expenses are assumed to be zero.
-  const cafeOpeningCash = 0; // TODO: add opening cash input field for Cafe
-  const cafeCashExpenses = 0; // TODO: wire up cash expenses for Cafe
+  const cafeOpeningCash = safeNumber(openingCash);
+  const cafeCashExpenses = safeNumber(cashExpenses);
   const expectedCash = cafeOpeningCash + closure.payments.cash - cafeCashExpenses;
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
   const printableTitle = `Daily Closure - ${printableDate(selectedDate)}`;
+
+  const handleOpenCounter = () => {
+    const record = openCounter({
+      branch: 'Cafe',
+      date: selectedDate,
+      cashier: openCashier || cashierName,
+      openingCash: openingDenomTotal,
+      denominations: Object.fromEntries(
+        Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
+      ),
+      openedBy: cashierName,
+    });
+    setOpeningCash(String(record.openingCash));
+    setClosureSavedMessage(`Cafe counter opened by ${record.cashier}. Opening cash: ${formatCurrency(record.openingCash)}`);
+    setTimeout(() => setClosureSavedMessage(''), 3500);
+  };
+
+  const handleSaveClosure = async () => {
+    const closurePayload = {
+      branch: 'Cafe',
+      closure_date: selectedDate,
+      cashier: cashierName,
+      opening_cash: cafeOpeningCash,
+      cash_total: closure.payments.cash,
+      upi_total: closure.payments.upi,
+      card_total: closure.payments.card,
+      credit_billed: closure.creditSales,
+      credit_collected: closure.creditCollected,
+      advance_collected: closure.advanceReceived,
+      advance_balance_collected: 0,
+      refunds: 0,
+      expenses: cafeCashExpenses,
+      discounts: closure.discountTotal,
+      tax_total: 0,
+      bill_count: closure.billable.length,
+      duplicate_prints: 0,
+      expected_cash: expectedCash,
+      actual_cash: closingCashValue,
+      difference: cashDifference,
+      notes: notes || null,
+      status: 'finalized',
+    };
+    const { error } = await supabase
+      .from('branch_daily_closures')
+      .upsert(closurePayload, { onConflict: 'branch,closure_date,cashier' });
+    addCashierClosure({
+      branch: 'Cafe',
+      cashier: cashierName,
+      openingCash: cafeOpeningCash,
+      closingCash: closingCashValue,
+      expectedCash,
+      difference: cashDifference,
+      cash: closure.payments.cash,
+      upi: closure.payments.upi,
+      card: closure.payments.card,
+      returns: 0,
+      discounts: closure.discountTotal,
+      billsCount: closure.billable.length,
+      duplicateBills: 0,
+      creditSales: closure.creditSales,
+      creditCollections: closure.creditCollected,
+      notes,
+    });
+    if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
+      setClosureSavedMessage(`Closure saved in operation records, but daily closure table save failed: ${error.message}`);
+    } else if (error) {
+      setClosureSavedMessage('Closure saved in operation records. Run the daily closure SQL table migration for formal closure history.');
+    } else {
+      setClosureSavedMessage('Cafe cashier closure saved in Supabase.');
+    }
+    setTimeout(() => setClosureSavedMessage(''), 3500);
+  };
 
   const handlePrint = () => {
     const printedAt = new Date().toLocaleString('en-IN');
@@ -409,7 +502,10 @@ export default function DailyClosure() {
         <div class="totals">
           <section class="section"><h2>Payment Collection</h2><table><tbody>${paymentRowsHtml}<tr><td>Credit Collected</td><td class="right">${safeHtml(formatCurrency(closure.creditCollected))}</td></tr><tr><td class="strong">Total Collection</td><td class="right strong">${safeHtml(formatCurrency(closure.collectionTotal))}</td></tr></tbody></table></section>
           <section class="section"><h2>Cash Counter</h2><table><tbody>
-            <tr><td>System Cash</td><td class="right">${safeHtml(formatCurrency(closure.payments.cash))}</td></tr>
+            <tr><td>Opening Cash</td><td class="right">${safeHtml(formatCurrency(cafeOpeningCash))}</td></tr>
+            <tr><td>System Cash Collection</td><td class="right">${safeHtml(formatCurrency(closure.payments.cash))}</td></tr>
+            <tr><td>Cash Expenses</td><td class="right">${safeHtml(formatCurrency(cafeCashExpenses))}</td></tr>
+            <tr><td>Expected Cash</td><td class="right">${safeHtml(formatCurrency(expectedCash))}</td></tr>
             <tr><td>Physical Cash</td><td class="right">${safeHtml(formatCurrency(closingCashValue || 0))}</td></tr>
             <tr><td class="strong">Difference</td><td class="right strong">${safeHtml(formatCurrency(cashDifference))}</td></tr>
           </tbody></table></section>
@@ -467,6 +563,9 @@ export default function DailyClosure() {
             <button onClick={handlePrint} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
               <Printer className="size-4" />Print Closure
             </button>
+            <button onClick={() => void handleSaveClosure()} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95">
+              <CheckCircle2 className="size-4" />Save Closure
+            </button>
           </div>
         </div>
       </div>
@@ -477,6 +576,57 @@ export default function DailyClosure() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 print:overflow-visible print:p-4">
+        <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Cafe counter open</p>
+              <h2 className="font-display text-xl font-black text-foreground">Start Cashier Counter</h2>
+              <p className="mt-1 text-xs font-bold text-muted-foreground">
+                {cafeCounterOpenRecord ? `Opened by ${cafeCounterOpenRecord.cashier} with ${formatCurrency(cafeCounterOpenRecord.openingCash)}` : 'Open the counter before Cafe billing or advance collection.'}
+              </p>
+            </div>
+            <span className={cn('rounded-full px-3 py-1 text-xs font-black border', cafeCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>
+              {cafeCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier</label>
+              <input
+                value={openCashier}
+                onChange={e => setOpenCashier(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
+              {denominations.map((denom) => (
+                <label key={denom} className="rounded-2xl border border-border bg-background p-2">
+                  <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={openDenominations[denom] || ''}
+                    onChange={e => setOpenDenominations((prev) => ({ ...prev, [denom]: e.target.value }))}
+                    className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-col justify-end gap-2">
+              <div className="rounded-2xl bg-slate-950 px-4 py-3 text-white">
+                <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
+                <p className="text-xl font-black tabular-nums">{formatCurrency(openingDenomTotal)}</p>
+              </div>
+              <button onClick={handleOpenCounter} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200">
+                Confirm Counter Open
+              </button>
+            </div>
+          </div>
+          {closureSavedMessage && (
+            <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">{closureSavedMessage}</p>
+          )}
+        </div>
+
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <StatCard title="Total sales" value={formatCurrency(closure.totalSales)} icon={<IndianRupee className="size-5" />} helper="Collections + credit" tone="emerald" />
           <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Paid now + credit collected" tone="blue" />
@@ -528,7 +678,28 @@ export default function DailyClosure() {
               <h2 className="font-display text-xl font-black text-foreground">Cash Counter</h2>
             </div>
             <div className="rounded-2xl bg-muted/40 p-3 space-y-2">
-              <div className="flex justify-between text-sm"><span>System cash</span><span className="font-black tabular-nums">{formatCurrency(closure.payments.cash)}</span></div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Opening cash</label>
+                <input
+                  type="number"
+                  value={openingCash}
+                  onChange={e => setOpeningCash(e.target.value)}
+                  placeholder="Counter opening amount"
+                  className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-3 text-lg font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+              <div className="flex justify-between text-sm"><span>System cash collection</span><span className="font-black tabular-nums">{formatCurrency(closure.payments.cash)}</span></div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cash expenses / paid out</label>
+                <input
+                  type="number"
+                  value={cashExpenses}
+                  onChange={e => setCashExpenses(e.target.value)}
+                  placeholder="Cash paid out today"
+                  className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-3 text-lg font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+              <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm"><span>Expected cash</span><span className="font-black tabular-nums">{formatCurrency(expectedCash)}</span></div>
               <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Physical closing cash</label>
                 <input
