@@ -233,7 +233,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
 
   return (
     <div className="workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]">
-      <aside className="workspace-sidebar hidden lg:flex">
+      <aside className="workspace-sidebar hidden md:flex">
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
           <div>

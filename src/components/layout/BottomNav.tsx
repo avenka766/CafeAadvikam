@@ -224,29 +224,37 @@ export default function BottomNav() {
       },
     );
   } else if (currentUser.role === "store") {
-    navItems.push({
-      label: "Store",
-      icon: <Store className="size-5" />,
-      path: "/bakery/store",
-    });
+    navItems.push(
+      { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/store" },
+      { label: "History", icon: <History className="size-5" />, path: "/bakery/store?tab=history" },
+      { label: "Stock", icon: <Store className="size-5" />, path: "/bakery/store?tab=inventory" },
+      { label: "Invoices", icon: <FileText className="size-5" />, path: "/bakery/store?tab=invoices" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/store?tab=closure" },
+      { label: "Reports", icon: <BarChart3 className="size-5" />, path: "/bakery/store?tab=report" },
+    );
   } else if (currentUser.role === "baker") {
-    navItems.push({
-      label: "Baker",
-      icon: <Flame className="size-5" />,
-      path: "/bakery/baker",
-    });
+    navItems.push(
+      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/baker" },
+      { label: "Done", icon: <History className="size-5" />, path: "/bakery/baker?tab=completed" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/baker?tab=closure" },
+    );
   } else if (currentUser.role === "packing") {
-    navItems.push({
-      label: "Packing",
-      icon: <Package className="size-5" />,
-      path: "/bakery/packing",
-    });
+    navItems.push(
+      { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/packing" },
+      { label: "Dispatch", icon: <History className="size-5" />, path: "/bakery/packing?tab=dispatched" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/packing?tab=closure" },
+    );
   } else if (currentUser.role === "branch_vrsnb") {
-    navItems.push({
-      label: "VR SNB",
-      icon: <ShoppingCart className="size-5" />,
-      path: "/branch/vrsnb",
-    });
+    navItems.push(
+      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/vrsnb" },
+      { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
+      { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
+      { label: "Stock", icon: <Package className="size-5" />, path: "/branch/vrsnb?tab=stock" },
+      { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
+      { label: "Credit", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=credit-sales" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
+      { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/vrsnb?tab=alerts" },
+    );
   } else if (currentUser.role === "branch_snb") {
     navItems.push(
       { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/snb" },
@@ -335,7 +343,7 @@ export default function BottomNav() {
     <>
       {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
-        className="app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] lg:hidden"
+        className="app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] md:hidden"
         data-safe-bottom
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
