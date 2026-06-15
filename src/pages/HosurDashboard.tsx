@@ -716,7 +716,7 @@ export default function HosurDashboard() {
   const { currentUser } = useAuthStore();
   const userName = currentUser?.displayName || currentUser?.username || 'Hosur User';
   const userRole = currentUser?.role || 'branch_hosur';
-  const isAdmin = userRole === 'admin';
+  const isAdmin = ['admin', 'owner', 'branch_hosur'].includes(userRole);
 
   const {
     incoming,
