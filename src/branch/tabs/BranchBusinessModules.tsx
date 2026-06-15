@@ -97,7 +97,11 @@ type SavedClosureRow = {
 };
 
 const num = (value: number | string | null | undefined) => Number(value ?? 0);
-const todayIso = () => new Date().toISOString().split('T')[0];
+const todayIso = () => {
+  const now = new Date();
+  const tzOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
+};
 
 type FieldProps = { label: string; children: React.ReactNode };
 function Field({ label, children }: FieldProps) {
@@ -806,19 +810,20 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
   const openTotal = denomTotal(openDenominations);
   const closeTotal = denomTotal(closeDenominations);
+  const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso());
+  const branchClosureRecord = cashierClosures.find((record) => record.branch === branch && today(record.createdAt));
 
   useEffect(() => {
     setOpenCashier(user);
   }, [user]);
 
   useEffect(() => {
-    const opened = counterOpenings.find((record) => record.branch === branch && record.date === todayIso());
-    setCounterOpened(Boolean(opened));
-    if (opened) {
-      setOpening(String(opened.openingCash));
-      setOpenCashier(opened.cashier || user);
+    setCounterOpened(Boolean(branchCounterOpenRecord));
+    if (branchCounterOpenRecord) {
+      setOpening(String(branchCounterOpenRecord.openingCash));
+      setOpenCashier(branchCounterOpenRecord.cashier || user);
     }
-  }, [branch, counterOpenings, user]);
+  }, [branchCounterOpenRecord, user]);
 
   useEffect(() => {
     void fetchCreditSales(branch);
@@ -902,7 +907,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // when in ledger mode to guard against RPCs that omit it from cash_total.
   const creditCollectionCashForExpected = ledgerToday ? creditCollectionCash : 0;
   const expected = Number(opening || 0) + cash + creditCollectionCashForExpected - refunds - expenses;
-  const countedCash = Number(closing || 0);
+  const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
 
   const save = async () => {
@@ -954,6 +959,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   };
 
   const confirmCounterOpen = () => {
+    if (branchCounterOpenRecord) {
+      setCounterOpened(true);
+      setOpenSavedMessage('Counter is already opened today. Close the counter before opening again.');
+      return;
+    }
     const record = openCounter({
       branch,
       date: openDate || todayIso(),
@@ -1003,6 +1013,29 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   };
 
   return <div className="space-y-5">
+    <div className="grid gap-3 lg:grid-cols-3">
+      <div className={cn('rounded-[2rem] border p-5', branchCounterOpenRecord ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
+        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 1</p>
+        <p className="mt-1 text-xl font-black text-slate-950">Open Counter</p>
+        <p className="mt-2 text-sm font-bold text-slate-600">
+          {branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier || user} with ${money(branchCounterOpenRecord.openingCash)}.` : 'Count opening cash before starting branch billing.'}
+        </p>
+      </div>
+      <div className="rounded-[2rem] border border-blue-200 bg-blue-50 p-5">
+        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 2</p>
+        <p className="mt-1 text-xl font-black text-slate-950">Check Collection</p>
+        <p className="mt-2 text-sm font-bold text-slate-600">
+          Today collection is {money(cash + upi + card)}. Credit collected {money(creditCollectionTotal)} and advance collected {money(advanceCollectedToday)}.
+        </p>
+      </div>
+      <div className={cn('rounded-[2rem] border p-5', branchClosureRecord ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white')}>
+        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 3</p>
+        <p className="mt-1 text-xl font-black text-slate-950">Close Counter</p>
+        <p className="mt-2 text-sm font-bold text-slate-600">
+          {branchClosureRecord ? `Closed. Difference ${money(branchClosureRecord.difference)}.` : `Expected drawer cash is ${money(expected)}. Difference is shown before saving.`}
+        </p>
+      </div>
+    </div>
     <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
       {(['open','close'] as const).map(t => (
         <button key={t} onClick={() => setClosureTab(t)}
@@ -1014,7 +1047,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     {closureTab === 'open' && (
       <Section title="Counter Open" icon={<CheckCircle2 className="size-5"/>}>
         <div className="space-y-5">
-          {counterOpened && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 font-black text-emerald-800">Counter already opened today. You can re-open to update cash count.</div>}
+          {counterOpened && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 font-black text-emerald-800">Counter already opened today. Close the counter before opening again.</div>}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Date"><Input type="date" value={openDate} onChange={(e)=>setOpenDate(e.target.value)}/></Field>
             <Field label="Time"><Input type="time" value={openTime} onChange={(e)=>setOpenTime(e.target.value)}/></Field>
@@ -1024,8 +1057,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
             <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={openDenominations[denom]} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(openDenominations[denom]||0)>0 ? money(denom*Number(openDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Opening Cash Total</td><td className="p-3 text-right text-xl font-black">{money(openTotal)}</td></tr></tbody></table>
           </div>
           {openSavedMessage && <div className="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700">{openSavedMessage}</div>}
-          <PrimaryButton onClick={confirmCounterOpen} className="w-full bg-orange-500 shadow-orange-200">
-            <CheckCircle2 className="size-4"/> Confirm Counter Open & Start Billing
+          <PrimaryButton onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="w-full bg-orange-500 shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+            <CheckCircle2 className="size-4"/> {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open & Start Billing'}
           </PrimaryButton>
         </div>
       </Section>
@@ -1042,24 +1075,24 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           </div>
           <div className="rounded-2xl bg-slate-100 p-4">
             <p className="text-xs font-black uppercase text-slate-500">Counted Cash</p>
-            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(closeTotal)}</p>
+            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(countedCash)}</p>
           </div>
-          <div className={cn('rounded-2xl p-4', closeTotal - expected === 0 ? 'bg-emerald-100 text-emerald-700' : closeTotal - expected > 0 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700')}>
+          <div className={cn('rounded-2xl p-4', diff === 0 ? 'bg-emerald-100 text-emerald-700' : diff > 0 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700')}>
             <p className="text-xs font-black uppercase opacity-80">Difference shown to cashier</p>
-            <p className="mt-1 text-2xl font-black tabular-nums">{closeTotal - expected > 0 ? '+' : ''}{money(closeTotal - expected)}</p>
-            <p className="mt-1 text-xs font-black">{closeTotal - expected === 0 ? 'Balanced' : closeTotal - expected > 0 ? 'Excess cash' : 'Cash shortage'}</p>
+            <p className="mt-1 text-2xl font-black tabular-nums">{diff > 0 ? '+' : ''}{money(diff)}</p>
+            <p className="mt-1 text-xs font-black">{diff === 0 ? 'Balanced' : diff > 0 ? 'Excess cash' : 'Cash shortage'}</p>
           </div>
         </div>
       </Section>
     )}
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
-      <Kpi label="Opening Cash" value={money(Number(opening || 0))} icon={<Banknote/>}/>
       <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<Receipt/>} tone="green"/>
+      <Kpi label="Total Collection" value={money(cash + upi + card)} icon={<WalletCards/>} tone="green"/>
+      <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<IndianRupee/>} tone="blue"/>
+      <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<CreditCard/>} tone="amber"/>
       <Kpi label="Cash Collected" value={money(cash)} icon={<Banknote/>} tone="green"/>
-      <Kpi label="UPI/Card" value={money(upi + card)} icon={<CreditCard/>} tone="blue"/>
-      <Kpi label="Credit Due" value={money(branchCredits.filter((c)=>c.status !== 'settled').reduce((sum,c)=>sum+c.creditAmount,0))} icon={<WalletCards/>} tone="amber"/>
-      <Kpi label="Expenses/Refunds" value={money(expenses + refunds)} icon={<RotateCcw/>} tone="red"/>
       <Kpi label="Expected Cash" value={money(expected)} icon={<WalletCards/>} tone="amber"/>
+      <Kpi label="Difference" value={money(diff)} icon={<AlertTriangle/>} tone={diff === 0 ? 'green' : diff > 0 ? 'blue' : 'red'}/>
     </div>
 
     <Section title="Cashier Closure - Simple Shift Summary" icon={<WalletCards className="size-5"/>} action={<div className="flex flex-wrap gap-2"><SoftButton onClick={printClosure}><Printer className="size-4"/>Print</SoftButton><SoftButton onClick={exportClosure}><Download className="size-4"/>Export</SoftButton></div>}>
@@ -1093,7 +1126,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           <Field label="Closing Remarks"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Optional notes: shortage reason, expense details, handover note"/></Field>
           {closureMessage && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
           {savedMessage && <p className={cn('rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
-          <PrimaryButton onClick={() => { if (closureTab === 'close') setClosing(String(closeTotal)); void save(); }} className="w-full bg-orange-500 text-white shadow-lg shadow-orange-200">Save Cashier Closure</PrimaryButton>
+          <PrimaryButton onClick={() => { void save(); }} className="w-full bg-orange-500 text-white shadow-lg shadow-orange-200">Save Cashier Closure</PrimaryButton>
         </div>
       </div>
     </Section>
