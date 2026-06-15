@@ -115,7 +115,6 @@ function AppRoutes() {
 
         <Route path="/bakery/receive/vrsnb" element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/receive/hosur" element={<ProtectedRoute allowedRoles={['receiver_hosur']}><Navigate to="/branch/hosur" replace /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/baker"   element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
@@ -124,7 +123,7 @@ function AppRoutes() {
 
         <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin','admin_vrsnb','owner']}><VRSNBDashboard /></ProtectedRoute>} />
         <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin','admin_snb','owner']}><SNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','receiver_hosur','admin','admin_hosur','owner']}><HosurDashboard /></ProtectedRoute>} />
+        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','admin','owner']}><HosurDashboard /></ProtectedRoute>} />
 
         <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><AdminVRSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-vrsnb/items"   element={<ProtectedRoute allowedRoles={['admin_vrsnb']}><VRSNBItemsPage /></ProtectedRoute>} />
@@ -132,7 +131,6 @@ function AppRoutes() {
         <Route path="/admin-snb"           element={<ProtectedRoute allowedRoles={['admin_snb']}><AdminSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-snb/items"     element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBItemsPage /></ProtectedRoute>} />
         <Route path="/admin-snb/history"   element={<ProtectedRoute allowedRoles={['admin_snb']}><SNBHistoryPage /></ProtectedRoute>} />
-        <Route path="/admin-hosur"         element={<ProtectedRoute allowedRoles={['admin_hosur']}><Navigate to="/branch/hosur" replace /></ProtectedRoute>} />
         <Route path="/admin/invoices"      element={<ProtectedRoute allowedRoles={['admin']}><AdminInvoicesPage /></ProtectedRoute>} />
         <Route path="/admin/alerts"        element={<ProtectedRoute allowedRoles={['admin', 'admin_vrsnb', 'admin_snb']}><AdminAlertsPage /></ProtectedRoute>} />
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
