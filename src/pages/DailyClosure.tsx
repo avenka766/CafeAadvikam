@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   Banknote,
-  CalendarDays,
   CheckCircle2,
   CreditCard,
   Download,
@@ -158,7 +157,7 @@ export default function DailyClosure() {
     }))
   );
   const { creditSales: branchCreditSales, creditPayments: branchCreditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
-  const { counterOpenings, openCounter, addCashierClosure } = useBranchOpsStore();
+  const { counterOpenings, openCounter, addCashierClosure, cashierClosures } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
@@ -175,6 +174,7 @@ export default function DailyClosure() {
   const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
   const closingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(closeDenominations[denom]), 0);
   const cafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
+  const cafeClosureRecord = cashierClosures.find((record) => record.branch === 'Cafe' && sameBusinessDate(record.createdAt, selectedDate));
 
   useEffect(() => {
     startPolling(60);
@@ -226,6 +226,7 @@ export default function DailyClosure() {
     );
 
     const payments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
+    const creditCollectionPayments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     let creditSales = 0;
     let creditCollected = 0;
     let creditPending = 0;
@@ -289,7 +290,11 @@ export default function DailyClosure() {
     const cafeCreditPayments = branchCreditPayments.Cafe || [];
     creditCollected = cafeCreditPayments
       .filter(payment => sameBusinessDate(payment.createdAt, selectedDate))
-      .reduce((sum, payment) => sum + safeNumber(payment.amount), 0);
+      .reduce((sum, payment) => {
+        const amount = safeNumber(payment.amount);
+        addPayment(creditCollectionPayments, payment.paymentMode, amount);
+        return sum + amount;
+      }, 0);
     creditPending = cafeCreditSales
       .filter(sale => sale.status !== 'settled')
       .reduce((sum, sale) => sum + safeNumber(sale.creditAmount), 0);
@@ -306,6 +311,7 @@ export default function DailyClosure() {
       cancelledButPaidAmount,
       unpaid,
       payments,
+      creditCollectionPayments,
       collectionTotal: collectionTotal + creditCollected,
       totalSales: totalSales, // FIX: creditCollected is recovery of old bills, not today's revenue
       creditSales,
@@ -333,11 +339,21 @@ export default function DailyClosure() {
   // The correct formula is: expected = openingCash + cashSales - cashExpenses - cashRefunds.
   const cafeOpeningCash = safeNumber(openingCash);
   const cafeCashExpenses = safeNumber(cashExpenses);
-  const expectedCash = cafeOpeningCash + closure.payments.cash - cafeCashExpenses;
+  const expectedCash = cafeOpeningCash + closure.payments.cash + closure.creditCollectionPayments.cash - cafeCashExpenses;
+  const collectionByMode: PaymentTotals = {
+    cash: closure.payments.cash + closure.creditCollectionPayments.cash,
+    upi: closure.payments.upi + closure.creditCollectionPayments.upi,
+    card: closure.payments.card + closure.creditCollectionPayments.card,
+  };
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
   const printableTitle = `Daily Closure - ${printableDate(selectedDate)}`;
 
   const handleOpenCounter = () => {
+    if (cafeCounterOpenRecord) {
+      setClosureSavedMessage('Counter is already opened. Close the counter before opening again.');
+      setTimeout(() => setClosureSavedMessage(''), 3500);
+      return;
+    }
     const record = openCounter({
       branch: 'Cafe',
       date: selectedDate,
@@ -429,7 +445,7 @@ export default function DailyClosure() {
       ? '<tr><td colspan="7" class="muted center">No bills closed for this date.</td></tr>'
       : closure.billable.map(order => {
         const paymentLabel = order.paymentType === 'advance'
-          ? `Advance ${order.advancePaidBy || ''}`
+          ? `Advance collected ${order.advancePaidBy || ''}`
           : order.paymentType === 'part_payment'
             ? 'Split Payment'
             : order.paymentType.replace('_', ' ');
@@ -549,16 +565,6 @@ export default function DailyClosure() {
             <p className="mt-1 text-sm font-black text-foreground">{printableTitle}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="relative w-full sm:w-auto">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={e => setSelectedDate(e.target.value)}
-                style={{ colorScheme: 'light' }}
-                className="h-11 w-full sm:w-[168px] rounded-xl border border-border bg-card pl-9 pr-10 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
-            </label>
             <button onClick={refresh} disabled={loading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-60">
               <RefreshCw className={cn('size-4', loading && 'animate-spin')} />Refresh
             </button>
@@ -587,8 +593,10 @@ export default function DailyClosure() {
               </div>
               {cafeCounterOpenRecord ? <CheckCircle2 className="size-6 text-emerald-600" /> : <AlertCircle className="size-6 text-amber-700" />}
             </div>
-            <p className="mt-2 text-sm font-bold text-muted-foreground">
-              {cafeCounterOpenRecord ? `${formatCurrency(cafeCounterOpenRecord.openingCash)} opened at ${timeLabel(cafeCounterOpenRecord.openedAt)}` : 'Count opening cash before billing starts.'}
+              <p className="mt-2 text-sm font-bold text-muted-foreground">
+                {cafeCounterOpenRecord
+                  ? `${cafeCounterOpenRecord.cashier} opened ${formatCurrency(cafeCounterOpenRecord.openingCash)} at ${timeLabel(cafeCounterOpenRecord.openedAt)}`
+                  : 'Count opening cash before billing starts.'}
             </p>
           </div>
           <div className="rounded-3xl border border-blue-200 bg-blue-50 p-4 shadow-soft">
@@ -611,8 +619,10 @@ export default function DailyClosure() {
               </div>
               {closingCashValue > 0 && Math.abs(cashDifference) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
             </div>
-            <p className="mt-2 text-sm font-bold text-muted-foreground">
-              Expected {formatCurrency(expectedCash)} · Counted {formatCurrency(closingCashValue)} · Difference {formatCurrency(cashDifference)}
+              <p className="mt-2 text-sm font-bold text-muted-foreground">
+                {cafeClosureRecord
+                  ? `Closed by ${cafeClosureRecord.cashier}. Difference ${formatCurrency(cafeClosureRecord.difference)}`
+                  : `Expected ${formatCurrency(expectedCash)} · Counted ${formatCurrency(closingCashValue)} · Difference ${formatCurrency(cashDifference)}`}
             </p>
           </div>
         </div>
@@ -623,7 +633,7 @@ export default function DailyClosure() {
               <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Cafe counter open</p>
               <h2 className="font-display text-xl font-black text-foreground">Start Cashier Counter</h2>
               <p className="mt-1 text-xs font-bold text-muted-foreground">
-                {cafeCounterOpenRecord ? `Opened by ${cafeCounterOpenRecord.cashier} with ${formatCurrency(cafeCounterOpenRecord.openingCash)}` : 'Open the counter before Cafe billing or advance collection.'}
+                {cafeCounterOpenRecord ? `Opened by ${cafeCounterOpenRecord.cashier} with ${formatCurrency(cafeCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : 'Open the counter before Cafe billing or advance collection.'}
               </p>
             </div>
             <span className={cn('rounded-full px-3 py-1 text-xs font-black border', cafeCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>
@@ -658,8 +668,12 @@ export default function DailyClosure() {
                 <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
                 <p className="text-xl font-black tabular-nums">{formatCurrency(openingDenomTotal)}</p>
               </div>
-              <button onClick={handleOpenCounter} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200">
-                Confirm Counter Open
+              <button
+                onClick={handleOpenCounter}
+                disabled={Boolean(cafeCounterOpenRecord)}
+                className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              >
+                {cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
               </button>
             </div>
           </div>
@@ -668,11 +682,12 @@ export default function DailyClosure() {
           )}
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <StatCard title="Total sales" value={formatCurrency(closure.totalSales)} icon={<IndianRupee className="size-5" />} helper="Collections + credit" tone="emerald" />
-          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Paid now + credit collected" tone="blue" />
-          <StatCard title="Credit collected" value={formatCurrency(closure.creditCollected)} icon={<UserCheck className="size-5" />} helper={`${formatCurrency(closure.creditPending)} still pending`} tone="amber" />
-          <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="violet" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <StatCard title="Total sales" value={formatCurrency(closure.totalSales)} icon={<IndianRupee className="size-5" />} helper="Today bills + today credit sales" tone="emerald" />
+          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Cash + UPI + card + credit recovery" tone="blue" />
+          <StatCard title="Advance collected" value={formatCurrency(closure.advanceReceived)} icon={<WalletCards className="size-5" />} helper={`${formatCurrency(closure.advanceBalanceOpen)} advance balance pending`} tone="amber" />
+          <StatCard title="Credit collected" value={formatCurrency(closure.creditCollected)} icon={<UserCheck className="size-5" />} helper={`${formatCurrency(closure.creditPending)} credit pending`} tone="violet" />
+          <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="slate" />
           <StatCard title="Cancelled" value={String(closure.cancelled.length)} icon={<XCircle className="size-5" />} helper={formatCurrency(closure.cancelled.reduce((s, o) => s + safeNumber(o.total), 0))} tone="red" />
           {closure.cancelledButPaidAmount > 0 && (
             <StatCard title="⚠ Cancelled + Paid" value={formatCurrency(closure.cancelledButPaidAmount)} icon={<XCircle className="size-5" />} helper={`${closure.cancelledButPaid.length} order${closure.cancelledButPaid.length !== 1 ? "s" : ""} — cash in drawer, not in revenue`} tone="red" />
@@ -694,22 +709,12 @@ export default function DailyClosure() {
               {paymentRows.map(key => (
                 <PaymentRow
                   key={key}
-                  label={paymentLabels[key]}
-                  value={closure.payments[key]}
-                  percent={closure.collectionTotal > 0 ? (closure.payments[key] / closure.collectionTotal) * 100 : 0}
+                  label={`${paymentLabels[key]} collected`}
+                  value={collectionByMode[key]}
+                  percent={closure.collectionTotal > 0 ? (collectionByMode[key] / closure.collectionTotal) * 100 : 0}
                   icon={paymentIcons[key]}
                 />
               ))}
-              {/* BUG-M2 FIX: only show credit-collected row when there's actually something collected,
-                  otherwise a 0% bar is misleading and wastes space */}
-              {closure.creditCollected > 0 && (
-                <PaymentRow
-                  label="Credit collected"
-                  value={closure.creditCollected}
-                  percent={closure.collectionTotal > 0 ? (closure.creditCollected / closure.collectionTotal) * 100 : 0}
-                  icon={<UserCheck className="size-5" />}
-                />
-              )}
             </div>
           </div>
 
@@ -729,7 +734,8 @@ export default function DailyClosure() {
                   className="mt-1 w-full rounded-xl border border-border bg-card px-3 py-3 text-lg font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
                 />
               </div>
-              <div className="flex justify-between text-sm"><span>System cash collection</span><span className="font-black tabular-nums">{formatCurrency(closure.payments.cash)}</span></div>
+              <div className="flex justify-between text-sm"><span>Bill cash collection</span><span className="font-black tabular-nums">{formatCurrency(closure.payments.cash)}</span></div>
+              <div className="flex justify-between text-sm"><span>Credit collected in cash</span><span className="font-black tabular-nums">{formatCurrency(closure.creditCollectionPayments.cash)}</span></div>
               <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cash expenses / paid out</label>
                 <input
@@ -796,8 +802,8 @@ export default function DailyClosure() {
         </div>
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard title="UPI" value={formatCurrency(closure.payments.upi)} icon={<Smartphone className="size-5" />} helper={`${closure.paymentModeCount.upi || 0} direct bills`} tone="blue" />
-          <StatCard title="Card" value={formatCurrency(closure.payments.card)} icon={<CreditCard className="size-5" />} helper={`${closure.paymentModeCount.card || 0} direct bills`} tone="amber" />
+          <StatCard title="UPI collected" value={formatCurrency(collectionByMode.upi)} icon={<Smartphone className="size-5" />} helper={`${formatCurrency(closure.creditCollectionPayments.upi)} from credit recovery`} tone="blue" />
+          <StatCard title="Card collected" value={formatCurrency(collectionByMode.card)} icon={<CreditCard className="size-5" />} helper={`${formatCurrency(closure.creditCollectionPayments.card)} from credit recovery`} tone="amber" />
           <StatCard title="Credit sales" value={formatCurrency(closure.creditSales)} icon={<History className="size-5" />} helper={`${formatCurrency(closure.creditPending)} pending`} tone="red" />
           <StatCard title="Average bill" value={formatCurrency(closure.averageBill)} icon={<Receipt className="size-5" />} helper="Total sales / bills" tone="slate" />
         </div>
@@ -899,7 +905,7 @@ export default function DailyClosure() {
                       <p className="font-bold">{order.customerName || (order.orderType === 'dine_in' ? `Table ${order.tableNumber || '-'}` : 'Walk-in')}</p>
                       <p className="text-xs text-muted-foreground capitalize">{order.orderType.replace('_', ' ')}</p>
                     </td>
-                    <td className="p-3 uppercase font-bold">{order.paymentType === 'advance' ? `ADVANCE ${order.advancePaidBy || ''}` : order.paymentType.replace('_', ' ')}</td>
+                    <td className="p-3 uppercase font-bold">{order.paymentType === 'advance' ? `ADVANCE COLLECTED ${order.advancePaidBy || ''}` : order.paymentType.replace('_', ' ')}</td>
                     <td className="p-3 text-right font-black tabular-nums">{formatCurrency(order.paymentType === 'advance' ? safeNumber(order.total || order.advanceAmount) : safeNumber(order.total))}</td>
                     <td className="p-3">{order.billedBy || order.createdBy || '-'}</td>
                     <td className="p-3"><span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-700 border border-emerald-200">{order.status.toUpperCase()}</span></td>

@@ -58,7 +58,9 @@ const ROLE_BRANCHES: Record<string, Branch[]> = {
 };
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const tzOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
 }
 
 function useCafeCounterOpened() {
@@ -2120,6 +2122,7 @@ export default function BillingDashboard() {
     }))
   );
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
   const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
   const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
@@ -2371,7 +2374,7 @@ export default function BillingDashboard() {
               </div>
             </div>
           ) : (
-            filtered.map(order => <OrderCard key={order.id} order={order} showActions />)
+            filtered.map(order => <OrderCard key={order.id} order={order} showActions counterOpenedToday={counterOpenedToday} />)
           )}
         </div>
       )}
