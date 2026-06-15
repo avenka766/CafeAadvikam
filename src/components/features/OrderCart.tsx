@@ -83,6 +83,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
         createdBy: currentUser.username,
         orderSource: 'staff',
       });
+      await useOrderStore.getState().loadOrders(1);
       setShowSuccess(true);
       setNotes('');
       setCustomerName('');
