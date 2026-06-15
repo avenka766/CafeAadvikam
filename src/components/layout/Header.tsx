@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
-  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', receiver_hosur: 'Hosur Receiver', store: 'Store',
+  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', store: 'Store',
   baker: 'Baker', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
   branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
   // N-04: previously missing role labels
@@ -22,6 +22,7 @@ const ROLE_COLORS: Record<string, string> = {
   // N-04: previously missing role colors
   admin_vrsnb: 'bg-purple-500/20 text-purple-700 border-purple-400/30',
   admin_snb: 'bg-indigo-500/20 text-indigo-700 border-indigo-400/30',
+  branch_hosur: 'bg-emerald-500/20 text-emerald-700 border-emerald-400/30',
   owner: 'bg-rose-500/20 text-rose-700 border-rose-400/30',
 };
 

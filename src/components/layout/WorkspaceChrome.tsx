@@ -160,14 +160,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Purchase Order', path: '/bakery/receive/snb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
-    case 'receiver_hosur':
-      return [
-        { label: 'New Order', path: '/branch/hosur?tab=newOrder', icon: <Inbox className="size-4" />, group: 'Main' },
-        { label: 'Receiving', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
-        { label: 'Billing', path: '/branch/hosur?tab=billing', icon: <Receipt className="size-4" />, group: 'Main' },
-        { label: 'Disputes', path: '/branch/hosur?tab=disputes', icon: <Bell className="size-4" />, group: 'Main' },
-        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <History className="size-4" />, group: 'Reports' },
-      ];
     case 'branch_vrsnb':
       return [
         { label: 'New Bill', path: '/branch/vrsnb', icon: <Receipt className="size-4" />, group: 'Main' },
@@ -193,7 +185,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Daily Closure', path: '/branch/snb?tab=daily-closure', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
       ];
     case 'branch_hosur':
-    case 'admin_hosur':
       return [
         { label: 'Shop Master', path: '/branch/hosur?tab=shops', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'New Order', path: '/branch/hosur?tab=newOrder', icon: <ShoppingCart className="size-4" />, group: 'Main' },

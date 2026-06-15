@@ -205,24 +205,6 @@ export default function BottomNav() {
         path: "/bakery/receive/snb?tab=stock-count",
       },
     );
-  } else if (currentUser.role === "receiver_hosur") {
-    navItems.push(
-      {
-        label: "Order",
-        icon: <Inbox className="size-5" />,
-        path: "/branch/hosur?tab=newOrder",
-      },
-      {
-        label: "Receive",
-        icon: <FileText className="size-5" />,
-        path: "/branch/hosur?tab=receiving",
-      },
-      {
-        label: "Alerts",
-        icon: <Bell className="size-5" />,
-        path: "/branch/hosur?tab=disputes",
-      },
-    );
   } else if (currentUser.role === "store") {
     navItems.push(
       { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/store" },
@@ -268,7 +250,7 @@ export default function BottomNav() {
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
       { label: "Daily", icon: <ClipboardList className="size-5" />, path: "/branch/snb?tab=daily-closure" },
     );
-  } else if (currentUser.role === "branch_hosur" || currentUser.role === "admin_hosur") {
+  } else if (currentUser.role === "branch_hosur") {
     navItems.push(
       { label: "Shops", icon: <Store className="size-5" />, path: "/branch/hosur?tab=shops" },
       { label: "Order", icon: <ShoppingCart className="size-5" />, path: "/branch/hosur?tab=newOrder" },
