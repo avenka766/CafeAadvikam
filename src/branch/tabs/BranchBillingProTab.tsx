@@ -257,7 +257,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const addItem = useCallback((item: BillingItem, amount = unitOf(item) === 'kg' ? 0.25 : 1) => {
     setError('');
     if (!isCounterOpen()) {
-      setError('Counter is not opened. Please open the counter in Cashier Closure -> Counter Open before billing.');
+      setError('Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.');
       setShowCounterClosedAlert(true);
       return;
     }
@@ -325,7 +325,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const validateCheckout = () => {
     if (!isCounterOpen()) {
       setShowCounterClosedAlert(true);
-      return 'Counter is not opened. Please open the counter in Cashier Closure -> Counter Open before billing.';
+      return 'Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.';
     }
     if (requiresSalesperson && !salesperson) return 'Salesperson selection is mandatory before billing.';
     if (!cart.length) return 'Cart is empty.';
