@@ -10,13 +10,11 @@ export type UserRole =
   | 'packing'
   | 'receiver_vrsnb'   // VRSNB Order Receiver (orders VRSNB items only)
   | 'receiver_snb'     // SNB Order Receiver   (orders SNB items only)
-  | 'receiver_hosur'   // Hosur Order Receiver (orders Hosur/SNB items only)
   | 'branch_vrsnb'
   | 'branch_snb'
   | 'branch_hosur'
   | 'admin_vrsnb'   // VRSNB Admin Dashboard
   | 'admin_snb'     // SNB Admin Dashboard
-  | 'admin_hosur'   // Hosur Admin Dashboard
   | 'owner';        // Owner Dashboard
 
 export interface User {
