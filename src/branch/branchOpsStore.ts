@@ -2112,6 +2112,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           ],
         }));
         mirrorOperationRecord(closure.branch, "cashier_closure", newClosure.id, newClosure, {
+          recordNo: newClosure.createdAt.slice(0, 10),
           amount: closure.expectedCash,
           status: String(closure.difference),
           actor: closure.cashier,
