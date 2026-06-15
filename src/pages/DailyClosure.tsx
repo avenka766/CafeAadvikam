@@ -167,11 +167,13 @@ export default function DailyClosure() {
   const [notes, setNotes] = useState('');
   const [openCashier, setOpenCashier] = useState('');
   const [openDenominations, setOpenDenominations] = useState<Record<number, string>>({ 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
+  const [closeDenominations, setCloseDenominations] = useState<Record<number, string>>({ 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
   const [closureSavedMessage, setClosureSavedMessage] = useState('');
 
   const cashierName = currentUser?.displayName || currentUser?.username || 'Cafe Cashier';
   const denominations = [500, 200, 100, 50, 20, 10, 5, 2, 1];
   const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
+  const closingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(closeDenominations[denom]), 0);
   const cafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
 
   useEffect(() => {
@@ -325,7 +327,7 @@ export default function DailyClosure() {
     };
   }, [orders, selectedDate, branchCreditSales, branchCreditPayments]);
 
-  const closingCashValue = Number(closingCash || 0);
+  const closingCashValue = closingDenomTotal > 0 ? closingDenomTotal : Number(closingCash || 0);
   // FIX (MD Bug #7): cashDifference previously compared physical cash directly against
   // cash sales only — ignoring opening float and any cash expenses/refunds.
   // The correct formula is: expected = openingCash + cashSales - cashExpenses - cashRefunds.
@@ -576,6 +578,45 @@ export default function DailyClosure() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 print:overflow-visible print:p-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className={cn('rounded-3xl border p-4 shadow-soft', cafeCounterOpenRecord ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 1</p>
+                <h3 className="font-display text-lg font-black text-foreground">Open Counter</h3>
+              </div>
+              {cafeCounterOpenRecord ? <CheckCircle2 className="size-6 text-emerald-600" /> : <AlertCircle className="size-6 text-amber-700" />}
+            </div>
+            <p className="mt-2 text-sm font-bold text-muted-foreground">
+              {cafeCounterOpenRecord ? `${formatCurrency(cafeCounterOpenRecord.openingCash)} opened at ${timeLabel(cafeCounterOpenRecord.openedAt)}` : 'Count opening cash before billing starts.'}
+            </p>
+          </div>
+          <div className="rounded-3xl border border-blue-200 bg-blue-50 p-4 shadow-soft">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 2</p>
+                <h3 className="font-display text-lg font-black text-foreground">Check Collection</h3>
+              </div>
+              <WalletCards className="size-6 text-blue-700" />
+            </div>
+            <p className="mt-2 text-sm font-bold text-muted-foreground">
+              Cash {formatCurrency(closure.payments.cash)} · UPI {formatCurrency(closure.payments.upi)} · Card {formatCurrency(closure.payments.card)}
+            </p>
+          </div>
+          <div className={cn('rounded-3xl border p-4 shadow-soft', closingCashValue > 0 ? (Math.abs(cashDifference) < 0.01 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50') : 'border-slate-200 bg-slate-50')}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 3</p>
+                <h3 className="font-display text-lg font-black text-foreground">Close Counter</h3>
+              </div>
+              {closingCashValue > 0 && Math.abs(cashDifference) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
+            </div>
+            <p className="mt-2 text-sm font-bold text-muted-foreground">
+              Expected {formatCurrency(expectedCash)} · Counted {formatCurrency(closingCashValue)} · Difference {formatCurrency(cashDifference)}
+            </p>
+          </div>
+        </div>
+
         <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -700,6 +741,34 @@ export default function DailyClosure() {
                 />
               </div>
               <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm"><span>Expected cash</span><span className="font-black tabular-nums">{formatCurrency(expectedCash)}</span></div>
+              <div className="rounded-2xl border border-border bg-card p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Closing denomination count</p>
+                    <p className="text-xs font-bold text-muted-foreground">Enter note/coin count. Total fills physical closing cash.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white tabular-nums">{formatCurrency(closingDenomTotal)}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {denominations.map((denom) => (
+                    <label key={denom} className="rounded-xl border border-border bg-background p-2">
+                      <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={closeDenominations[denom] || ''}
+                        onChange={e => {
+                          const next = { ...closeDenominations, [denom]: e.target.value };
+                          setCloseDenominations(next);
+                          const total = denominations.reduce((sum, d) => sum + d * safeNumber(next[d]), 0);
+                          setClosingCash(String(total));
+                        }}
+                        className="mt-1 w-full rounded-lg border border-border bg-card px-2 py-2 text-center text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
               <div>
                 <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Physical closing cash</label>
                 <input

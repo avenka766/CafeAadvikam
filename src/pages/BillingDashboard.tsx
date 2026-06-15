@@ -22,6 +22,7 @@ import MenuItemCard from '@/components/features/MenuItemCard';
 import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
+import { supabase } from '@/lib/supabase';
 
 // ── Branch Credit Panel (Biller view — scope controlled by caller) ───────────
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
@@ -62,10 +63,44 @@ function todayIso() {
 
 function useCafeCounterOpened() {
   const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
+  const [remoteOpened, setRemoteOpened] = useState(false);
+  const today = todayIso();
+
   useEffect(() => {
-    if (!useBranchOpsStore.persist.hasHydrated()) void useBranchOpsStore.persist.rehydrate();
-  }, []);
-  return counterOpenings.some((record) => record.branch === 'Cafe' && record.date === todayIso());
+    let alive = true;
+    const checkCounterOpening = async () => {
+      if (!useBranchOpsStore.persist.hasHydrated()) {
+        await useBranchOpsStore.persist.rehydrate();
+      }
+      const localOpened = useBranchOpsStore.getState().counterOpenings.some(
+        (record) => record.branch === 'Cafe' && record.date === today,
+      );
+      if (localOpened) {
+        if (alive) setRemoteOpened(true);
+        return;
+      }
+      const { data, error } = await supabase
+        .from('branch_operation_records')
+        .select('record_id')
+        .eq('branch', 'Cafe')
+        .eq('record_type', 'counter_opening')
+        .eq('record_no', today)
+        .limit(1);
+      if (!alive) return;
+      setRemoteOpened(!error && Array.isArray(data) && data.length > 0);
+    };
+    void checkCounterOpening();
+    const unsubscribe = useBranchOpsStore.subscribe((state) => {
+      const opened = state.counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+      if (opened) setRemoteOpened(true);
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [today]);
+
+  return remoteOpened || counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
 }
 
 function BillerCreditTab() {
