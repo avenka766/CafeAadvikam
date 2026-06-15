@@ -236,6 +236,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const meta = routeMeta(location.pathname);
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
+    || /^\/(daily-closure|order-history)/.test(location.pathname)
     || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname)
     || /^\/branch\//.test(location.pathname)
     || /^\/admin-dashboard/.test(location.pathname)
