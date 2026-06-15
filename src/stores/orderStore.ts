@@ -7,7 +7,7 @@ import { useMenuStore } from '@/stores/menuStore';
 // HYGIENE FIX: 3-second polling is very aggressive — with multiple devices/tabs open it creates a
 // large number of DB reads. Increased to 30 seconds. The preferred long-term solution is to
 // migrate to Supabase Realtime subscriptions, but this constant makes it easy to tune.
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 5_000;
 
 interface OrderState {
   orders: Order[];
