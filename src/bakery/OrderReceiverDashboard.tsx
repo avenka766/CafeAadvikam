@@ -1,7 +1,6 @@
 // ─── OrderReceiverDashboard — Branch-locked, role-driven ─────────────────────
 // receiver_vrsnb → VRSNB branch only, VRSNB items only
 // receiver_snb   → SNB branch only,   SNB items only
-// receiver_hosur → Hosur branch only, Hosur/SNB items only
 //
 // Each receiver has left-navigation driven sections:
 //   • Order          — place today's requirement
@@ -75,16 +74,6 @@ const BRANCH_META: Record<string, BranchMeta> = {
     pill: "bg-amber-50 border-amber-200",
     pillText: "text-amber-700",
     headerBg: "from-amber-50 via-white to-background",
-  },
-  receiver_hosur: {
-    branch: "Hosur",
-    label: "Hosur Order",
-    icon: "🌿",
-    dot: "bg-emerald-500",
-    ring: "ring-emerald-400",
-    pill: "bg-emerald-50 border-emerald-200",
-    pillText: "text-emerald-700",
-    headerBg: "from-emerald-50 via-white to-background",
   },
 };
 
