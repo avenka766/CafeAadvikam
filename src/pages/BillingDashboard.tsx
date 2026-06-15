@@ -2181,7 +2181,7 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: 'var(--header-h, 3.5rem)', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
+    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: '.35rem', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (

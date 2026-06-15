@@ -4,7 +4,6 @@ import { useOrderStore } from '@/stores/orderStore';
 import {
   ShoppingBag,
   UtensilsCrossed,
-  Sparkles,
   ClipboardCheck,
   ArrowRight,
   Plus,
@@ -41,30 +40,6 @@ export default function OrderPad() {
 
   return (
     <div className="orderpad-screen dashboard-screen">
-      <section className="orderpad-command-card">
-        <div className="orderpad-title-block">
-          <span className="orderpad-kicker"><Sparkles className="size-4" /> Rush-hour order taking</span>
-          <h2>Fast Order Pad</h2>
-        </div>
-        <div className="orderpad-metrics">
-          <div>
-            <span>Menu</span>
-            <strong>{enabledItems.length}</strong>
-            <small>Active items</small>
-          </div>
-          <div>
-            <span>Showing</span>
-            <strong>{filteredItems.length}</strong>
-            <small>{activeCategoryName}</small>
-          </div>
-          <div>
-            <span>Ticket</span>
-            <strong>{cartCount}</strong>
-            <small>{formatCurrency(cartTotal)}</small>
-          </div>
-        </div>
-      </section>
-
       <div className="orderpad-layout">
         <main className="orderpad-catalog-panel">
           <div className="orderpad-toolbar">
@@ -72,7 +47,14 @@ export default function OrderPad() {
               <div className="orderpad-toolbar-icon"><UtensilsCrossed className="size-5" /></div>
               <div>
                 <h3>Menu catalogue</h3>
+                <p>{activeCategoryName}</p>
               </div>
+            </div>
+            <div className="orderpad-toolbar-stats" aria-label="Order summary">
+              <span><b>{enabledItems.length}</b> menu</span>
+              <span><b>{filteredItems.length}</b> showing</span>
+              <span><b>{cartCount}</b> cart</span>
+              <strong>{formatCurrency(cartTotal)}</strong>
             </div>
           </div>
 
@@ -100,6 +82,7 @@ export default function OrderPad() {
                   quantity={getQty(item.id)}
                   onAdd={() => addToCart(item)}
                   onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)}
+                  compact
                   hideImage
                 />
               ))}
