@@ -614,7 +614,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   const billedBy = currentUser?.displayName || currentUser?.username || '';
 
   const handleSave = async () => {
-    if (!counterOpenedToday) { setError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before collecting payment.'); return; }
+    if (!counterOpenedToday) { setError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.'); return; }
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
     if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
@@ -679,7 +679,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
           {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
           {!counterOpenedToday && (
             <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
-              Counter is not opened today. Open Daily Closure -> Counter Open first.
+              Counter is not opened today. Open Daily Closure, then Counter Open first.
             </p>
           )}
 
@@ -789,7 +789,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before collecting payment.'); return; }
+    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.'); return; }
     if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
     if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
     if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
@@ -1364,7 +1364,7 @@ function NewBillPanel() {
 
   const openBillModal = () => {
     if (!counterOpenedToday) {
-      setSubmitError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before billing.');
+      setSubmitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before billing.');
       return;
     }
     if (orderType === 'dine_in' && !tableNumber) {
@@ -1380,7 +1380,7 @@ function NewBillPanel() {
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cafe Daily Closure -> Counter Open before billing.'); return; }
+    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before billing.'); return; }
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
 
@@ -1568,7 +1568,7 @@ function NewBillPanel() {
     <>
     {!counterOpenedToday && (
       <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
-        Counter is not opened today. Open Daily Closure -> Counter Open before billing.
+        Counter is not opened today. Open Daily Closure, then Counter Open before billing.
       </div>
     )}
     {showBillModal && (
