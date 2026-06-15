@@ -23,6 +23,7 @@ const CANCEL_REASONS = [
 interface OrderCardProps {
   order: Order;
   showActions?: boolean;
+  counterOpenedToday?: boolean;
 }
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
@@ -37,7 +38,7 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
 
 type SplitMethod = 'cash' | 'upi' | 'card';
 
-export default function OrderCard({ order, showActions = false }: OrderCardProps) {
+export default function OrderCard({ order, showActions = false, counterOpenedToday = true }: OrderCardProps) {
   const { updateOrderStatus, applyDiscount, setPaymentType } = useOrderStore();
   const { currentUser } = useAuthStore();
   const { toast } = useToast();
@@ -147,6 +148,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
 
   const handleSinglePayment = async (pt: PaymentType) => {
     setPaymentError('');
+    if (!counterOpenedToday) {
+      setPaymentError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+      return;
+    }
     try {
       await setPaymentType(order.id, pt, billerName);
       // Only move to 'served' if the kitchen has already finished (status === 'ready').
@@ -207,6 +212,10 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   };
 
   const handleSplitPayment = async () => {
+    if (!counterOpenedToday) {
+      setSplitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+      return;
+    }
     const cashAmt = splitMethods.includes('cash') ? (parseFloat(splitCash) || 0) : 0;
     const upiAmt = splitMethods.includes('upi') ? (parseFloat(splitUpi) || 0) : 0;
     const cardAmt = splitMethods.includes('card') ? (parseFloat(splitCard) || 0) : 0;
@@ -403,7 +412,14 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         {canCollectPayment && (
           <div className="px-4 py-3 border-t border-border flex gap-2">
             <button
-              onClick={() => setShowPayment(true)}
+              onClick={() => {
+                if (!counterOpenedToday) {
+                  setShowPayment(true);
+                  setPaymentError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+                  return;
+                }
+                setShowPayment(true);
+              }}
               className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2"
               style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
             >
