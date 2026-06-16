@@ -61,7 +61,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/staff-management/, meta: { title: 'Staff Management', eyebrow: 'People admin', description: 'Create, update and manage staff access with clear roles and clean account controls.', accent: 'Users • Roles • Access' } },
   { match: /^\/attendance-salary/, meta: { title: 'Attendance & Salary', eyebrow: 'HR operations', description: 'Attendance, salary, advances and payroll records organized for admin review.', accent: 'Attendance • Salary • Advance' } },
   { match: /^\/order-history/, meta: { title: 'Order History', eyebrow: 'Past orders', description: 'Search, inspect and audit completed orders from billing, kitchen and admin workflows.', accent: 'History • Search • Receipts' } },
-  { match: /^\/daily-closure/, meta: { title: 'Daily Closure', eyebrow: 'Counter handover', description: 'Close the day with payment-wise collection, total sales, credit, advance and cashier summaries.', accent: 'Cash • UPI • Card' } },
+  { match: /^\/daily-closure/, meta: { title: 'Cashier Counter Open & Closure', eyebrow: 'Counter handover', description: 'Open and close the cashier counter with payment-wise collection, credit, advance and cash difference.', accent: 'Open • Count • Close' } },
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Dashboard', eyebrow: 'Baking team', description: 'Active baking orders, completed work and daily closure in one clean workspace.', accent: 'Orders • Completed • Closure' } },
@@ -122,7 +122,7 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Billing', path: '/billing', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'History', path: '/order-history', icon: <History className="size-4" />, group: 'Reports' },
-        { label: 'Daily Closure', path: '/daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Cashier Counter', path: '/daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
       ];
     case 'order_taker':
       return [
@@ -217,6 +217,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard Overview', path: '/admin-vrsnb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Sales & Returns', path: '/admin-vrsnb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'Low Stock / Stock', path: '/admin-vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Credit', path: '/admin-vrsnb?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Daily Closure Report', path: '/admin-vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Branch Reports', path: '/admin-vrsnb?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Admin Notifications', path: '/admin-vrsnb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },

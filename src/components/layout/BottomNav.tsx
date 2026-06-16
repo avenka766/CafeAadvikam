@@ -95,7 +95,7 @@ export default function BottomNav() {
         path: "/order-history",
       },
       {
-        label: "Closure",
+        label: "Counter",
         icon: <WalletCards className="size-5" />,
         path: "/daily-closure",
       },
@@ -264,6 +264,11 @@ export default function BottomNav() {
         label: "Dashboard",
         icon: <LayoutDashboard className="size-5" />,
         path: "/admin-vrsnb",
+      },
+      {
+        label: "Credit",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-vrsnb?tab=credit",
       },
       {
         label: "Items",
