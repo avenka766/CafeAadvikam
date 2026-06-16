@@ -97,6 +97,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
         { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
         { label: 'Audit Logs', path: '/admin-dashboard?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
@@ -166,7 +167,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
-        { label: 'Purchase Order', path: '/bakery/receive/vrsnb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         { label: 'Stock Count', path: '/bakery/receive/vrsnb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
     case 'receiver_snb':

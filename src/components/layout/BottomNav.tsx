@@ -148,6 +148,11 @@ export default function BottomNav() {
         badge: pendingInvoices || undefined,
       },
       {
+        label: "Disputes",
+        icon: <ClipboardList className="size-5" />,
+        path: "/admin-dashboard?tab=stock-disputes",
+      },
+      {
         label: "Alerts",
         icon: <Bell className="size-5" />,
         path: "/admin/alerts",
@@ -175,11 +180,6 @@ export default function BottomNav() {
         label: "Stock",
         icon: <Package className="size-5" />,
         path: "/bakery/receive/vrsnb?tab=stock",
-      },
-      {
-        label: "PO",
-        icon: <ShoppingCart className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=po",
       },
       {
         label: "Count",
