@@ -165,6 +165,9 @@ function navForRole(role?: string): NavItem[] {
         { label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' },
         { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+        { label: 'Stock / Incoming', path: '/bakery/receive/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Order', path: '/bakery/receive/vrsnb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Stock Count', path: '/bakery/receive/vrsnb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
     case 'receiver_snb':
       return [
@@ -220,6 +223,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Credit', path: '/admin-vrsnb?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Daily Closure Report', path: '/admin-vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Branch Reports', path: '/admin-vrsnb?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Stock Audit', path: '/admin-vrsnb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
         { label: 'Admin Notifications', path: '/admin-vrsnb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-vrsnb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
         { label: 'History', path: '/admin-vrsnb/history', icon: <History className="size-4" />, group: 'Reports' },

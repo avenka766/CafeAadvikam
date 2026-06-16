@@ -171,6 +171,21 @@ export default function BottomNav() {
         icon: <Bell className="size-5" />,
         path: "/bakery/receive/vrsnb?tab=alerts",
       },
+      {
+        label: "Stock",
+        icon: <Package className="size-5" />,
+        path: "/bakery/receive/vrsnb?tab=stock",
+      },
+      {
+        label: "PO",
+        icon: <ShoppingCart className="size-5" />,
+        path: "/bakery/receive/vrsnb?tab=po",
+      },
+      {
+        label: "Count",
+        icon: <ClipboardList className="size-5" />,
+        path: "/bakery/receive/vrsnb?tab=stock-count",
+      },
     );
   } else if (currentUser.role === "receiver_snb") {
     navItems.push(
@@ -279,6 +294,11 @@ export default function BottomNav() {
         label: "History",
         icon: <History className="size-5" />,
         path: "/admin-vrsnb/history",
+      },
+      {
+        label: "Audit",
+        icon: <ClipboardList className="size-5" />,
+        path: "/admin-vrsnb?tab=audit-stock",
       },
       {
         label: "Alerts",
