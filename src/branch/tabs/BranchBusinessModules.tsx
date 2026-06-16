@@ -365,7 +365,6 @@ export function CreditSalesTab({ branch }: ModuleProps) {
         </div>
       </div>
     </Section>
-    </div>
   </div>;
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
