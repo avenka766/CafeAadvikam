@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
+  AlertTriangle,
   Bell,
   CalendarCheck,
   ChefHat,
@@ -90,9 +91,15 @@ function navForRole(role?: string): NavItem[] {
     case 'admin':
       // CHANGE 2: Removed Billing, Orders, Daily Closure, Bakery Store, Packing, Recipes
       return [
-        { label: 'Dashboard', path: '/admin-dashboard', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
+        { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
+        { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Reports' },
+        { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
+        { label: 'Audit Logs', path: '/admin-dashboard?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'Reports', path: '/sales-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Attendance', path: '/attendance-salary', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
         { label: 'Staff', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
         { label: 'Invoices', path: '/admin/invoices', icon: <FileText className="size-4" />, group: 'Reports' },
@@ -101,7 +108,15 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'owner':
       return [
-        { label: 'Owner Hub', path: '/owner', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Branch Overview', path: '/owner?tab=branches', icon: <Store className="size-4" />, group: 'Main' },
+        { label: 'Sales & Profit', path: '/owner?tab=sales', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Credit Tracking', path: '/owner?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
+        { label: 'Store Purchases', path: '/owner?tab=purchases', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure', path: '/owner?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Stock Variance', path: '/owner?tab=variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
+        { label: 'Owner Alerts', path: '/owner?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Staff & Payroll', path: '/owner?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
+        { label: 'Waste & Loss', path: '/owner?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
       ];
     case 'billing':
       return [
@@ -199,14 +214,38 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'admin_vrsnb':
       return [
-        { label: 'Dashboard', path: '/admin-vrsnb', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Dashboard Overview', path: '/admin-vrsnb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Sales & Returns', path: '/admin-vrsnb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
+        { label: 'Low Stock / Stock', path: '/admin-vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure Report', path: '/admin-vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Branch Reports', path: '/admin-vrsnb?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Admin Notifications', path: '/admin-vrsnb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-vrsnb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
         { label: 'History', path: '/admin-vrsnb/history', icon: <History className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/admin/alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'admin_snb':
       return [
-        { label: 'Dashboard', path: '/admin-snb', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Dashboard Overview', path: '/admin-snb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
+        { label: 'Sales & Returns', path: '/admin-snb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
+        { label: 'Low Stock / Stock', path: '/admin-snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Suppliers', path: '/admin-snb?tab=suppliers', icon: <Truck className="size-4" />, group: 'Operations' },
+        { label: 'Expenses', path: '/admin-snb?tab=expenses', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'Complaints', path: '/admin-snb?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Waste Logs', path: '/admin-snb?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
+        { label: 'Quotations', path: '/admin-snb?tab=quotations', icon: <FileText className="size-4" />, group: 'Operations' },
+        { label: 'Credit', path: '/admin-snb?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
+        { label: 'Purchase Invoices', path: '/admin-snb?tab=invoices', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Supplier Payments', path: '/admin-snb?tab=payments', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'Bank Deposits', path: '/admin-snb?tab=bank', icon: <ShieldCheck className="size-4" />, group: 'Operations' },
+        { label: 'Salesperson Management', path: '/admin-snb?tab=salespersons', icon: <Users className="size-4" />, group: 'Admin' },
+        { label: 'Salesperson Report', path: '/admin-snb?tab=salesperson-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Cashier Report', path: '/admin-snb?tab=cashier-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Cashier Closure', path: '/admin-snb?tab=cashier-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Daily Closure Report', path: '/admin-snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Branch Reports', path: '/admin-snb?tab=reports', icon: <FileText className="size-4" />, group: 'Reports' },
+        { label: 'Stock Audit', path: '/admin-snb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
+        { label: 'Admin Notifications', path: '/admin-snb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-snb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
         { label: 'History', path: '/admin-snb/history', icon: <History className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/admin/alerts', icon: <Bell className="size-4" />, group: 'Reports' },
@@ -231,6 +270,8 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     || /^\/bakery\/(store|baker|packing|receive)/.test(location.pathname)
     || /^\/branch\//.test(location.pathname)
     || /^\/admin-dashboard/.test(location.pathname)
+    || /^\/admin-(snb|vrsnb)/.test(location.pathname)
+    || /^\/owner/.test(location.pathname)
     || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
