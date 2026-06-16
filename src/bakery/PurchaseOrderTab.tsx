@@ -8,8 +8,9 @@ import { useStoreStockStore } from './storeStockStore';
 import { useSupplierStore } from './supplierStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import { SNB_ITEMS } from '@/branch/snbItems';
 
-type ReceiverBranchScope = 'SNB' | 'VRSNB';
+type ReceiverBranchScope = 'SNB';
 
 const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.ElementType }> = {
   draft:    { label: 'Draft',    color: 'bg-muted text-muted-foreground border-border',          icon: ShoppingCart },
@@ -121,15 +122,23 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
 
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '');
   const [notes,      setNotes]      = useState('');
-  const [lines,      setLines]      = useState<POItem[]>([{ materialName: stockItems[0]?.name ?? '', quantity: 1, unit: stockItems[0]?.unit ?? 'kg' }]);
+  const [itemSearch, setItemSearch] = useState('');
+  const materialOptions = branchScope === 'SNB'
+    ? SNB_ITEMS.map((item) => ({ id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category }))
+    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material' }));
+  const filteredMaterialOptions = materialOptions.filter((item) =>
+    !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),
+  );
+  const firstMaterial = materialOptions[0];
+  const [lines,      setLines]      = useState<POItem[]>([{ materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState<string | null>(null);
 
-  const addLine    = () => setLines(p => [...p, { materialName: stockItems[0]?.name ?? '', quantity: 1, unit: stockItems[0]?.unit ?? 'kg' }]);
+  const addLine    = () => setLines(p => [...p, { materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const removeLine = (i: number) => setLines(p => p.filter((_, j) => j !== i));
   const setItem    = (i: number, name: string) => {
-    const stock = stockItems.find(s => s.name === name);
-    setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: stock?.unit ?? l.unit } : l));
+    const selected = materialOptions.find(s => s.name === name);
+    setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: selected?.unit ?? l.unit } : l));
   };
   const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: qty } : l));
 
@@ -170,21 +179,40 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
         </div>
 
         <div className="space-y-2">
-          <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Materials</p>
-          {lines.map((line, i) => (
-            <div key={i} className="flex gap-2 items-center">
-              <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
-                className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-                {stockItems.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-              </select>
-              <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
-                className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
-              <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
-              <button onClick={() => removeLine(i)} disabled={lines.length === 1}
-                className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
-                <Trash2 className="size-3.5" />
-              </button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">SNB items</p>
+              <p className="text-[11px] font-body font-semibold text-muted-foreground">Add multiple items in one purchase order.</p>
             </div>
+            <input
+              value={itemSearch}
+              onChange={(e) => setItemSearch(e.target.value)}
+              placeholder="Search item/category"
+              className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-body font-bold focus:outline-none sm:w-64"
+            />
+          </div>
+          {lines.map((line, i) => (
+            (() => {
+              const selected = materialOptions.find((item) => item.name === line.materialName);
+              const options = selected && !filteredMaterialOptions.some((item) => item.name === selected.name)
+                ? [selected, ...filteredMaterialOptions]
+                : filteredMaterialOptions;
+              return (
+                <div key={i} className="flex gap-2 items-center">
+                  <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
+                    className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
+                    {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
+                  </select>
+                  <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
+                    className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
+                  <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
+                  <button onClick={() => removeLine(i)} disabled={lines.length === 1}
+                    className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              );
+            })()
           ))}
           <button onClick={addLine}
             className="w-full h-9 rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground flex items-center justify-center gap-1.5">

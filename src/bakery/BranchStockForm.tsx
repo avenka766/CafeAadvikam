@@ -166,6 +166,11 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   // The filter only affects the dropdown options for browsing / new additions.
   const handleCatChange = (cat: string) => {
     setSelectedCat(cat);
+    const first = cat === ALL ? branchItems[0] : branchItems.find((item) => item.category === cat);
+    if (!first) return;
+    setLines((prev) =>
+      prev.map((line) => (line.qty === "" || Number(line.qty) === 0 ? makeLine(branch, first) : line)),
+    );
   };
 
   // ── Custom lines ───────────────────────────────────────────────────────────

@@ -1410,7 +1410,8 @@ export default function OrderReceiverDashboard() {
   const role = currentUser?.role as UserRole | undefined;
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
-  const tab = tabFromParams(searchParams.get("tab"));
+  const requestedTab = tabFromParams(searchParams.get("tab"));
+  const tab = branch !== "SNB" && requestedTab === "po" ? "order" : requestedTab;
   const userName =
     currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
 
@@ -1531,8 +1532,8 @@ export default function OrderReceiverDashboard() {
     ...(branch === "SNB" || branch === "VRSNB"
       ? ([
           { key: "stock", label: "Stock / Incoming" },
-          { key: "po", label: "Purchase Order" },
           { key: "stock-count", label: "Stock Count" },
+          ...(branch === "SNB" ? [{ key: "po", label: "Purchase Order" } as { key: TabKey; label: string }] : []),
         ] as Array<{ key: TabKey; label: string }>)
       : []),
   ];
@@ -1640,7 +1641,7 @@ export default function OrderReceiverDashboard() {
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-2 rounded-3xl border border-border bg-white/90 p-2 shadow-soft">
+      <div className="mb-4 hidden flex-wrap gap-2 rounded-3xl border border-border bg-white/90 p-2 shadow-soft">
         {receiverTabs.map((item) => (
           <button
             key={item.key}
@@ -1778,7 +1779,7 @@ export default function OrderReceiverDashboard() {
           />
         )}
 
-        {tab === "po" && (branch === "SNB" || branch === "VRSNB") && <PurchaseOrderTab branchScope={branch} />}
+        {tab === "po" && branch === "SNB" && <PurchaseOrderTab branchScope="SNB" />}
 
         {tab === "stock-count" && (branch === "SNB" || branch === "VRSNB") && (
           <StockCountPanel branch={branch} branchStock={stock[branch]} userName={userName} />
