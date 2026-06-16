@@ -466,13 +466,23 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       quantity: line.quantity,
       isCustom: true,
       dispatchUnit: line.unit,
+      attachmentName: order.attachmentName,
+      attachmentDataUrl: order.attachmentDataUrl,
     }));
     const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
     await submitBakeryOrder(bakeryItems, `${user} - ${branch} advance`, branch, notes);
   };
   const sendCakeToStoreDashboard = async (order: CakeAdvanceOrder) => {
-    const bakeryItems: BakeryOrderItem[] = [{ itemId: `${order.orderNo}-0`, itemName: `${order.cakeKg}kg ${cake.flavor} ${cake.shape}`.trim(), quantity: Number(cake.cakeKg || 1), isCustom: true, dispatchUnit: 'kg' }];
-    const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | Cake ${cake.cakeKg}kg ${cake.shape} | Flavor: ${cake.flavor} | ${cake.designNotes || ''}${cake.attachmentName ? ` | Attachment: ${cake.attachmentName}` : ''}`;
+    const bakeryItems: BakeryOrderItem[] = [{
+      itemId: `${order.orderNo}-0`,
+      itemName: `${order.cakeKg}kg ${order.flavor} ${order.shape}`.trim(),
+      quantity: Number(order.cakeKg || 1),
+      isCustom: true,
+      dispatchUnit: 'kg',
+      attachmentName: order.attachmentName,
+      attachmentDataUrl: order.attachmentDataUrl,
+    }];
+    const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | Cake ${order.cakeKg}kg ${order.shape} | Flavor: ${order.flavor} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
     await submitBakeryOrder(bakeryItems, `${user} - ${branch} cake advance`, branch, notes);
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
