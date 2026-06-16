@@ -168,13 +168,29 @@ export default function DailyClosure() {
   const [openDenominations, setOpenDenominations] = useState<Record<number, string>>({ 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
   const [closeDenominations, setCloseDenominations] = useState<Record<number, string>>({ 500: '', 200: '', 100: '', 50: '', 20: '', 10: '', 5: '', 2: '', 1: '' });
   const [closureSavedMessage, setClosureSavedMessage] = useState('');
+  const [savingClosure, setSavingClosure] = useState(false);
+  const [openingCounter, setOpeningCounter] = useState(false);
+  const [remoteCounterOpenRecord, setRemoteCounterOpenRecord] = useState<null | {
+    id: string;
+    branch: 'Cafe';
+    date: string;
+    cashier: string;
+    openingCash: number;
+    denominations: Record<string, string>;
+    openedAt: string;
+    openedBy: string;
+  }>(null);
+  const [remoteClosureFinalized, setRemoteClosureFinalized] = useState(false);
 
   const cashierName = currentUser?.displayName || currentUser?.username || 'Cafe Cashier';
   const denominations = [500, 200, 100, 50, 20, 10, 5, 2, 1];
   const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
   const closingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(closeDenominations[denom]), 0);
-  const cafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
+  const localCafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
+  const cafeCounterOpenRecord = localCafeCounterOpenRecord ?? remoteCounterOpenRecord;
   const cafeClosureRecord = cashierClosures.find((record) => record.branch === 'Cafe' && sameBusinessDate(record.createdAt, selectedDate));
+  const closureAlreadySaved = Boolean(cafeClosureRecord) || remoteClosureFinalized;
+  const activeCashierName = cafeCounterOpenRecord?.cashier || openCashier || cashierName;
 
   useEffect(() => {
     startPolling(60);
@@ -187,6 +203,44 @@ export default function DailyClosure() {
   useEffect(() => {
     setOpenCashier(cashierName);
   }, [cashierName]);
+
+  useEffect(() => {
+    let alive = true;
+    const loadCounterStatus = async () => {
+      const { data, error } = await supabase
+        .from('branch_daily_closures')
+        .select('cashier, opening_cash, status, created_at, updated_at')
+        .eq('branch', 'Cafe')
+        .eq('closure_date', selectedDate);
+      if (!alive) return;
+      if (error) {
+        setRemoteCounterOpenRecord(null);
+        setRemoteClosureFinalized(false);
+        return;
+      }
+      const rows = Array.isArray(data) ? data : [];
+      setRemoteClosureFinalized(rows.some((row) => String(row.status || '').toLowerCase() === 'finalized'));
+      const openRow = rows.find((row) => String(row.status || '').toLowerCase() === 'open');
+      setRemoteCounterOpenRecord(
+        openRow
+          ? {
+              id: `remote-cafe-counter-${selectedDate}`,
+              branch: 'Cafe',
+              date: selectedDate,
+              cashier: String(openRow.cashier || cashierName),
+              openingCash: safeNumber(openRow.opening_cash),
+              denominations: {},
+              openedAt: String(openRow.updated_at || openRow.created_at || new Date().toISOString()),
+              openedBy: String(openRow.cashier || cashierName),
+            }
+          : null,
+      );
+    };
+    void loadCounterStatus();
+    return () => {
+      alive = false;
+    };
+  }, [selectedDate, cashierName]);
 
   useEffect(() => {
     if (!cafeCounterOpenRecord) return;
@@ -372,12 +426,13 @@ export default function DailyClosure() {
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
   const printableTitle = `Cashier Counter Open & Closure - ${printableDate(selectedDate)}`;
 
-  const handleOpenCounter = () => {
+  const handleOpenCounter = async () => {
     if (cafeCounterOpenRecord) {
       setClosureSavedMessage('Counter is already opened. Close the counter before opening again.');
       setTimeout(() => setClosureSavedMessage(''), 3500);
       return;
     }
+    setOpeningCounter(true);
     const record = openCounter({
       branch: 'Cafe',
       date: selectedDate,
@@ -388,16 +443,61 @@ export default function DailyClosure() {
       ),
       openedBy: cashierName,
     });
+    const { error } = await supabase
+      .from('branch_daily_closures')
+      .upsert(
+        {
+          branch: 'Cafe',
+          closure_date: selectedDate,
+          cashier: record.cashier,
+          opening_cash: record.openingCash,
+          cash_total: 0,
+          upi_total: 0,
+          card_total: 0,
+          credit_billed: 0,
+          credit_collected: 0,
+          advance_collected: 0,
+          advance_balance_collected: 0,
+          refunds: 0,
+          expenses: 0,
+          discounts: 0,
+          tax_total: 0,
+          bill_count: 0,
+          duplicate_prints: 0,
+          expected_cash: record.openingCash,
+          actual_cash: 0,
+          difference: 0,
+          notes: 'Counter opened',
+          status: 'open',
+        },
+        { onConflict: 'branch,closure_date,cashier' },
+      );
     setOpeningCash(String(record.openingCash));
-    setClosureSavedMessage(`Cafe counter opened by ${record.cashier}. Opening cash: ${formatCurrency(record.openingCash)}`);
+    setClosureSavedMessage(
+      error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)
+        ? `Counter opened locally, but Supabase open status failed: ${error.message}`
+        : `Cafe counter opened by ${record.cashier}. Opening cash: ${formatCurrency(record.openingCash)}`,
+    );
+    setOpeningCounter(false);
     setTimeout(() => setClosureSavedMessage(''), 3500);
   };
 
   const handleSaveClosure = async () => {
+    if (!cafeCounterOpenRecord) {
+      setClosureSavedMessage('Open the counter before saving closure.');
+      setTimeout(() => setClosureSavedMessage(''), 3500);
+      return;
+    }
+    if (closureAlreadySaved) {
+      setClosureSavedMessage('Closure is already saved for this counter.');
+      setTimeout(() => setClosureSavedMessage(''), 3500);
+      return;
+    }
+    setSavingClosure(true);
     const closurePayload = {
       branch: 'Cafe',
       closure_date: selectedDate,
-      cashier: cashierName,
+      cashier: activeCashierName,
       opening_cash: cafeOpeningCash,
       cash_total: closure.payments.cash,
       upi_total: closure.payments.upi,
@@ -423,7 +523,7 @@ export default function DailyClosure() {
       .upsert(closurePayload, { onConflict: 'branch,closure_date,cashier' });
     addCashierClosure({
       branch: 'Cafe',
-      cashier: cashierName,
+      cashier: activeCashierName,
       openingCash: cafeOpeningCash,
       closingCash: closingCashValue,
       expectedCash,
@@ -446,6 +546,7 @@ export default function DailyClosure() {
     } else {
       setClosureSavedMessage('Cafe cashier closure saved in Supabase.');
     }
+    setSavingClosure(false);
     setTimeout(() => setClosureSavedMessage(''), 3500);
   };
 
@@ -596,8 +697,12 @@ export default function DailyClosure() {
             <button onClick={handlePrint} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
               <Printer className="size-4" />Print Closure
             </button>
-            <button onClick={() => void handleSaveClosure()} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95">
-              <CheckCircle2 className="size-4" />Save Closure
+            <button
+              onClick={() => void handleSaveClosure()}
+              disabled={savingClosure || closureAlreadySaved}
+              className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+            >
+              <CheckCircle2 className="size-4" />{savingClosure ? 'Saving...' : closureAlreadySaved ? 'Closure Saved' : 'Save Closure'}
             </button>
           </div>
         </div>
@@ -645,7 +750,7 @@ export default function DailyClosure() {
               {closingCashValue > 0 && Math.abs(cashDifference) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
             </div>
               <p className="mt-2 text-sm font-bold text-muted-foreground">
-                {cafeClosureRecord
+                {closureAlreadySaved && cafeClosureRecord
                   ? `Closed by ${cafeClosureRecord.cashier}. Difference ${formatCurrency(cafeClosureRecord.difference)}`
                   : `Expected ${formatCurrency(expectedCash)} · Counted ${formatCurrency(closingCashValue)} · Difference ${formatCurrency(cashDifference)}`}
             </p>
@@ -661,8 +766,8 @@ export default function DailyClosure() {
                 {cafeCounterOpenRecord ? `Opened by ${cafeCounterOpenRecord.cashier} with ${formatCurrency(cafeCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : 'Open the counter before Cafe billing or advance collection.'}
               </p>
             </div>
-            <span className={cn('rounded-full px-3 py-1 text-xs font-black border', cafeCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>
-              {cafeCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}
+            <span className={cn('rounded-full px-3 py-1 text-xs font-black border', closureAlreadySaved ? 'bg-slate-100 text-slate-700 border-slate-200' : cafeCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>
+              {closureAlreadySaved ? 'CLOSED' : cafeCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}
             </span>
           </div>
           <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
@@ -694,11 +799,11 @@ export default function DailyClosure() {
                 <p className="text-xl font-black tabular-nums">{formatCurrency(openingDenomTotal)}</p>
               </div>
               <button
-                onClick={handleOpenCounter}
-                disabled={Boolean(cafeCounterOpenRecord)}
+                onClick={() => void handleOpenCounter()}
+                disabled={Boolean(cafeCounterOpenRecord) || openingCounter || closureAlreadySaved}
                 className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
               >
-                {cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+                {openingCounter ? 'Opening...' : closureAlreadySaved ? 'Counter Closed' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
               </button>
             </div>
           </div>

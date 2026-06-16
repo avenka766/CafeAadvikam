@@ -57,16 +57,20 @@ const ROLE_BRANCHES: Record<string, Branch[]> = {
   admin_vrsnb: ['Cafe', 'VRSNB'],
 };
 
-function todayIso() {
-  const now = new Date();
+function todayIso(value = new Date()) {
+  const now = value;
   const tzOffset = now.getTimezoneOffset() * 60000;
   return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
 }
 
 function useCafeCounterOpened() {
   const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
-  const [remoteOpened, setRemoteOpened] = useState(false);
+  const cashierClosures = useBranchOpsStore((s) => s.cashierClosures);
+  const [remoteCounter, setRemoteCounter] = useState({ opened: false, closed: false });
   const today = todayIso();
+  const localClosed = cashierClosures.some(
+    (record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today,
+  );
 
   useEffect(() => {
     let alive = true;
@@ -74,27 +78,36 @@ function useCafeCounterOpened() {
       if (!useBranchOpsStore.persist.hasHydrated()) {
         await useBranchOpsStore.persist.rehydrate();
       }
-      const localOpened = useBranchOpsStore.getState().counterOpenings.some(
-        (record) => record.branch === 'Cafe' && record.date === today,
-      );
-      if (localOpened) {
-        if (alive) setRemoteOpened(true);
-        return;
-      }
-      const { data, error } = await supabase
-        .from('branch_operation_records')
-        .select('record_id')
-        .eq('branch', 'Cafe')
-        .eq('record_type', 'counter_opening')
-        .eq('record_no', today)
-        .limit(1);
+      const [{ data: closureRows, error: closureError }, { data: opRows, error: opError }] = await Promise.all([
+        supabase
+          .from('branch_daily_closures')
+          .select('status')
+          .eq('branch', 'Cafe')
+          .eq('closure_date', today),
+        supabase
+          .from('branch_operation_records')
+          .select('record_id')
+          .eq('branch', 'Cafe')
+          .eq('record_type', 'counter_opening')
+          .eq('record_no', today)
+          .limit(1),
+      ]);
       if (!alive) return;
-      setRemoteOpened(!error && Array.isArray(data) && data.length > 0);
+      const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
+      const closed = formalRows.some((row) => String(row.status || '').toLowerCase() === 'finalized');
+      const opened =
+        formalRows.some((row) => String(row.status || '').toLowerCase() === 'open') ||
+        (!opError && Array.isArray(opRows) && opRows.length > 0);
+      setRemoteCounter({ opened, closed });
     };
     void checkCounterOpening();
     const unsubscribe = useBranchOpsStore.subscribe((state) => {
       const opened = state.counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
-      if (opened) setRemoteOpened(true);
+      const closed = state.cashierClosures.some((record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today);
+      setRemoteCounter((current) => ({
+        opened: current.opened || opened,
+        closed: current.closed || closed,
+      }));
     });
     return () => {
       alive = false;
@@ -102,7 +115,9 @@ function useCafeCounterOpened() {
     };
   }, [today]);
 
-  return remoteOpened || counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+  const localOpened = counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+  if (localClosed || remoteCounter.closed) return false;
+  return remoteCounter.opened || localOpened;
 }
 
 function BillerCreditTab() {
