@@ -365,6 +365,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
         </div>
       </div>
     </Section>
+    </div>
   </div>;
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
@@ -1012,124 +1013,187 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     a.click();
   };
 
-  return <div className="space-y-5">
-    <div className="grid gap-3 lg:grid-cols-3">
-      <div className={cn('rounded-[2rem] border p-5', branchCounterOpenRecord ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
-        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 1</p>
-        <p className="mt-1 text-xl font-black text-slate-950">Open Counter</p>
-        <p className="mt-2 text-sm font-bold text-slate-600">
-          {branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier || user} with ${money(branchCounterOpenRecord.openingCash)}.` : 'Count opening cash before starting branch billing.'}
-        </p>
-      </div>
-      <div className="rounded-[2rem] border border-blue-200 bg-blue-50 p-5">
-        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 2</p>
-        <p className="mt-1 text-xl font-black text-slate-950">Check Collection</p>
-        <p className="mt-2 text-sm font-bold text-slate-600">
-          Today collection is {money(cash + upi + card)}. Credit collected {money(creditCollectionTotal)} and advance collected {money(advanceCollectedToday)}.
-        </p>
-      </div>
-      <div className={cn('rounded-[2rem] border p-5', branchClosureRecord ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white')}>
-        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Step 3</p>
-        <p className="mt-1 text-xl font-black text-slate-950">Close Counter</p>
-        <p className="mt-2 text-sm font-bold text-slate-600">
-          {branchClosureRecord ? `Closed. Difference ${money(branchClosureRecord.difference)}.` : `Expected drawer cash is ${money(expected)}. Difference is shown before saving.`}
-        </p>
-      </div>
-    </div>
-    <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
-      {(['open','close'] as const).map(t => (
-        <button key={t} onClick={() => setClosureTab(t)}
-          className={cn('rounded-xl py-3 text-sm font-black capitalize', closureTab === t ? (t === 'open' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white') : 'text-slate-600')}>
-          {t === 'open' ? 'Counter Open' : 'Counter Close'}
-        </button>
-      ))}
-    </div>
-    {closureTab === 'open' && (
-      <Section title="Counter Open" icon={<CheckCircle2 className="size-5"/>}>
-        <div className="space-y-5">
-          {counterOpened && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 font-black text-emerald-800">Counter already opened today. Close the counter before opening again.</div>}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Date"><Input type="date" value={openDate} onChange={(e)=>setOpenDate(e.target.value)}/></Field>
-            <Field label="Time"><Input type="time" value={openTime} onChange={(e)=>setOpenTime(e.target.value)}/></Field>
+  const totalCollection = cash + upi + card;
+  const openingStatus = branchCounterOpenRecord
+    ? `${branchCounterOpenRecord.cashier || user} opened ${money(branchCounterOpenRecord.openingCash)}`
+    : 'Count opening cash before branch billing starts.';
+  const paymentRows = [
+    { key: 'cash', label: 'Cash collected', value: cash, icon: <Banknote className="size-5" /> },
+    { key: 'upi', label: 'UPI collected', value: upi, icon: <Smartphone className="size-5" /> },
+    { key: 'card', label: 'Card collected', value: card, icon: <CreditCard className="size-5" /> },
+  ];
+
+  return <div className="daily-closure-page flex flex-col bg-background">
+    <div className="border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="size-2 rounded-full bg-emerald-400" />
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">{BRANCH_LABELS[branch]} cashier closure</p>
           </div>
-          <Field label="Cashier Name"><Input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)}/></Field>
-          <div className="overflow-hidden rounded-2xl border border-slate-200">
-            <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={openDenominations[denom]} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(openDenominations[denom]||0)>0 ? money(denom*Number(openDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Opening Cash Total</td><td className="p-3 text-right text-xl font-black">{money(openTotal)}</td></tr></tbody></table>
-          </div>
-          {openSavedMessage && <div className="rounded-xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700">{openSavedMessage}</div>}
-          <PrimaryButton onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="w-full bg-orange-500 shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
-            <CheckCircle2 className="size-4"/> {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open & Start Billing'}
-          </PrimaryButton>
+          <p className="mt-1 text-sm font-black text-foreground">Daily Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
         </div>
-      </Section>
-    )}
-    {closureTab === 'close' && (
-      <Section title="Closing Cash Count" icon={<WalletCards className="size-5"/>}>
-        <div className="overflow-hidden rounded-2xl border border-slate-200">
-          <table className="w-full text-sm"><thead><tr className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><th className="p-3 text-left">Denomination</th><th className="p-3 text-center">Count</th><th className="p-3 text-right">Total</th></tr></thead><tbody>{denominations.map((denom)=><tr key={denom} className="border-t even:bg-slate-50 hover:bg-amber-50/50"><td className="p-3 font-black">Rs {denom}</td><td className="p-3"><input type="number" min="0" value={closeDenominations[denom]} onChange={(e)=>{ const next = {...closeDenominations,[denom]:e.target.value}; setCloseDenominations(next); setClosing(String(denomTotal(next))); }} className="h-9 w-full rounded-xl border border-slate-200 px-3 text-center font-black outline-none focus:border-amber-400"/></td><td className="p-3 text-right font-black text-emerald-700">{Number(closeDenominations[denom]||0)>0 ? money(denom*Number(closeDenominations[denom])) : '-'}</td></tr>)}<tr className="border-t bg-slate-950 text-white"><td colSpan={2} className="p-3 font-black">Closing Cash Total</td><td className="p-3 text-right text-xl font-black">{money(closeTotal)}</td></tr></tbody></table>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); }} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95">
+            <RotateCcw className="size-4" />Refresh
+          </button>
+          <button onClick={printClosure} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
+            <Printer className="size-4" />Print Closure
+          </button>
+          <button onClick={() => { void save(); }} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95">
+            <CheckCircle2 className="size-4" />Save Closure
+          </button>
         </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-2xl bg-slate-100 p-4">
-            <p className="text-xs font-black uppercase text-slate-500">Expected Cash</p>
-            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(expected)}</p>
-          </div>
-          <div className="rounded-2xl bg-slate-100 p-4">
-            <p className="text-xs font-black uppercase text-slate-500">Counted Cash</p>
-            <p className="mt-1 text-2xl font-black tabular-nums text-slate-950">{money(countedCash)}</p>
-          </div>
-          <div className={cn('rounded-2xl p-4', diff === 0 ? 'bg-emerald-100 text-emerald-700' : diff > 0 ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700')}>
-            <p className="text-xs font-black uppercase opacity-80">Difference shown to cashier</p>
-            <p className="mt-1 text-2xl font-black tabular-nums">{diff > 0 ? '+' : ''}{money(diff)}</p>
-            <p className="mt-1 text-xs font-black">{diff === 0 ? 'Balanced' : diff > 0 ? 'Excess cash' : 'Cash shortage'}</p>
-          </div>
-        </div>
-      </Section>
-    )}
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6">
-      <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<Receipt/>} tone="green"/>
-      <Kpi label="Total Collection" value={money(cash + upi + card)} icon={<WalletCards/>} tone="green"/>
-      <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<IndianRupee/>} tone="blue"/>
-      <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<CreditCard/>} tone="amber"/>
-      <Kpi label="Cash Collected" value={money(cash)} icon={<Banknote/>} tone="green"/>
-      <Kpi label="Expected Cash" value={money(expected)} icon={<WalletCards/>} tone="amber"/>
-      <Kpi label="Difference" value={money(diff)} icon={<AlertTriangle/>} tone={diff === 0 ? 'green' : diff > 0 ? 'blue' : 'red'}/>
+      </div>
     </div>
 
-    <Section title="Cashier Closure - Simple Shift Summary" icon={<WalletCards className="size-5"/>} action={<div className="flex flex-wrap gap-2"><SoftButton onClick={printClosure}><Printer className="size-4"/>Print</SoftButton><SoftButton onClick={exportClosure}><Download className="size-4"/>Export</SoftButton></div>}>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="overflow-x-auto rounded-3xl border border-slate-200">
-          <table className="w-full min-w-[760px] text-sm">
-            <thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Section</th><th className="p-3 text-right">Amount</th><th className="p-3">Meaning</th></tr></thead>
-            <tbody>
-              <tr className="border-t"><td className="p-3 font-black">Opening Cash</td><td className="p-3 text-right font-black">{money(Number(opening || 0))}</td><td className="p-3 text-slate-500">Cash available before starting shift.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Normal Bills</td><td className="p-3 text-right font-black text-emerald-700">{money(totalSales)}</td><td className="p-3 text-slate-500">Revenue from regular counter bills today.</td></tr>
-              <tr className="border-t bg-emerald-50/60"><td className="p-3 font-black text-emerald-800">Advance Collected Today</td><td className="p-3 text-right font-black text-emerald-700">{money(advanceCollectedToday)}</td><td className="p-3 text-slate-500">Advance + balance amounts received today for advance orders.</td></tr>
-              <tr className="border-t bg-emerald-50"><td className="p-3 font-black">Total Sales (inc. Advance)</td><td className="p-3 text-right font-black text-emerald-700">{money(totalSalesIncAdvance)}</td><td className="p-3 text-slate-500">Normal bills + advance collected today.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Cash Collected</td><td className="p-3 text-right font-black text-emerald-700">{money(cash)}</td><td className="p-3 text-slate-500">Cash from bills, credit collections and advance payments.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">UPI Collected</td><td className="p-3 text-right font-black">{money(upi)}</td><td className="p-3 text-slate-500">UPI from bills, credit collections and advance payments.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Card Collected</td><td className="p-3 text-right font-black">{money(card)}</td><td className="p-3 text-slate-500">Card from bills, credit collections and advance payments.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Split Payments</td><td className="p-3 text-right font-black">{money(splitTotal)}</td><td className="p-3 text-slate-500">Bills collected through more than one payment mode.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Credit Sales</td><td className="p-3 text-right font-black text-amber-700">{money(creditSalesTotal)}</td><td className="p-3 text-slate-500">Credit bills made today. This is sale value, not drawer cash.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Credit Collections</td><td className="p-3 text-right font-black text-emerald-700">{money(creditCollectionTotal)}</td><td className="p-3 text-slate-500">Payments collected today against older/new credit bills.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Advance Paid</td><td className="p-3 text-right font-black text-emerald-700">{money(advancePaid)}</td><td className="p-3 text-slate-500">Advance collected today for advance orders.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Advance Full / Balance</td><td className="p-3 text-right font-black text-emerald-700">{money(advanceFull)}</td><td className="p-3 text-slate-500">Final balance collected today for advance orders.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Expenses</td><td className="p-3 text-right font-black text-red-600">-{money(expenses)}</td><td className="p-3 text-slate-500">Supplier/purchase payments made today.</td></tr>
-              <tr className="border-t"><td className="p-3 font-black">Refunds</td><td className="p-3 text-right font-black text-red-600">-{money(refunds)}</td><td className="p-3 text-slate-500">Return/refund amount paid today.</td></tr>
-              <tr className="border-t bg-amber-50"><td className="p-3 font-black">Expected Cash</td><td className="p-3 text-right text-lg font-black">{money(expected)}</td><td className="p-3 text-slate-600">Opening + cash sales + cash credit collections + cash advances - cash out.</td></tr>
-            </tbody>
-          </table>
+    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className={cn('rounded-3xl border p-4 shadow-soft', branchCounterOpenRecord ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 1</p>
+              <h3 className="font-display text-lg font-black text-foreground">Open Counter</h3>
+            </div>
+            {branchCounterOpenRecord ? <CheckCircle2 className="size-6 text-emerald-600" /> : <AlertTriangle className="size-6 text-amber-700" />}
+          </div>
+          <p className="mt-2 text-sm font-bold text-muted-foreground">{openingStatus}</p>
         </div>
-        <div className="space-y-3 rounded-3xl bg-slate-50 p-4 ring-1 ring-slate-200">
-          <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)}/></Field>
-          <Field label="Counted Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter drawer cash counted"/></Field>
-          <Field label="Difference"><div className={cn('flex h-12 items-center rounded-2xl px-4 text-xl font-black', diff===0?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{money(diff)}</div></Field>
-          <Field label="Closing Remarks"><Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Optional notes: shortage reason, expense details, handover note"/></Field>
-          {closureMessage && <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
-          {savedMessage && <p className={cn('rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
-          <PrimaryButton onClick={() => { void save(); }} className="w-full bg-orange-500 text-white shadow-lg shadow-orange-200">Save Cashier Closure</PrimaryButton>
+        <div className="rounded-3xl border border-blue-200 bg-blue-50 p-4 shadow-soft">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 2</p>
+              <h3 className="font-display text-lg font-black text-foreground">Check Collection</h3>
+            </div>
+            <WalletCards className="size-6 text-blue-700" />
+          </div>
+          <p className="mt-2 text-sm font-bold text-muted-foreground">Cash {money(cash)} · UPI {money(upi)} · Card {money(card)}</p>
+        </div>
+        <div className={cn('rounded-3xl border p-4 shadow-soft', countedCash > 0 ? (Math.abs(diff) < 0.01 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50') : 'border-slate-200 bg-slate-50')}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 3</p>
+              <h3 className="font-display text-lg font-black text-foreground">Close Counter</h3>
+            </div>
+            {countedCash > 0 && Math.abs(diff) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
+          </div>
+          <p className="mt-2 text-sm font-bold text-muted-foreground">{branchClosureRecord ? `Closed by ${branchClosureRecord.cashier}. Difference ${money(branchClosureRecord.difference)}` : `Expected ${money(expected)} · Counted ${money(countedCash)} · Difference ${money(diff)}`}</p>
         </div>
       </div>
-    </Section>
+
+      <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">{BRANCH_LABELS[branch]} counter open</p>
+            <h2 className="font-display text-xl font-black text-foreground">Start Cashier Counter</h2>
+            <p className="mt-1 text-xs font-bold text-muted-foreground">{branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier} with ${money(branchCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : 'Open the counter before billing or advance collection.'}</p>
+          </div>
+          <span className={cn('rounded-full px-3 py-1 text-xs font-black border', branchCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>{branchCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}</span>
+        </div>
+        <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier</label>
+            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30" />
+          </div>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
+            {denominations.map((denom) => (
+              <label key={denom} className="rounded-2xl border border-border bg-background p-2">
+                <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
+                <input type="number" min="0" value={openDenominations[denom] || ''} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-col justify-end gap-2">
+            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-white">
+              <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
+              <p className="text-xl font-black tabular-nums">{money(openTotal)}</p>
+            </div>
+            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+              {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+            </button>
+          </div>
+        </div>
+        {openSavedMessage && <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">{openSavedMessage}</p>}
+        {closureMessage && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
+        {savedMessage && <p className={cn('mt-3 rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+        <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<IndianRupee/>} tone="green"/>
+        <Kpi label="Total Collection" value={money(totalCollection)} icon={<WalletCards/>} tone="blue"/>
+        <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<WalletCards/>} tone="amber"/>
+        <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<UserRound/>} tone="blue"/>
+        <Kpi label="Bills Closed" value={counterTodayBills.length} icon={<Receipt/>} tone="slate"/>
+        <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_420px]">
+        <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Payment details</p>
+              <h2 className="font-display text-xl font-black text-foreground">Cash / UPI / Card / Credit Collection</h2>
+            </div>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 border border-emerald-200">{money(totalCollection)} collected</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+            {paymentRows.map((row) => {
+              const percent = totalCollection > 0 ? (row.value / totalCollection) * 100 : 0;
+              return <div key={row.key} className="rounded-2xl border border-border bg-background p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-xl bg-muted flex items-center justify-center text-muted-foreground">{row.icon}</div>
+                    <div><p className="text-sm font-black text-foreground">{row.label}</p><p className="text-xs text-muted-foreground">{percent.toFixed(1)}% of collection</p></div>
+                  </div>
+                  <p className="font-display text-xl font-black tabular-nums text-foreground">{money(row.value)}</p>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} /></div>
+              </div>;
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Cash closure check</p>
+            <h2 className="font-display text-xl font-black text-foreground">Cash Counter</h2>
+          </div>
+          <div className="rounded-2xl bg-muted/40 p-3 space-y-2">
+            <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)} /></Field>
+            <div className="flex justify-between text-sm"><span>Bill cash collection</span><span className="font-black tabular-nums">{money(cash - creditCollectionCash - advanceCash)}</span></div>
+            <div className="flex justify-between text-sm"><span>Credit collected in cash</span><span className="font-black tabular-nums">{money(creditCollectionCash)}</span></div>
+            <div className="flex justify-between text-sm"><span>Advance collected in cash</span><span className="font-black tabular-nums">{money(advanceCash)}</span></div>
+            <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm"><span>Expected cash</span><span className="font-black tabular-nums">{money(expected)}</span></div>
+            <div className="rounded-2xl border border-border bg-card p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Closing denomination count</p><p className="text-xs font-bold text-muted-foreground">Enter note/coin count. Total fills physical closing cash.</p></div>
+                <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white tabular-nums">{money(closeTotal)}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                {denominations.map((denom) => (
+                  <label key={denom} className="rounded-xl border border-border bg-background p-2">
+                    <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
+                    <input type="number" min="0" value={closeDenominations[denom] || ''} onChange={(e)=>{ const next = {...closeDenominations,[denom]:e.target.value}; setCloseDenominations(next); setClosing(String(denomTotal(next))); }} className="mt-1 w-full rounded-lg border border-border bg-card px-2 py-2 text-center text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </label>
+                ))}
+              </div>
+            </div>
+            <Field label="Physical Closing Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter counted cash" /></Field>
+            <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', Math.abs(diff) < 0.01 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700')}>
+              <span className="text-sm font-black">Difference</span>
+              <span className="font-display text-xl font-black tabular-nums">{money(diff)}</span>
+            </div>
+          </div>
+          <Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Closure notes, cash shortage/excess reason, UPI settlement note..." rows={3} />
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="UPI Collected" value={money(upi)} icon={<Smartphone/>} tone="blue"/>
+        <Kpi label="Card Collected" value={money(card)} icon={<CreditCard/>} tone="amber"/>
+        <Kpi label="Credit Sales" value={money(creditSalesTotal)} icon={<History/>} tone="red"/>
+        <Kpi label="Expected Cash" value={money(expected)} icon={<Banknote/>} tone="slate"/>
+      </div>
 
     {savedClosures.length > 0 && (
       <Section title="Supabase Closure History" icon={<History className="size-5"/>}>
@@ -1142,6 +1206,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     <Section title="Closure History" icon={<History className="size-5"/>}>
       <div className="space-y-2">{cashierClosures.filter(c=>c.branch===branch).map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.createdAt).toLocaleString('en-IN')} · {c.cashier}</p><p className="text-sm text-slate-500">Bills {c.billsCount} · Cash {money(c.cash)} · Expected {money(c.expectedCash)} · Counted {money(c.closingCash)} · Difference {money(c.difference)}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}</div>
     </Section>
+  </div>
   </div>;
 }
 
