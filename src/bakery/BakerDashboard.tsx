@@ -40,6 +40,23 @@ function fmtDateTime(iso?: string) {
   });
 }
 
+function AttachmentPreview({ name, dataUrl }: { name?: string; dataUrl?: string }) {
+  if (!name && !dataUrl) return null;
+  return (
+    <div className="mt-2 rounded-2xl border border-amber-200 bg-amber-50 p-2">
+      <p className="mb-2 text-[10px] font-body font-bold uppercase tracking-wide text-amber-700">Cake Reference Image</p>
+      {dataUrl ? (
+        <a href={dataUrl} target="_blank" rel="noreferrer" className="block">
+          <img src={dataUrl} alt={name || 'Cake reference'} className="max-h-48 w-full rounded-xl bg-white object-contain" />
+        </a>
+      ) : (
+        <p className="text-xs font-body font-semibold text-amber-900">{name}</p>
+      )}
+      {name && <p className="mt-1 truncate text-[10px] font-body font-bold text-amber-800">{name}</p>}
+    </div>
+  );
+}
+
 function safeDate(iso?: string) {
   if (!iso) return 0;
   const time = new Date(iso).getTime();
@@ -642,6 +659,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
                     <p className="text-[10px] font-body text-muted-foreground mt-0.5">
                       Requested: <span className="font-bold text-foreground">{getRequestedQtyLabel(item)}</span>
                     </p>
+                    <AttachmentPreview name={item.attachmentName} dataUrl={item.attachmentDataUrl} />
                   </div>
                   <div className="flex flex-col items-center gap-1 shrink-0">
                     <input
@@ -821,6 +839,13 @@ function CompletedCard({ order }: { order: BakeryOrder }) {
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
               <p className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-wide">Special Instructions</p>
               <p className="text-sm font-body text-amber-900 mt-1">{order.notes}</p>
+            </div>
+          )}
+          {order.items.some(item => item.attachmentName || item.attachmentDataUrl) && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {order.items.filter(item => item.attachmentName || item.attachmentDataUrl).map(item => (
+                <AttachmentPreview key={item.itemId} name={item.attachmentName} dataUrl={item.attachmentDataUrl} />
+              ))}
             </div>
           )}
         </div>

@@ -9,6 +9,9 @@ export interface BakeryOrderItem {
   itemName: string;
   quantity: number;       // always in kg (for VRSNB Nos items, already converted) or natural unit
   isCustom?: boolean;
+  /** Optional custom/cake reference image sent by the branch. Stored inside items JSONB. */
+  attachmentName?: string;
+  attachmentDataUrl?: string;
   /** VRSNB Nos items: the raw pcs count the receiver entered before conversion */
   originalPcs?: number;
   /** VRSNB Nos items: per-unit weight in grams used for the pcs→kg conversion */

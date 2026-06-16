@@ -197,7 +197,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .select('dispatch_log, prepared_items, order_number')
       .eq('id', orderId)
       .single();
-    if (fetchErr || !freshOrder) return;
+    if (fetchErr || !freshOrder) {
+      throw new Error(fetchErr?.message || 'Dispatch failed because the bakery order could not be loaded.');
+    }
 
     const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];
     // FIX (MD Bug #18): check if this entry was already appended (idempotency guard for retries).
@@ -248,7 +250,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       p_entry: newEntry,
       p_status: newStatus,
     });
-    if (error) return;
+    if (error) {
+      throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
+    }
 
     // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──
     // Strategy: always pass the full list of discrepant items to pushPackingDiscrepancy
@@ -352,6 +356,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       });
       if (incomingErr) {
         console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
+        throw new Error(incomingErr.message || 'Dispatch failed while creating branch incoming stock.');
       }
     }
 

@@ -249,8 +249,8 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
 
       // Discrepancy detection is handled inside bakeryStore.submitDispatch
       // using fresh DB data — no stale-state risk here.
-    } catch {
-      setDispatchError('Dispatch failed — please try again.');
+    } catch (err) {
+      setDispatchError(err instanceof Error ? err.message : 'Dispatch failed - please try again.');
     } finally {
       setDispatchingItems(prev => { const s = new Set(prev); s.delete(itemName); return s; });
     }

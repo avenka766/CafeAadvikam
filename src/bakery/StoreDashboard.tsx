@@ -29,6 +29,7 @@ import StoreReportTab from './StoreReportTab';
 import RecipeManagement from './RecipeManagement';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 import { useAuthStore } from '@/stores/authStore';
+import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
@@ -66,6 +67,23 @@ function dayWindow(date: string) {
 
 function fmtMoney(value: number) {
   return `Rs ${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function AttachmentPreview({ name, dataUrl }: { name?: string; dataUrl?: string }) {
+  if (!name && !dataUrl) return null;
+  return (
+    <div className="mt-2 rounded-2xl border border-amber-200 bg-amber-50 p-2">
+      <p className="mb-2 text-[10px] font-body font-bold uppercase tracking-wide text-amber-700">Cake Reference Image</p>
+      {dataUrl ? (
+        <a href={dataUrl} target="_blank" rel="noreferrer" className="block">
+          <img src={dataUrl} alt={name || 'Cake reference'} className="max-h-48 w-full rounded-xl bg-white object-contain" />
+        </a>
+      ) : (
+        <p className="text-xs font-body font-semibold text-amber-900">{name}</p>
+      )}
+      {name && <p className="mt-1 truncate text-[10px] font-body font-bold text-amber-800">{name}</p>}
+    </div>
+  );
 }
 
 // ─── Print helper (per-item) ──────────────────────────────────────────────────
@@ -198,6 +216,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
               {item.originalPcs} pcs → {item.quantity} kg
             </p>
           )}
+          <AttachmentPreview name={item.attachmentName} dataUrl={item.attachmentDataUrl} />
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {anyOut && (
@@ -746,6 +765,8 @@ function InlineDeductionsView() {
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function StoreInventoryTab() {
   const { items, loaded, loading, load, addItem, updateItem, deleteItem, bulkImportFromRecipes } = useStoreStockStore();
+  const { pushStoreItemChange } = useNotificationStore();
+  const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch]         = useState('');
   const [showAdd, setShowAdd]       = useState(false);
   const [editItem, setEditItem]     = useState<StockItem | null>(null);
@@ -776,6 +797,11 @@ function StoreInventoryTab() {
     const base = stockView === 'low' ? lowItems : items;
     return base.filter(i => !q || i.name.toLowerCase().includes(q));
   }, [items, lowItems, search, stockView]);
+
+  const actor = currentUser?.displayName || currentUser?.username || 'Store user';
+  const notifyStockChange = async (action: 'created' | 'updated', itemId: string, itemName: string, summary: string) => {
+    await pushStoreItemChange({ action, itemId, itemName, category: summary, changedBy: actor });
+  };
 
   return (
     <div className="space-y-3">
@@ -871,15 +897,36 @@ function StoreInventoryTab() {
                     </div>
                   : <div className="space-y-2">
                       {displayList.map(i => (
-                        <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} />
+                        <StockRow key={i.id} item={i} onEdit={setEditItem} onDelete={async (id) => {
+                          const item = items.find(row => row.id === id);
+                          await deleteItem(id);
+                          if (item) await notifyStockChange('updated', item.id, item.name, `archived from store stock by ${actor}`);
+                        }} />
                       ))}
                     </div>;
               })()
           }
         </>
 
-      {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m) => { await addItem(n, u, q, m); }} />}
-      {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={async (u) => { await updateItem(editItem.id, u); setEditItem(null); }} />}
+      {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m) => {
+        const before = items.length;
+        const err = await addItem(n, u, q, m);
+        if (!err) {
+          const created = useStoreStockStore.getState().items.find(item => normaliseName(item.name) === normaliseName(n));
+          await notifyStockChange('created', created?.id || n, n, `stock ${q} ${u}, low alert ${m}`);
+        }
+        if (err || useStoreStockStore.getState().items.length === before) console.warn('[StoreInventoryTab] stock add note:', err);
+      }} />}
+      {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={async (u) => {
+        const before = editItem;
+        const err = await updateItem(editItem.id, u);
+        if (!err) {
+          const qtyNote = u.quantity !== undefined ? `stock ${before.quantity} ${before.unit} to ${u.quantity} ${u.unit || before.unit}` : 'details changed';
+          await notifyStockChange('updated', before.id, before.name, qtyNote);
+        }
+        setEditItem(null);
+        if (err) console.warn('[StoreInventoryTab] stock update failed:', err);
+      }} />}
     </div>
   );
 }
