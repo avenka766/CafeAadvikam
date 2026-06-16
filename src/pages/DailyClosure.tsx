@@ -346,7 +346,7 @@ export default function DailyClosure() {
     card: closure.payments.card + closure.creditCollectionPayments.card,
   };
   const cashDifference = Number.isFinite(closingCashValue) ? closingCashValue - expectedCash : 0;
-  const printableTitle = `Daily Closure - ${printableDate(selectedDate)}`;
+  const printableTitle = `Cashier Counter Open & Closure - ${printableDate(selectedDate)}`;
 
   const handleOpenCounter = () => {
     if (cafeCounterOpenRecord) {
@@ -501,7 +501,7 @@ export default function DailyClosure() {
       <main class="closure-print">
         <div class="header">
           <div>
-            <h1>Café Aadvikam Daily Closure</h1>
+            <h1>Café Aadvikam Cashier Counter Open & Closure</h1>
             <div class="badge">${safeHtml(printableDate(selectedDate))}</div>
           </div>
           <div class="right muted">
@@ -560,7 +560,7 @@ export default function DailyClosure() {
           <div>
             <div className="flex items-center gap-2">
               <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400')} />
-              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">Biller daily closure</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">Cashier counter open & closure</p>
             </div>
             <p className="mt-1 text-sm font-black text-foreground">{printableTitle}</p>
           </div>

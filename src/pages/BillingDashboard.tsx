@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+﻿import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -24,7 +24,7 @@ import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 
-// ── Branch Credit Panel (Biller view — scope controlled by caller) ───────────
+// â”€â”€ Branch Credit Panel (Biller view â€” scope controlled by caller) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 const BRANCH_BADGE: Record<Branch, string> = {
@@ -34,7 +34,7 @@ const BRANCH_BADGE: Record<Branch, string> = {
   Hosur: 'bg-teal-100 text-teal-700 border-teal-200',
 };
 
-// ── Notify VRSNB Admin + Admin whenever a new credit sale is recorded ─────────
+// â”€â”€ Notify VRSNB Admin + Admin whenever a new credit sale is recorded â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function notifyCreditSale(params: {
   customerName: string;
   amount: number;
@@ -43,12 +43,12 @@ async function notifyCreditSale(params: {
   soldBy: string;
   dueDate?: string;
 }) {
-  // Best-effort fire-and-forget — biller UI must never block on this
+  // Best-effort fire-and-forget â€” biller UI must never block on this
   try {
     const { pushCreditSale } = (await import('@/bakery/notificationStore')).useNotificationStore.getState();
     await pushCreditSale(params);
   } catch {
-    // Silent — notification failure must never break billing
+    // Silent â€” notification failure must never break billing
   }
 }
 
@@ -167,10 +167,10 @@ function BillerCreditTab() {
       <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
         <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
         <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
-          ₹{totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          â‚¹{totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          {pendingCount} open account{pendingCount !== 1 ? 's' : ''} · All Branches
+          {pendingCount} open account{pendingCount !== 1 ? 's' : ''} Â· All Branches
         </p>
         {/* Per-branch outstanding summary */}
         <div className="flex gap-2 mt-3 flex-wrap">
@@ -181,7 +181,7 @@ function BillerCreditTab() {
             if (due <= 0) return null;
             return (
               <div key={b} className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-bold', BRANCH_BADGE[b])}>
-                <Building2 className="size-3" />{b}: ₹{due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                <Building2 className="size-3" />{b}: â‚¹{due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
               </div>
             );
           })}
@@ -194,7 +194,7 @@ function BillerCreditTab() {
         </div>
       )}
 
-      {/* Branch filter — only shown when more than one branch is in scope */}
+      {/* Branch filter â€” only shown when more than one branch is in scope */}
       {branches.length > 1 && (
       <div className="flex gap-1.5 flex-wrap">
         <button onClick={() => setBranchFilter('all')}
@@ -247,7 +247,7 @@ function BillerCreditTab() {
               <div className="px-4 py-3 flex items-center justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '—'}</span>
+                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || 'â€”'}</span>
                     <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
                       {cs.status.toUpperCase()}
                     </span>
@@ -257,7 +257,7 @@ function BillerCreditTab() {
                   </div>
                   {cs.customerPhone && <p className="text-xs text-muted-foreground mt-0.5">{cs.customerPhone}</p>}
                   <p className="text-[10px] text-muted-foreground mt-0.5">
-                    Bill #{cs.billNo.split('-').pop()} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} · {cs.soldBy}
+                    Bill #{cs.billNo.split('-').pop()} Â· {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} Â· {cs.soldBy}
                   </p>
                   {cs.dueDate && (
                     <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
@@ -268,7 +268,7 @@ function BillerCreditTab() {
                 <div className="text-right ml-3 shrink-0">
                   <p className="text-[10px] text-muted-foreground">Due</p>
                   <p className="font-display font-bold text-lg text-red-600 tabular-nums">
-                    ₹{cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    â‚¹{cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </p>
                 </div>
               </div>
@@ -276,7 +276,7 @@ function BillerCreditTab() {
               {/* Expand/collapse */}
               <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
                 className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
-                <span>Total: ₹{cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} · Paid: ₹{cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span>Total: â‚¹{cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} Â· Paid: â‚¹{cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                 {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
 
@@ -285,8 +285,8 @@ function BillerCreditTab() {
                   <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
                   {cs.items.map((item, i) => (
                     <div key={i} className="flex justify-between text-xs">
-                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
-                      <span className="font-bold tabular-nums">₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : 'Ã—'} {item.itemName}</span>
+                      <span className="font-bold tabular-nums">â‚¹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                     </div>
                   ))}
                   {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
@@ -300,7 +300,7 @@ function BillerCreditTab() {
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                      <input type="number" placeholder={`Max ₹${cs.creditAmount.toFixed(2)}`}
+                      <input type="number" placeholder={`Max â‚¹${cs.creditAmount.toFixed(2)}`}
                         value={settleAmts[cs.id] || ''}
                         onChange={e => { setSettleAmts(prev => ({ ...prev, [cs.id]: e.target.value })); setError(''); }}
                         className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
@@ -308,7 +308,7 @@ function BillerCreditTab() {
                     <button onClick={() => handleSettle(cs)} disabled={settling === cs.id || !settleAmts[cs.id]}
                       className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition">
                       {settling === cs.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-                      {settling === cs.id ? '…' : 'Collect'}
+                      {settling === cs.id ? 'â€¦' : 'Collect'}
                     </button>
                   </div>
                 </div>
@@ -328,7 +328,7 @@ const STATUS_TABS: { key: OrderStatus; label: string; dotColor: string }[] = [
 
 const QUICK_NOTES = [
   'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
-  'Less oil', 'Extra chutney', 'Pack separately', 'Allergy – check ingredients',
+  'Less oil', 'Extra chutney', 'Pack separately', 'Allergy â€“ check ingredients',
 ];
 
 
@@ -389,7 +389,7 @@ function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'origi
   ` : '';
   printCounterSlip(`Bill ${order.orderNumber}`, `
     <div class="c">
-      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="b" style="font-size:15px">CafÃ© Aadvikam</div>
       <div class="muted">${copyType === 'duplicate' ? 'DUPLICATE BILL' : 'ORIGINAL BILL'}</div>
       <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
     </div>
@@ -416,7 +416,7 @@ function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, 
   const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
   printCounterSlip(`Sales Order ${order.orderNumber}`, `
     <div class="c">
-      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="b" style="font-size:15px">CafÃ© Aadvikam</div>
       <div class="muted">SALES ORDER SLIP</div>
       <div class="pill mt">SO #${String(order.orderNumber).padStart(4, '0')}</div>
     </div>
@@ -444,7 +444,7 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
   const paidNow = order.balanceDue ?? Math.max(0, fullAmount - advance);
   printCounterSlip(`Advance Closure ${order.orderNumber}`, `
     <div class="c">
-      <div class="b" style="font-size:15px">Café Aadvikam</div>
+      <div class="b" style="font-size:15px">CafÃ© Aadvikam</div>
       <div class="muted">ADVANCE CLOSURE BILL</div>
       <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
     </div>
@@ -470,9 +470,9 @@ type DirectPaymentMethod = 'cash' | 'upi' | 'card';
 type BillPaymentMethod = DirectPaymentMethod | 'part_payment';
 type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
 
-// ── Advance Order Card ────────────────────────────────────────────────────────
+// â”€â”€ Advance Order Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function AdvanceOrderCard({ order }: { order: Order }) {
-  // STORE-01 FIX: select only actions — stable refs, avoids re-renders from orders/cart changes
+  // STORE-01 FIX: select only actions â€” stable refs, avoids re-renders from orders/cart changes
   const { collectBalance, setAdvancePayment } = useOrderStore(
     useShallow(s => ({ collectBalance: s.collectBalance, setAdvancePayment: s.setAdvancePayment }))
   );
@@ -518,7 +518,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
           </span>
           <div className="flex flex-col gap-0.5">
             <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300">
-              ⏳ Advance Paid
+              â³ Advance Paid
             </span>
             <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
               <Clock className="size-3" />{formatTime(order.createdAt)}
@@ -528,7 +528,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         <div className="flex flex-col items-end gap-1">
           {order.deliveryDate && (
             <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1">
-              🚚 {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+              ðŸšš {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
             </span>
           )}
           <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
@@ -537,7 +537,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         </div>
       </div>
 
-      {/* Meta row — customer name */}
+      {/* Meta row â€” customer name */}
       {order.customerName && (
         <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
           <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
@@ -550,12 +550,12 @@ function AdvanceOrderCard({ order }: { order: Order }) {
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items</p>
           {order.items.map(ci => (
             <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
-              <span className="font-body text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
+              <span className="font-body text-foreground">{ci.quantity}Ã— {ci.menuItem.name}</span>
               <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
             </div>
           ))}
           {order.notes && (
-            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">⚠️ {order.notes}</p>
+            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">âš ï¸ {order.notes}</p>
           )}
         </div>
       )}
@@ -569,7 +569,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         {order.discount > 0 && (
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground">Discount</span>
-            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">−{formatCurrency(order.discount)}</span>
+            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">âˆ’{formatCurrency(order.discount)}</span>
           </div>
         )}
         <div className="flex items-center justify-between">
@@ -577,7 +577,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
             <Wallet className="size-3" />Advance Paid
             {order.advancePaidBy && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold ml-1 uppercase">{order.advancePaidBy}</span>}
           </span>
-          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">−{formatCurrency(advance)}</span>
+          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">âˆ’{formatCurrency(advance)}</span>
         </div>
         <div className="flex items-center justify-between pt-1 border-t border-border">
           <span className="text-sm font-body font-bold text-foreground">Balance Due</span>
@@ -638,10 +638,9 @@ function AdvanceOrderCard({ order }: { order: Order }) {
   );
 }
 
-// ── Advance Payment Modal (used inside OrderCard area for ready orders) ────────
+// â”€â”€ Advance Payment Modal (used inside OrderCard area for ready orders) â”€â”€â”€â”€â”€â”€â”€â”€
 export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
   const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
-  const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
   const [advanceAmt, setAdvanceAmt] = useState('');
   const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
@@ -651,7 +650,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   const billedBy = currentUser?.displayName || currentUser?.username || '';
 
   const handleSave = async () => {
-    if (!counterOpenedToday) { setError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.'); return; }
+    if (!counterOpenedToday) { setError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
     if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
@@ -661,7 +660,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
       await setAdvancePayment(order.id, amt, method, billedBy);
       onClose();
     } catch {
-      setError('Failed to save — please try again.');
+      setError('Failed to save â€” please try again.');
     } finally {
       setSaving(false);
     }
@@ -674,14 +673,14 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-display text-xl font-bold">Collect Advance</h2>
-            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')} · Total {formatCurrency(order.total)}</p>
+            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')} Â· Total {formatCurrency(order.total)}</p>
           </div>
           <button onClick={onClose} aria-label="Close" className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (₹)</label>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (â‚¹)</label>
             <div className="relative">
               <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
               <input
@@ -716,7 +715,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
           {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
           {!counterOpenedToday && (
             <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
-              Counter is not opened today. Open Daily Closure, then Counter Open first.
+              Counter is not opened today. Open Cashier Counter, then Counter Open first.
             </p>
           )}
 
@@ -732,8 +731,8 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   );
 }
 
-// ── Advance New Order Panel (menu + cart that submits as advance) ─────────────
-// ── Custom item type (for non-menu items) ─────────────────────────────────────
+// â”€â”€ Advance New Order Panel (menu + cart that submits as advance) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Custom item type (for non-menu items) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface CustomLineItem { id: string; name: string; price: number; qty: number; }
 
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
@@ -799,7 +798,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const cartCount   = getCartCount();
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity || 0;
 
-  // ── Add custom item ──────────────────────────────────────────────────────────
+  // â”€â”€ Add custom item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleAddCustomItem = () => {
     const n = customName.trim();
     const p = parseFloat(customPrice);
@@ -822,11 +821,11 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
   const allEmpty = cartCount === 0 && customItems.length === 0;
 
-  // ── Submit ───────────────────────────────────────────────────────────────────
+  // â”€â”€ Submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.'); return; }
+    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
     if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
     if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
     if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
@@ -878,7 +877,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
     } catch (err) {
-      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order — please try again.');
+      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order â€” please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -904,7 +903,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   return (
     <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
-      {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
+      {/* â•â•â• COL 1: Category sidebar â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
@@ -939,14 +938,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
       )}
 
-      {/* ═══ COL 2: Search + Items ═══════════════════════════════════════════════ */}
+      {/* â•â•â• COL 2: Search + Items â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
+                <input type="text" placeholder={`Search all ${enabledItems.length} itemsâ€¦`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
                 {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
@@ -963,7 +962,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
-                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+                <EmptyState icon="ðŸ½ï¸" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
                 <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
@@ -998,7 +997,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
                   Item Name <span className="text-destructive">*</span>
                 </label>
-                <input type="text" placeholder="e.g. Special Cake, Custom Parcel…" value={customName}
+                <input type="text" placeholder="e.g. Special Cake, Custom Parcelâ€¦" value={customName}
                   onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
                   className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
                   onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
@@ -1006,7 +1005,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                    Price (₹) <span className="text-destructive">*</span>
+                    Price (â‚¹) <span className="text-destructive">*</span>
                   </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -1056,7 +1055,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
                         <p className="text-xs font-body text-muted-foreground tabular-nums">
-                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
+                          {formatCurrency(ci.price)} Ã— {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -1082,7 +1081,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         )}
       </div>
 
-      {/* ═══ COL 3: Cart + Advance form ═════════════════════════════════════════ */}
+      {/* â•â•â• COL 3: Cart + Advance form â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
@@ -1144,7 +1143,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
           )}
         </div>
 
-        {/* Advance form + pending — fixed bottom */}
+        {/* Advance form + pending â€” fixed bottom */}
         <div className="biller-cart-footer border-t border-border shrink-0 overflow-y-auto">
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
@@ -1233,10 +1232,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                   </button>
                 </div>
 
-                {/* Advance Amount — hidden when full payment */}
+                {/* Advance Amount â€” hidden when full payment */}
                 {!isFullPayment && (
                   <div>
-                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
+                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (â‚¹) *</label>
                     <div className="relative">
                       <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                       <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
@@ -1279,7 +1278,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                   className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white"
                   style={{ background: isFullPayment ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: isFullPayment ? '0 4px 16px rgba(22,163,74,0.35)' : '0 4px 16px rgba(184,134,11,0.35)' }}>
                   {isFullPayment ? <CheckCircle2 className="size-4" /> : <Wallet className="size-4" />}
-                  {submitting ? 'Saving…' : isFullPayment ? '✅ Record Full Payment' : '⏳ Record Advance Order'}
+                  {submitting ? 'Savingâ€¦' : isFullPayment ? 'âœ… Record Full Payment' : 'â³ Record Advance Order'}
                 </button>
               </div>
             </div>
@@ -1362,7 +1361,7 @@ function NewBillPanel() {
   const menuTotal     = getCartTotal();
   const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
   const itemsSubtotal = menuTotal + customTotal;
-  // Parcel charges: ₹10 per item quantity for takeaway
+  // Parcel charges: â‚¹10 per item quantity for takeaway
   const PARCEL_CHARGE_PER_ITEM = 10;
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
                       + customItems.reduce((s, c) => s + c.qty, 0);
@@ -1401,7 +1400,7 @@ function NewBillPanel() {
 
   const openBillModal = () => {
     if (!counterOpenedToday) {
-      setSubmitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before billing.');
+      setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.');
       return;
     }
     if (orderType === 'dine_in' && !tableNumber) {
@@ -1417,11 +1416,11 @@ function NewBillPanel() {
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before billing.'); return; }
+    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.'); return; }
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
 
-    // ── Credit sale path ──────────────────────────────────────────────────────
+    // â”€â”€ Credit sale path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (paymentMode === 'credit') {
       const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
       if (!customerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
@@ -1510,7 +1509,7 @@ function NewBillPanel() {
       return;
     }
 
-    // ── Regular order path ────────────────────────────────────────────────────
+    // â”€â”€ Regular order path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const paymentBreakdown = billMethod === 'part_payment' ? splitBreakdown : undefined;
     if (paymentBreakdown) {
       const values = Object.values(paymentBreakdown);
@@ -1562,7 +1561,7 @@ function NewBillPanel() {
       setSplitPayment({ cash: '', upi: '', card: '' });
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to submit order — please try again.';
+      const msg = err instanceof Error ? err.message : 'Failed to submit order â€” please try again.';
       setSubmitError(msg);
     } finally {
       setSubmitting(false);
@@ -1605,7 +1604,7 @@ function NewBillPanel() {
     <>
     {!counterOpenedToday && (
       <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
-        Counter is not opened today. Open Daily Closure, then Counter Open before billing.
+        Counter is not opened today. Open Cashier Counter, then Counter Open before billing.
       </div>
     )}
     {showBillModal && (
@@ -1675,7 +1674,7 @@ function NewBillPanel() {
                 className="flex-1 py-3 rounded-xl border border-border text-sm font-bold active:scale-95 disabled:opacity-50">Cancel</button>
               <button type="button" onClick={handleSubmit} disabled={submitting}
                 className="flex-[1.4] py-3 rounded-xl bg-emerald-600 text-white text-sm font-black active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2">
-                <Printer className="size-4" />{submitting ? 'Billing…' : 'Bill & Print'}
+                <Printer className="size-4" />{submitting ? 'Billingâ€¦' : 'Bill & Print'}
               </button>
             </div>
           </div>
@@ -1684,7 +1683,7 @@ function NewBillPanel() {
     )}
     <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
-      {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
+      {/* â•â•â• COL 1: Category sidebar â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
@@ -1719,14 +1718,14 @@ function NewBillPanel() {
         </div>
       )}
 
-      {/* ═══ COL 2: Search + Item picker ════════════════════════════════════════ */}
+      {/* â•â•â• COL 2: Search + Item picker â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
+                <input type="text" placeholder={`Search all ${enabledItems.length} itemsâ€¦`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
                 {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
@@ -1743,7 +1742,7 @@ function NewBillPanel() {
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
-                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+                <EmptyState icon="ðŸ½ï¸" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
                 <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
@@ -1777,7 +1776,7 @@ function NewBillPanel() {
                 <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
                   Item Name <span className="text-destructive">*</span>
                 </label>
-                <input type="text" placeholder="e.g. Special Thali, Custom Parcel…"
+                <input type="text" placeholder="e.g. Special Thali, Custom Parcelâ€¦"
                   value={customName} onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
                   className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
                   onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
@@ -1785,7 +1784,7 @@ function NewBillPanel() {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                    Price (₹) <span className="text-destructive">*</span>
+                    Price (â‚¹) <span className="text-destructive">*</span>
                   </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -1839,7 +1838,7 @@ function NewBillPanel() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
                         <p className="text-xs font-body text-muted-foreground tabular-nums">
-                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
+                          {formatCurrency(ci.price)} Ã— {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -1866,7 +1865,7 @@ function NewBillPanel() {
         )}
       </div>
 
-      {/* ═══ COL 3: Bill summary ════════════════════════════════════════════════ */}
+      {/* â•â•â• COL 3: Bill summary â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
       <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
@@ -1946,17 +1945,17 @@ function NewBillPanel() {
                 className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                🍽️ Dine In
+                ðŸ½ï¸ Dine In
               </button>
               <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
                 className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                📦 Takeaway
+                ðŸ“¦ Takeaway
               </button>
             </div>
 
-            {/* ── Payment Mode: Regular vs Credit ── */}
+            {/* â”€â”€ Payment Mode: Regular vs Credit â”€â”€ */}
             <div className="flex gap-2">
               <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
                 className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
@@ -1971,7 +1970,7 @@ function NewBillPanel() {
               </button>
             </div>
 
-            {/* ── Credit sale form (shown only when Credit mode is active) ── */}
+            {/* â”€â”€ Credit sale form (shown only when Credit mode is active) â”€â”€ */}
             {paymentMode === 'credit' && (
               <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2.5">
                 <div className="flex items-center gap-1.5 mb-0.5">
@@ -2072,7 +2071,7 @@ function NewBillPanel() {
               )}
               {parcelCharges > 0 && (
                 <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
-                  <span className="flex items-center gap-1">📦 Parcel ({totalItemQty} × ₹10)</span>
+                  <span className="flex items-center gap-1">ðŸ“¦ Parcel ({totalItemQty} Ã— â‚¹10)</span>
                   <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
                 </div>
               )}
@@ -2095,8 +2094,8 @@ function NewBillPanel() {
                     : undefined,
                 }}>
                 {paymentMode === 'credit'
-                  ? <><CreditCard className="size-4" />{submitting ? 'Recording…' : '💳 Record Credit Sale'}</>
-                  : <><Receipt className="size-4" />{submitting ? 'Creating…' : '🧾 Create Bill'}</>
+                  ? <><CreditCard className="size-4" />{submitting ? 'Recordingâ€¦' : 'ðŸ’³ Record Credit Sale'}</>
+                  : <><Receipt className="size-4" />{submitting ? 'Creatingâ€¦' : 'ðŸ§¾ Create Bill'}</>
                 }
               </button>
             </div>
@@ -2108,9 +2107,9 @@ function NewBillPanel() {
   );
 }
 
-// ── Main BillingDashboard ─────────────────────────────────────────────────────
+// â”€â”€ Main BillingDashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function BillingDashboard() {
-  // STORE-01 FIX: granular selector with shallow equality — avoids full re-render on cart/loading changes
+  // STORE-01 FIX: granular selector with shallow equality â€” avoids full re-render on cart/loading changes
   const { orders, startPolling, stopPolling, polling, clearCart, cart } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
@@ -2123,13 +2122,12 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
-  const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit'>('new_bill');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | null>(null);
 
-  // U-01 FIX: guard against accidental cart wipe — show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'credit') => {
+  // U-01 FIX: guard against accidental cart wipe â€” show confirmation when cart has items
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -2194,25 +2192,11 @@ export default function BillingDashboard() {
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance') return [];
     let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
   }, [regularOrders, activeTab, sourceFilter, matchesStatusTab]);
-
-  // Determine which branches this user's credit tab should show
-  const creditBranches: Branch[] = useMemo(() => {
-    if (currentUser?.role === 'admin') return ALL_BRANCHES;           // full view
-    if (currentUser?.role === 'admin_vrsnb') return ['Cafe', 'VRSNB'];  // Cafe + VRSNB branch
-    return ['Cafe'];                                                   // billing → Cafe Aadvikam only
-  }, [currentUser?.role]);
-
-  // Credit count badge for the tab button (unsettled credit sales in scope)
-  const { creditSales: allCreditSales } = useBranchStore();
-  const creditCount = useMemo(() =>
-    creditBranches.flatMap(b => allCreditSales?.[b] || []).filter(cs => cs.status !== 'settled').length,
-    [allCreditSales, creditBranches]
-  );
 
   // Counts use regularOrders so advance (pending balance) never pollutes them
   const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
@@ -2250,7 +2234,7 @@ export default function BillingDashboard() {
         </div>
       )}
 
-      {/* ── Status bar ── */}
+      {/* â”€â”€ Status bar â”€â”€ */}
       <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
@@ -2260,9 +2244,9 @@ export default function BillingDashboard() {
         </div>
         <div className="flex items-center gap-1.5">
           {([
-            { key: 'all' as SourceFilter, label: `Total · ${regularOrders.length}`, icon: null },
-            { key: 'staff' as SourceFilter, label: `Staff · ${staffCount}`, icon: <UserCheck className="size-3" /> },
-            { key: 'qr' as SourceFilter, label: `QR · ${qrCount}`, icon: <QrCode className="size-3" /> },
+            { key: 'all' as SourceFilter, label: `Total Â· ${regularOrders.length}`, icon: null },
+            { key: 'staff' as SourceFilter, label: `Staff Â· ${staffCount}`, icon: <UserCheck className="size-3" /> },
+            { key: 'qr' as SourceFilter, label: `QR Â· ${qrCount}`, icon: <QrCode className="size-3" /> },
           ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
             <button key={s.key} onClick={() => setSourceFilter(s.key)}
               className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
@@ -2273,7 +2257,7 @@ export default function BillingDashboard() {
         </div>
       </div>
 
-      {/* ── Tab rail ── */}
+      {/* â”€â”€ Tab rail â”€â”€ */}
       <div className="border-b border-border bg-background shrink-0">
         <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
 
@@ -2300,23 +2284,6 @@ export default function BillingDashboard() {
             )}
           </button>
 
-          {/* Credit tab — visible to biller, admin, vrsnb_admin only */}
-          {isBiller && (
-            <button onClick={() => switchTab('credit')}
-              className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-                activeTab === 'credit'
-                  ? 'bg-red-600 text-white shadow-md'
-                  : 'bg-red-50 border border-red-200 text-red-700')}>
-              <CreditCard className="size-3.5" />Credit
-              {creditCount > 0 && (
-                <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                  activeTab === 'credit' ? 'bg-white/30 text-white' : 'bg-red-200 text-red-800')}>
-                  {creditCount}
-                </span>
-              )}
-            </button>
-          )}
-
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = sourceFilter === 'all'
@@ -2341,13 +2308,11 @@ export default function BillingDashboard() {
         </div>
       </div>
 
-      {/* ── Content ── */}
+      {/* â”€â”€ Content â”€â”€ */}
       {activeTab === 'new_bill' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
-      ) : activeTab === 'credit' ? (
-        <div className="flex-1 overflow-y-auto"><BillerCreditTab /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
@@ -2360,7 +2325,7 @@ export default function BillingDashboard() {
                 <p className="text-sm font-body text-muted-foreground mt-1">
                   {sourceFilter !== 'all'
                     ? `No ${activeTab} orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
-                    : activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab} orders right now`}
+                    : activeTab === 'pending' ? 'Waiting for new ordersâ€¦' : `No ${activeTab} orders right now`}
                 </p>
                 {/* U-11 FIX: offer one-tap clear when a source filter is hiding results */}
                 {sourceFilter !== 'all' && (
@@ -2368,7 +2333,7 @@ export default function BillingDashboard() {
                     onClick={() => setSourceFilter('all')}
                     className="mt-3 text-sm font-body font-semibold text-primary underline underline-offset-2 active:opacity-70"
                   >
-                    Clear filter — show all sources
+                    Clear filter â€” show all sources
                   </button>
                 )}
               </div>

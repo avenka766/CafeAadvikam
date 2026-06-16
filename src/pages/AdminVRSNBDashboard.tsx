@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
-import { useBranchStore } from "@/branch/branchStore";
+import { useBranchStore, type CreditSale } from "@/branch/branchStore";
 import {
   money,
   useBranchOpsStore,
@@ -82,11 +82,19 @@ const CHART_COLORS = [
   "#8B5CF6",
   "#F59E0B",
 ];
+const CREDIT_BRANCHES: Branch[] = ["Cafe", "VRSNB"];
+const CREDIT_BRANCH_LABEL: Record<Branch, string> = {
+  Cafe: "Cafe / Biller",
+  VRSNB: "VRSNB Branch",
+  SNB: "SNB Branch",
+  Hosur: "Hosur Branch",
+};
 
 type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "credit"
   | "closure"
   | "reports"
   | "notifications";
@@ -100,6 +108,12 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  {
+    id: "credit",
+    label: "Credit",
+    icon: CreditCard,
+    adminOnly: true,
+  },
   {
     id: "closure",
     label: "Daily Closure Report",
@@ -1052,6 +1066,7 @@ export default function AdminVRSNBDashboard() {
               {...commonProps}
             />
           )}
+          {tab === "credit" && <CreditTab />}
           {tab === "closure" && (
             <DailyClosureTab userName={userName} {...commonProps} />
           )}
@@ -2712,8 +2727,178 @@ function SalespersonReportTab(props: any) {
   );
 }
 
+function CreditTab() {
+  const {
+    creditSales,
+    creditPayments,
+    fetchCreditSales,
+    fetchCreditPayments,
+    settleCreditSale,
+  } = useBranchStore();
+  const { currentUser } = useAuthStore();
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "partial" | "settled">("pending");
+  const [branchFilter, setBranchFilter] = useState<Branch | "all">("all");
+  const [amounts, setAmounts] = useState<Record<string, string>>({});
+  const [modes, setModes] = useState<Record<string, "cash" | "upi" | "card" | "bank">>({});
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    CREDIT_BRANCHES.forEach((branch) => {
+      void fetchCreditSales(branch);
+      void fetchCreditPayments(branch);
+    });
+  }, [fetchCreditPayments, fetchCreditSales]);
+
+  const sales = useMemo(
+    () =>
+      CREDIT_BRANCHES.flatMap((branch) =>
+        (creditSales[branch] || []).map((sale) => ({ ...sale, branch })),
+      ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [creditSales],
+  );
+  const payments = useMemo(
+    () =>
+      CREDIT_BRANCHES.flatMap((branch) =>
+        (creditPayments[branch] || []).map((payment) => ({ ...payment, branch })),
+      ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [creditPayments],
+  );
+  const visibleSales = sales.filter((sale) => {
+    if (statusFilter !== "all" && sale.status !== statusFilter) return false;
+    if (branchFilter !== "all" && sale.branch !== branchFilter) return false;
+    return true;
+  });
+  const openCredit = sales
+    .filter((sale) => sale.status !== "settled")
+    .reduce((sum, sale) => sum + sale.creditAmount, 0);
+  const collected = payments.reduce((sum, payment) => sum + payment.amount, 0);
+  const todayCollected = payments
+    .filter((payment) => inRange(payment.createdAt, dateInput(), dateInput()))
+    .reduce((sum, payment) => sum + payment.amount, 0);
+
+  const collect = async (sale: CreditSale & { branch: Branch }) => {
+    const amount = Number(amounts[sale.id] || sale.creditAmount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setMessage("Enter a valid collection amount.");
+      return;
+    }
+    if (amount > sale.creditAmount) {
+      setMessage("Collection amount cannot be more than the pending balance.");
+      return;
+    }
+    const error = await settleCreditSale(sale.branch, sale.id, amount, {
+      mode: modes[sale.id] || "cash",
+      collectedBy: currentUser?.displayName || currentUser?.username || "VRSNB Admin",
+      collectedRole: currentUser?.role || "admin_vrsnb",
+      remarks: "Collected from VRSNB Admin credit tab",
+    });
+    if (error) {
+      setMessage(error);
+      return;
+    }
+    setAmounts((current) => ({ ...current, [sale.id]: "" }));
+    setMessage("Credit collection saved.");
+    await fetchCreditSales(sale.branch);
+    await fetchCreditPayments(sale.branch);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Kpi label="Open Credit" value={money(openCredit)} icon={<WalletCards className="size-5" />} tone="red" />
+        <Kpi label="Collected" value={money(collected)} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Collected Today" value={money(todayCollected)} icon={<IndianRupee className="size-5" />} tone="blue" />
+        <Kpi label="Credit Bills" value={sales.length} icon={<Receipt className="size-5" />} tone="amber" />
+      </div>
+      <Panel
+        title="Cafe + VRSNB Credit Register"
+        icon={<CreditCard className="size-4" />}
+        action={
+          <div className="flex flex-wrap gap-2">
+            <select className={cn(inputCls, "h-10 w-36 py-1")} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value as Branch | "all")}>
+              <option value="all">All units</option>
+              {CREDIT_BRANCHES.map((branch) => <option key={branch} value={branch}>{CREDIT_BRANCH_LABEL[branch]}</option>)}
+            </select>
+            <select className={cn(inputCls, "h-10 w-32 py-1")} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)}>
+              <option value="all">All status</option>
+              <option value="pending">Pending</option>
+              <option value="partial">Partial</option>
+              <option value="settled">Settled</option>
+            </select>
+          </div>
+        }
+      >
+        {message && (
+          <div className="mb-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-black text-amber-800 ring-1 ring-amber-100">
+            {message}
+          </div>
+        )}
+        <DataTable
+          headers={["Unit", "Bill", "Customer", "Mobile", "Total", "Paid", "Balance", "Due", "Status", "Collect"]}
+          rows={visibleSales.map((sale) => [
+            CREDIT_BRANCH_LABEL[sale.branch],
+            sale.billNo,
+            sale.customerName,
+            sale.customerPhone || "-",
+            money(sale.subtotal),
+            money(sale.amountPaid),
+            money(sale.creditAmount),
+            sale.dueDate || "-",
+            <StatusBadge key="status" tone={sale.status === "settled" ? "green" : sale.status === "partial" ? "amber" : "red"}>{sale.status}</StatusBadge>,
+            sale.status === "settled" ? (
+              <span key="done" className="text-xs font-black text-emerald-700">Settled</span>
+            ) : (
+              <div key="collect" className="flex min-w-[300px] flex-wrap gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max={sale.creditAmount}
+                  className={cn(inputCls, "h-10 w-24 py-1")}
+                  placeholder={String(sale.creditAmount)}
+                  value={amounts[sale.id] || ""}
+                  onChange={(e) => setAmounts((current) => ({ ...current, [sale.id]: e.target.value }))}
+                />
+                <select
+                  className={cn(inputCls, "h-10 w-24 py-1")}
+                  value={modes[sale.id] || "cash"}
+                  onChange={(e) => setModes((current) => ({ ...current, [sale.id]: e.target.value as any }))}
+                >
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                  <option value="bank">Bank</option>
+                </select>
+                <button onClick={() => void collect(sale)} className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200")}>
+                  Collect
+                </button>
+              </div>
+            ),
+          ])}
+          empty="No Cafe or VRSNB credit sales found."
+        />
+      </Panel>
+      <Panel title="Credit Collections" icon={<History className="size-4" />}>
+        <DataTable
+          headers={["Unit", "Bill", "Amount", "Mode", "Collected By", "Date", "Remarks"]}
+          rows={payments.map((payment) => [
+            CREDIT_BRANCH_LABEL[payment.branch],
+            payment.billNo,
+            money(payment.amount),
+            payment.paymentMode.toUpperCase(),
+            payment.collectedBy || "-",
+            fmtDateTime(payment.createdAt),
+            payment.remarks || "-",
+          ])}
+          empty="No credit collections recorded."
+        />
+      </Panel>
+    </div>
+  );
+}
+
 function DailyClosureTab({ userName, ...props }: any) {
   const { cashierClosures, addCashierClosure } = useBranchOpsStore();
+  const [remoteClosures, setRemoteClosures] = useState<any[]>([]);
   const [form, setForm] = useState({
     openingCash: "0",
     closingCash: "",
@@ -2777,7 +2962,48 @@ function DailyClosureTab({ userName, ...props }: any) {
     });
     setForm({ openingCash: "0", closingCash: "", remarks: "" });
   };
-  const rows = cashierClosures.filter((c) => c.branch === BRANCH);
+  useEffect(() => {
+    let alive = true;
+    const loadClosures = async () => {
+      const { data, error } = await supabase
+        .from("branch_daily_closures")
+        .select("*")
+        .in("branch", CREDIT_BRANCHES)
+        .order("closure_date", { ascending: false });
+      if (!alive) return;
+      if (!error && Array.isArray(data)) setRemoteClosures(data);
+    };
+    void loadClosures();
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const rows = useMemo(() => {
+    const localRows = cashierClosures.filter((c) => CREDIT_BRANCHES.includes(c.branch as Branch));
+    const mappedRemote = remoteClosures.map((row) => ({
+      id: `remote-${row.branch}-${row.closure_date}-${row.cashier}`,
+      branch: row.branch as Branch,
+      createdAt: row.created_at || `${row.closure_date || dateInput()}T00:00:00`,
+      cashier: row.cashier || "-",
+      openingCash: Number(row.opening_cash || 0),
+      expectedCash: Number(row.expected_cash || 0),
+      closingCash: Number(row.actual_cash || 0),
+      difference: Number(row.difference || 0),
+      billsCount: Number(row.bill_count || 0),
+      cash: Number(row.cash_total || 0),
+      upi: Number(row.upi_total || 0),
+      card: Number(row.card_total || 0),
+      returns: Number(row.refunds || 0),
+      notes: row.notes || "",
+    }));
+    const seen = new Set<string>();
+    return [...mappedRemote, ...localRows].filter((row) => {
+      const key = `${row.branch}-${new Date(row.createdAt).toDateString()}-${row.cashier}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [cashierClosures, remoteClosures]);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-4">
@@ -2920,9 +3146,10 @@ function DailyClosureTab({ userName, ...props }: any) {
           />
         </div>
       </Panel>
-      <Panel title="Closure History" icon={<History className="size-4" />}>
+      <Panel title="Cashier Counter Open & Closure Reports" icon={<History className="size-4" />}>
         <DataTable
           headers={[
+            "Unit",
             "Date",
             "Cashier",
             "Opening",
@@ -2937,6 +3164,7 @@ function DailyClosureTab({ userName, ...props }: any) {
             "Remarks",
           ]}
           rows={rows.map((c) => [
+            CREDIT_BRANCH_LABEL[c.branch as Branch] || c.branch,
             fmtDateTime(c.createdAt),
             c.cashier,
             money(c.openingCash),
@@ -2950,7 +3178,7 @@ function DailyClosureTab({ userName, ...props }: any) {
             money(c.returns),
             c.notes,
           ])}
-          empty="No daily closures saved."
+          empty="No cashier counter closure reports saved."
         />
       </Panel>
     </div>
