@@ -97,6 +97,7 @@ type TabId =
   | "credit"
   | "closure"
   | "reports"
+  | "audit-stock"
   | "notifications";
 
 const TABS: Array<{
@@ -124,6 +125,12 @@ const TABS: Array<{
     id: "reports",
     label: "Branch Reports",
     icon: FileSpreadsheet,
+    adminOnly: true,
+  },
+  {
+    id: "audit-stock",
+    label: "Stock Audit",
+    icon: ClipboardCheck,
     adminOnly: true,
   },
   {
@@ -1071,6 +1078,14 @@ export default function AdminVRSNBDashboard() {
             <DailyClosureTab userName={userName} {...commonProps} />
           )}
           {tab === "reports" && <ReportsTab {...commonProps} />}
+          {tab === "audit-stock" && (
+            <StockAuditTab
+              userName={userName}
+              manualUpdateStock={manualUpdateStock}
+              fetchBranchData={fetchBranchData}
+              setNotice={setNotice}
+            />
+          )}
           {tab === "notifications" && <NotificationsTab userName={userName} />}
         </main>
       </div>
@@ -3324,6 +3339,129 @@ function ReportsTab(props: any) {
           </div>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function StockAuditTab({
+  userName,
+  manualUpdateStock,
+  fetchBranchData,
+  setNotice,
+}: {
+  userName: string;
+  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
+  fetchBranchData: (branch: Branch) => Promise<void>;
+  setNotice: (message: string) => void;
+}) {
+  const { stockCountReports, confirmStockCountReport } = useBranchOpsStore();
+  const [savingId, setSavingId] = useState("");
+  const reports = stockCountReports
+    .filter((report) => report.branch === BRANCH)
+    .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
+  const pending = reports.filter((report) => report.status === "Pending Admin Review");
+  const openDifferences = pending.reduce(
+    (sum, report) => sum + report.lines.filter((line) => line.difference !== 0).length,
+    0,
+  );
+
+  const confirmReport = async (reportId: string) => {
+    const report = reports.find((row) => row.id === reportId);
+    if (!report) return;
+    if (report.status !== "Pending Admin Review") {
+      setNotice(`${report.reportNo} is already ${report.status}.`);
+      return;
+    }
+    const ok = window.confirm(
+      `Confirm ${report.reportNo} and update VRSNB stock to the physical counted quantities?`,
+    );
+    if (!ok) return;
+    setSavingId(reportId);
+    try {
+      const { error: rpcError } = await supabase.rpc("confirm_branch_stock_count_report", {
+        p_report_id: report.id,
+        p_confirmed_by: userName,
+      });
+      if (rpcError) {
+        const missingRpc =
+          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache/i.test(
+            rpcError.message || "",
+          );
+        if (!missingRpc) {
+          setNotice(`Stock count confirmation failed: ${rpcError.message}`);
+          return;
+        }
+        for (const line of report.lines) {
+          const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName);
+          if (error) {
+            setNotice(
+              `${report.reportNo} stopped at ${line.itemName}: ${error}. Re-check Stock Audit before confirming again.`,
+            );
+            return;
+          }
+        }
+      }
+      confirmStockCountReport(report.id, userName);
+      await fetchBranchData(BRANCH);
+      setNotice(`${report.reportNo} confirmed. VRSNB stock updated and variance sent to Owner/Admin.`);
+    } finally {
+      setSavingId("");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <Kpi label="Pending Reports" value={pending.length} icon={<ClipboardCheck className="size-4" />} tone="amber" />
+        <Kpi label="Total Reports" value={reports.length} icon={<PackageCheck className="size-4" />} tone="blue" />
+        <Kpi label="Open Difference Lines" value={openDifferences} icon={<AlertTriangle className="size-4" />} tone="red" />
+      </div>
+
+      {reports.length === 0 ? (
+        <Panel title="Incoming Stock Count Reports" icon={<ClipboardCheck className="size-4" />}>
+          <p className="text-sm font-bold text-slate-500">No VRSNB receiver stock-count reports submitted yet.</p>
+        </Panel>
+      ) : (
+        reports.map((report) => (
+          <Panel
+            key={report.id}
+            title={`${report.reportNo} - ${report.status}`}
+            icon={<ClipboardCheck className="size-4" />}
+            action={
+              report.status === "Pending Admin Review" ? (
+                <button
+                  type="button"
+                  disabled={savingId === report.id}
+                  onClick={() => confirmReport(report.id)}
+                  className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
+                >
+                  {savingId === report.id ? "Saving..." : "Confirm & Save"}
+                </button>
+              ) : (
+                <StatusBadge tone="green">Confirmed</StatusBadge>
+              )
+            }
+          >
+            <div className="mb-3 grid gap-2 text-xs font-bold text-slate-500 sm:grid-cols-3">
+              <span>Reported by: <b className="text-slate-900">{report.reportedBy}</b></span>
+              <span>Date: <b className="text-slate-900">{fmtDateTime(report.createdAt)}</b></span>
+              <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
+            </div>
+            <DataTable
+              headers={["Item", "System Qty", "Physical Qty", "Difference"]}
+              rows={report.lines.map((line) => [
+                <span key="i" className="font-black">{line.itemName}</span>,
+                <span key="s" className="font-black tabular-nums">{line.systemQty} {line.unit}</span>,
+                <span key="p" className="font-black tabular-nums">{line.physicalQty} {line.unit}</span>,
+                <StatusBadge key="d" tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
+                  {line.difference}
+                </StatusBadge>,
+              ])}
+              empty="No lines in this report."
+            />
+          </Panel>
+        ))
+      )}
     </div>
   );
 }
