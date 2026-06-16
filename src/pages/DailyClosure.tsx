@@ -231,6 +231,7 @@ export default function DailyClosure() {
     let creditCollected = 0;
     let creditPending = 0;
     let advanceReceived = 0;
+    let advanceBalanceCollected = 0;
     let advanceOrderValue = 0;
     let advanceBalanceOpen = 0;
     let discountTotal = 0;
@@ -261,7 +262,7 @@ export default function DailyClosure() {
         addPayment(payments, order.paymentType, safeNumber(order.total));
         personStats.collected += safeNumber(order.total);
       } else if (order.paymentType === 'advance') {
-        const amount = safeNumber(order.total || order.advanceAmount);
+        const amount = safeNumber(order.advanceAmount ?? order.total);
         advanceReceived += amount;
         advanceOrderValue += safeNumber(order.fullAmount || order.subtotal || order.total);
         advanceBalanceOpen += safeNumber(order.balanceDue);
@@ -277,6 +278,28 @@ export default function DailyClosure() {
         : order.paymentType;
       paymentModeCount[modeLabel] = (paymentModeCount[modeLabel] || 0) + 1;
       billPersonMap.set(person, personStats);
+    }
+
+    const balanceCollections = dayOrders.filter(order =>
+      order.status !== 'cancelled' &&
+      balanceOrderIds.has(order.id)
+    );
+    for (const order of balanceCollections) {
+      const amount = paymentTotalForOrder(order);
+      advanceBalanceCollected += amount;
+      const person = order.billedBy || order.createdBy || 'Unknown';
+      const personStats = billPersonMap.get(person) || { bills: 0, collected: 0, credit: 0 };
+      if (order.paymentBreakdown) {
+        addPayment(payments, 'cash', safeNumber(order.paymentBreakdown.cash));
+        addPayment(payments, 'upi', safeNumber(order.paymentBreakdown.upi));
+        addPayment(payments, 'card', safeNumber(order.paymentBreakdown.card));
+      } else if (order.paymentType === 'cash' || order.paymentType === 'upi' || order.paymentType === 'card') {
+        addPayment(payments, order.paymentType, safeNumber(order.total));
+      }
+      personStats.collected += amount;
+      billPersonMap.set(person, personStats);
+      const modeLabel = order.paymentBreakdown ? 'advance-balance-split' : `advance-balance-${order.paymentType || 'unknown'}`;
+      paymentModeCount[modeLabel] = (paymentModeCount[modeLabel] || 0) + 1;
     }
 
     const collectionTotal = payments.cash + payments.upi + payments.card;
@@ -318,6 +341,7 @@ export default function DailyClosure() {
       creditCollected,
       creditPending,
       advanceReceived,
+      advanceBalanceCollected,
       advanceOrderValue,
       advanceBalanceOpen,
       advanceOpen,
@@ -381,7 +405,7 @@ export default function DailyClosure() {
       credit_billed: closure.creditSales,
       credit_collected: closure.creditCollected,
       advance_collected: closure.advanceReceived,
-      advance_balance_collected: 0,
+      advance_balance_collected: closure.advanceBalanceCollected,
       refunds: 0,
       expenses: cafeCashExpenses,
       discounts: closure.discountTotal,
@@ -533,6 +557,7 @@ export default function DailyClosure() {
           <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(formatCurrency(closure.creditSales))}</div></div>
           <div class="card"><div class="label">Credit Collected</div><div class="value">${safeHtml(formatCurrency(closure.creditCollected))}</div></div>
           <div class="card"><div class="label">Advance Received</div><div class="value">${safeHtml(formatCurrency(closure.advanceReceived))}</div></div>
+          <div class="card"><div class="label">Advance Balance Collected</div><div class="value">${safeHtml(formatCurrency(closure.advanceBalanceCollected))}</div></div>
           <div class="card"><div class="label">Advance Balance</div><div class="value">${safeHtml(formatCurrency(closure.advanceBalanceOpen))}</div></div>
           <div class="card"><div class="label">Average Bill</div><div class="value">${safeHtml(formatCurrency(closure.averageBill))}</div></div>
         </div>
@@ -684,7 +709,7 @@ export default function DailyClosure() {
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <StatCard title="Total sales" value={formatCurrency(closure.totalSales)} icon={<IndianRupee className="size-5" />} helper="Today bills + today credit sales" tone="emerald" />
-          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Cash + UPI + card + credit recovery" tone="blue" />
+          <StatCard title="Total collection" value={formatCurrency(closure.collectionTotal)} icon={<WalletCards className="size-5" />} helper="Cash + UPI + card + advance + credit recovery" tone="blue" />
           <StatCard title="Advance collected" value={formatCurrency(closure.advanceReceived)} icon={<WalletCards className="size-5" />} helper={`${formatCurrency(closure.advanceBalanceOpen)} advance balance pending`} tone="amber" />
           <StatCard title="Credit collected" value={formatCurrency(closure.creditCollected)} icon={<UserCheck className="size-5" />} helper={`${formatCurrency(closure.creditPending)} credit pending`} tone="violet" />
           <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="slate" />
@@ -821,6 +846,7 @@ export default function DailyClosure() {
             </div>
             <div className="grid gap-2 sm:grid-cols-3">
               <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3"><p className="text-[10px] font-black text-amber-700 uppercase">Advance received</p><p className="font-display text-xl font-black">{formatCurrency(closure.advanceReceived)}</p></div>
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-200 p-3"><p className="text-[10px] font-black text-emerald-700 uppercase">Balance collected</p><p className="font-display text-xl font-black">{formatCurrency(closure.advanceBalanceCollected)}</p></div>
               <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3"><p className="text-[10px] font-black text-blue-700 uppercase">Order value</p><p className="font-display text-xl font-black">{formatCurrency(closure.advanceOrderValue)}</p></div>
               <div className="rounded-2xl bg-red-50 border border-red-200 p-3"><p className="text-[10px] font-black text-red-700 uppercase">Balance open</p><p className="font-display text-xl font-black">{formatCurrency(closure.advanceBalanceOpen)}</p></div>
             </div>

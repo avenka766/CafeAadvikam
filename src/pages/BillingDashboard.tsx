@@ -356,20 +356,98 @@ function printCounterSlip(title: string, bodyHtml: string) {
   if (!win) return;
   win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
 <style>
-@page{margin:5mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.25}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#555}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:1px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}table{width:100%;border-collapse:collapse}td,th{padding:2px 1px;vertical-align:top}th{text-align:left}.pill{border:1px solid #000;border-radius:999px;padding:2px 6px;display:inline-block;font-weight:900}.total{font-size:16px;font-weight:900}
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.22}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px}.meta .wide{grid-column:1/-1}.pick{text-align:center;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
 </style></head><body>${bodyHtml}</body></html>`);
   win.document.close();
   setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
 }
 
+function moneyHtml(value: number): string {
+  return `&#8377;${Number(value || 0).toFixed(2)}`;
+}
+
+function billNo(order: Order, prefix = ''): string {
+  return `${prefix}${String(order.orderNumber).padStart(4, '0')}`;
+}
+
+function receiptDate(value?: string) {
+  const d = value ? new Date(value) : new Date();
+  return Number.isNaN(d.getTime())
+    ? { date: '-', time: '-' }
+    : {
+        date: d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '/'),
+        time: d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      };
+}
+
+function cafeHeader(status: string, slipTitle: string): string {
+  return `
+    <div class="paid">${safeHtml(status)}</div>
+    <div class="c">
+      <div class="shop">Cafe Aadvikam</div>
+      <div>#109/1C, Hosur main Road, Berigai,</div>
+      <div>Soolagiri TK, Krishnagiri DT,</div>
+      <div>Tamilnadu 635105</div>
+      <div class="mt">GST No: 33AAZFV1266C1ZZ</div>
+      <div>FSSAI No: 12425011000098</div>
+    </div>
+    <div class="solid"></div>
+    <div class="c b big">${safeHtml(slipTitle)}</div>
+  `;
+}
+
+function taxableAmount(total: number): number {
+  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
+}
+
+function gstParts(total: number) {
+  const taxable = taxableAmount(total);
+  const tax = Math.max(0, Number(total || 0) - taxable);
+  const cgst = Math.round((tax / 2) * 100) / 100;
+  const sgst = Math.round((tax - cgst) * 100) / 100;
+  return { taxable, cgst, sgst };
+}
+
 function orderItemsRows(order: Pick<Order, 'items'>): string {
-  return order.items.map((ci) => `
-    <tr>
-      <td>${safeHtml(ci.menuItem.name)}</td>
-      <td class="c">${ci.quantity}</td>
-      <td class="r">${safeHtml(formatCurrency(ci.menuItem.price * ci.quantity))}</td>
-    </tr>
-  `).join('');
+  return order.items.map((ci) => {
+    const grossLine = ci.menuItem.price * ci.quantity;
+    const netLine = taxableAmount(grossLine);
+    const netRate = ci.quantity > 0 ? netLine / ci.quantity : 0;
+    return `
+      <tr class="item-row">
+        <td>${safeHtml(ci.menuItem.name)}</td>
+        <td class="num">${ci.quantity}</td>
+        <td class="num">${netRate.toFixed(2)}</td>
+        <td class="num">${netLine.toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function receiptItemTable(order: Order): string {
+  return `
+    <table>
+      <thead><tr><th>Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${orderItemsRows(order)}</tbody>
+    </table>
+  `;
+}
+
+function receiptTotals(order: Order, payable: number, extraRows = ''): string {
+  const taxableTotal = order.items.reduce((sum, ci) => sum + taxableAmount(ci.menuItem.price * ci.quantity), 0);
+  const gst = gstParts(order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0));
+  const totalQty = order.items.reduce((sum, ci) => sum + ci.quantity, 0);
+  const parcelCharges = order.parcelCharges ?? 0;
+  return `
+    <div class="solid"></div>
+    <div class="row"><span>Total Qty: ${totalQty}</span><span>Sub Total</span><span>${taxableTotal.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>CGST@2.5 2.5%</span><span>${gst.cgst.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>SGST@2.5 2.5%</span><span>${gst.sgst.toFixed(2)}</span></div>
+    ${parcelCharges > 0 ? `<div class="row"><span></span><span>Parcel</span><span>${parcelCharges.toFixed(2)}</span></div>` : ''}
+    ${extraRows}
+    <div class="solid"></div>
+    <div class="grand"><span>Grand Total</span><span>${moneyHtml(payable)}</span></div>
+  `;
 }
 
 function dateTimeLabel(value?: string): string {
@@ -381,32 +459,28 @@ function dateTimeLabel(value?: string): string {
 
 function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
   const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
-  const parcelCharges = order.parcelCharges ?? 0;
   const breakdownRows = order.paymentBreakdown ? `
-    <div class="row"><span>Cash</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.cash || 0))}</span></div>
-    <div class="row"><span>UPI</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.upi || 0))}</span></div>
-    <div class="row"><span>Card</span><span class="b">${safeHtml(formatCurrency(order.paymentBreakdown.card || 0))}</span></div>
+    <div class="row"><span>Cash</span><span class="b">${moneyHtml(order.paymentBreakdown.cash || 0)}</span></div>
+    <div class="row"><span>UPI</span><span class="b">${moneyHtml(order.paymentBreakdown.upi || 0)}</span></div>
+    <div class="row"><span>Card</span><span class="b">${moneyHtml(order.paymentBreakdown.card || 0)}</span></div>
   ` : '';
+  const dt = receiptDate(order.createdAt);
   printCounterSlip(`Bill ${order.orderNumber}`, `
-    <div class="c">
-      <div class="b" style="font-size:15px">Cafe Aadvikam</div>
-      <div class="muted">${copyType === 'duplicate' ? 'DUPLICATE BILL' : 'ORIGINAL BILL'}</div>
-      <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
+    ${cafeHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
     </div>
     <div class="dash"></div>
-    <div class="row"><span>Date</span><span class="b">${safeHtml(dateTimeLabel(order.createdAt))}</span></div>
-    <div class="row"><span>Type</span><span class="b">${order.orderType === 'dine_in' ? `Table ${order.tableNumber ?? '-'}` : 'Takeaway'}</span></div>
-    <div class="row"><span>Cashier</span><span class="b">${safeHtml(order.billedBy || order.createdBy)}</span></div>
-    ${order.customerName ? `<div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName)}</span></div>` : ''}
-    <div class="dash"></div>
-    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
-    <div class="solid"></div>
-    ${parcelCharges > 0 ? `<div class="row"><span>Parcel</span><span class="b">${safeHtml(formatCurrency(parcelCharges))}</span></div>` : ''}
-    <div class="row total"><span>Total</span><span>${safeHtml(formatCurrency(order.total))}</span></div>
-    <div class="row"><span>Payment</span><span class="b">${safeHtml(paidBy)}</span></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Paid via ${safeHtml(paidBy)}</div>
     ${breakdownRows}
-    <div class="dash"></div>
-    <div class="c b">Thank you, visit again</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
   `);
 }
 
@@ -414,27 +488,28 @@ function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, 
   const advance = order.advanceAmount ?? 0;
   const fullAmount = order.fullAmount ?? order.subtotal;
   const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(order.createdAt);
   printCounterSlip(`Sales Order ${order.orderNumber}`, `
-    <div class="c">
-      <div class="b" style="font-size:15px">Cafe Aadvikam</div>
-      <div class="muted">SALES ORDER SLIP</div>
-      <div class="pill mt">SO #${String(order.orderNumber).padStart(4, '0')}</div>
+    ${cafeHeader(balance <= 0 ? 'PAID' : 'ADVANCE PAID', 'SALES ORDER SLIP')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(mobile || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(orderDate || dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: SO-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(billPerson || order.billedBy || order.createdBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
     </div>
     <div class="dash"></div>
-    <div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName || '-')}</span></div>
-    <div class="row"><span>Mobile</span><span class="b">${safeHtml(mobile)}</span></div>
-    <div class="row"><span>Order Date</span><span class="b">${safeHtml(orderDate || new Date(order.createdAt).toLocaleDateString('en-IN'))}</span></div>
-    <div class="row"><span>Delivery</span><span class="b">${safeHtml(dateTimeLabel(order.deliveryDate))}</span></div>
-    <div class="row"><span>Bill Person</span><span class="b">${safeHtml(billPerson || order.billedBy || order.createdBy)}</span></div>
-    <div class="row"><span>Advance Mode</span><span class="b">${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</span></div>
-    <div class="dash"></div>
-    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Tender Amount</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Change Due</span><span>${balance.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
+    <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
     <div class="solid"></div>
-    <div class="row"><span>Order Value</span><span class="b">${safeHtml(formatCurrency(fullAmount))}</span></div>
-    <div class="row"><span>Advance Paid</span><span class="b">${safeHtml(formatCurrency(advance))}</span></div>
-    <div class="row total"><span>Balance</span><span>${safeHtml(formatCurrency(balance))}</span></div>
-    <div class="dash"></div>
-    <div class="c b">Carry this slip during delivery</div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
   `);
 }
 
@@ -442,26 +517,49 @@ function printAdvanceClosureBill(order: Order, balancePaymentType: string, balan
   const advance = order.advanceAmount ?? 0;
   const fullAmount = order.fullAmount ?? order.subtotal;
   const paidNow = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(new Date().toISOString());
   printCounterSlip(`Advance Closure ${order.orderNumber}`, `
-    <div class="c">
-      <div class="b" style="font-size:15px">Cafe Aadvikam</div>
-      <div class="muted">ADVANCE CLOSURE BILL</div>
-      <div class="pill mt">Bill #${String(order.orderNumber).padStart(4, '0')}</div>
+    ${cafeHeader('PAID', 'ADVANCE FINAL BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(balancePaidBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
     </div>
     <div class="dash"></div>
-    <div class="row"><span>Customer</span><span class="b">${safeHtml(order.customerName || '-')}</span></div>
-    <div class="row"><span>Delivery</span><span class="b">${safeHtml(dateTimeLabel(order.deliveryDate))}</span></div>
-    <div class="row"><span>Billed By</span><span class="b">${safeHtml(balancePaidBy)}</span></div>
-    <div class="dash"></div>
-    <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amount</th></tr></thead><tbody>${orderItemsRows(order)}</tbody></table>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Advance Paid</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Paid Now</span><span>${paidNow.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</div>
     <div class="solid"></div>
-    <div class="row"><span>Full Bill</span><span class="b">${safeHtml(formatCurrency(fullAmount))}</span></div>
-    <div class="row"><span>Advance Paid</span><span class="b">${safeHtml(formatCurrency(advance))}</span></div>
-    <div class="row total"><span>Paid Now</span><span>${safeHtml(formatCurrency(paidNow))}</span></div>
-    <div class="row"><span>Paid Now Mode</span><span class="b">${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</span></div>
-    <div class="row"><span>Balance</span><span class="b">${safeHtml(formatCurrency(0))}</span></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printCreditBill(order: Order, phone: string, dueDate: string) {
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Credit Bill ${order.orderNumber}`, `
+    ${cafeHeader('CREDIT', 'CREDIT BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(phone || '-')}</span></div>
+    <div class="row"><span>Due Date:</span><span>${safeHtml(dueDate || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: CR-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
+    </div>
     <div class="dash"></div>
-    <div class="c b">Paid in full</div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Payment Details: Credit</div>
+    <div>Credit Due: ${moneyHtml(order.total)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
   `);
 }
 
@@ -1494,6 +1592,7 @@ function NewBillPanel() {
           dueDate: creditDueDate,
         });
 
+        if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
         clearCart();
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
@@ -2152,7 +2251,7 @@ export default function BillingDashboard() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
-    startPolling(1); // PERF-01: billing only needs today's orders
+    startPolling(60); // Biller needs older open advance balances until they are fully collected.
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
@@ -2163,8 +2262,10 @@ export default function BillingDashboard() {
 
   // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)
   const advanceOrders = useMemo(() =>
-    todayOrders.filter(o => o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0),
-    [todayOrders]
+    orders
+      .filter(o => o.status !== 'cancelled' && o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [orders]
   );
 
   // Regular orders: exclude OPEN advance orders (pending balance) only.
