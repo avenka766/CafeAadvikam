@@ -14,6 +14,7 @@ import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
+import { supabase } from '@/lib/supabase';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -31,7 +32,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-variance' | 'audit';
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'audit';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -55,6 +56,7 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
   { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
   { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
+  { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
 ];
@@ -195,8 +197,8 @@ function AdminDashboard() {
   const { orders, polling, startPolling, stopPolling } = useOrderStore(
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
-  const { stock, sales, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs } = useBranchOpsStore();
+  const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus } = useBranchOpsStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
   const selectTab = (next: AdminTab) => {
     setActiveTab(next);
@@ -753,6 +755,128 @@ function AdminDashboard() {
     </div>
   );
 
+  const [disputeQtyById, setDisputeQtyById] = useState<Record<string, string>>({});
+  const [savingDisputeId, setSavingDisputeId] = useState('');
+  const [disputeMessage, setDisputeMessage] = useState('');
+  const stockDisputes = ADMIN_BRANCHES.flatMap(branch =>
+    (incoming[branch] || [])
+      .filter(item => item.disputed && !item.confirmed)
+      .map(item => ({ ...item, branch })),
+  ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime());
+
+  useEffect(() => {
+    setDisputeQtyById(prev => {
+      const next = { ...prev };
+      stockDisputes.forEach(item => {
+        if (next[item.id] === undefined) next[item.id] = String(item.quantity);
+      });
+      return next;
+    });
+  }, [stockDisputes]);
+
+  const resolveStockDispute = async (branch: Branch, incomingId: string) => {
+    const item = stockDisputes.find(row => row.branch === branch && row.id === incomingId);
+    if (!item) return;
+    const correctedQty = Number(disputeQtyById[incomingId] ?? item.quantity);
+    if (!Number.isFinite(correctedQty) || correctedQty < 0) {
+      setDisputeMessage('Enter a valid corrected quantity before confirming.');
+      return;
+    }
+    setSavingDisputeId(incomingId);
+    setDisputeMessage('');
+    const { error } = await supabase
+      .from('branch_incoming')
+      .update({
+        quantity: Math.round(correctedQty * 1000) / 1000,
+        disputed: false,
+        dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
+      })
+      .eq('id', incomingId)
+      .eq('branch', branch);
+    if (error) {
+      setDisputeMessage(`Could not update disputed stock: ${error.message}`);
+      setSavingDisputeId('');
+      return;
+    }
+    await fetchBranchData(branch);
+    const confirmError = await confirmIncoming(branch, incomingId);
+    if (confirmError) {
+      setDisputeMessage(confirmError);
+      setSavingDisputeId('');
+      return;
+    }
+    notifications
+      .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
+      .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
+    await fetchBranchData(branch);
+    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setSavingDisputeId('');
+  };
+
+  const StockDisputesTab = (
+    <div className="space-y-5">
+      <Panel
+        title="Incoming Stock Disputes"
+        subtitle="Admin approval is required before disputed incoming stock can sync to branch stock."
+        action={<Badge tone={stockDisputes.length > 0 ? 'amber' : 'green'}>{stockDisputes.length} pending</Badge>}
+      >
+        {disputeMessage && (
+          <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{disputeMessage}</p>
+        )}
+        {stockDisputes.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Branch</th>
+                  <th className="p-3">Item</th>
+                  <th className="p-3 text-right">Dispatched</th>
+                  <th className="p-3">Correct Qty</th>
+                  <th className="p-3">Reason</th>
+                  <th className="p-3">Raised By</th>
+                  <th className="p-3">Date</th>
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {stockDisputes.map(item => (
+                  <tr key={`${item.branch}-${item.id}`} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={item.branch} /></td>
+                    <td className="p-3 font-black">{item.itemName}</td>
+                    <td className="p-3 text-right font-black tabular-nums">{item.quantity} {item.unit}</td>
+                    <td className="p-3">
+                      <input
+                        type="number"
+                        min="0"
+                        step={item.unit === 'kg' ? '0.001' : '1'}
+                        value={disputeQtyById[item.id] ?? String(item.quantity)}
+                        onChange={event => setDisputeQtyById(prev => ({ ...prev, [item.id]: event.target.value }))}
+                        className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
+                      />
+                    </td>
+                    <td className="p-3 text-slate-600">{item.disputeReason || '-'}</td>
+                    <td className="p-3 text-slate-600">{item.disputedBy || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(item.disputedAt || item.receivedAt)}</td>
+                    <td className="p-3 text-right">
+                      <button
+                        type="button"
+                        disabled={savingDisputeId === item.id}
+                        onClick={() => void resolveStockDispute(item.branch, item.id)}
+                        className="rounded-2xl bg-orange-500 px-4 py-2 text-xs font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"
+                      >
+                        {savingDisputeId === item.id ? 'Saving...' : 'Confirm & Sync'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
   // CHANGE 9: Improved DailyClosureTab with presets, better layout, summary totals. CHANGE 14: Removed KPI grid
   const DailyClosureTab = (
     <div className="space-y-5">
@@ -991,6 +1115,7 @@ function AdminDashboard() {
     'daily-closure': DailyClosureTab,
     credits: CreditsTab,
     advance: AdvanceTab,
+    'stock-disputes': StockDisputesTab,
     'stock-variance': StockVarianceTab,
     audit: AuditTab,
   };

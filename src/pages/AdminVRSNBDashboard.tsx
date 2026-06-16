@@ -3207,11 +3207,7 @@ function ReportsTab(props: any) {
     .filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
-  const disputeRows = useBranchOpsStore
-    .getState()
-    .notifications.filter(
-      (n) => n.branch === BRANCH && n.type === "Stock Dispute",
-    );
+  const disputeRows: any[] = [];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-4">
@@ -3466,59 +3462,158 @@ function StockAuditTab({
   );
 }
 
-function NotificationsTab({ userName }: { userName: string }) {
+function IncomingDisputeReview({ userName }: { userName: string }) {
+  const { incoming, fetchBranchData, confirmIncoming } = useBranchStore();
   const { notifications, updateNotificationStatus } = useBranchOpsStore();
-  const rows = notifications.filter((n) => n.branch === BRANCH);
+  const [qtyById, setQtyById] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState("");
+  const [message, setMessage] = useState("");
+  const disputes = (incoming[BRANCH] || []).filter((item) => item.disputed && !item.confirmed);
+
+  useEffect(() => {
+    void fetchBranchData(BRANCH);
+  }, [fetchBranchData]);
+
+  useEffect(() => {
+    setQtyById((prev) => {
+      const next = { ...prev };
+      disputes.forEach((item) => {
+        if (next[item.id] === undefined) next[item.id] = String(item.quantity);
+      });
+      return next;
+    });
+  }, [disputes]);
+
+  const resolveAndConfirm = async (incomingId: string) => {
+    const item = disputes.find((row) => row.id === incomingId);
+    if (!item) return;
+    const correctedQty = Number(qtyById[incomingId] ?? item.quantity);
+    if (!Number.isFinite(correctedQty) || correctedQty < 0) {
+      setMessage("Enter a valid corrected quantity before confirming.");
+      return;
+    }
+    setSavingId(incomingId);
+    setMessage("");
+    const { error } = await supabase
+      .from("branch_incoming")
+      .update({
+        quantity: Math.round(correctedQty * 1000) / 1000,
+        disputed: false,
+        dispute_reason: `${item.disputeReason || "Dispute"} | Resolved by ${userName}`,
+      })
+      .eq("id", incomingId)
+      .eq("branch", BRANCH);
+    if (error) {
+      setMessage(`Could not update disputed stock: ${error.message}`);
+      setSavingId("");
+      return;
+    }
+    await fetchBranchData(BRANCH);
+    const confirmError = await confirmIncoming(BRANCH, incomingId);
+    if (confirmError) {
+      setMessage(confirmError);
+      setSavingId("");
+      return;
+    }
+    notifications
+      .filter((n) => n.branch === BRANCH && n.type === "Stock Dispute" && n.status !== "Resolved" && n.details.includes(item.itemName))
+      .forEach((n) => updateNotificationStatus(n.id, "Resolved", userName));
+    setMessage(`${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setSavingId("");
+    await fetchBranchData(BRANCH);
+  };
+
+  if (disputes.length === 0) return null;
+
   return (
-    <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
+    <Panel title="Incoming Stock Dispute Review" icon={<AlertTriangle className="size-4" />}>
+      {message && <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{message}</p>}
       <DataTable
-        headers={[
-          "Date",
-          "Type",
-          "Title",
-          "Details",
-          "Raised By",
-          "Status",
-          "Action",
-        ]}
-        rows={rows.map((n) => [
-          fmtDateTime(n.createdAt),
-          n.type,
-          n.title,
-          n.details,
-          n.raisedBy,
-          <StatusBadge
-            key="s"
-            tone={
-              n.status === "Resolved"
-                ? "green"
-                : n.status === "Seen"
-                  ? "blue"
-                  : "amber"
-            }
+        headers={["Item", "Dispatched Qty", "Correct Qty", "Reason", "Raised By", "Action"]}
+        rows={disputes.map((item) => [
+          <span key="i" className="font-black">{item.itemName}</span>,
+          <span key="d" className="font-black tabular-nums">{item.quantity} {item.unit}</span>,
+          <input
+            key="q"
+            type="number"
+            min="0"
+            step={item.unit === "kg" ? "0.001" : "1"}
+            value={qtyById[item.id] ?? String(item.quantity)}
+            onChange={(event) => setQtyById((prev) => ({ ...prev, [item.id]: event.target.value }))}
+            className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
+          />,
+          item.disputeReason || "-",
+          item.disputedBy || "-",
+          <button
+            key="a"
+            type="button"
+            disabled={savingId === item.id}
+            onClick={() => void resolveAndConfirm(item.id)}
+            className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
           >
-            {n.status}
-          </StatusBadge>,
-          <div key="a" className="flex gap-2">
-            <button
-              className={cn(btnCls, "bg-blue-50 text-blue-700")}
-              onClick={() => updateNotificationStatus(n.id, "Seen", userName)}
-            >
-              Review
-            </button>
-            <button
-              className={cn(btnCls, "bg-emerald-50 text-emerald-700")}
-              onClick={() =>
-                updateNotificationStatus(n.id, "Resolved", userName)
-              }
-            >
-              Clear / Resolve
-            </button>
-          </div>,
+            {savingId === item.id ? "Saving..." : "Confirm & Sync"}
+          </button>,
         ])}
-        empty="No notifications for VRSNB."
       />
     </Panel>
+  );
+}
+
+function NotificationsTab({ userName }: { userName: string }) {
+  const { notifications, updateNotificationStatus } = useBranchOpsStore();
+  const rows = notifications.filter((n) => n.branch === BRANCH && n.type !== "Stock Dispute");
+  return (
+    <div className="space-y-4">
+      <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
+        <DataTable
+          headers={[
+            "Date",
+            "Type",
+            "Title",
+            "Details",
+            "Raised By",
+            "Status",
+            "Action",
+          ]}
+          rows={rows.map((n) => [
+            fmtDateTime(n.createdAt),
+            n.type,
+            n.title,
+            n.details,
+            n.raisedBy,
+            <StatusBadge
+              key="s"
+              tone={
+                n.status === "Resolved"
+                  ? "green"
+                  : n.status === "Seen"
+                    ? "blue"
+                    : "amber"
+              }
+            >
+              {n.status}
+            </StatusBadge>,
+            <div key="a" className="flex gap-2">
+              <button
+                className={cn(btnCls, "bg-blue-50 text-blue-700")}
+                onClick={() => updateNotificationStatus(n.id, "Seen", userName)}
+              >
+                Review
+              </button>
+              <button
+                className={cn(btnCls, "bg-emerald-50 text-emerald-700")}
+                onClick={() =>
+                  updateNotificationStatus(n.id, "Resolved", userName)
+                }
+              >
+                Clear / Resolve
+              </button>
+            </div>,
+          ])}
+          empty="No notifications for VRSNB."
+        />
+      </Panel>
+    </div>
   );
 }
 

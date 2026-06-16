@@ -3942,6 +3942,103 @@ function StockAuditTab({
   );
 }
 
+function IncomingDisputeReview({ userName }: { userName: string }) {
+  const { incoming, fetchBranchData, confirmIncoming } = useBranchStore();
+  const { notifications, updateNotificationStatus } = useBranchOpsStore();
+  const [qtyById, setQtyById] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState("");
+  const [message, setMessage] = useState("");
+  const disputes = (incoming[BRANCH] || []).filter((item) => item.disputed && !item.confirmed);
+
+  useEffect(() => {
+    void fetchBranchData(BRANCH);
+  }, [fetchBranchData]);
+
+  useEffect(() => {
+    setQtyById((prev) => {
+      const next = { ...prev };
+      disputes.forEach((item) => {
+        if (next[item.id] === undefined) next[item.id] = String(item.quantity);
+      });
+      return next;
+    });
+  }, [disputes]);
+
+  const resolveAndConfirm = async (incomingId: string) => {
+    const item = disputes.find((row) => row.id === incomingId);
+    if (!item) return;
+    const correctedQty = Number(qtyById[incomingId] ?? item.quantity);
+    if (!Number.isFinite(correctedQty) || correctedQty < 0) {
+      setMessage("Enter a valid corrected quantity before confirming.");
+      return;
+    }
+    setSavingId(incomingId);
+    setMessage("");
+    const { error } = await supabase
+      .from("branch_incoming")
+      .update({
+        quantity: Math.round(correctedQty * 1000) / 1000,
+        disputed: false,
+        dispute_reason: `${item.disputeReason || "Dispute"} | Resolved by ${userName}`,
+      })
+      .eq("id", incomingId)
+      .eq("branch", BRANCH);
+    if (error) {
+      setMessage(`Could not update disputed stock: ${error.message}`);
+      setSavingId("");
+      return;
+    }
+    await fetchBranchData(BRANCH);
+    const confirmError = await confirmIncoming(BRANCH, incomingId);
+    if (confirmError) {
+      setMessage(confirmError);
+      setSavingId("");
+      return;
+    }
+    notifications
+      .filter((n) => n.branch === BRANCH && n.type === "Stock Dispute" && n.status !== "Resolved" && n.details.includes(item.itemName))
+      .forEach((n) => updateNotificationStatus(n.id, "Resolved", userName));
+    setMessage(`${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setSavingId("");
+    await fetchBranchData(BRANCH);
+  };
+
+  if (disputes.length === 0) return null;
+
+  return (
+    <Panel title="Incoming Stock Dispute Review" icon={<AlertTriangle className="size-4" />}>
+      {message && <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{message}</p>}
+      <DataTable
+        headers={["Item", "Dispatched Qty", "Correct Qty", "Reason", "Raised By", "Action"]}
+        rows={disputes.map((item) => [
+          <span key="i" className="font-black">{item.itemName}</span>,
+          <span key="d" className="font-black tabular-nums">{item.quantity} {item.unit}</span>,
+          <input
+            key="q"
+            type="number"
+            min="0"
+            step={item.unit === "kg" ? "0.001" : "1"}
+            value={qtyById[item.id] ?? String(item.quantity)}
+            onChange={(event) => setQtyById((prev) => ({ ...prev, [item.id]: event.target.value }))}
+            className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
+          />,
+          item.disputeReason || "-",
+          item.disputedBy || "-",
+          <button
+            key="a"
+            type="button"
+            disabled={savingId === item.id}
+            onClick={() => void resolveAndConfirm(item.id)}
+            className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
+          >
+            {savingId === item.id ? "Saving..." : "Confirm & Sync"}
+          </button>,
+        ])}
+      />
+    </Panel>
+  );
+}
+
 function NotificationsTab({ userName }: { userName: string }) {
   const { notifications, cashierClosures, updateNotificationStatus } = useBranchOpsStore();
   const { creditSales } = useBranchStore();
@@ -4018,6 +4115,7 @@ function NotificationsTab({ userName }: { userName: string }) {
       })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
+    <div className="space-y-4">
     <Panel title="Admin Notifications" icon={<Bell className="size-4" />}>
       <DataTable
         headers={[
@@ -4071,6 +4169,7 @@ function NotificationsTab({ userName }: { userName: string }) {
         empty="No SNB Admin notifications for price changes, complaint replies, credit sales, or cash closure differences."
       />
     </Panel>
+    </div>
   );
 }
 
