@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { SNB_ITEMS } from "@/branch/snbItems";
+import { VRSNB_ITEMS } from "@/branch/vrsnbItems";
 
 // ── Branch config ──────────────────────────────────────────────────────────────
 
@@ -1213,9 +1214,11 @@ function HosurAlertsPanel({ orders, orderItems }: { orders: HosurOrder[]; orderI
 }
 
 function StockCountPanel({
+  branch,
   branchStock,
   userName,
 }: {
+  branch: Extract<Branch, "SNB" | "VRSNB">;
   branchStock: StockItem[];
   userName: string;
 }) {
@@ -1225,7 +1228,8 @@ function StockCountPanel({
 
   const rows = useMemo(() => {
     const stockMap = new Map(branchStock.map((item) => [item.itemName, item]));
-    return SNB_ITEMS.map((item) => {
+    const itemMaster = branch === "VRSNB" ? VRSNB_ITEMS : SNB_ITEMS;
+    return itemMaster.map((item) => {
       const stockItem = stockMap.get(item.name);
       const unit = stockItem?.unit ?? (item.uom === "Kgs" || item.uom === "kg" ? "kg" : "pcs");
       return {
@@ -1234,7 +1238,7 @@ function StockCountPanel({
         systemQty: Number(stockItem?.quantity ?? 0),
       };
     });
-  }, [branchStock]);
+  }, [branch, branchStock]);
 
   useEffect(() => {
     setCounts((prev) => {
@@ -1253,7 +1257,7 @@ function StockCountPanel({
 
   const submit = () => {
     const report = submitStockCountReport({
-      branch: "SNB",
+      branch,
       reportedBy: userName,
       lines: rows.map((row) => {
         const physicalQty = Math.max(0, Number(counts[row.itemName] || 0));
@@ -1266,7 +1270,7 @@ function StockCountPanel({
         };
       }),
     });
-    setNotice(`${report.reportNo} sent to SNB Admin for confirmation.`);
+    setNotice(`${report.reportNo} sent to ${branch} Admin for confirmation.`);
   };
 
   return (
@@ -1289,7 +1293,7 @@ function StockCountPanel({
             onClick={submit}
             className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200"
           >
-            Send to SNB Admin
+            Send to {branch} Admin
           </button>
         </div>
         {notice && (
@@ -1514,17 +1518,17 @@ export default function OrderReceiverDashboard() {
       : tab === "notifications"
         ? "Shortage, excess and remainder alerts from packing are shown here."
         : tab === "stock"
-          ? "Confirm incoming stock, update stock manually and maintain thresholds for SNB."
+          ? `Confirm incoming stock, update stock manually and maintain thresholds for ${branch}.`
           : tab === "po"
-            ? "Create and track SNB purchase orders from the receiver dashboard."
+            ? `Create and track ${branch} purchase orders from the receiver dashboard.`
             : tab === "stock-count"
-              ? "Record the physical end-of-day count and send differences to SNB Admin."
+              ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
               : "Create today’s bakery requirement without the old history/search clutter.";
   const receiverTabs: Array<{ key: TabKey; label: string }> = [
     { key: "order", label: "Order" },
     { key: "placed", label: "Placed Orders" },
     { key: "notifications", label: "Notifications" },
-    ...(branch === "SNB"
+    ...(branch === "SNB" || branch === "VRSNB"
       ? ([
           { key: "stock", label: "Stock / Incoming" },
           { key: "po", label: "Purchase Order" },
@@ -1763,21 +1767,21 @@ export default function OrderReceiverDashboard() {
           )
         )}
 
-        {tab === "stock" && branch === "SNB" && (
+        {tab === "stock" && (branch === "SNB" || branch === "VRSNB") && (
           <StockTab
-            branch="SNB"
-            branchStock={stock.SNB}
-            branchIncoming={incoming.SNB}
-            branchThresholds={thresholds.SNB}
+            branch={branch}
+            branchStock={stock[branch]}
+            branchIncoming={incoming[branch]}
+            branchThresholds={thresholds[branch]}
             loading={branchLoading}
             stockMismatches={stockMismatches}
           />
         )}
 
-        {tab === "po" && branch === "SNB" && <PurchaseOrderTab branchScope="SNB" />}
+        {tab === "po" && (branch === "SNB" || branch === "VRSNB") && <PurchaseOrderTab branchScope={branch} />}
 
-        {tab === "stock-count" && branch === "SNB" && (
-          <StockCountPanel branchStock={stock.SNB} userName={userName} />
+        {tab === "stock-count" && (branch === "SNB" || branch === "VRSNB") && (
+          <StockCountPanel branch={branch} branchStock={stock[branch]} userName={userName} />
         )}
       </div>
     </div>

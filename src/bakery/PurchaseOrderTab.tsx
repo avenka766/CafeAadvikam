@@ -9,6 +9,8 @@ import { useSupplierStore } from './supplierStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 
+type ReceiverBranchScope = 'SNB' | 'VRSNB';
+
 const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.ElementType }> = {
   draft:    { label: 'Draft',    color: 'bg-muted text-muted-foreground border-border',          icon: ShoppingCart },
   sent:     { label: 'Sent',     color: 'bg-blue-50 text-blue-700 border-blue-200',              icon: Send         },
@@ -111,7 +113,7 @@ function POCard({ po, onStatusChange, onDelete }: {
   );
 }
 
-function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: 'SNB' }) {
+function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: ReceiverBranchScope }) {
   const { items: stockItems } = useStoreStockStore();
   const { suppliers }         = useSupplierStore();
   const { currentUser }       = useAuthStore();
@@ -207,7 +209,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   );
 }
 
-export default function PurchaseOrderTab({ branchScope }: { branchScope?: 'SNB' } = {}) {
+export default function PurchaseOrderTab({ branchScope }: { branchScope?: ReceiverBranchScope } = {}) {
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
