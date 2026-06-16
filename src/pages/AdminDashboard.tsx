@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
@@ -175,9 +176,12 @@ const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 function AdminDashboard() {
   const { currentUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
-  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const requestedTab = searchParams.get('tab') as AdminTab | null;
+  const initialTab = requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
+  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [fromDate, setFromDate] = useState(lastWeekInput());
   const [toDate, setToDate] = useState(todayInput());
@@ -194,9 +198,18 @@ function AdminDashboard() {
   const { stock, sales, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs } = useBranchOpsStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
+  const selectTab = (next: AdminTab) => {
+    setActiveTab(next);
+    setSearchParams(next === 'overview' ? {} : { tab: next });
+  };
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  useEffect(() => {
+    if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab, activeTab]);
 
   const rangeLabel = fromDate === toDate
     ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -453,7 +466,7 @@ function AdminDashboard() {
           const Icon = item.icon;
           const disabled = item.adminOnly && !isAdmin;
           return (
-            <button key={item.id} type="button" disabled={disabled} onClick={() => { setActiveTab(item.id); setMobileNavOpen(false); }}
+            <button key={item.id} type="button" disabled={disabled} onClick={() => { selectTab(item.id); setMobileNavOpen(false); }}
               className={cn('w-full rounded-2xl px-3 py-3 text-left transition', activeTab === item.id ? 'bg-slate-950 text-white shadow-lg shadow-slate-200' : 'text-slate-600 hover:bg-slate-100', disabled && 'cursor-not-allowed opacity-45')}>
               <div className="flex items-center gap-3">
                 <div className={cn('grid size-10 place-items-center rounded-xl', activeTab === item.id ? 'bg-white/15' : 'bg-slate-100 text-slate-600')}>

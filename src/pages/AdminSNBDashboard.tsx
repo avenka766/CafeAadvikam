@@ -7,6 +7,7 @@ import {
   type ElementType,
   type ReactNode,
 } from "react";
+import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { supabase } from "@/lib/supabase";
@@ -433,11 +434,13 @@ function PaymentSplitCard({
 
 export default function AdminSNBDashboard() {
   const { currentUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
     bills,
     returns,
     purchases,
+    purchasePayments,
     cashMovements,
     bankDeposits,
     notifications,
@@ -445,7 +448,9 @@ export default function AdminSNBDashboard() {
   } = useBranchOpsStore();
 
   const today = dateInput();
-  const [tab, setTab] = useState<TabId>("overview");
+  const requestedTab = searchParams.get("tab") as TabId | null;
+  const initialTab = requestedTab && TABS.some((item) => item.id === requestedTab) ? requestedTab : "overview";
+  const [tab, setTab] = useState<TabId>(initialTab);
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -458,6 +463,16 @@ export default function AdminSNBDashboard() {
     currentUser?.displayName || currentUser?.username || "SNB Admin";
   const role = currentUser?.role || "";
   const canManage = ["admin_snb", "admin", "owner"].includes(role);
+  const selectTab = (next: TabId) => {
+    setTab(next);
+    setSearchParams(next === "overview" ? {} : { tab: next });
+  };
+
+  useEffect(() => {
+    if (requestedTab && TABS.some((item) => item.id === requestedTab) && requestedTab !== tab) {
+      setTab(requestedTab);
+    }
+  }, [requestedTab, tab]);
 
   useEffect(() => {
     fetchBranchData(BRANCH);
@@ -986,7 +1001,7 @@ export default function AdminSNBDashboard() {
                 <button
                   key={item.id}
                   onClick={() => {
-                    setTab(item.id);
+                    selectTab(item.id);
                     setMobileOpen(false);
                   }}
                   className={cn(

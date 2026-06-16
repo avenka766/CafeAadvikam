@@ -13,6 +13,7 @@
 //   • Attendance tab: advance-to-salary ratio per employee + attendance rate
 
 import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
@@ -1952,7 +1953,21 @@ type OwnerDashboardTab =
   | 'waste';
 
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<OwnerDashboardTab>('branches');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
+  const ownerTabIds: OwnerDashboardTab[] = ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste'];
+  const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'branches';
+  const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
+  const selectTab = (next: OwnerDashboardTab) => {
+    setTab(next);
+    setSearchParams(next === 'branches' ? {} : { tab: next });
+  };
+
+  useEffect(() => {
+    if (requestedTab && ownerTabIds.includes(requestedTab) && requestedTab !== tab) {
+      setTab(requestedTab);
+    }
+  }, [requestedTab, tab]);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
@@ -1979,7 +1994,7 @@ export default function OwnerDashboard() {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setTab(t.id)}
+                onClick={() => selectTab(t.id)}
                 className={cn(tab === t.id && 'is-active')}
               >
                 {t.icon}

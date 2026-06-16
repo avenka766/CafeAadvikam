@@ -7,6 +7,7 @@ import {
   type ElementType,
   type ReactNode,
 } from "react";
+import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { supabase } from "@/lib/supabase";
@@ -86,16 +87,9 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
-  | "po"
-  | "invoices"
-  | "payments"
-  | "bank"
-  | "salespersons"
-  | "salesperson-report"
   | "closure"
   | "reports"
-  | "notifications"
-  | "audit";
+  | "notifications";
 
 const TABS: Array<{
   id: TabId;
@@ -106,32 +100,6 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
-  { id: "po", label: "Purchase Orders", icon: ClipboardCheck, adminOnly: true },
-  {
-    id: "invoices",
-    label: "Purchase Invoices",
-    icon: ShoppingCart,
-    adminOnly: true,
-  },
-  {
-    id: "payments",
-    label: "Supplier Payments",
-    icon: WalletCards,
-    adminOnly: true,
-  },
-  { id: "bank", label: "Bank Deposits", icon: Landmark, adminOnly: true },
-  {
-    id: "salespersons",
-    label: "Salesperson Management",
-    icon: UserRound,
-    adminOnly: true,
-  },
-  {
-    id: "salesperson-report",
-    label: "Salesperson Report",
-    icon: BarChart3,
-    adminOnly: true,
-  },
   {
     id: "closure",
     label: "Daily Closure Report",
@@ -150,7 +118,6 @@ const TABS: Array<{
     icon: Bell,
     adminOnly: true,
   },
-  { id: "audit", label: "Audit Logs", icon: ShieldCheck, adminOnly: true },
 ];
 
 function dateInput(d = new Date()) {
@@ -413,6 +380,7 @@ function PaymentSplitCard({
 
 export default function AdminVRSNBDashboard() {
   const { currentUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
     bills,
@@ -441,7 +409,9 @@ export default function AdminVRSNBDashboard() {
   } = useBranchOpsStore();
 
   const today = dateInput();
-  const [tab, setTab] = useState<TabId>("overview");
+  const requestedTab = searchParams.get("tab") as TabId | null;
+  const initialTab = requestedTab && TABS.some((item) => item.id === requestedTab) ? requestedTab : "overview";
+  const [tab, setTab] = useState<TabId>(initialTab);
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -454,6 +424,16 @@ export default function AdminVRSNBDashboard() {
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
   const role = currentUser?.role || "";
   const canManage = ["admin_vrsnb", "admin", "owner"].includes(role);
+  const selectTab = (next: TabId) => {
+    setTab(next);
+    setSearchParams(next === "overview" ? {} : { tab: next });
+  };
+
+  useEffect(() => {
+    if (requestedTab && TABS.some((item) => item.id === requestedTab) && requestedTab !== tab) {
+      setTab(requestedTab);
+    }
+  }, [requestedTab, tab]);
 
   useEffect(() => {
     fetchBranchData(BRANCH);
@@ -960,18 +940,14 @@ export default function AdminVRSNBDashboard() {
               const count =
                 item.id === "stock"
                   ? lowStockRows.length
-                  : item.id === "invoices"
-                    ? pendingSync
-                    : item.id === "po"
-                      ? pendingPO
-                      : item.id === "notifications"
-                        ? unreadNotifications
-                        : 0;
+                  : item.id === "notifications"
+                    ? unreadNotifications
+                    : 0;
               return (
                 <button
                   key={item.id}
                   onClick={() => {
-                    setTab(item.id);
+                    selectTab(item.id);
                     setMobileOpen(false);
                   }}
                   className={cn(
@@ -1076,38 +1052,11 @@ export default function AdminVRSNBDashboard() {
               {...commonProps}
             />
           )}
-          {tab === "po" && <PurchaseOrdersTab userName={userName} />}
-          {tab === "invoices" && (
-            <PurchaseInvoicesTab
-              userName={userName}
-              branchStock={branchStock}
-              manualUpdateStock={manualUpdateStock}
-              fetchBranchData={fetchBranchData}
-              setNotice={setNotice}
-            />
-          )}
-          {tab === "payments" && <SupplierPaymentsTab userName={userName} />}
-          {tab === "bank" && (
-            <BankDepositsTab
-              userName={userName}
-              cashBalance={cashBalance}
-              upiBalance={upiBalance}
-              cardBalance={cardBalance}
-              bankBalance={bankBalance}
-            />
-          )}
-          {tab === "salespersons" && (
-            <SalespersonManagementTab userName={userName} />
-          )}
-          {tab === "salesperson-report" && (
-            <SalespersonReportTab {...commonProps} />
-          )}
           {tab === "closure" && (
             <DailyClosureTab userName={userName} {...commonProps} />
           )}
           {tab === "reports" && <ReportsTab {...commonProps} />}
           {tab === "notifications" && <NotificationsTab userName={userName} />}
-          {tab === "audit" && <AuditTab />}
         </main>
       </div>
     </div>
