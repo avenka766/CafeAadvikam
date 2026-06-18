@@ -588,6 +588,10 @@
     }
   }
 
+  .workspace-no-sidebar .workspace-main-shell {
+    margin-left: 0 !important;
+  }
+
   .workspace-hero {
     display: flex;
     justify-content: space-between;
