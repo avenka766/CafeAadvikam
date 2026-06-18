@@ -10,6 +10,7 @@ interface BakeryState {
   // preventing the StoreDashboard list from unmounting and resetting card state.
   fetchOrders: (silent?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
+  acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
@@ -84,6 +85,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
+  acceptOrder: async (orderId) => {
+    const order = get().orders.find(o => o.id === orderId);
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update({ status: 'processing' })
+      .eq('id', orderId);
+    if (error) throw error;
+    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'processing' } : o) }));
+    if (order?.notes) {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'store', acceptedBy);
+    }
+  },
+
   updateExpectedOutput: async (orderId, qty) => {
     const { error } = await supabase
       .from('bakery_orders')
@@ -105,6 +124,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
+    if (order?.notes) {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'baking', acceptedBy);
+    }
     if (order?.targetBranch === 'VRSNB') {
       const { useAuthStore } = await import('@/stores/authStore');
       const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
@@ -138,6 +165,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #16 FIX: pushBakerShortage was defined in notificationStore but never called.
     // Compare each prepared qty against the requested qty and notify admin of any shortfall.
     const order = get().orders.find(o => o.id === orderId);
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (order?.notes) {
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const by = user?.displayName || user?.username || 'Baker';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'packing', by);
+    }
     if (order) {
       // FIX B1+B5: compare in the receiver's original unit (pcs or kg).
       // item.quantity is always in kg (even for pcs items after conversion).
@@ -222,7 +257,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // We need order items for weightGrams/dispatchUnit — fetch lazily; reused below too.
     const { data: fullOrderData } = await supabase
       .from('bakery_orders')
-      .select('items, order_number')
+      .select('items, order_number, notes, target_branch')
       .eq('id', orderId)
       .single();
     const orderItems = (fullOrderData?.items as import('./types').BakeryOrderItem[]) ?? [];
@@ -382,6 +417,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         detail:    `Order #${dispatchedOrder.orderNumber} → ${entry.branch}: ${entry.quantity} ${entry.unit ?? 'kg'} of ${entry.itemName}`,
         branch:    entry.branch,
       });
+    }
+    if (newStatus === 'dispatched' && fullOrderData?.notes) {
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const by = user?.displayName || user?.username || 'Packing';
+      const orderNo = (fullOrderData.notes as string).split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'dispatched', by);
     }
   },
 

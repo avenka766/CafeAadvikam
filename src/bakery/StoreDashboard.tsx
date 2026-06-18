@@ -319,18 +319,33 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { sendToBaker } = useBakeryStore();
+  const { sendToBaker, acceptOrder } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const currentUser = useAuthStore(s => s.currentUser);
 
-  const [expanded,  setExpanded]  = useState(true);
-  const [sending,   setSending]   = useState(false);
-  const [sent,      setSent]      = useState(order.status !== 'pending');
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [expanded,   setExpanded]   = useState(true);
+  const [accepting,  setAccepting]  = useState(false);
+  const [accepted,   setAccepted]   = useState(order.status !== 'pending');
+  const [sending,    setSending]    = useState(false);
+  const [sent,       setSent]       = useState(order.status !== 'pending' && order.status !== 'processing');
+  const [sendError,  setSendError]  = useState<string | null>(null);
 
   useEffect(() => {
-    setSent(order.status !== 'pending');
+    setAccepted(order.status !== 'pending');
+    setSent(order.status !== 'pending' && order.status !== 'processing');
   }, [order.status]);
+
+  const handleAccept = async () => {
+    setAccepting(true); setSendError(null);
+    try {
+      await acceptOrder(order.id);
+      setAccepted(true);
+    } catch {
+      setSendError('Failed to accept — please try again.');
+    } finally {
+      setAccepting(false);
+    }
+  };
 
   // Collect all materials across items for stock deduction on send
   const allMats = useMemo(() => {
@@ -407,6 +422,11 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 Sent to Baker ✓
               </span>
             )}
+            {accepted && !sent && (
+              <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                Accepted at Store
+              </span>
+            )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
             {order.items.map(i => i.itemName).join(' · ')}
@@ -424,17 +444,26 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
 
-          <button onClick={handleSendToBaker} disabled={sending || sent}
-            className={cn(
-              'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
-              sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
-            )}>
-            {sending
-              ? <Loader2 className="size-4 animate-spin" />
-              : sent
-              ? <><CheckCircle2 className="size-4" /> Sent to Baker</>
-              : <><ArrowRight className="size-4" /> Send to Baker</>}
-          </button>
+          {!accepted ? (
+            <button onClick={handleAccept} disabled={accepting}
+              className="w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1 cafe-gradient text-primary-foreground shadow-md">
+              {accepting
+                ? <Loader2 className="size-4 animate-spin" />
+                : <><CheckCircle2 className="size-4" /> Accept Order</>}
+            </button>
+          ) : (
+            <button onClick={handleSendToBaker} disabled={sending || sent}
+              className={cn(
+                'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
+                sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
+              )}>
+              {sending
+                ? <Loader2 className="size-4 animate-spin" />
+                : sent
+                ? <><CheckCircle2 className="size-4" /> Sent to Baker</>
+                : <><ArrowRight className="size-4" /> Send to Baker</>}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -948,7 +977,7 @@ function OrdersTab() {
       unsubStock();
     };
   }, [fetchOrders, loadStock, subscribeOrders, subscribeStock]);
-  const pending    = orders.filter(o => o.status === 'pending');
+  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
   return (
     <>
@@ -1454,7 +1483,7 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const pending    = orders.filter(o => o.status === 'pending');
+  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
   const sentOrders = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
   const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
