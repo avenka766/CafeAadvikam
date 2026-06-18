@@ -752,8 +752,8 @@ export default function HosurDashboard() {
   const isAdminRef = useRef(isAdmin);
   useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError('');
     try {
       const [
@@ -838,8 +838,8 @@ export default function HosurDashboard() {
   useEffect(() => { refreshRef.current = refresh; }, [refresh]);
 
   useEffect(() => {
-    void refreshRef.current();
-    const id = window.setInterval(() => void refreshRef.current(), 45_000);
+    void refreshRef.current(false);
+    const id = window.setInterval(() => void refreshRef.current(true), 45_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -892,20 +892,20 @@ export default function HosurDashboard() {
 
   const filteredTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
-  const withBusy = async (fn: () => Promise<void>, successMessage?: string) => {
+  const withBusy = useCallback(async (fn: () => Promise<void>, successMessage?: string) => {
     setBusy(true);
     setError('');
     setSuccess('');
     try {
       await fn();
       if (successMessage) setSuccess(successMessage);
-      await refresh();
+      await refreshRef.current(true);
     } catch (err: any) {
       setError(err?.message ?? 'Action failed. Please try again.');
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
 
   const sendWhatsapp = async ({
     shopId,
@@ -1208,7 +1208,7 @@ export default function HosurDashboard() {
     <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
       <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="flex items-center justify-end gap-3 px-4 py-3 md:px-5 xl:px-6">
-          <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
+          <button className={softButton} disabled={loading || busy} onClick={() => void refresh(false)}>
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             <span className="hidden sm:inline">Refresh</span>
           </button>
@@ -1435,13 +1435,15 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   return (
     <div className="space-y-4">
       <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <div className="space-y-4">
-          <Card className="space-y-3">
+      <div className="grid gap-4 xl:grid-cols-[360px_1fr] xl:items-start">
+
+        {/* LEFT: Add/Edit form + scrollable shop list */}
+        <div className="flex flex-col gap-4 xl:sticky xl:top-[140px] xl:max-h-[calc(100dvh-160px)]">
+          <Card className="shrink-0 space-y-3">
             <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
-            <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
+            <Field label="Address"><textarea className={cn(inputClass, 'min-h-20 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
             <Field label="Default Discount % (optional)">
               <input className={inputClass} type="number" min="0" max="100" value={form.discountPercent} onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} placeholder="e.g. 10 for 10% off" />
             </Field>
@@ -1452,54 +1454,60 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
               {editingShopId && <button className={softButton} onClick={cancelEdit}>Cancel</button>}
             </div>
           </Card>
-          <Card className="space-y-2">
-            <h3 className="font-black">Shops</h3>
-            {shops.length === 0
-              ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here." />
-              : shops.map((shop) => (
-                <div key={shop.id} className={cn('rounded-2xl border p-3 transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border')}>
-                  <button className="w-full text-left" onClick={() => setSelectedShopId(shop.id)}>
-                    <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
-                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
-                    {shop.discountPercent > 0 && <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied</p>}
-                  </button>
-                  <div className="mt-2 flex gap-2">
-                    <button className={softButton} onClick={() => startEditShop(shop)}>Edit</button>
-                    <button className="rounded-2xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 hover:bg-red-100" disabled={busy} onClick={() => withBusy(() => deleteShop(shop.id), 'Shop deactivated.')}>Delete</button>
+
+          {/* Scrollable shop list */}
+          <Card className="flex min-h-0 flex-col space-y-2 overflow-hidden">
+            <h3 className="shrink-0 font-black">Shops ({shops.length})</h3>
+            <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1">
+              {shops.length === 0
+                ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details above." />
+                : shops.map((shop) => (
+                  <div key={shop.id} className={cn('rounded-2xl border p-3 transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border')}>
+                    <button className="w-full text-left" onClick={() => setSelectedShopId(shop.id)}>
+                      <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
+                      {shop.discountPercent > 0 && <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied</p>}
+                    </button>
+                    <div className="mt-2 flex gap-2">
+                      <button className={softButton} onClick={() => startEditShop(shop)}>Edit</button>
+                      <button className="rounded-2xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 hover:bg-red-100" disabled={busy} onClick={() => withBusy(() => deleteShop(shop.id), 'Shop deactivated.')}>Delete</button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+            </div>
           </Card>
         </div>
-        <Card className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+
+        {/* RIGHT: Sticky price list panel with its own scroll */}
+        <Card className="flex flex-col gap-4 xl:sticky xl:top-[140px] xl:max-h-[calc(100dvh-160px)]">
+          <div className="shrink-0 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div><h3 className="font-black">Shop-wise Item Price List</h3><p className="text-sm text-muted-foreground">{selectedShop ? `Editing prices for ${selectedShop.shopName}` : 'Select a shop to edit prices.'}</p></div>
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
-            </div>
+            <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
           </div>
-          <div className="grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
+          <div className="shrink-0 grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
             <input className={inputClass} value={customItem.itemName} onChange={(e) => setCustomItem((prev) => ({ ...prev, itemName: e.target.value }))} placeholder="Add custom item name" />
             <select className={inputClass} value={customItem.unit} onChange={(e) => setCustomItem((prev) => ({ ...prev, unit: e.target.value as 'pcs' | 'kg' }))}><option value="pcs">pcs</option><option value="kg">kg</option></select>
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
-          {shopPriceItems.length === 0
-            ? <EmptyState icon={<Receipt className="size-6" />} title="No items in this shop's price list" subtitle="Use 'Add Item' above to add items for this shop." />
-            : (
-              <div className="overflow-x-auto rounded-2xl border">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
-                  <tbody className="divide-y">
-                    {shopPriceItems.map((item) => {
-                      const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
-                      return <tr key={item.name} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}</td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>Update</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed.')}>Delete</button></div></td></tr>;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {shopPriceItems.length === 0
+              ? <EmptyState icon={<Receipt className="size-6" />} title="No items in this shop's price list" subtitle="Use 'Add Item' above to add items for this shop." />
+              : (
+                <div className="overflow-x-auto rounded-2xl border">
+                  <table className="min-w-full text-sm">
+                    <thead className="sticky top-0 bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground z-10"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+                    <tbody className="divide-y">
+                      {shopPriceItems.map((item) => {
+                        const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
+                        return <tr key={item.name} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}</td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>Update</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed.')}>Delete</button></div></td></tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+          </div>
         </Card>
       </div>
     </div>
