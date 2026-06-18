@@ -20,6 +20,7 @@ import {
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
 import { VRSNB_ITEMS } from "@/branch/vrsnbItems";
+import { printHtml } from "@/branch/printUtils";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -56,8 +57,10 @@ import {
   Landmark,
   LayoutDashboard,
   Menu,
+  MessageSquareWarning,
   Package,
   PackageCheck,
+  Plus,
   Printer,
   Receipt,
   RefreshCcw,
@@ -67,6 +70,7 @@ import {
   ShoppingCart,
   Smartphone,
   Store,
+  Trash2,
   Truck,
   UserRound,
   WalletCards,
@@ -94,7 +98,13 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "expenses"
+  | "complaints"
+  | "waste"
+  | "quotations"
   | "credit"
+  | "cashier-report"
+  | "cashier-closure"
   | "closure"
   | "reports"
   | "audit-stock"
@@ -109,12 +119,18 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "expenses", label: "Expenses", icon: WalletCards, adminOnly: true },
+  { id: "complaints", label: "Complaints", icon: Bell, adminOnly: true },
+  { id: "waste", label: "Waste Logs", icon: Trash2, adminOnly: true },
+  { id: "quotations", label: "Quotations", icon: FileSpreadsheet, adminOnly: true },
   {
     id: "credit",
     label: "Credit",
     icon: CreditCard,
     adminOnly: true,
   },
+  { id: "cashier-report", label: "Cashier Report", icon: BarChart3, adminOnly: true },
+  { id: "cashier-closure", label: "Cashier Closure", icon: WalletCards, adminOnly: true },
   {
     id: "closure",
     label: "Daily Closure Report",
@@ -135,7 +151,7 @@ const TABS: Array<{
   },
   {
     id: "notifications",
-    label: "Admin Notifications",
+    label: "Notifications & Alerts",
     icon: Bell,
     adminOnly: true,
   },
@@ -199,17 +215,10 @@ function dedupeStockRows<T extends { itemName: string; quantity?: number; minThr
   const map = new Map<string, T>();
   rows.forEach((row) => {
     const key = normal(row.itemName);
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, row);
-      return;
-    }
-    map.set(key, {
-      ...existing,
-      ...row,
-      quantity: Number(existing.quantity || 0) + Number(row.quantity || 0),
-      minThreshold: existing.minThreshold ?? row.minThreshold,
-    } as T);
+    // Duplicate rows for the same item are a data sync artifact, not separate
+    // stock batches — keep the latest record instead of summing quantities
+    // (summing was doubling stock numbers whenever an item appeared twice).
+    map.set(key, row);
   });
   return Array.from(map.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
 }
@@ -415,6 +424,7 @@ export default function AdminVRSNBDashboard() {
     cashierClosures,
     notifications,
     auditLogs,
+    expenses,
     addSalesperson,
     updateSalesperson,
     removeSalesperson,
@@ -564,6 +574,8 @@ export default function AdminVRSNBDashboard() {
   const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
   const ledgerCreditBillAmount = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.credit_billed), 0);
   const ledgerBillsCount = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.bill_count), 0);
+  const ledgerAdvanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_collected), 0);
+  const ledgerAdvanceBalanceCollected = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.advance_balance_collected), 0);
   const grossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
   const netSales = Math.max(0, grossSales - returnAmount);
   const billsCount = hasLedgerRows ? ledgerBillsCount : rawBillsCount;
@@ -572,6 +584,36 @@ export default function AdminVRSNBDashboard() {
   const finalUpiSales = hasLedgerRows ? ledgerUpiSales : upiSales;
   const finalCardSales = hasLedgerRows ? ledgerCardSales : cardSales;
   const finalCreditBillAmount = hasLedgerRows ? ledgerCreditBillAmount : creditBillAmount;
+  const advanceCollectionsFallback = cashMovements
+    .filter(
+      (m) =>
+        m.branch === BRANCH &&
+        inRange(m.dateTime, fromDate, toDate) &&
+        m.direction === "in" &&
+        /advance/i.test(m.purpose || ""),
+    )
+    .reduce((sum, m) => sum + m.amount, 0);
+  const advanceCollected = hasLedgerRows ? ledgerAdvanceCollected : advanceCollectionsFallback;
+  const advanceBalanceCollected = hasLedgerRows ? ledgerAdvanceBalanceCollected : 0;
+  const transparentGrossSales = hasLedgerRows
+    ? ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0)
+    : rawGrossSales;
+  const salesBreakdown = {
+    billSales: transparentGrossSales,
+    advanceCollected,
+    advanceBalanceCollected,
+    creditBilled: finalCreditBillAmount,
+    creditCollected: 0,
+    returns: returnAmount,
+    expenses: 0,
+    netSales,
+    totalCollections:
+      finalCashSales +
+      finalUpiSales +
+      finalCardSales +
+      advanceCollected +
+      advanceBalanceCollected,
+  };
 
   const lowStockRows = useMemo(() => {
     const query = lowSearch.trim().toLowerCase();
@@ -601,18 +643,29 @@ export default function AdminVRSNBDashboard() {
         (sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount),
         0,
       );
-  const bankBalance =
+  // Money deposited to the owner's bank account has left the branch's
+  // control entirely — it is NOT cash the admin still holds. This total is
+  // for record-keeping only and must never be added back into "available"
+  // funds at the branch.
+  const depositedToOwner =
     bankDeposits
       .filter((d) => d.branch === BRANCH)
       .reduce((sum, d) => sum + d.amount, 0) + balanceByMode("bank");
+  const bankBalance = depositedToOwner;
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
+  const expenseAmount = expenses
+    .filter((e) => e.branch === BRANCH && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
+    .reduce((sum, e) => sum + e.amount, 0);
 
   const scopedCredits = [...(dbCreditSales.Cafe || []), ...(dbCreditSales[BRANCH] || [])];
   const scopedCreditPayments = [...(dbCreditPayments.Cafe || []), ...(dbCreditPayments[BRANCH] || [])];
   const pendingCredit = scopedCredits.filter((c) => c.status !== "settled").reduce((sum, c) => sum + c.creditAmount, 0);
-  const clearedCredit = scopedCreditPayments.filter((p) => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + p.amount, 0);
+  const creditPaymentsInRange = scopedCreditPayments.filter((p) => inRange(p.createdAt, fromDate, toDate));
+  const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
+  salesBreakdown.creditCollected = clearedCredit;
+  salesBreakdown.expenses = expenseAmount;
   const purchasePaid = purchasePayments
     .filter(
       (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
@@ -821,16 +874,8 @@ export default function AdminVRSNBDashboard() {
     { name: "Credit", value: finalCreditBillAmount, color: CHART_COLORS[0] },
   ].filter((row) => row.value > 0);
 
-  const hiddenVrsnbTabs: TabId[] = [
-    "po",
-    "invoices",
-    "payments",
-    "bank",
-    "salespersons",
-    "salesperson-report",
-  ];
   const scopedTabs = TABS.filter(
-    (item) => !hiddenVrsnbTabs.includes(item.id) && (!item.adminOnly || canManage),
+    (item) => !item.adminOnly || canManage,
   );
   const unreadNotifications = notifications.filter(
     (n) => n.branch === BRANCH && n.status === "Unread",
@@ -874,8 +919,13 @@ export default function AdminVRSNBDashboard() {
     upiBalance,
     cardBalance,
     bankBalance,
+    expenseAmount,
+    advanceCollected,
+    advanceBalanceCollected,
+    salesBreakdown,
     pendingCredit,
     clearedCredit,
+    creditPaymentsInRange,
     purchasePaid,
     depositAmount,
     movementInRange,
@@ -989,24 +1039,6 @@ export default function AdminVRSNBDashboard() {
               );
             })}
           </nav>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="rounded-2xl bg-amber-50 p-3 ring-1 ring-amber-100">
-              <p className="text-[10px] font-black uppercase text-amber-700">
-                Low Stock
-              </p>
-              <p className="text-xl font-black text-amber-800">
-                {lowStockRows.length}
-              </p>
-            </div>
-            <div className="rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
-              <p className="text-[10px] font-black uppercase text-emerald-700">
-                Net Sales
-              </p>
-              <p className="text-xl font-black text-emerald-800">
-                {money(netSales)}
-              </p>
-            </div>
-          </div>
         </aside>
 
         <main className="min-w-0 space-y-4">
@@ -1039,7 +1071,7 @@ export default function AdminVRSNBDashboard() {
                 <HeroPill
                   label="Available Balance"
                   value={money(
-                    cashBalance + upiBalance + cardBalance + bankBalance,
+                    cashBalance + upiBalance + cardBalance,
                   )}
                   tone="blue"
                 />
@@ -1047,12 +1079,14 @@ export default function AdminVRSNBDashboard() {
             </div>
           </header>
 
-          <DateFilters
-            fromDate={fromDate}
-            toDate={toDate}
-            setFromDate={setFromDate}
-            setToDate={setToDate}
-          />
+          {!["stock", "complaints", "quotations"].includes(tab) && (
+            <DateFilters
+              fromDate={fromDate}
+              toDate={toDate}
+              setFromDate={setFromDate}
+              setToDate={setToDate}
+            />
+          )}
           {notice && (
             <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
               <span>{notice}</span>
@@ -1073,7 +1107,13 @@ export default function AdminVRSNBDashboard() {
               {...commonProps}
             />
           )}
+          {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
+          {tab === "complaints" && <ComplaintsTab userName={userName} />}
+          {tab === "waste" && <WasteLogsTab userName={userName} />}
+          {tab === "quotations" && <QuotationsTab userName={userName} />}
           {tab === "credit" && <CreditTab />}
+          {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
+          {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
           {tab === "closure" && (
             <DailyClosureTab userName={userName} {...commonProps} />
           )}
@@ -1193,9 +1233,81 @@ function DateFilters({
   );
 }
 
+function printOverview(props: any, branchLabel: string) {
+  const rows = [
+    ["Date Range", `${props.fromDate} to ${props.toDate}`],
+    ["Bills", props.billsCount],
+    ["Gross Sales", money(props.grossSales)],
+    ["Return Amount", money(props.returnAmount)],
+    ["Net Sales", money(props.netSales)],
+    ["Average Bill", money(props.avgBillValue)],
+    ["—", "—"],
+    ["Regular Bill Sales", money(props.salesBreakdown.billSales)],
+    ["Advance Collected", money(props.salesBreakdown.advanceCollected)],
+    ["Advance Balance Collected", money(props.salesBreakdown.advanceBalanceCollected)],
+    ["Credit Billed", money(props.salesBreakdown.creditBilled)],
+    ["Credit Collected", money(props.salesBreakdown.creditCollected)],
+    ["Expenses", money(props.expenseAmount)],
+    ["—", "—"],
+    ["Cash Sales", money(props.cashSales)],
+    ["UPI Sales", money(props.upiSales)],
+    ["Card Sales", money(props.cardSales)],
+    ["Credit Sales", money(props.creditBillAmount)],
+    ["—", "—"],
+    ["Cash Available", money(props.cashBalance)],
+    ["UPI Available", money(props.upiBalance)],
+    ["Card Available", money(props.cardBalance)],
+    ["Deposited to Owner (Not Available)", money(props.bankBalance)],
+  ];
+  const body = `<div class="stamp">BRANCH OVERVIEW REPORT</div><h2 class="c">${branchLabel}</h2><div class="c" style="margin-bottom:8px">Generated by ${props.userName} on ${new Date().toLocaleString("en-IN")}</div>${rows
+    .map(([label, value]) =>
+      label === "—"
+        ? `<div class="dash"></div>`
+        : `<div class="row"><span>${label}</span><b>${value}</b></div>`,
+    )
+    .join("")}`;
+  printHtml(`${branchLabel} Overview Report`, body);
+}
+
+function RupeeBreakdown({ breakdown }: { breakdown: any }) {
+  const rows = [
+    ["Regular bill sales", breakdown.billSales],
+    ["Advance amount collected", breakdown.advanceCollected],
+    ["Advance balance collected", breakdown.advanceBalanceCollected],
+    ["Credit billed", breakdown.creditBilled],
+    ["Credit collected", breakdown.creditCollected],
+    ["Returns deducted", -breakdown.returns],
+    ["Expenses deducted", -breakdown.expenses],
+    ["Net sales shown", breakdown.netSales],
+  ];
+  return (
+    <Panel title="Rupee Source Breakdown" icon={<IndianRupee className="size-4" />}>
+      <div className="grid gap-2 md:grid-cols-4">
+        {rows.map(([label, value]) => (
+          <div key={String(label)} className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
+            <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+            <p className={cn("mt-1 text-lg font-black tabular-nums", Number(value) < 0 ? "text-red-600" : "text-slate-950")}>
+              {money(Number(value))}
+            </p>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 function OverviewTab(props: any) {
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-end">
+        <button
+          onClick={() => printOverview(props, "VRSNB")}
+          className={cn(btnCls, "bg-slate-950 text-white")}
+        >
+          <Printer className="size-4" />
+          Print Overview
+        </button>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
           label="Gross Sales"
@@ -1360,10 +1472,10 @@ function OverviewTab(props: any) {
               tone="purple"
             />
             <Kpi
-              label="Bank Balance"
+              label="Deposited to Owner (Not Available)"
               value={money(props.bankBalance)}
               icon={<Landmark className="size-5" />}
-              tone="amber"
+              tone="slate"
             />
           </div>
         </Panel>
@@ -1407,10 +1519,34 @@ function SalesReturnsTab(props: any) {
       net: -r.total,
       payment: "refund",
     })),
+    ...(props.movementInRange || [])
+      .filter((m: any) => m.direction === "in" && /advance/i.test(m.purpose || ""))
+      .map((m: any) => ({
+        type: "Advance",
+        no: m.referenceNumber || "-",
+        date: m.dateTime,
+        customer: m.remarks || "-",
+        person: m.enteredBy,
+        gross: m.amount,
+        returns: 0,
+        net: m.amount,
+        payment: m.paymentMode,
+      })),
+    ...(props.creditPaymentsInRange || []).map((p: any) => ({
+      type: "Credit Collected",
+      no: p.billNo,
+      date: p.createdAt,
+      customer: p.remarks || "-",
+      person: p.collectedBy,
+      gross: p.amount,
+      returns: 0,
+      net: p.amount,
+      payment: p.paymentMode,
+    })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
         <Kpi
           label="Gross Sales"
           value={money(props.grossSales)}
@@ -1429,7 +1565,20 @@ function SalesReturnsTab(props: any) {
           icon={<IndianRupee className="size-5" />}
           tone="green"
         />
+        <Kpi
+          label="Advance Collected"
+          value={money(props.salesBreakdown.advanceCollected + props.salesBreakdown.advanceBalanceCollected)}
+          icon={<WalletCards className="size-5" />}
+          tone="blue"
+        />
+        <Kpi
+          label="Credit Collected"
+          value={money(props.salesBreakdown.creditCollected)}
+          icon={<CreditCard className="size-5" />}
+          tone="purple"
+        />
       </div>
+      <RupeeBreakdown breakdown={props.salesBreakdown} />
       <Panel
         title="Sales and Returns Log"
         icon={<History className="size-4" />}
@@ -1469,7 +1618,18 @@ function SalesReturnsTab(props: any) {
             "Payment",
           ]}
           rows={salesRows.map((r) => [
-            <StatusBadge key="t" tone={r.type === "Return" ? "red" : "green"}>
+            <StatusBadge
+              key="t"
+              tone={
+                r.type === "Return"
+                  ? "red"
+                  : r.type === "Advance"
+                    ? "blue"
+                    : r.type === "Credit Collected"
+                      ? "amber"
+                      : "green"
+              }
+            >
               {r.type}
             </StatusBadge>,
             r.no,
@@ -1604,6 +1764,387 @@ function StockTab(props: any) {
             </StatusBadge>,
           ])}
           empty="No stock records found."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
+  const { expenses, addExpense } = useBranchOpsStore();
+  const [form, setForm] = useState({
+    expenseDate: dateInput(),
+    category: "",
+    description: "",
+    amount: "",
+    mode: "cash",
+  });
+  const rows = expenses.filter((e) => e.branch === BRANCH);
+  const save = () => {
+    const amount = Number(form.amount);
+    if (!form.category.trim() || !form.description.trim() || !amount) return;
+    addExpense({ branch: BRANCH, expenseDate: form.expenseDate, category: form.category, description: form.description, amount, mode: form.mode as any, enteredBy: userName });
+    setForm({ ...form, category: "", description: "", amount: "" });
+  };
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Kpi label="Expenses In Range" value={money(expenseAmount)} icon={<Banknote className="size-5" />} tone="red" />
+        <Kpi label="Cash After Expenses" value={money(cashBalance)} icon={<WalletCards className="size-5" />} tone="green" />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <Panel title="Add Expense" icon={<Banknote className="size-4" />}>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date"><input type="date" className={inputCls} value={form.expenseDate} onChange={(e) => setForm({ ...form, expenseDate: e.target.value })} /></Field>
+              <Field label="Amount"><input type="number" className={inputCls} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
+            </div>
+            <Field label="Category"><input className={inputCls} placeholder="Tea, flowers, cleaning..." value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+            <Field label="Details"><textarea className={inputCls} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+            <Field label="Mode">
+              <select className={inputCls} value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}>
+                <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option>
+              </select>
+            </Field>
+            <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
+          </div>
+        </Panel>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.csv", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function ComplaintsTab({ userName }: { userName: string }) {
+  const { complaints, addComplaint, updateComplaintStatus } = useBranchOpsStore();
+  const [form, setForm] = useState({ complaintArea: "VRSNB", title: "", details: "" });
+  const rows = complaints.filter((c) => c.branch === BRANCH);
+  const save = () => {
+    if (!form.title.trim() || !form.details.trim()) return;
+    addComplaint({ branch: BRANCH, complaintArea: form.complaintArea, title: form.title, details: form.details, raisedBy: userName });
+    setForm({ ...form, title: "", details: "" });
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title="Raise Complaint" icon={<MessageSquareWarning className="size-4" />}>
+        <div className="space-y-3">
+          <Field label="Complaint Area">
+            <select className={inputCls} value={form.complaintArea} onChange={(e) => setForm({ ...form, complaintArea: e.target.value })}>
+              {["Cafe", "VRSNB", "Store", "Packing", "Baker", "SNB", "Hosur"].map((area) => <option key={area}>{area}</option>)}
+            </select>
+          </Field>
+          <Field label="Title"><input className={inputCls} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+          <Field label="Details"><textarea className={inputCls} value={form.details} onChange={(e) => setForm({ ...form, details: e.target.value })} /></Field>
+          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Submit Complaint</button>
+        </div>
+      </Panel>
+      <Panel title="Complaint Register" icon={<Bell className="size-4" />}>
+        <DataTable
+          headers={["Date", "Area", "Title", "Details", "Raised By", "Status", "Action"]}
+          rows={rows.map((c) => [
+            fmtDateTime(c.createdAt),
+            c.complaintArea,
+            c.title,
+            c.details,
+            c.raisedBy,
+            <StatusBadge key="s" tone={c.status === "Resolved" ? "green" : c.status === "In Review" ? "blue" : "amber"}>{c.status}</StatusBadge>,
+            <div key="a" className="flex gap-2">
+              <button className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => updateComplaintStatus(c.id, "In Review", userName)}>Review</button>
+              <button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateComplaintStatus(c.id, "Resolved", userName)}>Resolve</button>
+            </div>,
+          ])}
+          empty="No complaints raised."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function printWasteLog(entry: any, branchLabel: string) {
+  const rows = [
+    ["Type", entry.logType],
+    ["Item", entry.itemName],
+    ["Quantity", `${entry.quantity} ${entry.unit}`],
+    ["Reason", entry.reason],
+    ["Verified By", entry.verifiedBy],
+    ["Logged By", entry.createdBy],
+  ];
+  const checklistHtml = entry.checklist.length
+    ? `<div class="dash"></div><div class="b">Checklist Confirmed</div>${entry.checklist
+        .map((c: string) => `<div class="row"><span>&#10003; ${c}</span></div>`)
+        .join("")}`
+    : "";
+  const body = `<div class="stamp">WASTE LOG — ${String(entry.logType).toUpperCase()}</div><h2 class="c">${branchLabel}</h2>${rows
+    .map(([label, value]) => `<div class="row"><span>${label}</span><b>${value}</b></div>`)
+    .join("")}${checklistHtml}<div class="dash"></div><div class="c">Stock updated automatically · Printed ${new Date().toLocaleString("en-IN")}</div>`;
+  printHtml(`${branchLabel} Waste Log - ${entry.itemName}`, body);
+}
+
+function WasteLogsTab({ userName }: { userName: string }) {
+  const { wasteLogs, addWasteLog } = useBranchOpsStore();
+  const { stock, manualUpdateStock } = useBranchStore();
+  const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
+  const [form, setForm] = useState({ itemName: VRSNB_ITEMS[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
+  const transferOutChecklist = [
+    "Verify standard quantity in box or Kgs or Pcs before transfer",
+    "Cross-check all box or Kgs or Pcs before transfer-out and sync",
+    "Sync the data in the Transfer-Out module",
+    "Manual verification by 2 employees against transfer-out list",
+    "Intimate factory and bill for extra products if received quantity exceeds list",
+    "Sync store computer after goods received",
+    "Perform Transfer In in the Billmaxo system",
+    "Store In-Charge final acknowledgement collected",
+  ];
+  const checklistOptions = subTab === "Trans Out"
+    ? transferOutChecklist
+    : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
+  const rows = wasteLogs.filter((w) => w.branch === BRANCH);
+  const save = async () => {
+    const qty = Number(form.quantity);
+    if (!form.itemName || !qty || !form.reason.trim() || !form.verifiedBy.trim()) return;
+    addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
+    // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
+    // this branch's inventory, so deduct it from current stock immediately.
+    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
+    const currentQty = Number(currentRow?.quantity || 0);
+    const newQty = Math.max(0, currentQty - qty);
+    await manualUpdateStock(BRANCH, form.itemName, newQty, userName);
+    // Print the waste log along with its checklist in one go.
+    printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
+    setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+  };
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {(["Dump", "Damage", "Trans Out"] as const).map((name) => <button key={name} onClick={() => setSubTab(name)} className={cn(btnCls, subTab === name ? "bg-orange-500 text-white" : "bg-white text-slate-700 ring-1 ring-slate-200")}>{name}</button>)}
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <Panel title={`${subTab} Entry`} icon={<Trash2 className="size-4" />}>
+          <div className="space-y-3">
+            <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{VRSNB_ITEMS.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Quantity"><input type="number" className={inputCls} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></Field>
+              <Field label="Unit"><select className={inputCls} value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
+            </div>
+            <Field label="Reason"><textarea className={inputCls} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} /></Field>
+            <Field label="Verified By"><input className={inputCls} value={form.verifiedBy} onChange={(e) => setForm({ ...form, verifiedBy: e.target.value })} /></Field>
+            <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
+              {checklistOptions.map((item) => (
+                <label key={item} className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-700">
+                  <input type="checkbox" checked={form.checklist.includes(item)} onChange={(e) => setForm((f) => ({ ...f, checklist: e.target.checked ? [...f.checklist, item] : f.checklist.filter((x) => x !== item) }))} />
+                  {item}
+                </label>
+              ))}
+            </div>
+            <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
+          </div>
+        </Panel>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function QuotationsTab({ userName }: { userName: string }) {
+  const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
+  const [mode, setMode] = useState<"list" | "custom">("list");
+  const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: VRSNB_ITEMS[0]?.name || "", customName: "", qty: "1", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
+  const [lines, setLines] = useState<any[]>([]);
+  const rows = quotations.filter((q) => q.branch === BRANCH);
+  const addLine = () => {
+    const qty = Number(form.qty);
+    const item = VRSNB_ITEMS.find((i) => i.name === form.itemName);
+    const name = mode === "custom" ? form.customName.trim() : form.itemName;
+    const rate = mode === "custom" ? Number(form.rate) : Number((item as any)?.price || form.rate);
+    if (!name || !qty || !rate) return;
+    setLines((current) => [...current, { itemName: name, quantity: qty, unit: (item as any)?.uom === "Kgs" ? "kg" : "pcs", price: rate, tax: 0, discount: 0, lineTotal: qty * rate }]);
+    setForm({ ...form, customName: "", qty: "1", rate: "" });
+  };
+  const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
+  const total = Math.max(0, subtotal + Number(form.deliveryCharges || 0) + Number(form.packingCharges || 0) + Number(form.extraCharges || 0) - Number(form.discount || 0));
+  const save = () => {
+    if (!form.customerName.trim() || !form.mobile.trim() || lines.length === 0) return;
+    addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !VRSNB_ITEMS.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
+    setLines([]);
+    setForm({ ...form, customerName: "", companyName: "", mobile: "", gstNumber: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[460px_minmax(0,1fr)]">
+      <Panel title="Create Quotation" icon={<FileSpreadsheet className="size-4" />}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Customer / Company"><input className={inputCls} value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /></Field>
+            <Field label="Mobile"><input className={inputCls} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} /></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Company Name"><input className={inputCls} value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} /></Field>
+            <Field label="GST Number"><input className={inputCls} value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} /></Field>
+          </div>
+          <div className="flex gap-2">{(["list", "custom"] as const).map((x) => <button key={x} onClick={() => setMode(x)} className={cn(btnCls, mode === x ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-700")}>{x === "list" ? "Item List" : "Custom Item"}</button>)}</div>
+          {mode === "list" ? <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{VRSNB_ITEMS.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field> : <Field label="Custom Item"><input className={inputCls} value={form.customName} onChange={(e) => setForm({ ...form, customName: e.target.value })} /></Field>}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Qty"><input type="number" className={inputCls} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
+            <Field label="Rate"><input type="number" className={inputCls} value={form.rate} placeholder={mode === "list" ? "Auto from item" : ""} onChange={(e) => setForm({ ...form, rate: e.target.value })} /></Field>
+          </div>
+          <button onClick={addLine} className={cn(btnCls, "w-full bg-white text-slate-700 ring-1 ring-slate-200")}><Plus className="size-4" /> Add Item</button>
+          {lines.map((line, i) => <div key={`${line.itemName}-${i}`} className="flex items-center justify-between rounded-xl bg-slate-50 p-2 text-sm font-bold"><span>{line.itemName} - {line.quantity} x {money(line.price)}</span><button onClick={() => setLines((current) => current.filter((_, idx) => idx !== i))} className="text-red-600"><X className="size-4" /></button></div>)}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Delivery"><input type="number" className={inputCls} value={form.deliveryCharges} onChange={(e) => setForm({ ...form, deliveryCharges: e.target.value })} /></Field>
+            <Field label="Packing"><input type="number" className={inputCls} value={form.packingCharges} onChange={(e) => setForm({ ...form, packingCharges: e.target.value })} /></Field>
+            <Field label="Extra"><input type="number" className={inputCls} value={form.extraCharges} onChange={(e) => setForm({ ...form, extraCharges: e.target.value })} /></Field>
+            <Field label="Discount"><input type="number" className={inputCls} value={form.discount} onChange={(e) => setForm({ ...form, discount: e.target.value })} /></Field>
+          </div>
+          <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-700">Quotation Total: {money(total)}</div>
+          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Quotation</button>
+        </div>
+      </Panel>
+      <Panel title="Quotation History" icon={<History className="size-4" />}>
+        <DataTable headers={["No", "Customer", "Mobile", "GST", "Items", "Charges", "Discount", "Total", "Status", "Action"]} rows={rows.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.gstNumber || "-", q.items.length, money((q.deliveryCharges || 0) + (q.packingCharges || 0) + (q.extraCharges || 0)), money(q.discount || 0), money(q.total), q.status, <div key="a" className="flex gap-2"><button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateQuotationStatus(q.id, "Converted", userName)}>Convert</button><button className={cn(btnCls, "bg-red-50 text-red-600")} onClick={() => updateQuotationStatus(q.id, "Cancelled", userName)}>Cancel</button></div>])} empty="No quotations saved." />
+      </Panel>
+    </div>
+  );
+}
+
+function CashierReportTab(props: any) {
+  const rows = useMemo(() => {
+    const map = new Map<string, any>();
+    const ensure = (name: string) => {
+      const key = name || "Unknown";
+      const row = map.get(key) ?? {
+        name: key,
+        grossSales: 0,
+        returns: 0,
+        netSales: 0,
+        bills: 0,
+        cash: 0,
+        upi: 0,
+        card: 0,
+        credit: 0,
+      };
+      map.set(key, row);
+      return row;
+    };
+    props.branchBills.forEach((bill: any) => {
+      const row = ensure(bill.biller || bill.salesperson);
+      row.grossSales += bill.total;
+      row.bills += 1;
+      if (bill.paymentMode === "cash") row.cash += bill.total;
+      if (bill.paymentMode === "upi") row.upi += bill.total;
+      if (bill.paymentMode === "card") row.card += bill.total;
+      if (bill.paymentMode === "credit") row.credit += bill.total;
+      if (bill.paymentMode === "split") {
+        row.cash += bill.split?.cash ?? 0;
+        row.upi += bill.split?.upi ?? 0;
+        row.card += bill.split?.card ?? 0;
+      }
+    });
+    props.legacySalesRows.forEach((sale: any) => {
+      const row = ensure(sale.biller || sale.soldBy);
+      const line = (sale.unitPrice ?? 0) * sale.quantitySold;
+      row.grossSales += line;
+      row.bills += 1;
+      if (amountForLegacyPayment(sale.paymentMethod, "cash")) row.cash += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "upi")) row.upi += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "card")) row.card += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "credit")) row.credit += line;
+    });
+    props.branchReturns.forEach((ret: any) => {
+      const original = props.branchBills.find((bill: any) => bill.billNo === ret.originalBillNo);
+      const row = ensure(original?.biller || ret.returnedBy);
+      row.returns += ret.total;
+    });
+    return Array.from(map.values())
+      .map((row) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) }))
+      .sort((a, b) => b.netSales - a.netSales);
+  }, [props.branchBills, props.branchReturns, props.legacySalesRows]);
+  const totalNet = rows.reduce((sum: number, r: any) => sum + r.netSales, 0);
+  const totalBills = rows.reduce((sum: number, r: any) => sum + r.bills, 0);
+  const best = rows[0];
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Cashiers" value={rows.length} icon={<UserRound className="size-5" />} />
+        <Kpi label="Total Bills" value={totalBills} icon={<Receipt className="size-5" />} tone="blue" />
+        <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Cashier_Report.csv", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
+        <DataTable headers={["Rank", "Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any, idx: number) => [`#${idx + 1}`, r.name, money(r.grossSales), money(r.returns), <span key="n" className="font-black text-emerald-700">{money(r.netSales)}</span>, r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
+      </Panel>
+    </div>
+  );
+}
+
+function CashierClosureTab(props: any) {
+  const { cashierClosures } = useBranchOpsStore();
+  const rows = cashierClosures.filter((c) => c.branch === BRANCH);
+  const totalDifference = rows.reduce((sum, c) => sum + c.difference, 0);
+  const mismatches = rows.filter((c) => c.difference !== 0).length;
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Closures Logged" value={rows.length} icon={<CalendarClock className="size-5" />} />
+        <Kpi label="Matched Closures" value={rows.length - mismatches} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
+        <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={totalDifference === 0 ? "green" : "red"} />
+      </div>
+      <Panel
+        title="All Cashier Closure Data"
+        icon={<CalendarClock className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload(
+                "VRSNB_All_Cashier_Closures.csv",
+                rows.map((c) => ({
+                  Date: fmtDateTime(c.createdAt),
+                  Cashier: c.cashier,
+                  Opening: c.openingCash,
+                  Expected: c.expectedCash,
+                  Closing: c.closingCash,
+                  Difference: c.difference,
+                  Bills: c.billsCount,
+                  Cash: c.cash,
+                  UPI: c.upi,
+                  Card: c.card,
+                  Returns: c.returns,
+                  CreditSales: c.creditSales ?? 0,
+                  CreditCollections: c.creditCollections ?? 0,
+                  Notes: c.notes,
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
+        <DataTable
+          headers={["Date", "Cashier", "Opening", "Expected", "Closing", "Difference", "Status", "Bills", "Cash", "UPI", "Card", "Returns", "Credit Sales", "Credit Collections", "Notes"]}
+          rows={rows.map((c) => [
+            fmtDateTime(c.createdAt),
+            c.cashier,
+            money(c.openingCash),
+            money(c.expectedCash),
+            money(c.closingCash),
+            <span key="d" className={cn("font-black", c.difference === 0 ? "text-emerald-700" : "text-red-600")}>{money(c.difference)}</span>,
+            <StatusBadge key="s" tone={c.difference === 0 ? "green" : "red"}>{c.difference === 0 ? "Matched" : "Mismatch"}</StatusBadge>,
+            c.billsCount,
+            money(c.cash),
+            money(c.upi),
+            money(c.card),
+            money(c.returns),
+            money(c.creditSales ?? 0),
+            money(c.creditCollections ?? 0),
+            c.notes || "-",
+          ])}
+          empty="No cashier closures saved."
         />
       </Panel>
     </div>
@@ -2248,7 +2789,7 @@ function SupplierPaymentsTab({ userName }: { userName: string }) {
           </button>
         </div>
       </Panel>
-      <Panel title="Payment History" icon={<History className="size-4" />}>
+      <Panel title="Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Supplier_Payments.csv", rows.map((p) => ({ Date: p.createdAt, Supplier: p.supplier, Amount: p.amount, Mode: p.mode, Reference: p.reference || "-", PaidBy: p.paidBy })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={[
             "Date",
@@ -2343,11 +2884,14 @@ function BankDepositsTab({
           tone="purple"
         />
         <Kpi
-          label="Bank Balance"
+          label="Total Deposited to Owner"
           value={money(bankBalance)}
           icon={<Landmark className="size-5" />}
-          tone="amber"
+          tone="slate"
         />
+      </div>
+      <div className="rounded-2xl bg-slate-50 p-3 text-xs font-bold text-slate-600 ring-1 ring-slate-100">
+        Money deposited here has been handed over to the Owner's bank account — it is no longer with the branch. Cash/UPI/Card Balance above already reduces automatically by the deposited amount.
       </div>
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel
@@ -2840,6 +3384,27 @@ function CreditTab() {
               <option value="partial">Partial</option>
               <option value="settled">Settled</option>
             </select>
+            <button
+              className={cn(btnCls, "h-10 bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() =>
+                csvDownload(
+                  "VRSNB_Credit_Register.csv",
+                  visibleSales.map((s) => ({
+                    Unit: CREDIT_BRANCH_LABEL[s.branch],
+                    Bill: s.billNo,
+                    Customer: s.customerName,
+                    Mobile: s.customerPhone || "-",
+                    Total: s.subtotal,
+                    Paid: s.amountPaid,
+                    Balance: s.creditAmount,
+                    Due: s.dueDate || "-",
+                    Status: s.status,
+                  })),
+                )
+              }
+            >
+              <Download className="size-4" /> Excel
+            </button>
           </div>
         }
       >
@@ -2892,7 +3457,7 @@ function CreditTab() {
           empty="No Cafe or VRSNB credit sales found."
         />
       </Panel>
-      <Panel title="Credit Collections" icon={<History className="size-4" />}>
+      <Panel title="Credit Collections" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Credit_Collections.csv", payments.map((p) => ({ Unit: CREDIT_BRANCH_LABEL[p.branch], Bill: p.billNo, Amount: p.amount, Mode: p.paymentMode, CollectedBy: p.collectedBy, Date: p.createdAt, Remarks: p.remarks })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={["Unit", "Bill", "Amount", "Mode", "Collected By", "Date", "Remarks"]}
           rows={payments.map((payment) => [
@@ -2909,6 +3474,42 @@ function CreditTab() {
       </Panel>
     </div>
   );
+}
+
+function printDailyClosure(props: any, branchLabel: string) {
+  const rows = [
+    ["Date", dateInput()],
+    ["Cashier", props.userName],
+    ["Opening Balance", money(props.openingCash)],
+    ["—", "—"],
+    ["Gross Sales", money(props.grossSales)],
+    ["Return Amount", money(props.returnAmount)],
+    ["Net Sales", money(props.netSales)],
+    ["Cash Sales", money(props.cashSales)],
+    ["UPI Sales", money(props.upiSales)],
+    ["Card Sales", money(props.cardSales)],
+    ["Credit Sales", money(props.creditBillAmount)],
+    ["Credit Collections", money(props.clearedCredit)],
+    ["Advance Collected", money(props.advanceCollected)],
+    ["Advance Balance Collected", money(props.advanceBalanceCollected)],
+    ["Purchase Payments", money(props.purchasePaid)],
+    ["Expenses", money(props.expenseAmount)],
+    ["Bank Deposits", money(props.depositAmount)],
+    ["Pending Credit", money(props.pendingCredit)],
+    ["—", "—"],
+    ["Expected Cash", money(props.expectedCash)],
+    ["Closing Cash Counted", money(props.closingCash)],
+    ["Difference", money(props.diff)],
+    ["Remarks", props.remarks || "-"],
+  ];
+  const body = `<div class="stamp">DAILY CLOSURE REPORT</div><h2 class="c">${branchLabel}</h2>${rows
+    .map(([label, value]) =>
+      label === "—"
+        ? `<div class="dash"></div>`
+        : `<div class="row"><span>${label}</span><b>${value}</b></div>`,
+    )
+    .join("")}<div class="dash"></div><div class="c">Printed ${new Date().toLocaleString("en-IN")}</div>`;
+  printHtml(`${branchLabel} Daily Closure - ${dateInput()}`, body);
 }
 
 function DailyClosureTab({ userName, ...props }: any) {
@@ -3053,7 +3654,20 @@ function DailyClosureTab({ userName, ...props }: any) {
         action={
           <div className="flex gap-2">
             <button
-              onClick={() => window.print()}
+              onClick={() =>
+                printDailyClosure(
+                  {
+                    openingCash: Number(form.openingCash || 0),
+                    closingCash: Number(form.closingCash || 0),
+                    expectedCash,
+                    diff,
+                    remarks: form.remarks,
+                    userName,
+                    ...props,
+                  },
+                  "VRSNB",
+                )
+              }
               className={cn(
                 btnCls,
                 "bg-white text-slate-700 ring-1 ring-slate-200",
@@ -3202,68 +3816,114 @@ function DailyClosureTab({ userName, ...props }: any) {
 
 function ReportsTab(props: any) {
   const { creditSales } = useBranchStore();
+  const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations, cashierClosures } =
+    useBranchOpsStore();
   const dueCredits = (["Cafe", BRANCH] as const)
     .flatMap((branch) => creditSales[branch] || [])
     .filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
   const disputeRows: any[] = [];
+  const branchPurchases = purchases.filter((p) => p.branch === BRANCH);
+  const supplierDue = branchPurchases.reduce((sum, p) => sum + Math.max(0, p.total - p.paidAmount), 0);
+  const purchaseTotal = branchPurchases.reduce((sum, p) => sum + p.total, 0);
+  const branchExpenses = expenses.filter((e) => e.branch === BRANCH);
+  const branchDeposits = bankDeposits.filter((d) => d.branch === BRANCH);
+  const branchWaste = wasteLogs.filter((w) => w.branch === BRANCH);
+  const branchQuotes = quotations.filter((q) => q.branch === BRANCH);
+  const branchClosures = cashierClosures.filter((c) => c.branch === BRANCH);
+  const collectionTotal = props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
-          label="Shop-wise/Customer Sales"
-          value={
-            props.branchBills.filter((b: any) => b.creditCustomerName).length
-          }
-          icon={<Store className="size-5" />}
+          label="Total Collections"
+          value={money(collectionTotal)}
+          icon={<IndianRupee className="size-5" />}
+          tone="green"
         />
         <Kpi
-          label="Due Credits"
-          value={dueCredits.length}
+          label="Pending Credit"
+          value={money(props.pendingCredit)}
           icon={<WalletCards className="size-5" />}
           tone="red"
         />
         <Kpi
-          label="Item Reports"
-          value={props.topItems.length}
-          icon={<Package className="size-5" />}
-          tone="blue"
+          label="Supplier Due"
+          value={money(supplierDue)}
+          icon={<Truck className="size-5" />}
+          tone="amber"
         />
         <Kpi
-          label="Disputes"
-          value={disputeRows.length}
-          icon={<AlertTriangle className="size-5" />}
-          tone="amber"
+          label="Expenses"
+          value={money(props.expenseAmount)}
+          icon={<Banknote className="size-5" />}
+          tone="red"
         />
       </div>
       <Panel
-        title="Branch Reports"
+        title="Complete Branch Reports"
         icon={<FileSpreadsheet className="size-4" />}
         action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload("VRSNB_Branch_Report.csv", [
-                {
-                  GrossSales: props.grossSales,
-                  ReturnAmount: props.returnAmount,
-                  NetSales: props.netSales,
-                  CashSales: props.cashSales,
-                  UPISales: props.upiSales,
-                  CardSales: props.cardSales,
-                  CreditSales: props.creditBillAmount,
-                  PendingCredit: props.pendingCredit,
-                },
-              ])
-            }
-          >
-            <Download className="size-4" />
-            Export Summary
-          </button>
+          <div className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => printOverview(props, "VRSNB")}
+            >
+              <Printer className="size-4" />
+              Print Summary
+            </button>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={() =>
+                csvDownload("VRSNB_Branch_Report.csv", [
+                  {
+                    BillSales: props.salesBreakdown.billSales,
+                    GrossSales: props.grossSales,
+                    ReturnAmount: props.returnAmount,
+                    NetSales: props.netSales,
+                    CashSales: props.cashSales,
+                    UPISales: props.upiSales,
+                    CardSales: props.cardSales,
+                    CreditSales: props.creditBillAmount,
+                    CreditCollections: props.clearedCredit,
+                    AdvanceCollected: props.advanceCollected,
+                    AdvanceBalanceCollected: props.advanceBalanceCollected,
+                    TotalCollections: collectionTotal,
+                    PurchaseTotal: purchaseTotal,
+                    SupplierDue: supplierDue,
+                    SupplierPayments: props.purchasePaid,
+                    Expenses: props.expenseAmount,
+                    BankDeposits: props.depositAmount,
+                    PendingCredit: props.pendingCredit,
+                  },
+                ])
+              }
+            >
+              <Download className="size-4" />
+              Export Summary
+            </button>
+          </div>
         }
       >
         <div className="grid gap-4 xl:grid-cols-2">
+          <div className="xl:col-span-2">
+            <h3 className="mb-2 font-black">Rupee Source Breakdown</h3>
+            <DataTable
+              headers={["Source", "Amount"]}
+              rows={[
+                ["Regular bill sales", money(props.salesBreakdown.billSales)],
+                ["Advance collected", money(props.salesBreakdown.advanceCollected)],
+                ["Advance balance collected", money(props.salesBreakdown.advanceBalanceCollected)],
+                ["Credit billed", money(props.salesBreakdown.creditBilled)],
+                ["Credit collected", money(props.salesBreakdown.creditCollected)],
+                ["Returns deducted", money(-props.salesBreakdown.returns)],
+                ["Expenses deducted", money(-props.salesBreakdown.expenses)],
+                ["Total collections", money(collectionTotal)],
+                ["Net sales shown", money(props.salesBreakdown.netSales)],
+              ]}
+            />
+          </div>
           <div>
             <h3 className="mb-2 font-black">Item-wise Sales</h3>
             <DataTable
@@ -3299,6 +3959,83 @@ function ReportsTab(props: any) {
                 c.status,
               ])}
               empty="No due credit records."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Supplier Purchase Position</h3>
+            <DataTable
+              headers={["Invoice", "Supplier", "Total", "Paid", "Due", "Status"]}
+              rows={branchPurchases.map((p) => {
+                const due = Math.max(0, p.total - p.paidAmount);
+                return [
+                  p.invoiceNo,
+                  p.supplier,
+                  money(p.total),
+                  money(p.paidAmount),
+                  money(due),
+                  due <= 0 ? "Cleared" : p.paidAmount > 0 ? "Partial" : "Pending",
+                ];
+              })}
+              empty="No purchase invoices."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Supplier Payments</h3>
+            <DataTable
+              headers={["Date", "Supplier", "Amount", "Mode", "Reference"]}
+              rows={purchasePayments.filter((p) => p.branch === BRANCH).map((p) => [
+                fmtDateTime(p.createdAt),
+                p.supplier,
+                money(p.amount),
+                p.mode.toUpperCase(),
+                p.reference || "-",
+              ])}
+              empty="No supplier payments."
+            />
+          </div>
+          <div className="xl:col-span-2">
+            <h3 className="mb-2 font-black">Expenses And Bank Deposits</h3>
+            <DataTable
+              headers={["Type", "Date", "Details", "Amount", "Mode / Bank"]}
+              rows={[
+                ...branchExpenses.map((e) => ["Expense", fmtDate(e.expenseDate), `${e.category} - ${e.description}`, money(e.amount), e.mode.toUpperCase()]),
+                ...branchDeposits.map((d) => ["Bank Deposit", fmtDate(d.depositDate), d.remarks || d.transactionRef || d.slipNo || "-", money(d.amount), d.bankAccount]),
+              ]}
+              empty="No expenses or deposits."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Waste Logs</h3>
+            <DataTable
+              headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By"]}
+              rows={branchWaste.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy])}
+              empty="No waste logs."
+            />
+          </div>
+          <div>
+            <h3 className="mb-2 font-black">Quotations</h3>
+            <DataTable
+              headers={["Quote", "Customer", "Mobile", "Items", "Total", "Status"]}
+              rows={branchQuotes.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.items.length, money(q.total), q.status])}
+              empty="No quotations."
+            />
+          </div>
+          <div className="xl:col-span-2">
+            <h3 className="mb-2 font-black">Cashier Closure Reconciliation</h3>
+            <DataTable
+              headers={["Date", "Cashier", "Expected", "Closing", "Difference", "Cash", "UPI", "Card", "Credit Collections"]}
+              rows={branchClosures.map((c) => [
+                fmtDateTime(c.createdAt),
+                c.cashier,
+                money(c.expectedCash),
+                money(c.closingCash),
+                money(c.difference),
+                money(c.cash),
+                money(c.upi),
+                money(c.card),
+                money(c.creditCollections ?? 0),
+              ])}
+              empty="No cashier closures."
             />
           </div>
           <div>

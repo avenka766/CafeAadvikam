@@ -20,6 +20,7 @@ import {
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
 import { SNB_ITEMS } from "@/branch/snbItems";
+import { printHtml } from "@/branch/printUtils";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -168,7 +169,7 @@ const TABS: Array<{
   },
   {
     id: "notifications",
-    label: "Admin Notifications",
+    label: "Notifications & Alerts",
     icon: Bell,
     adminOnly: true,
   },
@@ -232,17 +233,10 @@ function dedupeStockRows<T extends { itemName: string; quantity?: number; minThr
   const map = new Map<string, T>();
   rows.forEach((row) => {
     const key = normal(row.itemName);
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, row);
-      return;
-    }
-    map.set(key, {
-      ...existing,
-      ...row,
-      quantity: Number(existing.quantity || 0) + Number(row.quantity || 0),
-      minThreshold: existing.minThreshold ?? row.minThreshold,
-    } as T);
+    // Duplicate rows for the same item are a data sync artifact, not separate
+    // stock batches — keep the latest record instead of summing quantities
+    // (summing was doubling stock numbers whenever an item appeared twice).
+    map.set(key, row);
   });
   return Array.from(map.values()).sort((a, b) => a.itemName.localeCompare(b.itemName));
 }
@@ -652,16 +646,22 @@ export default function AdminSNBDashboard() {
         (sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount),
         0,
       );
-  const bankBalance =
+  // Money deposited to the owner's bank account has left the branch's
+  // control entirely — it is NOT cash the admin still holds. This total is
+  // for record-keeping only and must never be added back into "available"
+  // funds at the branch.
+  const depositedToOwner =
     bankDeposits
       .filter((d) => d.branch === BRANCH)
       .reduce((sum, d) => sum + d.amount, 0) + balanceByMode("bank");
+  const bankBalance = depositedToOwner;
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
 
   const pendingCredit = (dbCreditSales[BRANCH] || []).filter((c) => c.status !== "settled").reduce((sum, c) => sum + c.creditAmount, 0);
-  const clearedCredit = (dbCreditPayments[BRANCH] || []).filter((p) => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + p.amount, 0);
+  const creditPaymentsInRange = (dbCreditPayments[BRANCH] || []).filter((p) => inRange(p.createdAt, fromDate, toDate));
+  const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
   const purchasePaid = purchasePayments
     .filter(
@@ -903,6 +903,7 @@ export default function AdminSNBDashboard() {
     bankBalance,
     pendingCredit,
     clearedCredit,
+    creditPaymentsInRange,
     purchasePaid,
     expenseAmount,
     advanceCollected,
@@ -1022,24 +1023,6 @@ export default function AdminSNBDashboard() {
               );
             })}
           </nav>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="rounded-2xl bg-amber-50 p-3 ring-1 ring-amber-100">
-              <p className="text-[10px] font-black uppercase text-amber-700">
-                Low Stock
-              </p>
-              <p className="text-xl font-black text-amber-800">
-                {lowStockRows.length}
-              </p>
-            </div>
-            <div className="rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
-              <p className="text-[10px] font-black uppercase text-emerald-700">
-                Net Sales
-              </p>
-              <p className="text-xl font-black text-emerald-800">
-                {money(netSales)}
-              </p>
-            </div>
-          </div>
         </aside>
 
         <main className="min-w-0 space-y-4">
@@ -1072,7 +1055,7 @@ export default function AdminSNBDashboard() {
                 <HeroPill
                   label="Available Balance"
                   value={money(
-                    cashBalance + upiBalance + cardBalance + bankBalance,
+                    cashBalance + upiBalance + cardBalance,
                   )}
                   tone="blue"
                 />
@@ -1080,12 +1063,14 @@ export default function AdminSNBDashboard() {
             </div>
           </header>
 
-          <DateFilters
-            fromDate={fromDate}
-            toDate={toDate}
-            setFromDate={setFromDate}
-            setToDate={setToDate}
-          />
+          {!["stock", "suppliers", "complaints", "quotations", "salespersons"].includes(tab) && (
+            <DateFilters
+              fromDate={fromDate}
+              toDate={toDate}
+              setFromDate={setFromDate}
+              setToDate={setToDate}
+            />
+          )}
           {notice && (
             <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
               <span>{notice}</span>
@@ -1268,9 +1253,54 @@ function DateFilters({
   );
 }
 
+function printOverview(props: any, branchLabel: string) {
+  const rows = [
+    ["Date Range", `${props.fromDate} to ${props.toDate}`],
+    ["Bills", props.billsCount],
+    ["Gross Sales", money(props.grossSales)],
+    ["Return Amount", money(props.returnAmount)],
+    ["Net Sales", money(props.netSales)],
+    ["Average Bill", money(props.avgBillValue)],
+    ["—", "—"],
+    ["Regular Bill Sales", money(props.salesBreakdown.billSales)],
+    ["Advance Collected", money(props.salesBreakdown.advanceCollected)],
+    ["Advance Balance Collected", money(props.salesBreakdown.advanceBalanceCollected)],
+    ["Credit Billed", money(props.salesBreakdown.creditBilled)],
+    ["Credit Collected", money(props.salesBreakdown.creditCollected)],
+    ["Expenses", money(props.expenseAmount)],
+    ["—", "—"],
+    ["Cash Sales", money(props.cashSales)],
+    ["UPI Sales", money(props.upiSales)],
+    ["Card Sales", money(props.cardSales)],
+    ["Credit Sales", money(props.creditBillAmount)],
+    ["—", "—"],
+    ["Cash Available", money(props.cashBalance)],
+    ["UPI Available", money(props.upiBalance)],
+    ["Card Available", money(props.cardBalance)],
+    ["Deposited to Owner (Not Available)", money(props.bankBalance)],
+  ];
+  const body = `<div class="stamp">BRANCH OVERVIEW REPORT</div><h2 class="c">${branchLabel}</h2><div class="c" style="margin-bottom:8px">Generated by ${props.userName} on ${new Date().toLocaleString("en-IN")}</div>${rows
+    .map(([label, value]) =>
+      label === "—"
+        ? `<div class="dash"></div>`
+        : `<div class="row"><span>${label}</span><b>${value}</b></div>`,
+    )
+    .join("")}`;
+  printHtml(`${branchLabel} Overview Report`, body);
+}
+
 function OverviewTab(props: any) {
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-end">
+        <button
+          onClick={() => printOverview(props, "SNB")}
+          className={cn(btnCls, "bg-slate-950 text-white")}
+        >
+          <Printer className="size-4" />
+          Print Overview
+        </button>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
           label="Gross Sales"
@@ -1301,7 +1331,6 @@ function OverviewTab(props: any) {
           tone="blue"
         />
       </div>
-      <RupeeBreakdown breakdown={props.salesBreakdown} />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(340px,0.6fr)]">
         <Panel
           title="Gross / Returns / Net Sales Trend"
@@ -1436,10 +1465,10 @@ function OverviewTab(props: any) {
               tone="purple"
             />
             <Kpi
-              label="Bank Balance"
+              label="Deposited to Owner (Not Available)"
               value={money(props.bankBalance)}
               icon={<Landmark className="size-5" />}
-              tone="amber"
+              tone="slate"
             />
           </div>
         </Panel>
@@ -1510,10 +1539,34 @@ function SalesReturnsTab(props: any) {
       net: -r.total,
       payment: "refund",
     })),
+    ...(props.movementInRange || [])
+      .filter((m: any) => m.direction === "in" && /advance/i.test(m.purpose || ""))
+      .map((m: any) => ({
+        type: "Advance",
+        no: m.referenceNumber || "-",
+        date: m.dateTime,
+        customer: m.remarks || "-",
+        person: m.enteredBy,
+        gross: m.amount,
+        returns: 0,
+        net: m.amount,
+        payment: m.paymentMode,
+      })),
+    ...(props.creditPaymentsInRange || []).map((p: any) => ({
+      type: "Credit Collected",
+      no: p.billNo,
+      date: p.createdAt,
+      customer: p.remarks || "-",
+      person: p.collectedBy,
+      gross: p.amount,
+      returns: 0,
+      net: p.amount,
+      payment: p.paymentMode,
+    })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
         <Kpi
           label="Gross Sales"
           value={money(props.grossSales)}
@@ -1531,6 +1584,18 @@ function SalesReturnsTab(props: any) {
           value={money(props.netSales)}
           icon={<IndianRupee className="size-5" />}
           tone="green"
+        />
+        <Kpi
+          label="Advance Collected"
+          value={money(props.salesBreakdown.advanceCollected + props.salesBreakdown.advanceBalanceCollected)}
+          icon={<WalletCards className="size-5" />}
+          tone="blue"
+        />
+        <Kpi
+          label="Credit Collected"
+          value={money(props.salesBreakdown.creditCollected)}
+          icon={<CreditCard className="size-5" />}
+          tone="purple"
         />
       </div>
       <RupeeBreakdown breakdown={props.salesBreakdown} />
@@ -1573,7 +1638,18 @@ function SalesReturnsTab(props: any) {
             "Payment",
           ]}
           rows={salesRows.map((r) => [
-            <StatusBadge key="t" tone={r.type === "Return" ? "red" : "green"}>
+            <StatusBadge
+              key="t"
+              tone={
+                r.type === "Return"
+                  ? "red"
+                  : r.type === "Advance"
+                    ? "blue"
+                    : r.type === "Credit Collected"
+                      ? "amber"
+                      : "green"
+              }
+            >
               {r.type}
             </StatusBadge>,
             r.no,
@@ -1766,7 +1842,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.csv", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
         </Panel>
       </div>
@@ -1819,8 +1895,29 @@ function ComplaintsTab({ userName }: { userName: string }) {
   );
 }
 
+function printWasteLog(entry: any, branchLabel: string) {
+  const rows = [
+    ["Type", entry.logType],
+    ["Item", entry.itemName],
+    ["Quantity", `${entry.quantity} ${entry.unit}`],
+    ["Reason", entry.reason],
+    ["Verified By", entry.verifiedBy],
+    ["Logged By", entry.createdBy],
+  ];
+  const checklistHtml = entry.checklist.length
+    ? `<div class="dash"></div><div class="b">Checklist Confirmed</div>${entry.checklist
+        .map((c: string) => `<div class="row"><span>&#10003; ${c}</span></div>`)
+        .join("")}`
+    : "";
+  const body = `<div class="stamp">WASTE LOG — ${String(entry.logType).toUpperCase()}</div><h2 class="c">${branchLabel}</h2>${rows
+    .map(([label, value]) => `<div class="row"><span>${label}</span><b>${value}</b></div>`)
+    .join("")}${checklistHtml}<div class="dash"></div><div class="c">Stock updated automatically · Printed ${new Date().toLocaleString("en-IN")}</div>`;
+  printHtml(`${branchLabel} Waste Log - ${entry.itemName}`, body);
+}
+
 function WasteLogsTab({ userName }: { userName: string }) {
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
+  const { stock, manualUpdateStock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: SNB_ITEMS[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
@@ -1837,10 +1934,18 @@ function WasteLogsTab({ userName }: { userName: string }) {
     ? transferOutChecklist
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
   const rows = wasteLogs.filter((w) => w.branch === BRANCH);
-  const save = () => {
+  const save = async () => {
     const qty = Number(form.quantity);
     if (!form.itemName || !qty || !form.reason.trim() || !form.verifiedBy.trim()) return;
     addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
+    // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
+    // this branch's inventory, so deduct it from current stock immediately.
+    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
+    const currentQty = Number(currentRow?.quantity || 0);
+    const newQty = Math.max(0, currentQty - qty);
+    await manualUpdateStock(BRANCH, form.itemName, newQty, userName);
+    // Print the waste log along with its checklist in one go.
+    printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
     setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
   };
   return (
@@ -1869,7 +1974,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>
@@ -1948,7 +2053,7 @@ function CreditTab() {
         <Kpi label="Collected" value={money(payments.reduce((s, p) => s + p.amount, 0))} icon={<CheckCircle2 className="size-5" />} tone="green" />
         <Kpi label="Credit Bills" value={credits.length} icon={<Receipt className="size-5" />} tone="amber" />
       </div>
-      <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />}>
+      <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.csv", credits.map((c) => ({ Bill: c.billNo, Customer: c.customerName, Mobile: c.customerPhone || "-", Total: c.subtotal, Paid: c.amountPaid, Balance: c.creditAmount, Due: c.dueDate || "-", Status: c.status })))}><Download className="size-4" /> Excel</button>}>
         <DataTable headers={["Bill", "Customer", "Mobile", "Total", "Paid", "Balance", "Due", "Status"]} rows={credits.map((c) => [c.billNo, c.customerName, c.customerPhone || "-", money(c.subtotal), money(c.amountPaid), money(c.creditAmount), c.dueDate || "-", c.status])} empty="No SNB credit sales found." />
       </Panel>
     </div>
@@ -2034,71 +2139,93 @@ function CashierReportTab(props: any) {
       .map((row) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) }))
       .sort((a, b) => b.netSales - a.netSales);
   }, [props.branchBills, props.branchReturns, props.legacySalesRows]);
+  const totalNet = rows.reduce((sum: number, r: any) => sum + r.netSales, 0);
+  const totalBills = rows.reduce((sum: number, r: any) => sum + r.bills, 0);
+  const best = rows[0];
   return (
-    <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.csv", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
-      <DataTable headers={["Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any) => [r.name, money(r.grossSales), money(r.returns), money(r.netSales), r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
-    </Panel>
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Cashiers" value={rows.length} icon={<UserRound className="size-5" />} />
+        <Kpi label="Total Bills" value={totalBills} icon={<Receipt className="size-5" />} tone="blue" />
+        <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.csv", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
+        <DataTable headers={["Rank", "Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any, idx: number) => [`#${idx + 1}`, r.name, money(r.grossSales), money(r.returns), <span key="n" className="font-black text-emerald-700">{money(r.netSales)}</span>, r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
+      </Panel>
+    </div>
   );
 }
 
 function CashierClosureTab(props: any) {
   const { cashierClosures } = useBranchOpsStore();
   const rows = cashierClosures.filter((c) => c.branch === BRANCH);
+  const totalDifference = rows.reduce((sum, c) => sum + c.difference, 0);
+  const mismatches = rows.filter((c) => c.difference !== 0).length;
   return (
-    <Panel
-      title="All Cashier Closure Data"
-      icon={<CalendarClock className="size-4" />}
-      action={
-        <button
-          className={cn(btnCls, "bg-slate-950 text-white")}
-          onClick={() =>
-            csvDownload(
-              "SNB_All_Cashier_Closures.csv",
-              rows.map((c) => ({
-                Date: fmtDateTime(c.createdAt),
-                Cashier: c.cashier,
-                Opening: c.openingCash,
-                Expected: c.expectedCash,
-                Closing: c.closingCash,
-                Difference: c.difference,
-                Bills: c.billsCount,
-                Cash: c.cash,
-                UPI: c.upi,
-                Card: c.card,
-                Returns: c.returns,
-                CreditSales: c.creditSales ?? 0,
-                CreditCollections: c.creditCollections ?? 0,
-                Notes: c.notes,
-              })),
-            )
-          }
-        >
-          <Download className="size-4" />
-          Export
-        </button>
-      }
-    >
-      <DataTable
-        headers={["Date", "Cashier", "Opening", "Expected", "Closing", "Difference", "Bills", "Cash", "UPI", "Card", "Returns", "Credit Sales", "Credit Collections", "Notes"]}
-        rows={rows.map((c) => [
-          fmtDateTime(c.createdAt),
-          c.cashier,
-          money(c.openingCash),
-          money(c.expectedCash),
-          money(c.closingCash),
-          <span key="d" className={cn("font-black", c.difference === 0 ? "text-emerald-700" : "text-red-600")}>{money(c.difference)}</span>,
-          c.billsCount,
-          money(c.cash),
-          money(c.upi),
-          money(c.card),
-          money(c.returns),
-          money(c.creditSales ?? 0),
-          money(c.creditCollections ?? 0),
-          c.notes || "-",
-        ])}
-        empty="No cashier closures saved."
-      />
-    </Panel>
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Closures Logged" value={rows.length} icon={<CalendarClock className="size-5" />} />
+        <Kpi label="Matched Closures" value={rows.length - mismatches} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
+        <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={totalDifference === 0 ? "green" : "red"} />
+      </div>
+      <Panel
+        title="All Cashier Closure Data"
+        icon={<CalendarClock className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload(
+                "SNB_All_Cashier_Closures.csv",
+                rows.map((c) => ({
+                  Date: fmtDateTime(c.createdAt),
+                  Cashier: c.cashier,
+                  Opening: c.openingCash,
+                  Expected: c.expectedCash,
+                  Closing: c.closingCash,
+                  Difference: c.difference,
+                  Bills: c.billsCount,
+                  Cash: c.cash,
+                  UPI: c.upi,
+                  Card: c.card,
+                  Returns: c.returns,
+                  CreditSales: c.creditSales ?? 0,
+                  CreditCollections: c.creditCollections ?? 0,
+                  Notes: c.notes,
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
+        <DataTable
+          headers={["Date", "Cashier", "Opening", "Expected", "Closing", "Difference", "Status", "Bills", "Cash", "UPI", "Card", "Returns", "Credit Sales", "Credit Collections", "Notes"]}
+          rows={rows.map((c) => [
+            fmtDateTime(c.createdAt),
+            c.cashier,
+            money(c.openingCash),
+            money(c.expectedCash),
+            money(c.closingCash),
+            <span key="d" className={cn("font-black", c.difference === 0 ? "text-emerald-700" : "text-red-600")}>{money(c.difference)}</span>,
+            <StatusBadge key="s" tone={c.difference === 0 ? "green" : "red"}>{c.difference === 0 ? "Matched" : "Mismatch"}</StatusBadge>,
+            c.billsCount,
+            money(c.cash),
+            money(c.upi),
+            money(c.card),
+            money(c.returns),
+            money(c.creditSales ?? 0),
+            money(c.creditCollections ?? 0),
+            c.notes || "-",
+          ])}
+          empty="No cashier closures saved."
+        />
+      </Panel>
+    </div>
   );
 }
 
@@ -2621,14 +2748,36 @@ function PurchaseInvoicesTab({
         title="Purchase Invoice Management & Stock Sync"
         icon={<PackageCheck className="size-4" />}
         action={
-          <StatusBadge tone="amber">
-            {
-              rows.filter(
-                (r) => !(r.syncedToStock || r.syncStatus === "Synced"),
-              ).length
-            }{" "}
-            Not Synced
-          </StatusBadge>
+          <div className="flex items-center gap-2">
+            <StatusBadge tone="amber">
+              {
+                rows.filter(
+                  (r) => !(r.syncedToStock || r.syncStatus === "Synced"),
+                ).length
+              }{" "}
+              Not Synced
+            </StatusBadge>
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() =>
+                csvDownload(
+                  "SNB_Purchase_Invoices.csv",
+                  rows.map((p) => ({
+                    Invoice: p.invoiceNo,
+                    Supplier: p.supplier,
+                    Item: p.itemName,
+                    Quantity: p.quantity,
+                    Total: p.total,
+                    Paid: p.paidAmount,
+                    Balance: Math.max(0, p.total - p.paidAmount),
+                    SyncStatus: p.syncStatus ?? "Not Synced",
+                  })),
+                )
+              }
+            >
+              <Download className="size-4" /> Excel
+            </button>
+          </div>
         }
       >
         <DataTable
@@ -2841,7 +2990,7 @@ function SupplierPaymentsTab({ userName }: { userName: string }) {
           </button>
         </div>
       </Panel>
-      <Panel title="Payment History" icon={<History className="size-4" />}>
+      <Panel title="Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Supplier_Payments.csv", rows.map((p) => ({ Date: p.createdAt, Supplier: p.supplier, Amount: p.amount, Mode: p.mode, Reference: p.reference || "-", PaidBy: p.paidBy })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={[
             "Date",
@@ -2936,11 +3085,14 @@ function BankDepositsTab({
           tone="purple"
         />
         <Kpi
-          label="Bank Balance"
+          label="Total Deposited to Owner"
           value={money(bankBalance)}
           icon={<Landmark className="size-5" />}
-          tone="amber"
+          tone="slate"
         />
+      </div>
+      <div className="rounded-2xl bg-slate-50 p-3 text-xs font-bold text-slate-600 ring-1 ring-slate-100">
+        Money deposited here has been handed over to the Owner's bank account — it is no longer with the branch. Cash/UPI/Card Balance above already reduces automatically by the deposited amount.
       </div>
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel
@@ -3028,6 +3180,7 @@ function BankDepositsTab({
         <Panel
           title="Bank Deposit History"
           icon={<History className="size-4" />}
+          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.csv", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
         >
           <DataTable
             headers={[
@@ -3259,16 +3412,25 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
 
 function SalespersonReportTab(props: any) {
   const [selectedPerson, setSelectedPerson] = useState("All");
+  const sortedRows = [...props.salespersonRows].sort((a: any, b: any) => b.netSales - a.netSales);
   const filteredRows = selectedPerson === "All"
-    ? props.salespersonRows
-    : props.salespersonRows.filter((r: any) => r.name === selectedPerson);
+    ? sortedRows
+    : sortedRows.filter((r: any) => r.name === selectedPerson);
+  const topPerformer = sortedRows[0];
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
           label="Active Salespersons"
           value={props.salespersonRows.length}
           icon={<UserRound className="size-5" />}
+        />
+        <Kpi
+          label="Top Performer"
+          value={topPerformer ? topPerformer.name : "-"}
+          sub={topPerformer ? money(topPerformer.netSales) : undefined}
+          icon={<BarChart3 className="size-5" />}
+          tone="amber"
         />
         <Kpi
           label="Net Sales"
@@ -3283,6 +3445,21 @@ function SalespersonReportTab(props: any) {
           tone="red"
         />
       </div>
+      {sortedRows.length > 0 && (
+        <Panel title="Net Sales by Salesperson" icon={<Activity className="size-4" />}>
+          <div className="h-[260px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={sortedRows} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" tickFormatter={(v) => `₹${Number(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v: number) => money(Number(v))} />
+                <Bar dataKey="netSales" fill="#C5973E" radius={[0, 8, 8, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      )}
       <Panel
         title="Salesperson Performance"
         icon={<BarChart3 className="size-4" />}
@@ -3290,7 +3467,7 @@ function SalespersonReportTab(props: any) {
           <div className="flex flex-wrap gap-2">
             <select className={inputCls} value={selectedPerson} onChange={(e) => setSelectedPerson(e.target.value)}>
               <option value="All">All Salespersons</option>
-              {props.salespersonRows.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
+              {sortedRows.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
             </select>
             <button
               className={cn(btnCls, "bg-slate-950 text-white")}
@@ -3319,6 +3496,7 @@ function SalespersonReportTab(props: any) {
       >
         <DataTable
           headers={[
+            "Rank",
             "Salesperson",
             "Gross Sales",
             "Return Amount",
@@ -3329,7 +3507,8 @@ function SalespersonReportTab(props: any) {
             "UPI",
             "Card",
           ]}
-          rows={filteredRows.map((r: any) => [
+          rows={filteredRows.map((r: any, idx: number) => [
+            `#${sortedRows.indexOf(r) + 1}`,
             r.name,
             money(r.grossSales),
             money(r.returns),
@@ -3347,6 +3526,42 @@ function SalespersonReportTab(props: any) {
       </Panel>
     </div>
   );
+}
+
+function printDailyClosure(props: any, branchLabel: string) {
+  const rows = [
+    ["Date", dateInput()],
+    ["Cashier", props.userName],
+    ["Opening Balance", money(props.openingCash)],
+    ["—", "—"],
+    ["Gross Sales", money(props.grossSales)],
+    ["Return Amount", money(props.returnAmount)],
+    ["Net Sales", money(props.netSales)],
+    ["Cash Sales", money(props.cashSales)],
+    ["UPI Sales", money(props.upiSales)],
+    ["Card Sales", money(props.cardSales)],
+    ["Credit Sales", money(props.creditBillAmount)],
+    ["Credit Collections", money(props.clearedCredit)],
+    ["Advance Collected", money(props.advanceCollected)],
+    ["Advance Balance Collected", money(props.advanceBalanceCollected)],
+    ["Purchase Payments", money(props.purchasePaid)],
+    ["Expenses", money(props.expenseAmount)],
+    ["Bank Deposits", money(props.depositAmount)],
+    ["Pending Credit", money(props.pendingCredit)],
+    ["—", "—"],
+    ["Expected Cash", money(props.expectedCash)],
+    ["Closing Cash Counted", money(props.closingCash)],
+    ["Difference", money(props.diff)],
+    ["Remarks", props.remarks || "-"],
+  ];
+  const body = `<div class="stamp">DAILY CLOSURE REPORT</div><h2 class="c">${branchLabel}</h2>${rows
+    .map(([label, value]) =>
+      label === "—"
+        ? `<div class="dash"></div>`
+        : `<div class="row"><span>${label}</span><b>${value}</b></div>`,
+    )
+    .join("")}<div class="dash"></div><div class="c">Printed ${new Date().toLocaleString("en-IN")}</div>`;
+  printHtml(`${branchLabel} Daily Closure - ${dateInput()}`, body);
 }
 
 function DailyClosureTab({ userName, ...props }: any) {
@@ -3451,7 +3666,20 @@ function DailyClosureTab({ userName, ...props }: any) {
         action={
           <div className="flex gap-2">
             <button
-              onClick={() => window.print()}
+              onClick={() =>
+                printDailyClosure(
+                  {
+                    openingCash: Number(form.openingCash || 0),
+                    closingCash: Number(form.closingCash || 0),
+                    expectedCash,
+                    diff,
+                    remarks: form.remarks,
+                    userName,
+                    ...props,
+                  },
+                  "SNB",
+                )
+              }
               className={cn(
                 btnCls,
                 "bg-white text-slate-700 ring-1 ring-slate-200",
@@ -3649,36 +3877,45 @@ function ReportsTab(props: any) {
         title="Complete Branch Reports"
         icon={<FileSpreadsheet className="size-4" />}
         action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload("SNB_Branch_Report.csv", [
-                {
-                  BillSales: props.salesBreakdown.billSales,
-                  GrossSales: props.grossSales,
-                  ReturnAmount: props.returnAmount,
-                  NetSales: props.netSales,
-                  CashSales: props.cashSales,
-                  UPISales: props.upiSales,
-                  CardSales: props.cardSales,
-                  CreditSales: props.creditBillAmount,
-                  CreditCollections: props.clearedCredit,
-                  AdvanceCollected: props.advanceCollected,
-                  AdvanceBalanceCollected: props.advanceBalanceCollected,
-                  TotalCollections: collectionTotal,
-                  PurchaseTotal: purchaseTotal,
-                  SupplierDue: supplierDue,
-                  SupplierPayments: props.purchasePaid,
-                  Expenses: props.expenseAmount,
-                  BankDeposits: props.depositAmount,
-                  PendingCredit: props.pendingCredit,
-                },
-              ])
-            }
-          >
-            <Download className="size-4" />
-            Export Summary
-          </button>
+          <div className="flex gap-2">
+            <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() => printOverview(props, "SNB")}
+            >
+              <Printer className="size-4" />
+              Print Summary
+            </button>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={() =>
+                csvDownload("SNB_Branch_Report.csv", [
+                  {
+                    BillSales: props.salesBreakdown.billSales,
+                    GrossSales: props.grossSales,
+                    ReturnAmount: props.returnAmount,
+                    NetSales: props.netSales,
+                    CashSales: props.cashSales,
+                    UPISales: props.upiSales,
+                    CardSales: props.cardSales,
+                    CreditSales: props.creditBillAmount,
+                    CreditCollections: props.clearedCredit,
+                    AdvanceCollected: props.advanceCollected,
+                    AdvanceBalanceCollected: props.advanceBalanceCollected,
+                    TotalCollections: collectionTotal,
+                    PurchaseTotal: purchaseTotal,
+                    SupplierDue: supplierDue,
+                    SupplierPayments: props.purchasePaid,
+                    Expenses: props.expenseAmount,
+                    BankDeposits: props.depositAmount,
+                    PendingCredit: props.pendingCredit,
+                  },
+                ])
+              }
+            >
+              <Download className="size-4" />
+              Export Summary
+            </button>
+          </div>
         }
       >
         <div className="grid gap-4 xl:grid-cols-2">
