@@ -13,7 +13,10 @@ import SnbItemsTab from '@/components/admin/SnbItemsTab';
 import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
+import AttendanceSalary from '@/pages/AttendanceSalary';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
+import { useInvoiceStore } from '@/bakery/invoiceStore';
+import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
@@ -32,7 +35,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'audit';
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -52,13 +55,17 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
   { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
-  { id: 'items', label: 'Items', description: 'Bakery SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
+  { id: 'items', label: 'Items', description: 'SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
   { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
   { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
   { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
   { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
+  { id: 'invoices', label: 'Invoices', description: 'Supplier invoices and purchase records', icon: Receipt, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
+  { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
+  { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
+  { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
 ];
 
 function todayInput(d = new Date()) {
@@ -198,7 +205,9 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints } = useBranchOpsStore();
+  const { invoices, load: loadInvoices } = useInvoiceStore();
+  const { notifications: adminNotifications, load: loadAdminNotifications } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
   const selectTab = (next: AdminTab) => {
     setActiveTab(next);
@@ -207,6 +216,7 @@ function AdminDashboard() {
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
   useEffect(() => {
     if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
       setActiveTab(requestedTab);
@@ -512,23 +522,59 @@ function AdminDashboard() {
   );
 
   // CHANGE 14: Removed top KPI grid from OverviewTab. CHANGE 4/5: Added date presets + branch filter + Excel download
+  const overviewPaymentSplit = useMemo(() => {
+    const isAll = branchFilter === 'all';
+    const isCafe = branchFilter === 'Cafe';
+    const totals = { cash: 0, upi: 0, card: 0, credit: 0 };
+    if (isAll || isCafe) {
+      totals.cash += cafePaymentSplit.cash; totals.upi += cafePaymentSplit.upi;
+      totals.card += cafePaymentSplit.card; totals.credit += cafePaymentSplit.credit;
+    }
+    if (isAll || !isCafe) {
+      const filteredBills = branchFilter === 'all' ? opsBillsInRange : opsBillsInRange.filter(b => b.branch === branchFilter);
+      filteredBills.forEach(b => {
+        if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+        else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+        else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+        else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+        else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+      });
+      const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+      filteredTxns.forEach(t => {
+        if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+        else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+        else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+        else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+      });
+    }
+    return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
+  }, [branchFilter, cafePaymentSplit, opsBillsInRange, branchTransactions]);
+
   const OverviewTab = (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* TOP BAR: date presets + branch filter + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
         <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_Overview_${fromDate}_${toDate}.csv`, filteredBranchSalesByBranch.map(r => ({ Branch: r.label, Sales: r.sales, Transactions: r.orders, Returns: r.returns, 'Date From': fromDate, 'Date To': toDate })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
-        <Panel title="Branch-wise Sales Comparison" subtitle="Cafe, SNB, VRSNB and Hosur revenue for selected range"
-          action={
-            <div className="flex flex-wrap items-center gap-2">
-              {rangeControls}
-              <button onClick={() => csvDownload(`Admin_Overview_${fromDate}_${toDate}.csv`, filteredBranchSalesByBranch.map(r => ({ Branch: r.label, Sales: r.sales, Transactions: r.orders, Returns: r.returns, 'Date From': fromDate, 'Date To': toDate })))}
-                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
-                <FileSpreadsheet className="size-3.5" /> Excel
-              </button>
-            </div>
-          }>
+        <Panel title="Branch-wise Sales Comparison" subtitle="Cafe, SNB, VRSNB and Hosur revenue for selected range">
           <ChartWrap>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={filteredBranchSalesByBranch}>
@@ -544,13 +590,13 @@ function AdminDashboard() {
           </ChartWrap>
         </Panel>
 
-        <Panel title="Payment Mode Split" subtitle="Cash, UPI, card and credit mix">
-          {paymentSplit.length === 0 ? <EmptyState label="No payment data in selected range." /> : (
+        <Panel title="Payment Mode Split" subtitle={`Cash, UPI, card and credit mix${branchFilter !== 'all' ? ` — ${BRANCH_LABELS[branchFilter]}` : ' — All branches'}`}>
+          {overviewPaymentSplit.length === 0 ? <EmptyState label="No payment data in selected range." /> : (
             <ChartWrap>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={paymentSplit} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
-                    {paymentSplit.map((_, index) => <Cell key={index} fill={PAYMENT_COLORS[index % PAYMENT_COLORS.length]} />)}
+                  <Pie data={overviewPaymentSplit} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {overviewPaymentSplit.map((_, index) => <Cell key={index} fill={PAYMENT_COLORS[index % PAYMENT_COLORS.length]} />)}
                   </Pie>
                   <Tooltip formatter={value => formatCurrency(Number(value))} />
                 </PieChart>
@@ -558,7 +604,7 @@ function AdminDashboard() {
             </ChartWrap>
           )}
           <div className="grid grid-cols-2 gap-2">
-            {paymentSplit.map((row, index) => (
+            {overviewPaymentSplit.map((row, index) => (
               <div key={row.name} className="rounded-2xl bg-slate-50 p-3">
                 <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: PAYMENT_COLORS[index % PAYMENT_COLORS.length] }} /><p className="text-xs font-black text-slate-700">{row.name}</p></div>
                 <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(row.value)}</p>
@@ -630,34 +676,73 @@ function AdminDashboard() {
     </div>
   );
 
-  // CHANGE 14: Removed top KPI grid from CafeTab. CHANGE 4/6: Added date presets + Excel download
+  // CHANGE 14: Removed top KPI grid from CafeTab. CHANGE 4/6: Added date presets + Excel download, no branch filter (cafe only)
   const CafeTab = (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* TOP BAR: date presets + date range + excel (no branch filter - cafe only) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
         <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_Cafe_${fromDate}_${toDate}.csv`, cafeOrdersInRange.map(o => ({ OrderNo: o.orderNumber, Customer: o.customerName || '-', Items: o.items.reduce((s, i) => s + i.quantity, 0), Payment: o.paymentType || '-', Total: o.total || 0, Status: o.status, Time: fmtDateTime(o.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
       </div>
-      <Panel title="Cafe Sales Trend" subtitle="Cafe-only revenue trend"
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            {rangeControls}
-            <button onClick={() => csvDownload(`Admin_Cafe_${fromDate}_${toDate}.csv`, cafeOrdersInRange.map(o => ({ OrderNo: o.orderNumber, Customer: o.customerName || '-', Items: o.items.reduce((s, i) => s + i.quantity, 0), Payment: o.paymentType || '-', Total: o.total || 0, Status: o.status, Time: fmtDateTime(o.createdAt) })))}
-              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
-              <FileSpreadsheet className="size-3.5" /> Excel
-            </button>
+
+      {/* KPI Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Sales" value={formatCurrency(cafeSalesTotal)} icon={<IndianRupee className="size-5" />} tone="green" sub={`${cafeServedOrders.length} orders`} />
+        <KpiCard label="Cancelled" value={cafeCancelledOrders.length} icon={<TrendingDown className="size-5" />} tone="red" sub="Cancelled orders" />
+        <KpiCard label="Cash Collected" value={formatCurrency(cafePaymentSplit.cash)} icon={<Banknote className="size-5" />} tone="blue" />
+        <KpiCard label="UPI Collected" value={formatCurrency(cafePaymentSplit.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Cafe Sales Trend" subtitle="Cafe-only revenue trend">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={dailySalesTrend}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Line dataKey="Cafe" stroke="#16a34a" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Cafe Payment Split" subtitle="Cash, UPI, Card and Credit breakdown">
+          {Object.values(cafePaymentSplit).every(v => v === 0) ? <EmptyState label="No payment data for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={[{ name: 'Cash', value: cafePaymentSplit.cash }, { name: 'UPI', value: cafePaymentSplit.upi }, { name: 'Card', value: cafePaymentSplit.card }, { name: 'Credit', value: cafePaymentSplit.credit }].filter(d => d.value > 0)} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {PAYMENT_COLORS.map((color, i) => <Cell key={i} fill={color} />)}
+                  </Pie>
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[{ name: 'Cash', value: cafePaymentSplit.cash, color: PAYMENT_COLORS[0] }, { name: 'UPI', value: cafePaymentSplit.upi, color: PAYMENT_COLORS[1] }, { name: 'Card', value: cafePaymentSplit.card, color: PAYMENT_COLORS[2] }, { name: 'Credit', value: cafePaymentSplit.credit, color: PAYMENT_COLORS[3] }].filter(d => d.value > 0).map(d => (
+              <div key={d.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: d.color }} /><p className="text-xs font-black text-slate-700">{d.name}</p></div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(d.value)}</p>
+              </div>
+            ))}
           </div>
-        }>
-        <ChartWrap>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={dailySalesTrend}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
-              <Tooltip formatter={value => formatCurrency(Number(value))} />
-              <Line dataKey="Cafe" stroke="#16a34a" strokeWidth={3} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartWrap>
-      </Panel>
+        </Panel>
+      </div>
+
       <Panel title="Recent Cafe Orders" subtitle="Served and cancelled orders in selected range">
         {cafeOrdersInRange.length === 0 ? <EmptyState label="No cafe orders in this range." /> : (
           <div className="overflow-x-auto">
@@ -683,35 +768,78 @@ function AdminDashboard() {
     </div>
   );
 
-  // CHANGE 7: Branch filter + date presets + Excel. CHANGE 14: Removed KPI grid
-  const filteredBranchTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+  // CHANGE 7: Branch filter + date presets + Excel. CHANGE 14: Removed KPI grid. Cafe excluded from branch filter
+  const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
+  const filteredBranchTxns = branchFilter === 'all' || branchFilter === 'Cafe' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+  const branchOnlyFilter = (branchFilter === 'Cafe' ? 'all' : branchFilter) as Branch | 'all';
   const BranchesTab = (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* TOP BAR: date presets + branch filter (no Cafe) + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
         <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchOnlyFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCH_ONLY_OPTIONS.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_BranchSales_${fromDate}_${toDate}.csv`, filteredBranchTxns.map(t => ({ Branch: t.branch, Item: t.itemName, Qty: t.qty, Payment: t.payment, Revenue: t.revenue, 'Sold By': t.soldBy, Time: fmtDateTime(t.soldAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
       </div>
-      <Panel title="Branch Sales Comparison" subtitle="Revenue by branch and selected range"
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            {rangeControls}
-            <button onClick={() => csvDownload(`Admin_BranchSales_${fromDate}_${toDate}.csv`, filteredBranchTxns.map(t => ({ Branch: t.branch, Item: t.itemName, Qty: t.qty, Payment: t.payment, Revenue: t.revenue, 'Sold By': t.soldBy, Time: fmtDateTime(t.soldAt) })))}
-              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
-              <FileSpreadsheet className="size-3.5" /> Excel
-            </button>
-          </div>
-        }>
-        <ChartWrap>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={branchFilter === 'all' ? branchSalesByBranch.filter(b => b.branch !== 'Cafe') : branchSalesByBranch.filter(b => b.branch === branchFilter)}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
-              <Tooltip formatter={value => formatCurrency(Number(value))} />
-              <Bar dataKey="sales" radius={[10, 10, 0, 0]} fill="#2563eb" />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartWrap>
-      </Panel>
+
+      {/* Branch KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {branchSalesByBranch.filter(b => b.branch !== 'Cafe').map((b, i) => (
+          <KpiCard key={b.branch} label={b.label} value={formatCurrency(b.sales)} icon={<Store className="size-5" />} tone={(['green', 'blue', 'purple'] as const)[i % 3]} sub={`${b.orders} transactions`} />
+        ))}
+        <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch !== 'Cafe').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Branch Sales Comparison" subtitle="Revenue by branch for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={branchOnlyFilter === 'all' ? branchSalesByBranch.filter(b => b.branch !== 'Cafe') : branchSalesByBranch.filter(b => b.branch === branchOnlyFilter)}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]} fill="#2563eb" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Daily Branch Sales Trend" subtitle="Day-by-day revenue for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={dailySalesTrend}>
+                <defs>
+                  <linearGradient id="snbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="vrsnbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#7c3aed" stopOpacity={0.25} /><stop offset="95%" stopColor="#7c3aed" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="hosurFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#d97706" stopOpacity={0.25} /><stop offset="95%" stopColor="#d97706" stopOpacity={0} /></linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'SNB') && <Area type="monotone" dataKey="SNB" stroke="#2563eb" fill="url(#snbFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'VRSNB') && <Area type="monotone" dataKey="VRSNB" stroke="#7c3aed" fill="url(#vrsnbFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'Hosur') && <Area type="monotone" dataKey="Hosur" stroke="#d97706" fill="url(#hosurFill)" strokeWidth={2} />}
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+      </div>
+
       <Panel title="Branch Sales Transactions" subtitle="SNB, VRSNB and Hosur sales details">
         {filteredBranchTxns.length === 0 ? <EmptyState label="No branch sales in this range." /> : (
           <div className="overflow-x-auto">
@@ -739,7 +867,7 @@ function AdminDashboard() {
 
   const ItemsTab = (
     <div className="space-y-5">
-      <Panel title="Items > Bakery" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
+      <Panel title="Item Controls" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
         <div className="mb-4 grid gap-2 sm:grid-cols-2">
           <button onClick={() => setItemsSection('snb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'snb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
             <p className="font-black">SNB Items</p>
@@ -954,80 +1082,124 @@ function AdminDashboard() {
     </div>
   );
 
-  // CHANGE 14: Removed KPI grid from CreditsTab. CHANGE 4/10: Date presets passed via props
+  // CreditsTab KPI data
+  const { creditSales: allCreditSalesMap, advanceOrders: allAdvanceOrdersMap } = useBranchStore(useShallow(s => ({ creditSales: s.creditSales, advanceOrders: s.advanceOrders })));
+  const allCredits = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allCreditSalesMap[branch] || []).map(c => ({ ...c, branch }))), [allCreditSalesMap]);
+  const pendingCredits = useMemo(() => allCredits.filter(c => c.status === 'pending'), [allCredits]);
+  const partialCredits = useMemo(() => allCredits.filter(c => c.status === 'partial'), [allCredits]);
+  const settledCredits = useMemo(() => allCredits.filter(c => c.status === 'settled'), [allCredits]);
+  const totalPending = useMemo(() => pendingCredits.reduce((s, c) => s + Number(c.creditAmount || 0), 0), [pendingCredits]);
+
+  // AdvanceTab KPI data
+  const allAdvances = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allAdvanceOrdersMap[branch] || []).map(a => ({ ...a, branch }))), [allAdvanceOrdersMap]);
+  const pendingAdvances = useMemo(() => allAdvances.filter(a => a.status === 'pending'), [allAdvances]);
+  const deliveredAdvances = useMemo(() => allAdvances.filter(a => a.status === 'completed'), [allAdvances]);
+  const totalAdvanceValue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.subtotal || 0), 0), [allAdvances]);
+  const advanceBalanceDue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.balanceDue || 0), 0), [allAdvances]);
+
   const CreditsTab = (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
         <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+        </div>
       </div>
-      <Panel title="Credit Management" subtitle="Credit collection flow remains inside the existing credit module, now embedded in Admin control.">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Credits" value={allCredits.length} icon={<WalletCards className="size-5" />} tone="slate" />
+        <KpiCard label="Pending" value={pendingCredits.length} icon={<AlertTriangle className="size-5" />} tone={pendingCredits.length > 0 ? 'red' : 'slate'} sub={formatCurrency(totalPending)} />
+        <KpiCard label="Partial" value={partialCredits.length} icon={<CreditCard className="size-5" />} tone="amber" />
+        <KpiCard label="Settled" value={settledCredits.length} icon={<TrendingUp className="size-5" />} tone="green" />
+      </div>
+      <Panel title="Credit Management" subtitle="All branches — pending, partial and settled credit sales">
         <AdminCreditTab branches={ADMIN_BRANCHES} />
       </Panel>
     </div>
   );
 
-  // CHANGE 4/11: Date presets for AdvanceTab
+  // AdvanceTab — improved with top bar + KPI summary
   const AdvanceTab = (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
         <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibond text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_AdvanceOrders_${fromDate}_${toDate}.csv`, allAdvances.map(a => ({ Branch: a.branch, Customer: a.customerName || '-', 'Delivery Date': a.deliveryDate || '-', Subtotal: a.subtotal || 0, 'Advance Paid': a.advanceAmount || 0, 'Balance Due': a.balanceDue || 0, Status: a.status })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
       </div>
-      <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across Cafe, SNB, VRSNB and Hosur.">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Orders" value={allAdvances.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Active Orders" value={pendingAdvances.length} icon={<AlertTriangle className="size-5" />} tone={pendingAdvances.length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Delivered" value={deliveredAdvances.length} icon={<TrendingUp className="size-5" />} tone="green" />
+        <KpiCard label="Balance Due" value={formatCurrency(advanceBalanceDue)} icon={<IndianRupee className="size-5" />} tone={advanceBalanceDue > 0 ? 'red' : 'slate'} sub={`of ${formatCurrency(totalAdvanceValue)} total`} />
+      </div>
+      <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across all branches">
         <AdminAdvanceTab branches={ADMIN_BRANCHES} />
       </Panel>
     </div>
   );
 
+  const [varianceBranchFilter, setVarianceBranchFilter] = useState<Branch | 'all'>('all');
+  const [varianceSearch, setVarianceSearch] = useState('');
+  const filteredVarianceRecords = useMemo(() => {
+    return stockVarianceRecords
+      .filter(r => varianceBranchFilter === 'all' || r.branch === varianceBranchFilter)
+      .filter(r => !varianceSearch || r.itemName.toLowerCase().includes(varianceSearch.toLowerCase()) || r.reportNo?.toLowerCase().includes(varianceSearch.toLowerCase()));
+  }, [stockVarianceRecords, varianceBranchFilter, varianceSearch]);
+  const excessVariance = filteredVarianceRecords.filter(r => r.difference > 0);
+  const shortVariance = filteredVarianceRecords.filter(r => r.difference < 0);
+
   const StockVarianceTab = (
     <div className="space-y-5">
-      <Panel
-        title="Stock Variance"
-        subtitle="Physical stock-count differences confirmed by branch admin"
-        action={
-          <button
-            onClick={() =>
-              csvDownload(
-                'Admin_StockVariance.csv',
-                stockVarianceRecords.map(row => ({
-                  Date: fmtDateTime(row.createdAt),
-                  Branch: row.branch,
-                  Report: row.reportNo,
-                  Item: row.itemName,
-                  Unit: row.unit || '',
-                  'System Qty': row.systemQty,
-                  'Physical Qty': row.physicalQty,
-                  Difference: row.difference,
-                  'Reported By': row.reportedBy,
-                  'Confirmed By': row.confirmedBy,
-                })),
-              )
-            }
-            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"
-          >
-            <FileSpreadsheet className="size-3.5" />Excel
-          </button>
-        }
-      >
-        {stockVarianceRecords.length === 0 ? (
-          <EmptyState label="No stock variance records yet. Differences will appear after SNB Admin confirms a stock-count report." />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap gap-2">
+          <select value={varianceBranchFilter} onChange={e => setVarianceBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(b => <option key={b} value={b}>{BRANCH_LABELS[b]}</option>)}
+          </select>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={varianceSearch} onChange={e => setVarianceSearch(e.target.value)} placeholder="Search item or report" className="rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none" />
+          </div>
+        </div>
+        <button onClick={() => csvDownload('Admin_StockVariance.csv', filteredVarianceRecords.map(r => ({ Date: fmtDateTime(r.createdAt), Branch: r.branch, Report: r.reportNo, Item: r.itemName, Unit: r.unit || '', 'System Qty': r.systemQty, 'Physical Qty': r.physicalQty, Difference: r.difference, 'Reported By': r.reportedBy, 'Confirmed By': r.confirmedBy })))}
+          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+          <FileSpreadsheet className="size-3.5" /> Excel
+        </button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Variances" value={filteredVarianceRecords.length} icon={<AlertTriangle className="size-5" />} tone="slate" />
+        <KpiCard label="Excess (Physical > System)" value={excessVariance.length} icon={<TrendingUp className="size-5" />} tone="blue" />
+        <KpiCard label="Short (Physical < System)" value={shortVariance.length} icon={<TrendingDown className="size-5" />} tone={shortVariance.length > 0 ? 'red' : 'slate'} />
+      </div>
+      <Panel title="Stock Variance Records" subtitle="Physical stock-count differences confirmed by branch admin">
+        {filteredVarianceRecords.length === 0 ? (
+          <EmptyState label={stockVarianceRecords.length === 0 ? "No stock variance records yet. Differences appear after SNB Admin confirms a stock-count report." : "No records match current filters."} />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[920px] text-sm">
               <thead>
                 <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
-                  <th className="p-3">Date</th>
-                  <th className="p-3">Branch</th>
-                  <th className="p-3">Report</th>
-                  <th className="p-3">Item</th>
-                  <th className="p-3 text-right">System</th>
-                  <th className="p-3 text-right">Physical</th>
-                  <th className="p-3 text-right">Difference</th>
-                  <th className="p-3">Reported By</th>
-                  <th className="p-3">Confirmed By</th>
+                  <th className="p-3">Date</th><th className="p-3">Branch</th><th className="p-3">Report</th><th className="p-3">Item</th>
+                  <th className="p-3 text-right">System</th><th className="p-3 text-right">Physical</th><th className="p-3 text-right">Difference</th>
+                  <th className="p-3">Reported By</th><th className="p-3">Confirmed By</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {stockVarianceRecords.slice(0, 300).map(row => (
+                {filteredVarianceRecords.slice(0, 300).map(row => (
                   <tr key={row.id} className="hover:bg-slate-50">
                     <td className="p-3 text-slate-500">{fmtDateTime(row.createdAt)}</td>
                     <td className="p-3"><BranchPill branch={row.branch} /></td>
@@ -1035,7 +1207,7 @@ function AdminDashboard() {
                     <td className="p-3 font-semibold">{row.itemName}</td>
                     <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
                     <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
-                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : 'blue'}>{row.difference}</Badge></td>
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : row.difference < 0 ? 'blue' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
                     <td className="p-3 text-slate-500">{row.reportedBy}</td>
                     <td className="p-3 text-slate-500">{row.confirmedBy}</td>
                   </tr>
@@ -1048,7 +1220,7 @@ function AdminDashboard() {
     </div>
   );
 
-  // CHANGE 12: Improved AuditTab with filters, search, refresh, empty message, Excel export
+  // CHANGE 12: Simplified AuditTab — shows only main details
   const AuditTab = (
     <div className="space-y-5">
       <Panel title="Admin Audit Logs" subtitle="Sensitive edits, stock changes, duplicate prints and closure actions"
@@ -1058,7 +1230,7 @@ function AdminDashboard() {
               className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
               <RefreshCw className="size-3.5" />Refresh
             </button>
-            <button onClick={() => csvDownload('Admin_AuditLogs.csv', filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action, Previous: l.previousValue, New: l.newValue })))}
+            <button onClick={() => csvDownload('Admin_AuditLogs.csv', filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action })))}
               className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
               <FileSpreadsheet className="size-3.5" />Excel
             </button>
@@ -1086,8 +1258,8 @@ function AdminDashboard() {
           <EmptyState label={auditLogs.length === 0 ? "Audit logs are written when stock edits, duplicate prints, and closure actions occur in branch dashboards." : "No audit logs match the current filters."} />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Time</th><th className="p-3">Branch</th><th className="p-3">User</th><th className="p-3">Action</th><th className="p-3">Previous</th><th className="p-3">New</th></tr></thead>
+            <table className="w-full min-w-[560px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Time</th><th className="p-3">Branch</th><th className="p-3">User</th><th className="p-3">Action</th></tr></thead>
               <tbody className="divide-y">
                 {filteredAuditLogs.slice(0, 150).map(log => (
                   <tr key={log.id} className="hover:bg-slate-50">
@@ -1095,8 +1267,6 @@ function AdminDashboard() {
                     <td className="p-3"><BranchPill branch={log.branch} /></td>
                     <td className="p-3 font-semibold">{log.user}</td>
                     <td className="p-3">{log.action}</td>
-                    <td className="p-3 text-slate-500">{log.previousValue}</td>
-                    <td className="p-3 text-slate-500">{log.newValue}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1104,6 +1274,157 @@ function AdminDashboard() {
           </div>
         )}
       </Panel>
+    </div>
+  );
+
+  // Invoices Tab
+  const InvoicesTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Invoices" value={invoices.length} icon={<Receipt className="size-5" />} tone="slate" />
+        <KpiCard label="Pending Review" value={invoices.filter(inv => inv.status === 'pending_review').length} icon={<AlertTriangle className="size-5" />} tone={invoices.filter(inv => inv.status === 'pending_review').length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Total Value" value={formatCurrency(invoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0))} icon={<IndianRupee className="size-5" />} tone="blue" />
+      </div>
+      <Panel title="Supplier Invoices" subtitle="Store purchase invoices and review status"
+        action={
+          <button onClick={() => csvDownload('Admin_Invoices.csv', invoices.map(inv => ({ Invoice: inv.invoiceNumber || '-', Supplier: inv.supplierName || '-', Delivery: fmtDate(inv.deliveryDate || inv.createdAt), Total: inv.grandTotal || 0, Status: inv.status || '-', Notes: inv.notes || '-' })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        }>
+        {invoices.length === 0 ? <EmptyState label="No invoices found. Store purchase invoices appear here after being created in the bakery store." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Invoice #</th><th className="p-3">Supplier</th><th className="p-3">Delivery Date</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Notes</th></tr></thead>
+              <tbody className="divide-y">
+                {invoices.slice(0, 100).map(inv => (
+                  <tr key={inv.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-bold">{inv.invoiceNumber || '-'}</td>
+                    <td className="p-3">{inv.supplierName || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDate(inv.deliveryDate || inv.createdAt)}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(Number(inv.grandTotal || 0))}</td>
+                    <td className="p-3"><Badge tone={inv.status === 'approved' ? 'green' : inv.status === 'pending_review' ? 'amber' : 'red'}>{inv.status?.replace(/_/g, ' ') || 'pending'}</Badge></td>
+                    <td className="p-3 text-slate-500 max-w-[200px] truncate">{inv.notes || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Alerts Tab — no low stock
+  const nonLowStockNotifications = useMemo(() =>
+    adminNotifications.filter(n => n.type !== 'low_stock'),
+    [adminNotifications]
+  );
+  const AlertsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Alerts" value={nonLowStockNotifications.length} icon={<Bell className="size-5" />} tone="slate" />
+        <KpiCard label="Unread" value={nonLowStockNotifications.filter(n => !n.isRead).length} icon={<AlertTriangle className="size-5" />} tone={nonLowStockNotifications.filter(n => !n.isRead).length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="Credit Alerts" value={nonLowStockNotifications.filter(n => n.type === 'credit_sale').length} icon={<WalletCards className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Business Alerts" subtitle="Credit, packing, invoice and operational alerts — low stock excluded">
+        {nonLowStockNotifications.length === 0 ? <EmptyState label="No alerts. Credit sales, invoice and packing alerts will appear here." /> : (
+          <div className="space-y-3">
+            {nonLowStockNotifications.slice(0, 50).map(n => (
+              <div key={n.id} className={cn('rounded-2xl border p-4', n.isRead ? 'border-slate-100 bg-slate-50' : 'border-amber-200 bg-amber-50')}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-slate-900">{n.title}</p>
+                    <p className="mt-1 text-xs text-slate-600">{n.body}</p>
+                    <p className="mt-2 text-[10px] text-slate-400">{fmtDateTime(n.createdAt)}</p>
+                  </div>
+                  <Badge tone={n.isRead ? 'slate' : 'amber'}>{n.isRead ? 'Read' : 'Unread'}</Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Complaints Tab — from VRSNB and SNB admins
+  const adminComplaints = useMemo(() =>
+    (complaints || []).filter(c => ['VRSNB', 'SNB'].includes(c.branch))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [complaints]
+  );
+  const [complaintStatusUpdate, setComplaintStatusUpdate] = useState<Record<string, string>>({});
+  const ComplaintsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Complaints" value={adminComplaints.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Open" value={adminComplaints.filter(c => c.status === 'Open').length} icon={<AlertTriangle className="size-5" />} tone={adminComplaints.filter(c => c.status === 'Open').length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="In Review" value={adminComplaints.filter(c => c.status === 'In Review').length} icon={<ShieldCheck className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Branch Admin Complaints" subtitle="Complaints raised by VRSNB and SNB admins"
+        action={
+          <button onClick={() => csvDownload('Admin_Complaints.csv', adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        }>
+        {adminComplaints.length === 0 ? <EmptyState label="No complaints from VRSNB or SNB admins yet." /> : (
+          <div className="space-y-4">
+            {adminComplaints.slice(0, 50).map(c => (
+              <div key={c.id} className={cn('rounded-3xl border p-4', c.status === 'Open' ? 'border-red-200 bg-red-50' : c.status === 'In Review' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white')}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <BranchPill branch={c.branch} />
+                    <div>
+                      <p className="text-sm font-black text-slate-900">{c.title}</p>
+                      <p className="text-xs text-slate-500">{c.complaintArea} · Raised by {c.raisedBy} · {fmtDate(c.createdAt)}</p>
+                    </div>
+                  </div>
+                  <Badge tone={c.status === 'Open' ? 'red' : c.status === 'In Review' ? 'amber' : 'green'}>{c.status}</Badge>
+                </div>
+                <p className="mt-3 text-sm text-slate-700">{c.details}</p>
+                <div className="mt-3 flex items-center gap-2">
+                  <select
+                    value={complaintStatusUpdate[c.id] || c.status}
+                    onChange={e => setComplaintStatusUpdate(prev => ({ ...prev, [c.id]: e.target.value }))}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold outline-none">
+                    <option value="Open">Open</option>
+                    <option value="In Review">In Review</option>
+                    <option value="Resolved">Resolved</option>
+                  </select>
+                  <button
+                    onClick={async () => {
+                      const newStatus = complaintStatusUpdate[c.id] || c.status;
+                      if (newStatus !== c.status) {
+                        await supabase.from('branch_complaints').update({ status: newStatus }).eq('id', c.id);
+                      }
+                    }}
+                    className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white">
+                    Update
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Attendance Tab — embeds the full AttendanceSalary page
+  const AttendanceTab = (
+    <div className="space-y-5">
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="grid size-10 place-items-center rounded-xl bg-blue-50"><CalendarClock className="size-5 text-blue-600" /></div>
+          <div>
+            <p className="font-black text-slate-900">Staff Attendance & Payroll</p>
+            <p className="text-xs text-slate-500">Manage attendance, calculate salaries and track advances for all staff</p>
+          </div>
+        </div>
+      </div>
+      <AttendanceSalary />
     </div>
   );
 
@@ -1118,6 +1439,10 @@ function AdminDashboard() {
     'stock-disputes': StockDisputesTab,
     'stock-variance': StockVarianceTab,
     audit: AuditTab,
+    invoices: InvoicesTab,
+    alerts: AlertsTab,
+    complaints: ComplaintsTab,
+    attendance: AttendanceTab,
   };
 
   const activeMeta = NAV_ITEMS.find(item => item.id === activeTab) || NAV_ITEMS[0];
@@ -1141,19 +1466,15 @@ function AdminDashboard() {
       <div className="mx-auto flex min-h-[100dvh] max-w-[1800px]">
         <div className="sticky top-0 hidden h-[100dvh] shrink-0 md:block">{sidebar}</div>
         <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
-          <div className="mb-5 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/70 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Complete Business Control</p>
                 <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
               </div>
               <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
               <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600"><Activity className="size-4 text-emerald-600" />{new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}</span>
-              <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
-            </div>
+            <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
           </div>
 
           {!isAdmin && (

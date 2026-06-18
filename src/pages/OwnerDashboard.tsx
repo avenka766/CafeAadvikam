@@ -933,15 +933,19 @@ function AttendanceSalaryTab() {
 // ── Waste Logs Tab ────────────────────────────────────────────────────────────
 // CHANGE 11: date range state + presets + daily trend chart
 function WasteLogsTab() {
+  // Kitchen waste log (cafe)
   const [entries, setEntries] = useState<Array<{
     id: string; food_item: string; quantity: string; logged_at: string;
   }>>([]);
+  // Branch waste logs from branchOpsStore
+  const { wasteLogs } = useBranchOpsStore();
   const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState('');
+  const [error, setError] = useState('');
+  const [activeSource, setActiveSource] = useState<'kitchen' | 'branches'>('kitchen');
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const [fromDate, setFromDate] = useState(todayStr);
-  const [toDate,   setToDate]   = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
 
   useEffect(() => {
     const fetchWaste = async () => {
@@ -957,6 +961,14 @@ function WasteLogsTab() {
     };
     fetchWaste();
   }, [fromDate, toDate]);
+
+  // Filter branch waste logs by date range
+  const filteredBranchWaste = useMemo(() => {
+    return wasteLogs.filter(log => {
+      const d = new Date(log.createdAt);
+      return d >= new Date(`${fromDate}T00:00:00`) && d <= new Date(`${toDate}T23:59:59`);
+    }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [wasteLogs, fromDate, toDate]);
 
   const dailyWasteCount = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -983,6 +995,18 @@ function WasteLogsTab() {
   }, [entries]);
   const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
 
+  // Group branch waste by date
+  const branchWasteGrouped = useMemo(() => {
+    const g: Record<string, typeof filteredBranchWaste> = {};
+    filteredBranchWaste.forEach(log => {
+      const date = log.createdAt.slice(0, 10);
+      if (!g[date]) g[date] = [];
+      g[date].push(log);
+    });
+    return g;
+  }, [filteredBranchWaste]);
+  const sortedBranchDates = Object.keys(branchWasteGrouped).sort((a, b) => b.localeCompare(a));
+
   function formatDateLabel(dateStr: string) {
     const d = new Date(dateStr + 'T00:00:00');
     const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
@@ -1000,6 +1024,19 @@ function WasteLogsTab() {
     setToDate(d2.toISOString().slice(0, 10));
   };
 
+  const BRANCH_COLORS_MAP: Record<string, string> = {
+    SNB: 'bg-blue-50 text-blue-700',
+    VRSNB: 'bg-purple-50 text-purple-700',
+    Hosur: 'bg-amber-50 text-amber-700',
+    Cafe: 'bg-emerald-50 text-emerald-700',
+  };
+
+  const LOG_TYPE_COLORS: Record<string, string> = {
+    Dump: 'bg-red-50 text-red-600',
+    Damage: 'bg-orange-50 text-orange-600',
+    'Trans Out': 'bg-blue-50 text-blue-600',
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -1007,111 +1044,325 @@ function WasteLogsTab() {
           <Trash2 className="size-4 text-red-600" />
         </div>
         <div>
-          <p className="text-sm font-semibold text-foreground">Kitchen Waste Log</p>
-          <p className="text-[11px] text-muted-foreground">Logged by kitchen</p>
+          <p className="text-sm font-semibold text-foreground">Waste & Loss</p>
+          <p className="text-xs text-muted-foreground">Kitchen waste log and branch waste records</p>
         </div>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            { label: 'Today',     from: 0,  to: 0 },
-            { label: 'Yesterday', from: 1,  to: 1 },
-            { label: 'Last 7d',   from: 6,  to: 0 },
-            { label: 'Last 15d',  from: 14, to: 0 },
-            { label: '4 Weeks',   from: 27, to: 0 },
-            { label: '7 Weeks',   from: 48, to: 0 },
-          ].map(p => (
-            <button key={p.label} onClick={() => applyPreset(p.from, p.to)}
-              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
-            className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none" />
-          <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
-            className="flex-1 rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none" />
-        </div>
+      {/* Source toggle */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setActiveSource('kitchen')}
+          className={`rounded-xl px-4 py-2 text-xs font-black transition ${activeSource === 'kitchen' ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+          Kitchen Waste ({entries.length})
+        </button>
+        <button
+          onClick={() => setActiveSource('branches')}
+          className={`rounded-xl px-4 py-2 text-xs font-black transition ${activeSource === 'branches' ? 'bg-slate-950 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+          Branch Waste ({filteredBranchWaste.length})
+        </button>
       </div>
 
-      {!loading && entries.length > 0 && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-red-50 border border-red-100 rounded-2xl p-3 text-center">
-            <p className="font-display text-2xl font-bold text-red-700 tabular-nums">{entries.length}</p>
-            <p className="text-[10px] font-semibold text-red-500 uppercase tracking-wide mt-0.5">Total Entries</p>
-          </div>
-          <div className="bg-card border border-border rounded-2xl p-3 text-center">
-            <p className="font-display text-2xl font-bold text-foreground tabular-nums">{sortedDates.length}</p>
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mt-0.5">Days with Waste</p>
-          </div>
-        </div>
-      )}
+      {/* Date filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        {[{ label: 'Today', args: [0, 0] }, { label: 'Yesterday', args: [1, 1] }, { label: '7 Days', args: [6, 0] }, { label: '30 Days', args: [29, 0] }].map(p => (
+          <button key={p.label} onClick={() => applyPreset(p.args[0], p.args[1])}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
+            {p.label}
+          </button>
+        ))}
+        <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+          From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+        </label>
+        <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+          To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+        </label>
+      </div>
 
-      {!loading && dailyWasteCount.length > 1 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-4">Daily Waste Trend</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={dailyWasteCount}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-              <Tooltip />
-              <Bar dataKey="Entries" fill="#ef4444" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20">
-          <AlertTriangle className="size-4 text-destructive shrink-0" />
-          <p className="text-xs text-destructive">{error}</p>
-        </div>
-      )}
-      {loading && <div className="flex items-center justify-center py-12"><div className="size-6 rounded-xl bg-primary/10 animate-pulse" /></div>}
-      {!loading && !error && entries.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-          <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
-            <Trash2 className="size-7 text-muted-foreground" />
-          </div>
-          <p className="text-sm font-medium text-muted-foreground">No waste logged for this period</p>
-        </div>
-      )}
-      {!loading && sortedDates.map(date => (
-        <div key={date} className="space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{formatDateLabel(date)}</span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-bold">
-              {grouped[date].length} {grouped[date].length === 1 ? 'entry' : 'entries'}
-            </span>
-          </div>
-          <div className="space-y-1.5">
-            {grouped[date].map(entry => (
-              <div key={entry.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
-                <div className="size-8 rounded-xl flex items-center justify-center shrink-0 bg-red-50">
-                  <Trash2 className="size-3.5 text-red-500" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-foreground truncate">{entry.food_item}</p>
-                  <p className="text-[11px] text-muted-foreground">{entry.quantity}</p>
-                </div>
-                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
-                  {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+      {activeSource === 'kitchen' && (
+        <>
+          {/* Daily trend chart */}
+          {dailyWasteCount.length > 1 && (
+            <div className="rounded-2xl border border-border bg-card p-4">
+              <p className="text-xs font-bold text-muted-foreground mb-3">Daily Kitchen Waste Entries</p>
+              <div style={{ height: 180 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dailyWasteCount}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="Entries" fill="#ef4444" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          {error && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20">
+              <AlertTriangle className="size-4 text-destructive shrink-0" />
+              <p className="text-xs text-destructive">{error}</p>
+            </div>
+          )}
+          {loading && <div className="flex items-center justify-center py-12"><div className="size-6 rounded-xl bg-primary/10 animate-pulse" /></div>}
+          {!loading && !error && entries.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+              <Trash2 className="size-7 text-muted-foreground" />
+              <p className="text-sm font-medium text-muted-foreground">No kitchen waste logged for this period</p>
+            </div>
+          )}
+          {!loading && sortedDates.map(date => (
+            <div key={date} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{formatDateLabel(date)}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-bold">
+                  {grouped[date].length} {grouped[date].length === 1 ? 'entry' : 'entries'}
                 </span>
               </div>
-            ))}
-          </div>
-        </div>
-      ))}
+              <div className="space-y-1.5">
+                {grouped[date].map(entry => (
+                  <div key={entry.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
+                    <div className="size-8 rounded-xl flex items-center justify-center shrink-0 bg-red-50">
+                      <Trash2 className="size-3.5 text-red-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-foreground truncate">{entry.food_item}</p>
+                      <p className="text-[11px] text-muted-foreground">{entry.quantity}</p>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                      {new Date(entry.logged_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {activeSource === 'branches' && (
+        <>
+          {filteredBranchWaste.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+              <Trash2 className="size-7 text-muted-foreground" />
+              <p className="text-sm font-medium text-muted-foreground">No branch waste logs for this period</p>
+            </div>
+          )}
+          {/* Summary by branch */}
+          {filteredBranchWaste.length > 0 && (
+            <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+              {(['SNB', 'VRSNB', 'Hosur', 'Cafe'] as const).map(branch => {
+                const count = filteredBranchWaste.filter(l => l.branch === branch).length;
+                return (
+                  <div key={branch} className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <p className="text-[10px] font-black uppercase text-slate-500">{branch}</p>
+                    <p className="text-2xl font-black text-slate-950">{count}</p>
+                    <p className="text-xs text-slate-500">waste entries</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {sortedBranchDates.map(date => (
+            <div key={date} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{formatDateLabel(date)}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-50 text-red-600 font-bold">
+                  {branchWasteGrouped[date].length} entries
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {branchWasteGrouped[date].map(log => (
+                  <div key={log.id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
+                    <div className={`size-8 rounded-xl flex items-center justify-center shrink-0 ${LOG_TYPE_COLORS[log.logType] || 'bg-slate-50 text-slate-500'}`}>
+                      <Trash2 className="size-3.5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-foreground truncate">{log.itemName}</p>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${BRANCH_COLORS_MAP[log.branch] || 'bg-slate-100 text-slate-600'}`}>{log.branch}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${LOG_TYPE_COLORS[log.logType] || 'bg-slate-100 text-slate-500'}`}>{log.logType}</span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">{log.quantity} {log.unit} · {log.reason || '-'} · by {log.createdBy}</p>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                      {new Date(log.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
 
+// ── Owner Audit Logs Tab (read-only) ─────────────────────────────────────────
+function OwnerAuditTab() {
+  const { auditLogs } = useBranchOpsStore();
+  const { fetchBranchData } = useBranchStore();
+  const [search, setSearch] = useState('');
+  const [branchFilter, setBranchFilter] = useState<string>('all');
 
-// ── Branch Overview Tab ──────────────────────────────────────────────────────
-// CHANGE 4: split view toggle, better cards, payment grouped chart, extended presets
+  useEffect(() => { OWNER_FULL_BRANCHES.forEach(b => fetchBranchData(b)); }, [fetchBranchData]);
+
+  const filtered = useMemo(() =>
+    auditLogs
+      .filter(l => branchFilter === 'all' || l.branch === branchFilter)
+      .filter(l => !search || `${l.action} ${l.user} ${l.branch}`.toLowerCase().includes(search.toLowerCase()))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [auditLogs, branchFilter, search]
+  );
+
+  const BRANCH_COLOR: Record<string, string> = { SNB: 'bg-blue-50 text-blue-700', VRSNB: 'bg-purple-50 text-purple-700', Hosur: 'bg-amber-50 text-amber-700', Cafe: 'bg-emerald-50 text-emerald-700' };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <div className="size-8 rounded-xl flex items-center justify-center bg-slate-100">
+          <ShieldCheck className="size-4 text-slate-600" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-foreground">Audit Logs</p>
+          <p className="text-xs text-muted-foreground">Sensitive action history across all branches — read-only</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search action, user or branch" className="w-full rounded-2xl border border-border bg-card py-2 pl-9 pr-3 text-sm outline-none" />
+        </div>
+        <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)} className="rounded-2xl border border-border bg-card px-3 py-2 text-sm outline-none">
+          <option value="all">All branches</option>
+          {OWNER_FULL_BRANCHES.map(b => <option key={b} value={b}>{ownerBranchDisplay(b)}</option>)}
+        </select>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-2 text-center">
+          <ShieldCheck className="size-7 text-muted-foreground" />
+          <p className="text-sm font-medium text-muted-foreground">{auditLogs.length === 0 ? 'No audit logs yet' : 'No logs match filters'}</p>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {filtered.slice(0, 150).map(log => (
+            <div key={log.id} className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${BRANCH_COLOR[log.branch] || 'bg-slate-100 text-slate-600'}`}>{log.branch}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground truncate">{log.action}</p>
+                <p className="text-[11px] text-muted-foreground">{log.user}</p>
+              </div>
+              <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                {new Date(log.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Owner Complaints Tab ──────────────────────────────────────────────────────
+function OwnerComplaintsTab() {
+  const { complaints } = useBranchOpsStore();
+  const [statusUpdates, setStatusUpdates] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const allComplaints = useMemo(() =>
+    [...(complaints || [])].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [complaints]
+  );
+
+  const open = allComplaints.filter(c => c.status === 'Open').length;
+  const inReview = allComplaints.filter(c => c.status === 'In Review').length;
+  const resolved = allComplaints.filter(c => c.status === 'Resolved').length;
+
+  const BRANCH_COLOR: Record<string, string> = {
+    SNB: 'bg-blue-50 text-blue-700 border-blue-200',
+    VRSNB: 'bg-purple-50 text-purple-700 border-purple-200',
+    Hosur: 'bg-amber-50 text-amber-700 border-amber-200',
+    Cafe: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  };
+
+  const handleUpdate = async (id: string, currentStatus: string) => {
+    const newStatus = statusUpdates[id] || currentStatus;
+    if (newStatus === currentStatus) return;
+    setSaving(id);
+    await supabase.from('branch_complaints').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', id);
+    setSaving(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <div className="size-8 rounded-xl flex items-center justify-center bg-orange-50">
+          <AlertTriangle className="size-4 text-orange-600" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-foreground">Complaints</p>
+          <p className="text-xs text-muted-foreground">All branch admin complaints — owner view</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {[{ label: 'Open', count: open, color: 'bg-red-50 border-red-200 text-red-700' },
+          { label: 'In Review', count: inReview, color: 'bg-amber-50 border-amber-200 text-amber-700' },
+          { label: 'Resolved', count: resolved, color: 'bg-emerald-50 border-emerald-200 text-emerald-700' }
+        ].map(({ label, count, color }) => (
+          <div key={label} className={`rounded-2xl border px-4 py-3 ${color}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{label}</p>
+            <p className="text-2xl font-black tabular-nums">{count}</p>
+          </div>
+        ))}
+      </div>
+
+      {allComplaints.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-2 text-center">
+          <AlertTriangle className="size-7 text-muted-foreground" />
+          <p className="text-sm font-medium text-muted-foreground">No complaints yet from any branch admin</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {allComplaints.map(c => (
+            <div key={c.id} className={`rounded-2xl border p-4 ${c.status === 'Open' ? 'border-red-200 bg-red-50' : c.status === 'In Review' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${BRANCH_COLOR[c.branch] || 'bg-slate-100'}`}>{c.branch}</span>
+                  <span className="text-[10px] text-muted-foreground font-semibold">{c.complaintArea}</span>
+                  <span className="text-[10px] text-muted-foreground">· {c.raisedBy} · {new Date(c.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                </div>
+                <span className={`self-start text-[10px] font-black px-2 py-0.5 rounded-full ${c.status === 'Open' ? 'bg-red-200 text-red-800' : c.status === 'In Review' ? 'bg-amber-200 text-amber-800' : 'bg-emerald-200 text-emerald-800'}`}>{c.status}</span>
+              </div>
+              <p className="mt-2 text-sm font-bold text-foreground">{c.title}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{c.details}</p>
+              <div className="mt-3 flex items-center gap-2">
+                <select
+                  value={statusUpdates[c.id] ?? c.status}
+                  onChange={e => setStatusUpdates(prev => ({ ...prev, [c.id]: e.target.value }))}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold outline-none">
+                  <option value="Open">Open</option>
+                  <option value="In Review">In Review</option>
+                  <option value="Resolved">Resolved</option>
+                </select>
+                <button
+                  disabled={saving === c.id}
+                  onClick={() => void handleUpdate(c.id, c.status)}
+                  className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">
+                  {saving === c.id ? 'Saving…' : 'Update'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BranchOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
@@ -1526,18 +1777,12 @@ function OwnerAlertsTab() {
     STOCK_BRANCHES.forEach(branch => {
       const stockRows = stock[branch] || [];
       const out = stockRows.filter(item => item.quantity <= 0);
-      const low = stockRows.filter(item => item.quantity > 0 && item.minThreshold > 0 && item.quantity <= item.minThreshold);
+      // Low stock alerts removed — owner should not receive low stock notifications
       if (out.length) list.push({
         title: `${ownerBranchDisplay(branch)} — Out of stock`,
         value: String(out.length),
         note: out.slice(0, 3).map(i => i.itemName).join(', ') + (out.length > 3 ? `… +${out.length - 3} more` : ''),
         tone: 'danger', branch,
-      });
-      if (low.length) list.push({
-        title: `${ownerBranchDisplay(branch)} — Low stock`,
-        value: String(low.length),
-        note: `Needs restocking before running out`,
-        tone: 'warning', branch,
       });
     });
     OWNER_FULL_BRANCHES.forEach(branch => {
@@ -1950,12 +2195,14 @@ type OwnerDashboardTab =
   | 'variance'
   | 'alerts'
   | 'attendance'
-  | 'waste';
+  | 'waste'
+  | 'complaints'
+  | 'audit';
 
 export default function OwnerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds: OwnerDashboardTab[] = ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste'];
+  const ownerTabIds: OwnerDashboardTab[] = ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'];
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'branches';
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
@@ -1979,6 +2226,8 @@ export default function OwnerDashboard() {
     { id: 'alerts',     label: 'Owner Alerts',       icon: <Bell          className="size-4" />, hint: 'Actionable risks' },
     { id: 'attendance', label: 'Staff & Payroll',    icon: <CalendarCheck className="size-4" />, hint: 'Attendance and advances' },
     { id: 'waste',      label: 'Waste & Loss',       icon: <Trash2        className="size-4" />, hint: 'Kitchen loss control' },
+    { id: 'complaints', label: 'Complaints',          icon: <AlertTriangle className="size-4" />, hint: 'Branch admin complaints' },
+    { id: 'audit',      label: 'Audit Logs',          icon: <ShieldCheck   className="size-4" />, hint: 'Sensitive action history' },
   ];
 
   return (
@@ -2015,6 +2264,8 @@ export default function OwnerDashboard() {
           {tab === 'alerts'     && <OwnerAlertsTab />}
           {tab === 'attendance' && <AttendanceSalaryTab />}
           {tab === 'waste'      && <WasteLogsTab />}
+          {tab === 'complaints' && <OwnerComplaintsTab />}
+          {tab === 'audit'      && <OwnerAuditTab />}
         </main>
       </div>
     </div>
