@@ -2,7 +2,7 @@
 // Hosur branch workflow dashboard: shop master, shop-wise pricing, receiving,
 // billing, credit, WhatsApp logs, reminders, disputes, daily closure and reports.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -18,7 +18,6 @@ import {
   History,
   IndianRupee,
   Loader2,
-  Menu,
   MessageCircle,
   PackageCheck,
   Plus,
@@ -67,7 +66,6 @@ type HosurTab =
   | 'collection'
   | 'whatsapp'
   | 'reminders'
-  | 'disputes'
   | 'closure'
   | 'reports'
   | 'notifications';
@@ -86,6 +84,8 @@ interface HosurShop {
   isActive: boolean;
   createdAt: string;
   updatedAt?: string | null;
+  /** Default discount % for items not in the shop's custom price list (0 = no discount) */
+  discountPercent: number;
 }
 
 interface HosurShopPrice {
@@ -268,7 +268,7 @@ interface PaymentDraft {
 }
 
 const EMPTY_PAYMENT: PaymentDraft = { paidAmount: '', dueDate: '', paymentMode: 'cash', remarks: '' };
-const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'credit', 'collection', 'whatsapp', 'reminders', 'disputes', 'closure', 'reports', 'notifications'];
+const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'credit', 'collection', 'whatsapp', 'reminders', 'closure', 'reports', 'notifications'];
 const KG_ITEM_HINTS = ['biscuit', 'cake', 'chips', 'mixture', 'murk', 'nippat', 'boondhi'];
 
 function parseHosurTab(value: string | null): HosurTab {
@@ -333,6 +333,7 @@ function mapShop(row: any): HosurShop {
     isActive: row.is_active !== false,
     createdAt: row.created_at ?? new Date().toISOString(),
     updatedAt: row.updated_at ?? null,
+    discountPercent: Number(row.discount_percent ?? 0),
   };
 }
 
@@ -728,7 +729,6 @@ export default function HosurDashboard() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('tab')));
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -748,6 +748,9 @@ export default function HosurDashboard() {
   const [notifications, setNotifications] = useState<AdminNotification[]>([]);
 
   const branchIncoming = incoming[BRANCH] || [];
+
+  const isAdminRef = useRef(isAdmin);
+  useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -783,7 +786,7 @@ export default function HosurDashboard() {
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('admin_notifications').select('*').in('recipient_role', [isAdmin ? 'admin' : 'branch_hosur']).order('created_at', { ascending: false }).limit(100),
+        supabase.from('admin_notifications').select('*').in('recipient_role', [isAdminRef.current ? 'admin' : 'branch_hosur']).order('created_at', { ascending: false }).limit(100),
       ]);
 
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
@@ -829,13 +832,16 @@ export default function HosurDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [fetchBranchData, fetchCreditSales, isAdmin, syncIncomingFromDispatches]);
+  }, [fetchBranchData, fetchCreditSales, syncIncomingFromDispatches]);
+
+  const refreshRef = useRef(refresh);
+  useEffect(() => { refreshRef.current = refresh; }, [refresh]);
 
   useEffect(() => {
-    void refresh();
-    const id = window.setInterval(() => void refresh(), 45_000);
+    void refreshRef.current();
+    const id = window.setInterval(() => void refreshRef.current(), 45_000);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, []);
 
   useEffect(() => {
     const nextTab = parseHosurTab(searchParams.get('tab'));
@@ -864,8 +870,12 @@ export default function HosurDashboard() {
     const exact = prices.find((price) => price.shopId === shopId && normalize(price.itemName) === normalize(itemName) && price.isActive);
     if (exact) return exact.unitPrice;
     const master = typeof item === 'string' ? SNB_ITEMS.find((x) => normalize(x.name) === normalize(itemName)) : item;
-    return Number(master?.price ?? 0);
-  }, [prices]);
+    const basePrice = Number(master?.price ?? 0);
+    const shop = shops.find((s) => s.id === shopId);
+    const disc = shop?.discountPercent ?? 0;
+    if (disc > 0 && basePrice > 0) return Math.round(basePrice * (1 - disc / 100) * 100) / 100;
+    return basePrice;
+  }, [prices, shops]);
 
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
@@ -876,7 +886,6 @@ export default function HosurDashboard() {
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
     { id: 'whatsapp', label: 'WhatsApp Logs', icon: MessageCircle, badge: failedWhatsapp.length },
     { id: 'reminders', label: 'Reminder History', icon: Bell, badge: overdueCredits.length },
-    { id: 'disputes', label: 'Disputes', icon: AlertTriangle, badge: openDisputes.length },
     { id: 'closure', label: 'Daily Closure', icon: CalendarDays },
     { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
     { id: 'notifications', label: 'Notifications', icon: ShieldCheck, badge: unreadNotifications },
@@ -1199,15 +1208,7 @@ export default function HosurDashboard() {
   return (
     <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
       <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="flex items-center gap-3 px-4 py-3 md:px-5 xl:px-6">
-          <button className="rounded-2xl border bg-card p-2 md:hidden" onClick={() => setSidebarOpen(true)}><Menu className="size-5" /></button>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate font-display text-2xl font-black text-emerald-700">Hosur Branch Dashboard</h1>
-              <Badge tone="emerald">Shop pricing • Credit • WhatsApp</Badge>
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">Branch workflow for order receiver, biller, manager and owner.</p>
-          </div>
+        <div className="flex items-center justify-end gap-3 px-4 py-3 md:px-5 xl:px-6">
           <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             <span className="hidden sm:inline">Refresh</span>
@@ -1221,25 +1222,12 @@ export default function HosurDashboard() {
         </div>
       </div>
 
-      <div className="flex min-h-[calc(100dvh-230px)]">
-        <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-slate-950 p-3 text-white md:block xl:w-72">
-          <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
-        </aside>
-
-        {sidebarOpen && (
-          <div className="fixed inset-0 z-50 md:hidden">
-            <div className="absolute inset-0 bg-black/40" onClick={() => setSidebarOpen(false)} />
-            <div className="absolute bottom-0 left-0 top-0 w-[86vw] max-w-xs bg-slate-950 p-3 text-white shadow-2xl">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="font-black text-emerald-300">Hosur Menu</p>
-                <button className="rounded-xl border border-white/20 p-2" onClick={() => setSidebarOpen(false)}><X className="size-4" /></button>
-              </div>
-              <Sidebar tabs={filteredTabs} active={tab} setActive={(id) => { setTab(id); setSidebarOpen(false); }} />
-            </div>
+      <div className="min-h-[calc(100dvh-230px)]">
+        <main className="p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white">
+            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
           </div>
-        )}
 
-        <main className="min-w-0 flex-1 p-3 sm:p-4 md:p-5 xl:p-6">
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
           {success && <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{success}</div>}
           {loading ? (
@@ -1254,7 +1242,6 @@ export default function HosurDashboard() {
               {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
-              {tab === 'disputes' && <DisputesTab disputes={disputes} busy={busy} withBusy={withBusy} isAdmin={isAdmin} />}
               {tab === 'closure' && <DailyClosureTab orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} />}
               {tab === 'reports' && <ReportsTab shops={shops} bills={bills} billItems={billItems} credits={credits} logs={whatsappLogs} reminders={reminders} disputes={disputes} />}
               {tab === 'notifications' && <NotificationsTab notifications={notifications} busy={busy} withBusy={withBusy} />}
@@ -1289,7 +1276,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
-  const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '' });
+  const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
@@ -1308,10 +1295,11 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
       shop_name: form.shopName.trim(),
       whatsapp_number: cleanPhone(form.whatsappNumber),
       address: form.address.trim(),
+      discount_percent: Number(form.discountPercent) || 0,
       is_active: true,
     });
     if (error) throw error;
-    setForm({ shopName: '', whatsappNumber: '', address: '' });
+    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   };
 
   const importVrsnbPriceList = async () => {
@@ -1417,6 +1405,17 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
+            <Field label="Default Discount % (optional)">
+              <input
+                className={inputClass}
+                type="number"
+                min="0"
+                max="100"
+                value={form.discountPercent}
+                onChange={(e) => setForm({ ...form, discountPercent: e.target.value })}
+                placeholder="e.g. 10 for 10% off"
+              />
+            </Field>
             <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Save Shop</button>
           </Card>
           <Card className="space-y-2">
@@ -1426,6 +1425,9 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
                 <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
                 <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
+                {shop.discountPercent > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
+                )}
               </button>
             ))}
           </Card>
@@ -1434,7 +1436,6 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div><h3 className="font-black">Shop-wise Item Price List</h3><p className="text-sm text-muted-foreground">{selectedShop ? `Editing prices for ${selectedShop.shopName}` : 'Select a shop to edit prices.'}</p></div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <button className={softButton} disabled={busy} onClick={() => withBusy(importVrsnbPriceList, 'VRSNB price list imported to Hosur shops.')}>Import VRSNB Price List</button>
               <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
             </div>
           </div>
@@ -1475,11 +1476,27 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   const [category, setCategory] = useState<string>('All');
   const [cart, setCart] = useState<Record<string, DraftOrderItem>>({});
   const [notes, setNotes] = useState('');
+  const [orderSubTab, setOrderSubTab] = useState<'catalog' | 'custom'>('catalog');
+  const [customLine, setCustomLine] = useState({ itemName: '', unit: 'pcs' as 'pcs' | 'kg', unitPrice: '', qty: '' });
   const shop = shops.find((s) => s.id === shopId) ?? shops[0];
 
   useEffect(() => { if (!shopId && shops[0]) setShopId(shops[0].id); }, [shops, shopId]);
 
-  const catalogItems = buildHosurCatalogItems(prices, shop?.id);
+  const shopOnlyPrices = prices.filter((p) => p.shopId === shop?.id && p.isActive);
+  const hasShopPriceList = shopOnlyPrices.length > 0;
+  const catalogItems: HosurCatalogItem[] = hasShopPriceList
+    ? shopOnlyPrices.map((p, index) => {
+        const master = masterItemFor(p.itemName);
+        return {
+          barcode: master?.barcode ?? 90_000 + index,
+          name: p.itemName,
+          price: p.unitPrice,
+          uom: p.itemUnit === 'kg' ? 'Kgs' : 'Nos',
+          category: master?.category ?? inferHosurItemCategory(p.itemName),
+          source: (master ? 'master' : 'shop') as 'master' | 'shop',
+        };
+      })
+    : SNB_ITEMS.map((item) => ({ ...item, source: 'master' as const }));
   const filteredItems = catalogItems.filter((item) => {
     if (search.trim()) return normalize(item.name).includes(normalize(search));
     return category === 'All' || item.category === category;
@@ -1549,6 +1566,44 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
               <Field label="Search item"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search item name" /></div></Field>
             </div>
             {shop && <div className="rounded-2xl bg-emerald-50 p-3 text-sm"><b>{shop.shopName}</b><span className="mx-2 text-muted-foreground">•</span>{shop.whatsappNumber}<p className="mt-1 text-xs text-muted-foreground">{shop.address}</p></div>}
+            <div className="flex gap-2">
+              {(['catalog', 'custom'] as const).map((t) => (
+                <button key={t} onClick={() => setOrderSubTab(t)}
+                  className={cn('rounded-full border px-4 py-1.5 text-xs font-black transition',
+                    orderSubTab === t ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card'
+                  )}>
+                  {t === 'catalog' ? '📦 Shop Items' : '✏️ Custom Items'}
+                </button>
+              ))}
+            </div>
+            {orderSubTab === 'custom' ? (
+              <div className="space-y-3 rounded-2xl border bg-card p-4">
+                <h3 className="font-black text-sm">Add Custom Item to Order</h3>
+                <div className="grid gap-2 md:grid-cols-[1fr_100px_110px_90px_auto]">
+                  <input className={inputClass} value={customLine.itemName} onChange={(e) => setCustomLine((p) => ({ ...p, itemName: e.target.value }))} placeholder="Item name" />
+                  <select className={inputClass} value={customLine.unit} onChange={(e) => setCustomLine((p) => ({ ...p, unit: e.target.value as 'pcs' | 'kg' }))}>
+                    <option value="pcs">pcs</option>
+                    <option value="kg">kg</option>
+                  </select>
+                  <input className={inputClass} type="number" value={customLine.unitPrice} onChange={(e) => setCustomLine((p) => ({ ...p, unitPrice: e.target.value }))} placeholder="Price" />
+                  <input className={inputClass} type="number" value={customLine.qty} onChange={(e) => setCustomLine((p) => ({ ...p, qty: e.target.value }))} placeholder="Qty" />
+                  <button className={primaryButton} onClick={() => {
+                    const name = customLine.itemName.trim();
+                    const price = Number(customLine.unitPrice);
+                    const qty = Number(customLine.qty);
+                    if (!name || !price || !qty) return;
+                    const lineTotal = Math.round(qty * price * 100) / 100;
+                    setCart((prev) => ({
+                      ...prev,
+                      [name]: { itemName: name, unit: customLine.unit, quantity: qty, unitPrice: price, lineTotal, category: 'Custom' },
+                    }));
+                    setCustomLine({ itemName: '', unit: 'pcs', unitPrice: '', qty: '' });
+                  }}>Add</button>
+                </div>
+                <p className="text-xs text-muted-foreground">Custom items added here will appear in the Order Summary alongside shop items.</p>
+              </div>
+            ) : (
+              <>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {['All', ...SNB_CATEGORIES].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
             </div>
@@ -1556,12 +1611,30 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
               {filteredItems.slice(0, 120).map((item) => {
                 const current = cart[item.name]?.quantity ?? 0;
                 const step = item.uom === 'Kgs' ? 0.25 : 1;
+                const basePrice = typeof item.price === 'number' ? item.price : 0;
+                const shopPrice = shop ? priceFor(shop.id, item) : basePrice;
+                const hasDiscount = shopPrice < basePrice && basePrice > 0;
                 return <div key={item.barcode} className={cn('rounded-2xl border p-3', current > 0 ? 'border-emerald-300 bg-emerald-50' : 'bg-card')}>
-                  <div className="min-h-12"><p className="line-clamp-2 text-sm font-black">{item.name}</p><p className="text-xs text-muted-foreground">{item.uom === 'Kgs' ? 'kg' : 'pcs'} · {money(shop ? priceFor(shop.id, item) : item.price)}</p></div>
+                  <div className="min-h-12">
+                    <p className="line-clamp-2 text-sm font-black">{item.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.uom === 'Kgs' ? 'kg' : 'pcs'} ·{' '}
+                      {hasDiscount ? (
+                        <>
+                          <span className="line-through text-muted-foreground/60">{money(basePrice)}</span>{' '}
+                          <span className="font-bold text-emerald-700">{money(shopPrice)}</span>
+                        </>
+                      ) : (
+                        money(shopPrice)
+                      )}
+                    </p>
+                  </div>
                   <div className="mt-3 flex items-center gap-2"><button className="size-9 rounded-xl border bg-white font-black" onClick={() => setQty(item, current - step)}>-</button><input className="h-9 min-w-0 flex-1 rounded-xl border text-center text-sm font-black" type="number" step={step} value={current || ''} onChange={(e) => setQty(item, Number(e.target.value))} placeholder="0" /><button className="size-9 rounded-xl bg-emerald-600 font-black text-white" onClick={() => setQty(item, current + step)}>+</button></div>
                 </div>;
               })}
             </div>
+              </>
+            )}
           </Card>
           <Card className="h-fit space-y-4 2xl:sticky 2xl:top-36">
             <h3 className="font-black">Order Summary</h3>
@@ -1589,6 +1662,7 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
   const pendingOrders = orders.filter((o) => ['pending_packing', 'dispatched'].includes(o.status));
   const [receivedQty, setReceivedQty] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<Record<string, string>>({});
+  const [disputeRemarks, setDisputeRemarks] = useState<Record<string, string>>({});
 
   const confirmOrder = async (order: HosurOrder) => {
     const items = orderItems[order.id] ?? [];
@@ -1633,7 +1707,48 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
               <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{order.shopName}</p><p className="text-xs text-muted-foreground">{order.orderNumber} · {toDateTimeLabel(order.createdAt)}</p></div><Badge tone={statusTone(order.status)}>{order.status.replace(/_/g, ' ')}</Badge></div>
               <div className="mt-3 space-y-2">{items.map((item) => {
                 const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
-                return <div key={item.id} className="grid gap-2 rounded-2xl bg-muted/30 p-3 md:grid-cols-[1fr_120px_1fr]"><div><p className="text-sm font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">Expected {num(expected)} {item.unit}</p></div><input className="rounded-xl border px-2 py-2 text-sm" type="number" step={item.unit === 'kg' ? 0.25 : 1} value={receivedQty[item.id] ?? String(expected)} onChange={(e) => setReceivedQty((p) => ({ ...p, [item.id]: e.target.value }))} /><input className="rounded-xl border px-2 py-2 text-sm" value={remarks[item.id] ?? ''} onChange={(e) => setRemarks((p) => ({ ...p, [item.id]: e.target.value }))} placeholder="Mismatch remarks" /></div>;
+                return <div key={item.id} className="rounded-2xl bg-muted/30 p-3">
+                  <div className="grid gap-2 md:grid-cols-[1fr_120px_1fr]"><div><p className="text-sm font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">Expected {num(expected)} {item.unit}</p></div><input className="rounded-xl border px-2 py-2 text-sm" type="number" step={item.unit === 'kg' ? 0.25 : 1} value={receivedQty[item.id] ?? String(expected)} onChange={(e) => setReceivedQty((p) => ({ ...p, [item.id]: e.target.value }))} /><input className="rounded-xl border px-2 py-2 text-sm" value={remarks[item.id] ?? ''} onChange={(e) => setRemarks((p) => ({ ...p, [item.id]: e.target.value }))} placeholder="Mismatch remarks" /></div>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      className={cn(inputClass, 'flex-1 text-xs')}
+                      value={disputeRemarks[item.id] ?? ''}
+                      onChange={(e) => setDisputeRemarks((p) => ({ ...p, [item.id]: e.target.value }))}
+                      placeholder="Raise dispute — describe the issue (optional)"
+                    />
+                    <button
+                      className="rounded-2xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 hover:bg-amber-100 border border-amber-200"
+                      disabled={busy || !disputeRemarks[item.id]?.trim()}
+                      onClick={() => withBusy(async () => {
+                        const remark = disputeRemarks[item.id]?.trim();
+                        if (!remark) throw new Error('Enter a dispute reason.');
+                        const received = Number(receivedQty[item.id] ?? expected);
+                        const { error } = await supabase.from('hosur_disputes').insert({
+                          order_id: order.id,
+                          order_number: order.orderNumber,
+                          item_name: item.itemName,
+                          expected_quantity: expected,
+                          received_quantity: received,
+                          unit: item.unit,
+                          raised_by: userName,
+                          status: 'open',
+                          admin_remarks: remark,
+                        });
+                        if (error) throw error;
+                        await notifyAdmin(
+                          'Hosur dispute raised',
+                          `${order.shopName} · ${item.itemName} · ${remark}`,
+                          order.id,
+                          order.orderNumber,
+                          { orderId: order.id }
+                        );
+                        setDisputeRemarks((p) => { const n = { ...p }; delete n[item.id]; return n; });
+                      }, 'Dispute raised and sent to Admin.')}
+                    >
+                      <AlertTriangle className="size-3 inline mr-1" />Raise Dispute
+                    </button>
+                  </div>
+                </div>;
               })}</div>
               <button className={primaryButton} disabled={busy || items.length === 0} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
             </div>;
@@ -1752,64 +1867,161 @@ function ReminderHistoryTab({ reminders, credits, busy, withBusy, runDueReminder
   );
 }
 
-function DisputesTab({ disputes, busy, withBusy, isAdmin }: { disputes: HosurDispute[]; busy: boolean; withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>; isAdmin: boolean }) {
-  const [remarks, setRemarks] = useState<Record<string, string>>({});
-  const updateDispute = async (dispute: HosurDispute, status: DisputeStatus) => {
-    const { error } = await supabase.from('hosur_disputes').update({ status, admin_remarks: remarks[dispute.id] || dispute.adminRemarks, resolved_at: status === 'open' ? null : new Date().toISOString() }).eq('id', dispute.id);
-    if (error) throw error;
-    await notifyBranch('Hosur dispute updated', `${dispute.itemName} dispute for ${dispute.orderNumber ?? 'order'} marked ${status}.`, dispute.orderId ?? undefined, dispute.orderNumber ?? undefined, { disputeId: dispute.id, status });
-  };
-  return (
-    <div className="space-y-4">
-      <SectionTitle icon={<AlertTriangle className="size-5" />} title="Disputes" subtitle="Branch can raise mismatch disputes. Admin can review, approve, reject, clear or resolve them." />
-      <Card className="space-y-2">{disputes.length === 0 ? <EmptyState icon={<AlertTriangle className="size-6" />} title="No disputes" /> : disputes.map((dispute) => <div key={dispute.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{dispute.itemName}</p><p className="text-xs text-muted-foreground">Order {dispute.orderNumber ?? '—'} · Expected {num(dispute.expectedQuantity)} {dispute.unit}, received {num(dispute.receivedQuantity)} {dispute.unit} · Raised by {dispute.raisedBy}</p>{dispute.adminRemarks && <p className="mt-1 text-xs text-muted-foreground">Remarks: {dispute.adminRemarks}</p>}</div><Badge tone={statusTone(dispute.status)}>{dispute.status}</Badge></div>{isAdmin && dispute.status === 'open' && <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]"><input className={inputClass} value={remarks[dispute.id] ?? ''} onChange={(e) => setRemarks((p) => ({ ...p, [dispute.id]: e.target.value }))} placeholder="Admin remarks" /><div className="flex flex-wrap gap-2">{(['approved', 'rejected', 'cleared', 'resolved'] as DisputeStatus[]).map((status) => <button key={status} className={softButton} disabled={busy} onClick={() => withBusy(() => updateDispute(dispute, status), `Dispute ${status}.`)}>{status}</button>)}</div></div>}</div>)}</Card>
-    </div>
-  );
-}
-
-function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: { orders: HosurOrder[]; bills: HosurBill[]; credits: HosurCreditLedger[]; payments: HosurCreditPayment[]; disputes: HosurDispute[]; logs: HosurWhatsappLog[] }) {
+function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
+  orders: HosurOrder[];
+  bills: HosurBill[];
+  credits: HosurCreditLedger[];
+  payments: HosurCreditPayment[];
+  disputes: HosurDispute[];
+  logs: HosurWhatsappLog[];
+}) {
   const [date, setDate] = useState(TODAY_ISO());
-  const dayBills = bills.filter((bill) => (bill.confirmedAt ?? bill.createdAt).slice(0, 10) === date);
-  const dayOrders = orders.filter((order) => order.createdAt.slice(0, 10) === date);
-  const dayPayments = payments.filter((payment) => payment.createdAt.slice(0, 10) === date);
-  const dayDisputes = disputes.filter((dispute) => dispute.createdAt.slice(0, 10) === date);
-  const dayLogs = logs.filter((log) => log.createdAt.slice(0, 10) === date);
+
+  const dayBills = bills.filter((b) => (b.confirmedAt ?? b.createdAt).slice(0, 10) === date);
+  const dayOrders = orders.filter((o) => o.createdAt.slice(0, 10) === date);
+  const dayPayments = payments.filter((p) => p.createdAt.slice(0, 10) === date);
+  const dayDisputes = disputes.filter((d) => d.createdAt.slice(0, 10) === date);
+  const dayLogs = logs.filter((l) => l.createdAt.slice(0, 10) === date);
+
   const fullPayments = dayBills.filter((b) => b.paymentType === 'full').reduce((s, b) => s + b.paidAmount, 0);
   const creditBills = dayBills.filter((b) => b.paymentType === 'credit').reduce((s, b) => s + b.creditAmount, 0);
   const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
   const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
-  // FIX (Bug #8): previously filtered on brittle remarks string 'Hosur partial payment at billing'.
-  // This breaks silently if the remarks text ever changes (typo, refactor, different message).
-  // Now filters on payment_purpose field ('credit_collection') instead.
-  // TODO: ensure the hosur_payments table has a payment_purpose column and that billing-partial
-  // payments are inserted with payment_purpose = 'billing_partial', and credit-collection payments
-  // with payment_purpose = 'credit_collection'. Until that migration is applied, fall back to the
-  // remarks string so existing behaviour is preserved.
   const clearedCredit = dayPayments.filter((p) =>
-    p.payment_purpose != null
-      ? p.payment_purpose === 'credit_collection'
-      : p.remarks !== 'Hosur partial payment at billing'
+    p.payment_purpose != null ? p.payment_purpose === 'credit_collection' : p.remarks !== 'Hosur partial payment at billing'
   ).reduce((s, p) => s + p.amountCollected, 0);
-  const print = () => window.print();
+
+  const totalCollection = fullPayments + partialPaid + clearedCredit;
+  const totalCredit = creditBills + partialCredit;
+
+  const waSent = dayLogs.filter((l) => l.status === 'sent').length;
+  const waFailed = dayLogs.filter((l) => l.status === 'failed').length;
+
   return (
-    <div className="space-y-4 print:bg-white">
-      <SectionTitle icon={<CalendarDays className="size-5" />} title="Daily Closure" subtitle="Clear handover summary for Hosur Branch." action={<div className="flex gap-2"><input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} /><button className={softButton} onClick={print}><Printer className="size-4" /> Print</button></div>} />
-      <div className="grid gap-3 md:grid-cols-4"><Metric label="Orders" value={dayOrders.length} icon={<ShoppingCart className="size-4" />} tone="blue" /><Metric label="Bills" value={dayBills.length} icon={<Receipt className="size-4" />} tone="emerald" /><Metric label="Collection" value={money(fullPayments + partialPaid + clearedCredit)} icon={<IndianRupee className="size-4" />} tone="emerald" /><Metric label="Pending Credit" value={money(creditBills + partialCredit)} icon={<CreditCard className="size-4" />} tone="red" /></div>
-      <Card className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"><ClosureRow label="Full payments" value={money(fullPayments)} /><ClosureRow label="Credit bills" value={money(creditBills)} /><ClosureRow label="Partial payments collected" value={money(partialPaid)} /><ClosureRow label="Partial balance credit" value={money(partialCredit)} /><ClosureRow label="Credit cleared today" value={money(clearedCredit)} /><ClosureRow label="Disputes raised" value={dayDisputes.length} /><ClosureRow label="WhatsApp sent" value={dayLogs.filter((l) => l.status === 'sent').length} /><ClosureRow label="WhatsApp failed" value={dayLogs.filter((l) => l.status === 'failed').length} /></Card>
+    <div className="space-y-5 print:bg-white">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl font-black text-foreground">Daily Closure</h2>
+          <p className="text-sm text-muted-foreground">Handover summary for Hosur Branch</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
+          <button className={softButton} onClick={() => window.print()}>
+            <Printer className="size-4" /> Print
+          </button>
+        </div>
+      </div>
+
+      {/* Top KPI row */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Metric label="Orders Placed" value={dayOrders.length} icon={<ShoppingCart className="size-4" />} tone="blue" />
+        <Metric label="Bills Raised" value={dayBills.length} icon={<Receipt className="size-4" />} tone="emerald" />
+        <Metric label="Cash Collected" value={money(totalCollection)} icon={<IndianRupee className="size-4" />} tone="emerald" />
+        <Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
+      </div>
+
+      {/* Payment Breakdown */}
+      <div className="rounded-2xl border bg-card p-4 space-y-3">
+        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Payment Breakdown</h3>
+        <div className="grid gap-2 md:grid-cols-3">
+          {[
+            { label: 'Full Payments', value: money(fullPayments), color: 'text-emerald-700 bg-emerald-50' },
+            { label: 'Partial — Paid Now', value: money(partialPaid), color: 'text-blue-700 bg-blue-50' },
+            { label: 'Credit Cleared Today', value: money(clearedCredit), color: 'text-teal-700 bg-teal-50' },
+            { label: 'Full Credit Bills', value: money(creditBills), color: 'text-red-700 bg-red-50' },
+            { label: 'Partial — Credit Balance', value: money(partialCredit), color: 'text-orange-700 bg-orange-50' },
+          ].map(({ label, value, color }) => (
+            <div key={label} className={cn('rounded-2xl p-3', color)}>
+              <p className="text-xs font-bold uppercase opacity-70">{label}</p>
+              <p className="mt-1 font-display text-xl font-black">{value}</p>
+            </div>
+          ))}
+          <div className="rounded-2xl p-3 bg-slate-900 text-white">
+            <p className="text-xs font-bold uppercase opacity-70">Total Collected</p>
+            <p className="mt-1 font-display text-xl font-black">{money(totalCollection)}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Activity Summary */}
+      <div className="rounded-2xl border bg-card p-4 space-y-3">
+        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Activity Summary</h3>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          {[
+            { label: 'Disputes Raised', value: dayDisputes.length, tone: dayDisputes.length > 0 ? 'text-amber-700' : 'text-foreground' },
+            { label: 'WhatsApp Sent', value: waSent, tone: 'text-emerald-700' },
+            { label: 'WhatsApp Failed', value: waFailed, tone: waFailed > 0 ? 'text-red-700' : 'text-foreground' },
+            { label: 'Payments Received', value: dayPayments.length, tone: 'text-blue-700' },
+          ].map(({ label, value, tone }) => (
+            <div key={label} className="rounded-2xl border bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground font-semibold">{label}</p>
+              <p className={cn('mt-1 font-display text-2xl font-black', tone)}>{value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Bill List */}
+      {dayBills.length > 0 && (
+        <div className="rounded-2xl border bg-card p-4 space-y-3">
+          <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Bills for {toDateLabel(date)}</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2">Bill No</th>
+                  <th className="px-3 py-2">Shop</th>
+                  <th className="px-3 py-2">Amount</th>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {dayBills.map((b) => (
+                  <tr key={b.id} className="bg-card">
+                    <td className="px-3 py-2 font-semibold">{b.billNo}</td>
+                    <td className="px-3 py-2">{b.shopName}</td>
+                    <td className="px-3 py-2 font-black">{money(b.subtotal)}</td>
+                    <td className="px-3 py-2 capitalize">{b.paymentType ?? '—'}</td>
+                    <td className="px-3 py-2"><Badge tone={statusTone(b.status)}>{b.status}</Badge></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ClosureRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return <div className="rounded-2xl bg-muted/40 p-3"><p className="text-xs font-black uppercase text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{value}</p></div>;
-}
-
-function ReportsTab({ shops, bills, billItems, credits, logs, reminders, disputes }: { shops: HosurShop[]; bills: HosurBill[]; billItems: Record<string, HosurBillItem[]>; credits: HosurCreditLedger[]; logs: HosurWhatsappLog[]; reminders: HosurReminder[]; disputes: HosurDispute[] }) {
+function ReportsTab({ shops, bills, billItems, credits, logs, reminders, disputes }: {
+  shops: HosurShop[];
+  bills: HosurBill[];
+  billItems: Record<string, HosurBillItem[]>;
+  credits: HosurCreditLedger[];
+  logs: HosurWhatsappLog[];
+  reminders: HosurReminder[];
+  disputes: HosurDispute[];
+}) {
   const [from, setFrom] = useState(TODAY_ISO().slice(0, 8) + '01');
   const [to, setTo] = useState(TODAY_ISO());
+  const [reportTab, setReportTab] = useState<'sales' | 'credit' | 'items' | 'whatsapp' | 'disputes'>('sales');
+
   const inRange = (date: string) => date.slice(0, 10) >= from && date.slice(0, 10) <= to;
   const rangeBills = bills.filter((b) => inRange(b.confirmedAt ?? b.createdAt));
-  const shopSales = shops.map((shop) => ({ shop: shop.shopName, total: rangeBills.filter((b) => b.shopId === shop.id).reduce((s, b) => s + b.subtotal, 0), credit: credits.filter((c) => c.shopId === shop.id && c.balanceAmount > 0).reduce((s, c) => s + c.balanceAmount, 0) })).filter((x) => x.total > 0 || x.credit > 0);
+
+  const shopSales = shops
+    .map((s) => ({
+      shop: s.shopName,
+      bills: rangeBills.filter((b) => b.shopId === s.id).length,
+      total: rangeBills.filter((b) => b.shopId === s.id).reduce((sum, b) => sum + b.subtotal, 0),
+      credit: credits.filter((c) => c.shopId === s.id && c.balanceAmount > 0).reduce((sum, c) => sum + c.balanceAmount, 0),
+    }))
+    .filter((r) => r.total > 0 || r.credit > 0)
+    .sort((a, b) => b.total - a.total);
+
   const itemMap = new Map<string, { qty: number; total: number }>();
   rangeBills.forEach((bill) => (billItems[bill.id] ?? []).forEach((item) => {
     const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0 };
@@ -1817,9 +2029,25 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
     row.total += item.lineTotal;
     itemMap.set(item.itemName, row);
   }));
-  const itemSales = Array.from(itemMap.entries()).map(([item, row]) => ({ item, ...row })).sort((a, b) => b.total - a.total).slice(0, 60);
+  const itemSales = Array.from(itemMap.entries())
+    .map(([item, row]) => ({ item, ...row }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 60);
+
+  const openCredits = credits.filter((c) => c.balanceAmount > 0).sort((a, b) => b.balanceAmount - a.balanceAmount);
+  const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
+  const rangeLogs = logs.filter((l) => inRange(l.createdAt));
+
+  const totalSales = shopSales.reduce((s, r) => s + r.total, 0);
+  const totalCredit = openCredits.reduce((s, c) => s + c.balanceAmount, 0);
+
   const exportCsv = () => {
-    const lines = [['Report', 'Name', 'Amount'], ...shopSales.map((r) => ['Shop Sales', r.shop, String(r.total)]), ...itemSales.map((r) => ['Item Sales', r.item, String(r.total)])];
+    const lines = [
+      ['Report', 'Name', 'Amount/Count'],
+      ...shopSales.map((r) => ['Shop Sales', r.shop, String(r.total)]),
+      ...itemSales.map((r) => ['Item Sales', r.item, String(r.total)]),
+      ...openCredits.map((c) => ['Open Credit', c.shopName, String(c.balanceAmount)]),
+    ];
     const blob = new Blob([lines.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1828,27 +2056,334 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const reportTabs = [
+    { id: 'sales', label: '🏪 Shop Sales' },
+    { id: 'items', label: '📦 Item Sales' },
+    { id: 'credit', label: '💳 Credit Due' },
+    { id: 'whatsapp', label: '💬 WhatsApp' },
+    { id: 'disputes', label: '⚠️ Disputes' },
+  ] as const;
+
   return (
-    <div className="space-y-4">
-      <SectionTitle icon={<FileSpreadsheet className="size-5" />} title="Reports" subtitle="Shop-wise sales, credit pending, due payment, item-wise sales, WhatsApp, reminders and disputes." action={<div className="flex flex-wrap gap-2"><input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} /><input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} /><button className={softButton} onClick={exportCsv}><Download className="size-4" /> Export</button><button className={softButton} onClick={() => window.print()}><Printer className="size-4" /> Print</button></div>} />
-      <div className="grid gap-4 xl:grid-cols-2"><ReportTable title="Shop-wise sales and credit pending" headers={['Shop', 'Sales', 'Credit Pending']} rows={shopSales.map((r) => [r.shop, money(r.total), money(r.credit)])} /><ReportTable title="Item-wise sales" headers={['Item', 'Qty', 'Amount']} rows={itemSales.map((r) => [r.item, num(r.qty), money(r.total)])} /><ReportTable title="WhatsApp bill sent/failed report" headers={['Status', 'Count', 'Type']} rows={['sent', 'failed', 'queued'].map((s) => [s, logs.filter((l) => l.status === s && inRange(l.createdAt)).length, 'Bill/Reminder'])} /><ReportTable title="Payment reminder report" headers={['Shop', 'Pending', 'Status']} rows={reminders.filter((r) => inRange(r.createdAt)).map((r) => [r.shopName, money(r.pendingAmount), r.status])} /><ReportTable title="Dispute report" headers={['Order', 'Item', 'Status']} rows={disputes.filter((d) => inRange(d.createdAt)).map((d) => [d.orderNumber ?? '—', d.itemName, d.status])} /><ReportTable title="Due payment report" headers={['Shop', 'Bill', 'Due Amount']} rows={credits.filter((c) => c.balanceAmount > 0).map((c) => [c.shopName, c.billNo, money(c.balanceAmount)])} /></div>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl font-black">Reports</h2>
+          <p className="text-sm text-muted-foreground">Shop-wise sales, credit, items, WhatsApp & disputes</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <span className="self-center text-muted-foreground text-sm">to</span>
+          <input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <button className={softButton} onClick={exportCsv}><Download className="size-4" /> CSV</button>
+          <button className={softButton} onClick={() => window.print()}><Printer className="size-4" /> Print</button>
+        </div>
+      </div>
+
+      {/* Summary KPIs */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Metric label="Total Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald" />
+        <Metric label="Bills Count" value={rangeBills.length} icon={<Receipt className="size-4" />} tone="blue" />
+        <Metric label="Open Credit" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
+        <Metric label="Shops Served" value={shopSales.length} icon={<Store className="size-4" />} tone="slate" />
+      </div>
+
+      {/* Sub-tab pills */}
+      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+        {reportTabs.map((t) => (
+          <button key={t.id} onClick={() => setReportTab(t.id)}
+            className={cn('shrink-0 rounded-full border px-4 py-1.5 text-xs font-black whitespace-nowrap transition',
+              reportTab === t.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card hover:bg-muted'
+            )}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Shop Sales */}
+      {reportTab === 'sales' && (
+        <div className="rounded-2xl border bg-card overflow-hidden">
+          <div className="px-4 py-3 bg-muted/40 border-b">
+            <h3 className="font-black text-sm">Shop-wise Sales — {toDateLabel(from)} to {toDateLabel(to)}</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Shop</th>
+                  <th className="px-4 py-2 text-right">Bills</th>
+                  <th className="px-4 py-2 text-right">Sales</th>
+                  <th className="px-4 py-2 text-right">Credit Pending</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {shopSales.length === 0
+                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No sales in this period</td></tr>
+                  : shopSales.map((r) => (
+                    <tr key={r.shop} className="bg-card hover:bg-muted/20">
+                      <td className="px-4 py-2 font-semibold">{r.shop}</td>
+                      <td className="px-4 py-2 text-right">{r.bills}</td>
+                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
+                      <td className="px-4 py-2 text-right font-semibold text-red-600">{r.credit > 0 ? money(r.credit) : '—'}</td>
+                    </tr>
+                  ))}
+              </tbody>
+              {shopSales.length > 0 && (
+                <tfoot className="bg-muted/60 font-black text-sm">
+                  <tr>
+                    <td className="px-4 py-2">Total</td>
+                    <td className="px-4 py-2 text-right">{rangeBills.length}</td>
+                    <td className="px-4 py-2 text-right text-emerald-700">{money(totalSales)}</td>
+                    <td className="px-4 py-2 text-right text-red-600">{money(totalCredit)}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Item Sales */}
+      {reportTab === 'items' && (
+        <div className="rounded-2xl border bg-card overflow-hidden">
+          <div className="px-4 py-3 bg-muted/40 border-b">
+            <h3 className="font-black text-sm">Item-wise Sales — Top {itemSales.length} items</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">#</th>
+                  <th className="px-4 py-2">Item</th>
+                  <th className="px-4 py-2 text-right">Qty</th>
+                  <th className="px-4 py-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {itemSales.length === 0
+                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No items in this period</td></tr>
+                  : itemSales.map((r, i) => (
+                    <tr key={r.item} className="bg-card hover:bg-muted/20">
+                      <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
+                      <td className="px-4 py-2 font-semibold">{r.item}</td>
+                      <td className="px-4 py-2 text-right">{num(r.qty)}</td>
+                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Credit Due */}
+      {reportTab === 'credit' && (
+        <div className="rounded-2xl border bg-card overflow-hidden">
+          <div className="px-4 py-3 bg-muted/40 border-b">
+            <h3 className="font-black text-sm">Open Credit Dues (all time)</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Shop</th>
+                  <th className="px-4 py-2">Bill No</th>
+                  <th className="px-4 py-2">Due Date</th>
+                  <th className="px-4 py-2 text-right">Balance</th>
+                  <th className="px-4 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {openCredits.length === 0
+                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No open credit dues</td></tr>
+                  : openCredits.map((c) => (
+                    <tr key={c.id} className="bg-card hover:bg-muted/20">
+                      <td className="px-4 py-2 font-semibold">{c.shopName}</td>
+                      <td className="px-4 py-2">{c.billNo}</td>
+                      <td className="px-4 py-2">{toDateLabel(c.dueDate)}</td>
+                      <td className="px-4 py-2 text-right font-black text-red-600">{money(c.balanceAmount)}</td>
+                      <td className="px-4 py-2"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp */}
+      {reportTab === 'whatsapp' && (
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border bg-card overflow-hidden">
+            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">WhatsApp Log</h3></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                  <tr><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Count</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {(['sent', 'failed', 'queued'] as const).map((s) => (
+                    <tr key={s} className="bg-card">
+                      <td className="px-4 py-2 capitalize font-semibold">{s}</td>
+                      <td className="px-4 py-2 text-right font-black">{rangeLogs.filter((l) => l.status === s).length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-card overflow-hidden">
+            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">Reminder History</h3></div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                  <tr><th className="px-4 py-2">Shop</th><th className="px-4 py-2 text-right">Pending</th><th className="px-4 py-2">Status</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {reminders.filter((r) => inRange(r.createdAt)).length === 0
+                    ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={3}>No reminders in this period</td></tr>
+                    : reminders.filter((r) => inRange(r.createdAt)).map((r) => (
+                      <tr key={r.id} className="bg-card">
+                        <td className="px-4 py-2 font-semibold">{r.shopName}</td>
+                        <td className="px-4 py-2 text-right">{money(r.pendingAmount)}</td>
+                        <td className="px-4 py-2"><Badge tone={statusTone(r.status)}>{r.status}</Badge></td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Disputes */}
+      {reportTab === 'disputes' && (
+        <div className="rounded-2xl border bg-card overflow-hidden">
+          <div className="px-4 py-3 bg-muted/40 border-b">
+            <h3 className="font-black text-sm">Disputes — {toDateLabel(from)} to {toDateLabel(to)}</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2">Order</th>
+                  <th className="px-4 py-2">Item</th>
+                  <th className="px-4 py-2 text-right">Expected</th>
+                  <th className="px-4 py-2 text-right">Received</th>
+                  <th className="px-4 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {rangeDisputes.length === 0
+                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No disputes in this period</td></tr>
+                  : rangeDisputes.map((d) => (
+                    <tr key={d.id} className="bg-card hover:bg-muted/20">
+                      <td className="px-4 py-2 font-semibold">{d.orderNumber ?? '—'}</td>
+                      <td className="px-4 py-2">{d.itemName}</td>
+                      <td className="px-4 py-2 text-right">{num(d.expectedQuantity)} {d.unit}</td>
+                      <td className="px-4 py-2 text-right">{num(d.receivedQuantity)} {d.unit}</td>
+                      <td className="px-4 py-2"><Badge tone={statusTone(d.status)}>{d.status}</Badge></td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ReportTable({ title, headers, rows }: { title: string; headers: string[]; rows: React.ReactNode[][] }) {
-  return <Card className="space-y-3"><h3 className="font-black">{title}</h3><div className="overflow-x-auto rounded-2xl border"><table className="min-w-full text-sm"><thead className="bg-muted text-left text-xs uppercase text-muted-foreground"><tr>{headers.map((h) => <th key={h} className="px-3 py-2">{h}</th>)}</tr></thead><tbody className="divide-y">{rows.length === 0 ? <tr><td className="px-3 py-5 text-center text-muted-foreground" colSpan={headers.length}>No data</td></tr> : rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j} className="px-3 py-2">{cell}</td>)}</tr>)}</tbody></table></div></Card>;
-}
-
-function NotificationsTab({ notifications, busy, withBusy }: { notifications: AdminNotification[]; busy: boolean; withBusy: (fn: () => Promise<void>, success?: string) => Promise<void> }) {
+function NotificationsTab({ notifications, busy, withBusy }: {
+  notifications: AdminNotification[];
+  busy: boolean;
+  withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
+}) {
   const markRead = async (id: string) => {
     const { error } = await supabase.from('admin_notifications').update({ is_read: true }).eq('id', id);
     if (error) throw error;
   };
+
+  const markAllRead = async () => {
+    const unreadIds = notifications.filter((n) => !n.isRead).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+    const { error } = await supabase.from('admin_notifications').update({ is_read: true }).in('id', unreadIds);
+    if (error) throw error;
+  };
+
+  const unread = notifications.filter((n) => !n.isRead);
+  const read = notifications.filter((n) => n.isRead);
+
   return (
-    <div className="space-y-4">
-      <SectionTitle icon={<ShieldCheck className="size-5" />} title="Admin / Branch Notifications" subtitle="Credit clearing, disputes, WhatsApp failures and workflow changes are visible here." />
-      <Card className="space-y-2">{notifications.length === 0 ? <EmptyState icon={<Bell className="size-6" />} title="No notifications" /> : notifications.map((n) => <div key={n.id} className={cn('rounded-2xl border p-3', !n.isRead && 'border-amber-200 bg-amber-50')}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{n.title}</p><p className="mt-1 text-sm text-muted-foreground">{n.body}</p><p className="mt-1 text-xs text-muted-foreground">{toDateTimeLabel(n.createdAt)} {n.refLabel ? `· ${n.refLabel}` : ''}</p></div>{!n.isRead && <button className={softButton} disabled={busy} onClick={() => withBusy(() => markRead(n.id), 'Notification marked read.')}>Mark Read</button>}</div></div>)}</Card>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl font-black">Notifications</h2>
+          <p className="text-sm text-muted-foreground">
+            {unread.length > 0 ? `${unread.length} unread notification${unread.length > 1 ? 's' : ''}` : 'All caught up'}
+          </p>
+        </div>
+        {unread.length > 0 && (
+          <button className={softButton} disabled={busy} onClick={() => withBusy(markAllRead, 'All notifications marked as read.')}>
+            <BadgeCheck className="size-4" /> Mark All Read
+          </button>
+        )}
+      </div>
+
+      {notifications.length === 0 ? (
+        <EmptyState icon={<Bell className="size-6" />} title="No notifications" subtitle="Workflow events, credit alerts and WhatsApp failures will appear here." />
+      ) : (
+        <div className="space-y-4">
+          {/* Unread */}
+          {unread.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-black uppercase tracking-wider text-amber-700 px-1">Unread ({unread.length})</p>
+              {unread.map((n) => (
+                <div key={n.id} className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 size-2 shrink-0 rounded-full bg-amber-500" />
+                      <div>
+                        <p className="font-black text-sm">{n.title}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{n.body}</p>
+                        <p className="mt-1.5 text-xs text-muted-foreground">
+                          {toDateTimeLabel(n.createdAt)}{n.refLabel ? ` · ${n.refLabel}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    className="shrink-0 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-black text-amber-700 hover:bg-amber-100"
+                    disabled={busy}
+                    onClick={() => withBusy(() => markRead(n.id), 'Marked as read.')}
+                  >
+                    Mark Read
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Read */}
+          {read.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-black uppercase tracking-wider text-muted-foreground px-1">Earlier ({read.length})</p>
+              {read.map((n) => (
+                <div key={n.id} className="rounded-2xl border bg-card p-4">
+                  <p className="font-semibold text-sm text-muted-foreground">{n.title}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{n.body}</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {toDateTimeLabel(n.createdAt)}{n.refLabel ? ` · ${n.refLabel}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
