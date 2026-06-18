@@ -142,7 +142,133 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false) {
   if (win) { win.document.write(html); win.document.close(); }
 }
 
-// ─── Main export: routes to correct format based on branch ────────────────────
+// ─── Branch Cashier Closure print — same layout/style as the Biller (DailyClosure) print ──
+function safeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+const inr = (n: number) => `₹${Number(n || 0).toFixed(2)}`;
+
+export function printBranchCashierClosure(input: {
+  branch: import('./types').Branch;
+  cashier: string;
+  date: string;
+  totalSales: number;
+  advanceCollected: number;
+  totalSalesIncAdvance: number;
+  billsCount: number;
+  cancelledCount: number;
+  cash: number; upi: number; card: number; splitTotal: number;
+  creditSales: number; creditCollected: number;
+  openingCash: number; expenses: number; refunds: number;
+  expected: number; counted: number; difference: number;
+  notes?: string;
+  bills: Array<{ billNo: string; createdAt: string; customerName?: string; paymentMode: string; total: number; biller: string }>;
+}) {
+  const printedAt = new Date().toLocaleString('en-IN');
+  const billRowsHtml = input.bills.length === 0
+    ? '<tr><td colspan="6" class="muted center">No bills closed for this date.</td></tr>'
+    : input.bills.map((b) => `
+        <tr>
+          <td>${safeHtml(b.billNo)}</td>
+          <td>${safeHtml(new Date(b.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td>
+          <td>${safeHtml(b.customerName || 'Walk-in')}</td>
+          <td>${safeHtml(b.paymentMode)}</td>
+          <td class="right">${safeHtml(inr(b.total))}</td>
+          <td>${safeHtml(b.biller)}</td>
+        </tr>`).join('');
+  const notesHtml = input.notes?.trim() ? `<div class="notes"><b>Closure Notes</b><p>${safeHtml(input.notes)}</p></div>` : '';
+
+  const win = window.open('', '_blank', 'width=920,height=900');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(BRANCH_LABELS[input.branch])} Cashier Closure</title>
+    <style>
+      @page { size: A4; margin: 7mm; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #fff; color: #111827; font-family: Arial, Helvetica, sans-serif; }
+      body { font-size: 11px; line-height: 1.35; }
+      .closure-print { width: 100%; }
+      .header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 12px; }
+      h1 { margin: 0; font-size: 22px; line-height: 1; }
+      h2 { margin: 0 0 7px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #374151; }
+      .muted { color: #6b7280; } .right { text-align: right; } .center { text-align: center; } .strong { font-weight: 800; }
+      .badge { display: inline-block; margin-top: 5px; padding: 3px 8px; border: 1px solid #111827; border-radius: 999px; font-weight: 800; }
+      .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+      .card { border: 1px solid #d1d5db; border-radius: 10px; padding: 9px; break-inside: avoid; }
+      .label { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; font-weight: 800; }
+      .value { margin-top: 4px; font-size: 16px; font-weight: 900; }
+      .section { border: 1px solid #d1d5db; border-radius: 12px; padding: 10px; margin-bottom: 10px; break-inside: avoid; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid #e5e7eb; padding: 5px 4px; vertical-align: top; }
+      th { background: #f3f4f6; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .07em; }
+      tr:last-child td { border-bottom: 0; }
+      .totals { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .notes { border: 1px dashed #9ca3af; border-radius: 10px; padding: 8px; margin-bottom: 10px; }
+      .notes p { margin: 4px 0 0; white-space: pre-wrap; }
+      .footer { margin-top: 14px; display: flex; justify-content: space-between; gap: 20px; }
+      .sign { width: 34%; border-top: 1px solid #111827; padding-top: 5px; text-align: center; color: #374151; }
+      @media print {
+        html, body { width: 210mm; min-height: 297mm; }
+        body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+        .section, .card { break-inside: avoid; page-break-inside: avoid; }
+      }
+    </style></head><body>
+    <main class="closure-print">
+      <div class="header">
+        <div>
+          <h1>${safeHtml(BRANCH_LABELS[input.branch])} Cashier Counter Open &amp; Closure</h1>
+          <div class="badge">${safeHtml(input.date)}</div>
+        </div>
+        <div class="right muted">
+          <div><b>Closed by:</b> ${safeHtml(input.cashier)}</div>
+          <div><b>Printed:</b> ${safeHtml(printedAt)}</div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card"><div class="label">Total Sales</div><div class="value">${safeHtml(inr(input.totalSalesIncAdvance))}</div></div>
+        <div class="card"><div class="label">Collection</div><div class="value">${safeHtml(inr(input.cash + input.upi + input.card))}</div></div>
+        <div class="card"><div class="label">Bills Closed</div><div class="value">${input.billsCount}</div></div>
+        <div class="card"><div class="label">Cancelled</div><div class="value">${input.cancelledCount}</div></div>
+      </div>
+
+      <div class="totals">
+        <section class="section"><h2>Payment Collection</h2><table><tbody>
+          <tr><td>Cash</td><td class="right">${safeHtml(inr(input.cash))}</td></tr>
+          <tr><td>UPI</td><td class="right">${safeHtml(inr(input.upi))}</td></tr>
+          <tr><td>Card</td><td class="right">${safeHtml(inr(input.card))}</td></tr>
+          <tr><td>Split Payments</td><td class="right">${safeHtml(inr(input.splitTotal))}</td></tr>
+          <tr><td>Credit Collected</td><td class="right">${safeHtml(inr(input.creditCollected))}</td></tr>
+          <tr><td class="strong">Total Collection</td><td class="right strong">${safeHtml(inr(input.cash + input.upi + input.card))}</td></tr>
+        </tbody></table></section>
+        <section class="section"><h2>Cash Counter</h2><table><tbody>
+          <tr><td>Opening Cash</td><td class="right">${safeHtml(inr(input.openingCash))}</td></tr>
+          <tr><td>System Cash Collection</td><td class="right">${safeHtml(inr(input.cash))}</td></tr>
+          <tr><td>Cash Expenses</td><td class="right">${safeHtml(inr(input.expenses))}</td></tr>
+          <tr><td>Refunds</td><td class="right">${safeHtml(inr(input.refunds))}</td></tr>
+          <tr><td>Expected Cash</td><td class="right">${safeHtml(inr(input.expected))}</td></tr>
+          <tr><td>Physical Cash</td><td class="right">${safeHtml(inr(input.counted))}</td></tr>
+          <tr><td class="strong">Difference</td><td class="right strong">${safeHtml(inr(input.difference))}</td></tr>
+        </tbody></table></section>
+      </div>
+
+      <div class="grid">
+        <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(inr(input.creditSales))}</div></div>
+        <div class="card"><div class="label">Credit Collected</div><div class="value">${safeHtml(inr(input.creditCollected))}</div></div>
+        <div class="card"><div class="label">Advance Collected</div><div class="value">${safeHtml(inr(input.advanceCollected))}</div></div>
+        <div class="card"><div class="label">Normal Sales</div><div class="value">${safeHtml(inr(input.totalSales))}</div></div>
+      </div>
+
+      ${notesHtml}
+      <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Payment</th><th class="right">Paid</th><th>Cashier</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>
+      <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
+    </main>
+    <script>window.onload=()=>window.print()</script>
+    </body></html>`);
+  win.document.close();
+}
+
+
 export function printCounterBill(bill: BranchBillRecord, duplicate = false) {
   if (bill.branch === 'VRSNB') {
     printVrsnbReceiptBill(bill, duplicate);

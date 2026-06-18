@@ -146,6 +146,7 @@ export interface CakeAdvanceOrder {
   storeStatus?: "store" | "baking" | "packing" | "dispatched";
   storeAcceptedBy?: string;
   storeStatusHistory?: Array<{ status: string; by: string; at: string }>;
+  sentToStoreAt?: string;
   finalInvoiceBillNo?: string;
   createdAt: string;
 }
@@ -538,6 +539,12 @@ interface BranchOpsState {
     storeStatus: CakeAdvanceOrder["storeStatus"],
     by: string,
   ) => void;
+  updateAdvanceStoreStatusByOrderNo: (
+    orderNo: string,
+    storeStatus: CakeAdvanceOrder["storeStatus"],
+    by: string,
+  ) => void;
+  markAdvanceSentToStore: (id: string) => void;
   addQuotation: (
     quote: Omit<QuotationRecord, "id" | "quoteNo" | "createdAt" | "status">,
   ) => QuotationRecord;
@@ -1658,6 +1665,50 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ],
           };
         }),
+      updateAdvanceStoreStatusByOrderNo: (orderNo, storeStatus, by) =>
+        set((s) => {
+          const prev = s.advanceCakeOrders.find((o) => o.orderNo === orderNo);
+          if (!prev || !storeStatus) return {};
+          const now = new Date().toISOString();
+          const next = {
+            ...prev,
+            storeStatus,
+            storeAcceptedBy: by,
+            storeStatusHistory: [...(prev.storeStatusHistory || []), { status: storeStatus, by, at: now }],
+          };
+          mirrorOperationRecord(prev.branch, "advance_order", prev.id, next, {
+            recordNo: prev.orderNo,
+            amount: prev.orderValue,
+            status: storeStatus,
+            actor: by,
+          });
+          return {
+            advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === prev.id ? next : o)),
+            notifications: [
+              {
+                id: uid("note"),
+                branch: prev.branch,
+                type: "Advance Order" as const,
+                title: `Advance order moved to ${storeStatus}`,
+                details: `${prev.orderNo} moved to ${storeStatus} by ${by} at ${new Date(now).toLocaleString("en-IN")}`,
+                createdAt: now,
+                raisedBy: by,
+                status: "Unread" as const,
+              },
+              ...s.notifications,
+            ],
+            auditLogs: [
+              audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
+              ...s.auditLogs,
+            ],
+          };
+        }),
+      markAdvanceSentToStore: (id) =>
+        set((s) => ({
+          advanceCakeOrders: s.advanceCakeOrders.map((o) =>
+            o.id === id ? { ...o, sentToStoreAt: new Date().toISOString() } : o,
+          ),
+        })),
       addQuotation: (quote) => {
         const quoteNo = `${quote.branch}-QT-${String(seq(`quote-${quote.branch}`)).padStart(4, "0")}`;
         const newQuote = {
@@ -2093,13 +2144,19 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         return newDeposit;
       },
       addCashierClosure: (closure) => {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const existing = useBranchOpsStore.getState().cashierClosures.find(
+          (c) => c.branch === closure.branch && c.cashier === closure.cashier && c.createdAt.slice(0, 10) === todayKey,
+        );
         const newClosure = {
           ...closure,
-          id: uid("closure"),
-          createdAt: new Date().toISOString(),
+          id: existing?.id ?? uid("closure"),
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
         };
         set((s) => ({
-          cashierClosures: [newClosure, ...s.cashierClosures],
+          cashierClosures: existing
+            ? s.cashierClosures.map((c) => (c.id === existing.id ? newClosure : c))
+            : [newClosure, ...s.cashierClosures],
           auditLogs: [
             audit(
               closure.branch,
