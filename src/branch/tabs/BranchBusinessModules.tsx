@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ClipboardCheck,
@@ -21,7 +21,7 @@ import {
 } from '../branchOpsStore';
 import { SNB_ITEMS } from '../snbItems';
 import { VRSNB_ITEMS } from '../vrsnbItems';
-import { printCounterBill, printHtml } from '../printUtils';
+import { printCounterBill, printHtml, printBranchCashierClosure } from '../printUtils';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void };
 
@@ -369,7 +369,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, updateAdvanceStoreStatus, addCashMovement, addAdvanceFinalBill } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, counterOpenings } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
@@ -391,6 +391,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const [cake, setCake] = useState({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
+  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso());
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const staff = isVRSNB ? user : common.salesperson;
@@ -486,6 +487,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     await submitBakeryOrder(bakeryItems, `${user} - ${branch} cake advance`, branch, notes);
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
+    if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
     const fullyPaid = orderType === 'store' ? storeFullyPaid : orderType === 'custom' ? customFullyPaid : false;
     const sourceLines = orderType === 'store'
       ? storeLines
@@ -549,6 +551,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     setError('');
   };
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
+    if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
     const usedMode = payMode || finalPaymentMode;
     const { billNo, invoiceNo } = await nextBranchInvoiceAtomic(branch);
     const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
@@ -618,6 +621,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   };
 
   return <div className="grid gap-5 xl:grid-cols-[480px_minmax(0,1fr)]">
+    {!counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the cashier counter (Cashier Closure tab) before collecting advance payments.</div>}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
         {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
@@ -689,7 +693,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.storeStatus && <SoftButton onClick={async()=>{setSendingToStore(o.id); updateAdvanceStoreStatus(o.id,'store',user); if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); setSendingToStore(null);}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.storeStatus && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(['store','baking','packing','dispatched'] as const).map((stage, idx, arr)=>{ const done = arr.indexOf(stage) <= arr.indexOf(o.storeStatus!); const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><button onClick={()=>updateAdvanceStoreStatus(o.id,stage,user)} className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</button>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; })}<span className="ml-auto text-slate-500">{o.storeAcceptedBy && `Accepted: ${o.storeAcceptedBy}`}{o.storeStatusHistory?.at(-1) && ` - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); markAdvanceSentToStore(o.id); if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); setSendingToStore(null);}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[600px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Customer</th><th className="p-3">Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={5} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3">{o.deliveryDate}</td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
@@ -807,14 +811,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const [ledgerToday, setLedgerToday] = useState<ClosureLedgerRow | null>(null);
   const [savedClosures, setSavedClosures] = useState<SavedClosureRow[]>([]);
   const [closureMessage, setClosureMessage] = useState('');
-  const [closureTab, setClosureTab] = useState<'open'|'close'>('open');
-  const [openDate, setOpenDate] = useState(new Date().toISOString().split('T')[0]);
-  const [openTime, setOpenTime] = useState(() => new Date().toTimeString().slice(0,5));
   const [openCashier, setOpenCashier] = useState('');
   const [openDenominations, setOpenDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
   const [closeDenominations, setCloseDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
-  const [counterOpened, setCounterOpened] = useState(false);
   const [openSavedMessage, setOpenSavedMessage] = useState('');
+  const [ledgerLoading, setLedgerLoading] = useState(false);
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
   const denominations = [500,200,100,50,20,10,5,2,1];
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
@@ -828,7 +829,6 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   }, [user]);
 
   useEffect(() => {
-    setCounterOpened(Boolean(branchCounterOpenRecord));
     if (branchCounterOpenRecord) {
       setOpening(String(branchCounterOpenRecord.openingCash));
       setOpenCashier(branchCounterOpenRecord.cashier || user);
@@ -840,36 +840,36 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     void fetchCreditPayments(branch);
   }, [branch, fetchCreditPayments, fetchCreditSales]);
 
-  useEffect(() => {
-    let active = true;
-    const loadClosureLedger = async () => {
-      setClosureMessage('');
-      const date = todayIso();
-      const [{ data: ledgerData, error: ledgerError }, { data: savedData, error: savedError }] = await Promise.all([
-        supabase.from('branch_daily_closure_ledger').select('*').eq('branch', branch).eq('closure_date', date).maybeSingle(),
-        supabase.from('branch_daily_closures').select('*').eq('branch', branch).order('closure_date', { ascending: false }).order('created_at', { ascending: false }).limit(30),
-      ]);
-      if (!active) return;
-      if (ledgerError) {
-        const missingLedger = /branch_daily_closure_ledger|does not exist|schema cache/i.test(ledgerError.message);
-        setClosureMessage(missingLedger
-          ? 'Supabase daily closure ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql before relying on closure totals.'
-          : `Could not load Supabase closure ledger: ${ledgerError.message}`);
-        setLedgerToday(null);
-      } else {
-        setLedgerToday((ledgerData as ClosureLedgerRow | null) || null);
-      }
-      if (savedError) {
-        const missingClosureTable = /branch_daily_closures|does not exist|schema cache/i.test(savedError.message);
-        if (!missingClosureTable) setClosureMessage(`Could not load closure history: ${savedError.message}`);
-        setSavedClosures([]);
-      } else {
-        setSavedClosures((savedData || []) as SavedClosureRow[]);
-      }
-    };
-    void loadClosureLedger();
-    return () => { active = false; };
+  const loadClosureLedger = useCallback(async () => {
+    setLedgerLoading(true);
+    setClosureMessage('');
+    const date = todayIso();
+    const [{ data: ledgerData, error: ledgerError }, { data: savedData, error: savedError }] = await Promise.all([
+      supabase.from('branch_daily_closure_ledger').select('*').eq('branch', branch).eq('closure_date', date).maybeSingle(),
+      supabase.from('branch_daily_closures').select('*').eq('branch', branch).order('closure_date', { ascending: false }).order('created_at', { ascending: false }).limit(30),
+    ]);
+    setLedgerLoading(false);
+    if (ledgerError) {
+      const missingLedger = /branch_daily_closure_ledger|does not exist|schema cache/i.test(ledgerError.message);
+      setClosureMessage(missingLedger
+        ? 'Supabase daily closure ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql before relying on closure totals.'
+        : `Could not load Supabase closure ledger: ${ledgerError.message}`);
+      setLedgerToday(null);
+    } else {
+      setLedgerToday((ledgerData as ClosureLedgerRow | null) || null);
+    }
+    if (savedError) {
+      const missingClosureTable = /branch_daily_closures|does not exist|schema cache/i.test(savedError.message);
+      if (!missingClosureTable) setClosureMessage(`Could not load closure history: ${savedError.message}`);
+      setSavedClosures([]);
+    } else {
+      setSavedClosures((savedData || []) as SavedClosureRow[]);
+    }
   }, [branch]);
+
+  useEffect(() => {
+    void loadClosureLedger();
+  }, [loadClosureLedger]);
 
   const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
   const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
@@ -921,6 +921,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const diff = countedCash - expected;
 
   const save = async () => {
+    if (!branchCounterOpenRecord) { setSavedMessage('Open the counter before saving a closure.'); return; }
     const closurePayload = {
       branch,
       closure_date: todayIso(),
@@ -970,13 +971,12 @@ export function CashierClosureTab({ branch }: ModuleProps) {
 
   const confirmCounterOpen = () => {
     if (branchCounterOpenRecord) {
-      setCounterOpened(true);
       setOpenSavedMessage('Counter is already opened today. Close the counter before opening again.');
       return;
     }
     const record = openCounter({
       branch,
-      date: openDate || todayIso(),
+      date: todayIso(),
       cashier: openCashier || user,
       openingCash: openTotal,
       denominations: Object.fromEntries(
@@ -985,11 +985,21 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       openedBy: user,
     });
     setOpening(String(record.openingCash));
-    setCounterOpened(true);
-    setOpenSavedMessage(`Counter opened at ${openTime} by ${record.cashier}. Opening cash: ${money(record.openingCash)}`);
+    setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${record.cashier}. Opening cash: ${money(record.openingCash)}`);
   };
 
-  const printClosure = () => printHtml(`${branch} Cashier Closure`, `<div class="stamp">CASHIER CLOSURE</div><h2>${BRANCH_LABELS[branch]}</h2><div class="row"><span>Cashier</span><b>${user}</b></div><div class="row"><span>Bills</span><b>${counterTodayBills.length}</b></div><div class="row"><span>Normal Bills</span><b>&#x20B9;${totalSales.toFixed(2)}</b></div><div class="row"><span>Advance Collected Today</span><b>&#x20B9;${advanceCollectedToday.toFixed(2)}</b></div><div class="row"><span>Total Sales (inc. Advance)</span><b>&#x20B9;${totalSalesIncAdvance.toFixed(2)}</b></div><div class="row"><span>Opening Cash</span><b>&#x20B9;${Number(opening || 0).toFixed(2)}</b></div><div class="row"><span>Cash Collected</span><b>&#x20B9;${cash.toFixed(2)}</b></div><div class="row"><span>UPI Collected</span><b>&#x20B9;${upi.toFixed(2)}</b></div><div class="row"><span>Card Collected</span><b>&#x20B9;${card.toFixed(2)}</b></div><div class="row"><span>Split Payments</span><b>&#x20B9;${splitTotal.toFixed(2)}</b></div><div class="row"><span>Credit Sales</span><b>&#x20B9;${creditSalesTotal.toFixed(2)}</b></div><div class="row"><span>Credit Collections</span><b>&#x20B9;${creditCollectionTotal.toFixed(2)}</b></div><div class="row"><span>Expenses</span><b>&#x20B9;${expenses.toFixed(2)}</b></div><div class="row"><span>Refunds</span><b>&#x20B9;${refunds.toFixed(2)}</b></div><div class="row"><span>Expected Cash</span><b>&#x20B9;${expected.toFixed(2)}</b></div><div class="row"><span>Counted Cash</span><b>&#x20B9;${countedCash.toFixed(2)}</b></div><div class="row"><span>Difference</span><b>&#x20B9;${diff.toFixed(2)}</b></div><p>${notes || ''}</p>`);
+  const printClosure = () => printBranchCashierClosure({
+    branch, cashier: user,
+    date: new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }),
+    totalSales, advanceCollected: advanceCollectedToday, totalSalesIncAdvance,
+    billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
+    cash, upi, card, splitTotal,
+    creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
+    openingCash: Number(opening || 0), expenses, refunds,
+    expected, counted: countedCash, difference: diff,
+    notes,
+    bills: counterTodayBills.map((b) => ({ billNo: b.billNo, createdAt: b.createdAt, customerName: b.creditCustomerName, paymentMode: b.paymentMode, total: b.total, biller: b.biller })),
+  });
 
   const exportClosure = () => {
     const rows = [
@@ -1043,13 +1053,13 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           <p className="mt-1 text-sm font-black text-foreground">Daily Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); }} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95">
-            <RotateCcw className="size-4" />Refresh
+          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
+            <RotateCcw className={cn("size-4", ledgerLoading && "animate-spin")} />Refresh
           </button>
           <button onClick={printClosure} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
             <Printer className="size-4" />Print Closure
           </button>
-          <button onClick={() => { void save(); }} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95">
+          <button onClick={() => { void save(); }} disabled={!branchCounterOpenRecord} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
             <CheckCircle2 className="size-4" />Save Closure
           </button>
         </div>
@@ -1102,13 +1112,13 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
           <div>
             <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier</label>
-            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
           </div>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
             {denominations.map((denom) => (
               <label key={denom} className="rounded-2xl border border-border bg-background p-2">
                 <span className="block text-[10px] font-black text-muted-foreground">Rs {denom}</span>
-                <input type="number" min="0" value={openDenominations[denom] || ''} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                <input type="number" min="0" value={openDenominations[denom] || ''} onChange={(e)=>setOpenDenominations(prev=>({...prev,[denom]:e.target.value}))} disabled={Boolean(branchCounterOpenRecord)} className="mt-1 w-full rounded-xl border border-border bg-card px-2 py-2 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-400" />
               </label>
             ))}
           </div>
@@ -1168,7 +1178,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
             <h2 className="font-display text-xl font-black text-foreground">Cash Counter</h2>
           </div>
           <div className="rounded-2xl bg-muted/40 p-3 space-y-2">
-            <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)} /></Field>
+            <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} /></Field>
             <div className="flex justify-between text-sm"><span>Bill cash collection</span><span className="font-black tabular-nums">{money(cash - creditCollectionCash - advanceCash)}</span></div>
             <div className="flex justify-between text-sm"><span>Credit collected in cash</span><span className="font-black tabular-nums">{money(creditCollectionCash)}</span></div>
             <div className="flex justify-between text-sm"><span>Advance collected in cash</span><span className="font-black tabular-nums">{money(advanceCash)}</span></div>
@@ -1205,16 +1215,47 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       </div>
 
     {savedClosures.length > 0 && (
-      <Section title="Supabase Closure History" icon={<History className="size-5"/>}>
+      <Section title="Closure History" icon={<History className="size-5"/>}>
         <div className="space-y-2">
-          {savedClosures.map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.created_at).toLocaleString('en-IN')} - {c.cashier}</p><p className="text-sm text-slate-500">Bills {num(c.bill_count)} - Cash {money(num(c.cash_total))} - UPI {money(num(c.upi_total))} - Card {money(num(c.card_total))} - Expected {money(num(c.expected_cash))} - Counted {money(num(c.actual_cash))} - Difference {money(num(c.difference))}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}
+          {savedClosures.map(c=><div key={c.id} className="rounded-2xl border p-4">
+            <p className="font-black">{c.closure_date ?? new Date(c.created_at).toLocaleDateString('en-IN')} — {c.cashier}</p>
+            <p className="text-xs text-slate-400 mb-2">Saved: {new Date(c.created_at).toLocaleString('en-IN')}</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+              <span className="text-slate-500">Bills</span><span className="font-black tabular-nums">{num(c.bill_count)}</span>
+              <span className="text-slate-500">Cash</span><span className="font-black tabular-nums">{money(num(c.cash_total))}</span>
+              <span className="text-slate-500">UPI</span><span className="font-black tabular-nums">{money(num(c.upi_total))}</span>
+              <span className="text-slate-500">Card</span><span className="font-black tabular-nums">{money(num(c.card_total))}</span>
+              <span className="text-slate-500">Expected Cash</span><span className="font-black tabular-nums">{money(num(c.expected_cash))}</span>
+              <span className="text-slate-500">Physical Cash</span><span className="font-black tabular-nums">{money(num(c.actual_cash))}</span>
+              <span className="text-slate-500">Difference</span><span className={cn("font-black tabular-nums", Math.abs(num(c.difference)) < 0.01 ? 'text-emerald-600' : 'text-red-600')}>{money(num(c.difference))}</span>
+            </div>
+            {c.notes && <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-600">{c.notes}</p>}
+          </div>)}
         </div>
       </Section>
     )}
 
-    <Section title="Closure History" icon={<History className="size-5"/>}>
-      <div className="space-y-2">{cashierClosures.filter(c=>c.branch===branch).map(c=><div key={c.id} className="rounded-2xl border p-4"><p className="font-black">{new Date(c.createdAt).toLocaleString('en-IN')} · {c.cashier}</p><p className="text-sm text-slate-500">Bills {c.billsCount} · Cash {money(c.cash)} · Expected {money(c.expectedCash)} · Counted {money(c.closingCash)} · Difference {money(c.difference)}</p>{c.notes && <p className="mt-2 text-sm font-semibold text-slate-600">{c.notes}</p>}</div>)}</div>
-    </Section>
+    {counterTodayBills.length > 0 && (
+      <Section title={`Today's Bills (${counterTodayBills.length})`} icon={<Receipt className="size-5"/>}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[600px] text-sm">
+            <thead><tr className="border-b text-left text-xs uppercase text-slate-500">
+              <th className="pb-2 pr-3">Bill #</th><th className="pb-2 pr-3">Time</th><th className="pb-2 pr-3">Customer</th><th className="pb-2 pr-3">Payment</th><th className="pb-2 pr-3 text-right">Amount</th><th className="pb-2">Cashier</th>
+            </tr></thead>
+            <tbody>
+              {counterTodayBills.map(b=><tr key={b.id} className="border-b last:border-0">
+                <td className="py-2 pr-3 font-black">{b.billNo}</td>
+                <td className="py-2 pr-3 text-slate-500">{new Date(b.createdAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</td>
+                <td className="py-2 pr-3">{b.creditCustomerName || 'Walk-in'}</td>
+                <td className="py-2 pr-3"><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-black">{b.paymentMode}</span></td>
+                <td className="py-2 pr-3 text-right font-black tabular-nums">{money(b.total)}</td>
+                <td className="py-2 text-slate-500">{b.biller}</td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    )}
   </div>
   </div>;
 }
