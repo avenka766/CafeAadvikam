@@ -246,9 +246,7 @@ export default function BottomNav() {
       { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/vrsnb" },
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
-      { label: "Stock", icon: <Package className="size-5" />, path: "/branch/vrsnb?tab=stock" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
-      { label: "Credit", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=credit-sales" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/vrsnb?tab=alerts" },
     );
@@ -256,14 +254,10 @@ export default function BottomNav() {
     navItems.push(
       { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/snb" },
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/snb?tab=advance" },
-      { label: "Quote", icon: <FileText className="size-5" />, path: "/branch/snb?tab=quotation" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/snb?tab=returns" },
-      { label: "Stock", icon: <Package className="size-5" />, path: "/branch/snb?tab=stock" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/snb?tab=history" },
-      { label: "Credit", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=credit-sales" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
-      { label: "Daily", icon: <ClipboardList className="size-5" />, path: "/branch/snb?tab=daily-closure" },
     );
   } else if (currentUser.role === "branch_hosur") {
     navItems.push(
