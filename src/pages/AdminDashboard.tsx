@@ -26,7 +26,7 @@ import {
   Activity, AlertTriangle, Banknote, BarChart3, Bell, CalendarClock,
   CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download,
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
-  Lock, Menu, Package, PackageSearch, Printer, Receipt, RefreshCw, Search,
+  Lock, Package, PackageSearch, Printer, Receipt, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
   WalletCards, X,
 } from 'lucide-react';
@@ -191,7 +191,6 @@ function AdminDashboard() {
   const requestedTab = searchParams.get('tab') as AdminTab | null;
   const initialTab = requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [fromDate, setFromDate] = useState(lastWeekInput());
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
@@ -460,51 +459,6 @@ function AdminDashboard() {
       .filter(l => inRange(l.createdAt, fromDate, toDate))
       .filter(l => !q || `${l.action} ${l.user} ${l.branch}`.toLowerCase().includes(q));
   }, [auditLogs, auditBranchFilter, fromDate, toDate, auditSearch]);
-
-  const sidebar = (
-    <aside className="flex h-full flex-col border-r border-slate-200 bg-white/95 shadow-sm md:w-64 xl:w-72">
-      <div className="border-b border-slate-100 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-primary">Admin Portal</p>
-            <h1 className="mt-1 font-display text-xl font-black text-slate-950">Business Control</h1>
-            <p className="mt-1 text-xs text-slate-500">Cafe · SNB · VRSNB · Hosur</p>
-          </div>
-          <button className="rounded-xl p-2 hover:bg-slate-100 md:hidden" onClick={() => setMobileNavOpen(false)}><X className="size-4" /></button>
-        </div>
-      </div>
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        {NAV_ITEMS.map(item => {
-          const Icon = item.icon;
-          const disabled = item.adminOnly && !isAdmin;
-          return (
-            <button key={item.id} type="button" disabled={disabled} onClick={() => { selectTab(item.id); setMobileNavOpen(false); }}
-              className={cn('w-full rounded-2xl px-3 py-3 text-left transition', activeTab === item.id ? 'bg-slate-950 text-white shadow-lg shadow-slate-200' : 'text-slate-600 hover:bg-slate-100', disabled && 'cursor-not-allowed opacity-45')}>
-              <div className="flex items-center gap-3">
-                <div className={cn('grid size-10 place-items-center rounded-xl', activeTab === item.id ? 'bg-white/15' : 'bg-slate-100 text-slate-600')}>
-                  {disabled ? <Lock className="size-4" /> : <Icon className="size-4" />}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-black">{item.label}</p>
-                  <p className={cn('mt-0.5 truncate text-[10px]', activeTab === item.id ? 'text-white/70' : 'text-slate-400')}>{item.description}</p>
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </nav>
-      {/* CHANGE 13: Replaced "Role protected" box with user info */}
-      <div className="border-t border-slate-100 p-4">
-        <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
-          <ShieldCheck className="size-5 text-emerald-600 shrink-0" />
-          <div className="min-w-0">
-            <p className="text-sm font-black text-slate-900 truncate">{adminName}</p>
-            <p className="text-[10px] text-slate-500 capitalize">{currentUser?.role?.replace(/_/g, ' ')}</p>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
 
   const rangeControls = (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -1448,45 +1402,26 @@ function AdminDashboard() {
   const activeMeta = NAV_ITEMS.find(item => item.id === activeTab) || NAV_ITEMS[0];
 
   return (
-    <div className="min-h-[100dvh] bg-slate-50/80">
-      <div className="md:hidden sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
-        <div className="flex items-center justify-between gap-3">
-          <button onClick={() => setMobileNavOpen(true)} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-sm font-black text-white"><Menu className="size-4" />Menu</button>
-          <div className="text-right"><p className="text-xs font-black uppercase tracking-wider text-primary">Admin</p><p className="text-sm font-bold text-slate-950">{activeMeta.label}</p></div>
+    <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
+          </div>
+          <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
+          <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
         </div>
+        <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
       </div>
 
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <div className="absolute inset-0 bg-slate-950/40" onClick={() => setMobileNavOpen(false)} />
-          <div className="relative h-full w-[88vw] max-w-sm">{sidebar}</div>
+      {!isAdmin && (
+        <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
         </div>
       )}
 
-      <div className="mx-auto flex min-h-[100dvh] max-w-[1800px]">
-        <div className="sticky top-0 hidden h-[100dvh] shrink-0 md:block">{sidebar}</div>
-        <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
-              </div>
-              <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
-              <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
-            </div>
-            <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
-          </div>
-
-          {!isAdmin && (
-            <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
-            </div>
-          )}
-
-          {activeContent[activeTab]}
-        </main>
-      </div>
-    </div>
+      {activeContent[activeTab]}
+    </main>
   );
 }
 

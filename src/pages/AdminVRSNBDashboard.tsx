@@ -56,7 +56,7 @@ import {
   IndianRupee,
   Landmark,
   LayoutDashboard,
-  Menu,
+
   MessageSquareWarning,
   Package,
   PackageCheck,
@@ -445,7 +445,6 @@ export default function AdminVRSNBDashboard() {
   const [tab, setTab] = useState<TabId>(initialTab);
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
@@ -950,186 +949,56 @@ export default function AdminVRSNBDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/70 pb-6">
-      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-3 py-3 backdrop-blur md:hidden">
-        <div className="flex items-center justify-between gap-3">
-          <button
-            onClick={() => setMobileOpen(true)}
-            className="rounded-2xl bg-slate-950 p-3 text-white"
-          >
-            <Menu className="size-5" />
-          </button>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700">
-              VRSNB Branch
-            </p>
-            <h1 className="truncate text-lg font-black text-slate-950">
-              Admin Control Center
-            </h1>
-          </div>
-          <StatusBadge tone="amber">Net {money(netSales)}</StatusBadge>
-        </div>
-      </div>
-
-      {mobileOpen && (
-        <button
-          className="fixed inset-0 z-40 bg-slate-950/40 md:hidden"
-          onClick={() => setMobileOpen(false)}
-          aria-label="Close menu backdrop"
+    <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
+      {!["stock", "complaints", "quotations"].includes(tab) && (
+        <DateFilters
+          fromDate={fromDate}
+          toDate={toDate}
+          setFromDate={setFromDate}
+          setToDate={setToDate}
         />
       )}
+      {notice && (
+        <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")}>
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
 
-      <div className="grid gap-4 px-3 py-4 md:grid-cols-[260px_minmax(0,1fr)] md:px-4 xl:grid-cols-[300px_minmax(0,1fr)] xl:px-5">
-        <aside
-          className={cn(
-            "fixed inset-y-0 left-0 z-50 w-[86vw] max-w-[330px] translate-x-[-105%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-3 text-white shadow-2xl transition md:sticky md:top-4 md:z-10 md:h-[calc(100dvh-2rem)] md:w-auto md:max-w-none md:translate-x-0 md:rounded-[2rem] md:border md:shadow-sm",
-            mobileOpen && "translate-x-0",
-          )}
-        >
-          <div className="mb-3 rounded-[1.75rem] bg-white/5 p-4 text-white ring-1 ring-white/10">
-            <div className="flex items-center justify-between gap-2">
-              <StatusBadge tone="amber">
-                <Store className="size-3" /> VRSNB Admin
-              </StatusBadge>
-              <button
-                onClick={() => setMobileOpen(false)}
-                className="rounded-xl p-2 text-white/70 md:hidden"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <h2 className="mt-4 text-2xl font-black leading-tight">
-              Branch Control Center
-            </h2>
-            <p className="mt-2 text-xs font-semibold text-white/60">
-              Sales, returns, purchases, stock, balances and closure.
-            </p>
-          </div>
-          <nav className="space-y-2">
-            {scopedTabs.map((item) => {
-              const Icon = item.icon;
-              const count =
-                item.id === "stock"
-                  ? lowStockRows.length
-                  : item.id === "notifications"
-                    ? unreadNotifications
-                    : 0;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    selectTab(item.id);
-                    setMobileOpen(false);
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-black transition",
-                    tab === item.id
-                      ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
-                      : "bg-white/5 text-white/70 ring-1 ring-white/10 hover:bg-white/10 hover:text-white",
-                  )}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  <span className="min-w-0 flex-1">{item.label}</span>
-                  {count > 0 && (
-                    <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] text-white">
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-        </aside>
-
-        <main className="min-w-0 space-y-4">
-          <header className="hidden">
-            <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.22em] text-amber-300">
-                  VRSNB Branch Management
-                </p>
-                <h1 className="mt-2 text-4xl font-black tracking-tight">
-                  Admin Control Center
-                </h1>
-                <p className="mt-2 max-w-3xl text-sm font-semibold text-white/60">
-                  Net sales always deduct return amount. Purchase sync is
-                  protected against duplicate stock updates.
-                </p>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-4 xl:min-w-[780px]">
-                <HeroPill label="Gross Sales" value={money(grossSales)} />
-                <HeroPill
-                  label="Return Amount"
-                  value={money(returnAmount)}
-                  tone="red"
-                />
-                <HeroPill
-                  label="Net Sales"
-                  value={money(netSales)}
-                  tone="green"
-                />
-                <HeroPill
-                  label="Available Balance"
-                  value={money(
-                    cashBalance + upiBalance + cardBalance,
-                  )}
-                  tone="blue"
-                />
-              </div>
-            </div>
-          </header>
-
-          {!["stock", "complaints", "quotations"].includes(tab) && (
-            <DateFilters
-              fromDate={fromDate}
-              toDate={toDate}
-              setFromDate={setFromDate}
-              setToDate={setToDate}
-            />
-          )}
-          {notice && (
-            <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
-              <span>{notice}</span>
-              <button onClick={() => setNotice("")}>
-                <X className="size-4" />
-              </button>
-            </div>
-          )}
-
-          {tab === "overview" && <OverviewTab {...commonProps} />}
-          {tab === "sales" && <SalesReturnsTab {...commonProps} />}
-          {tab === "stock" && (
-            <StockTab
-              lowStockOpen={lowStockOpen}
-              setLowStockOpen={setLowStockOpen}
-              lowSearch={lowSearch}
-              setLowSearch={setLowSearch}
-              {...commonProps}
-            />
-          )}
-          {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
-          {tab === "complaints" && <ComplaintsTab userName={userName} />}
-          {tab === "waste" && <WasteLogsTab userName={userName} />}
-          {tab === "quotations" && <QuotationsTab userName={userName} />}
-          {tab === "credit" && <CreditTab />}
-          {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
-          {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
-          {tab === "closure" && (
-            <DailyClosureTab userName={userName} {...commonProps} />
-          )}
-          {tab === "reports" && <ReportsTab {...commonProps} />}
-          {tab === "audit-stock" && (
-            <StockAuditTab
-              userName={userName}
-              manualUpdateStock={manualUpdateStock}
-              fetchBranchData={fetchBranchData}
-              setNotice={setNotice}
-            />
-          )}
-          {tab === "notifications" && <NotificationsTab userName={userName} />}
-        </main>
-      </div>
-    </div>
+      {tab === "overview" && <OverviewTab {...commonProps} />}
+      {tab === "sales" && <SalesReturnsTab {...commonProps} />}
+      {tab === "stock" && (
+        <StockTab
+          lowStockOpen={lowStockOpen}
+          setLowStockOpen={setLowStockOpen}
+          lowSearch={lowSearch}
+          setLowSearch={setLowSearch}
+          {...commonProps}
+        />
+      )}
+      {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
+      {tab === "complaints" && <ComplaintsTab userName={userName} />}
+      {tab === "waste" && <WasteLogsTab userName={userName} />}
+      {tab === "quotations" && <QuotationsTab userName={userName} />}
+      {tab === "credit" && <CreditTab />}
+      {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
+      {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
+      {tab === "closure" && (
+        <DailyClosureTab userName={userName} {...commonProps} />
+      )}
+      {tab === "reports" && <ReportsTab {...commonProps} />}
+      {tab === "audit-stock" && (
+        <StockAuditTab
+          userName={userName}
+          manualUpdateStock={manualUpdateStock}
+          fetchBranchData={fetchBranchData}
+          setNotice={setNotice}
+        />
+      )}
+      {tab === "notifications" && <NotificationsTab userName={userName} />}
+    </main>
   );
 }
 

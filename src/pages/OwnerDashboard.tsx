@@ -2231,43 +2231,18 @@ export default function OwnerDashboard() {
   ];
 
   return (
-    <div className="owner-dashboard-screen dashboard-screen min-h-screen bg-transparent">
-      <div className="owner-dashboard-shell">
-        <aside className="owner-sidebar" aria-label="Owner dashboard sections">
-          <div className="owner-sidebar-brand">
-            <span>Owner Control</span>
-            <strong>Business cockpit</strong>
-          </div>
-          <nav className="owner-tabs">
-            {tabs.map(t => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => selectTab(t.id)}
-                className={cn(tab === t.id && 'is-active')}
-              >
-                {t.icon}
-                <span>{t.label}</span>
-                <em>{t.hint}</em>
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        <main className="owner-dashboard-body">
-          {tab === 'branches'   && <BranchOverviewTab />}
-          {tab === 'sales'      && <SalesOverviewTab />}
-          {tab === 'credit'     && <OwnerCreditTab />}
-          {tab === 'purchases'  && <OwnerPurchasesTab />}
-          {tab === 'closure'    && <OwnerDailyClosureTab />}
-          {tab === 'variance'   && <OwnerStockVarianceTab />}
-          {tab === 'alerts'     && <OwnerAlertsTab />}
-          {tab === 'attendance' && <AttendanceSalaryTab />}
-          {tab === 'waste'      && <WasteLogsTab />}
-          {tab === 'complaints' && <OwnerComplaintsTab />}
-          {tab === 'audit'      && <OwnerAuditTab />}
-        </main>
-      </div>
-    </div>
+    <main className="owner-dashboard-body px-4 py-5 sm:px-6 xl:px-8">
+      {tab === 'branches'   && <BranchOverviewTab />}
+      {tab === 'sales'      && <SalesOverviewTab />}
+      {tab === 'credit'     && <OwnerCreditTab />}
+      {tab === 'purchases'  && <OwnerPurchasesTab />}
+      {tab === 'closure'    && <OwnerDailyClosureTab />}
+      {tab === 'variance'   && <OwnerStockVarianceTab />}
+      {tab === 'alerts'     && <OwnerAlertsTab />}
+      {tab === 'attendance' && <AttendanceSalaryTab />}
+      {tab === 'waste'      && <WasteLogsTab />}
+      {tab === 'complaints' && <OwnerComplaintsTab />}
+      {tab === 'audit'      && <OwnerAuditTab />}
+    </main>
   );
 }
