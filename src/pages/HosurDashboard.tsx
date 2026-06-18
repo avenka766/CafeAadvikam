@@ -851,7 +851,6 @@ export default function HosurDashboard() {
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
     setSearchParams(nextTab === 'newOrder' ? {} : { tab: nextTab });
-    setSidebarOpen(false);
   };
 
   const activeShops = shops.filter((shop) => shop.isActive);
@@ -1224,10 +1223,6 @@ export default function HosurDashboard() {
 
       <div className="min-h-[calc(100dvh-230px)]">
         <main className="p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white">
-            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
-          </div>
-
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
           {success && <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{success}</div>}
           {loading ? (
@@ -1277,6 +1272,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
@@ -1285,21 +1281,62 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   useEffect(() => { if (!selectedShopId && shops[0]) setSelectedShopId(shops[0].id); }, [shops, selectedShopId]);
 
-  const catalogItems = buildHosurCatalogItems(prices, selectedShop?.id);
-  const filteredItems = catalogItems.filter((item) => normalize(item.name).includes(normalize(priceSearch))).slice(0, 120);
+  // Only show items that belong to the selected shop's price list
+  const shopPriceItems: HosurCatalogItem[] = prices
+    .filter((p) => p.shopId === selectedShop?.id && p.isActive)
+    .filter((p) => !priceSearch || normalize(p.itemName).includes(normalize(priceSearch)))
+    .map((p, index) => {
+      const master = masterItemFor(p.itemName);
+      return {
+        barcode: master?.barcode ?? 90_000 + index,
+        name: p.itemName,
+        price: p.unitPrice,
+        uom: p.itemUnit === 'kg' ? 'Kgs' : 'Nos',
+        category: master?.category ?? inferHosurItemCategory(p.itemName),
+        source: (master ? 'master' : 'shop') as 'master' | 'shop',
+      };
+    });
+
+  const startEditShop = (shop: HosurShop) => {
+    setEditingShopId(shop.id);
+    setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') });
+  };
+
+  const cancelEdit = () => {
+    setEditingShopId(null);
+    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  };
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
     if (!cleanPhone(form.whatsappNumber)) throw new Error('WhatsApp number is required.');
-    const { error } = await supabase.from('hosur_shops').insert({
-      shop_name: form.shopName.trim(),
-      whatsapp_number: cleanPhone(form.whatsappNumber),
-      address: form.address.trim(),
-      discount_percent: Number(form.discountPercent) || 0,
-      is_active: true,
-    });
-    if (error) throw error;
+    if (editingShopId) {
+      const { error } = await supabase.from('hosur_shops').update({
+        shop_name: form.shopName.trim(),
+        whatsapp_number: cleanPhone(form.whatsappNumber),
+        address: form.address.trim(),
+        discount_percent: Number(form.discountPercent) || 0,
+        updated_at: new Date().toISOString(),
+      }).eq('id', editingShopId);
+      if (error) throw error;
+      setEditingShopId(null);
+    } else {
+      const { error } = await supabase.from('hosur_shops').insert({
+        shop_name: form.shopName.trim(),
+        whatsapp_number: cleanPhone(form.whatsappNumber),
+        address: form.address.trim(),
+        discount_percent: Number(form.discountPercent) || 0,
+        is_active: true,
+      });
+      if (error) throw error;
+    }
     setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  };
+
+  const deleteShop = async (shopId: string) => {
+    const { error } = await supabase.from('hosur_shops').update({ is_active: false }).eq('id', shopId);
+    if (error) throw error;
+    if (selectedShopId === shopId) setSelectedShopId('');
   };
 
   const importVrsnbPriceList = async () => {
@@ -1401,35 +1438,38 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
           <Card className="space-y-3">
-            <h3 className="font-black">Add Shop</h3>
+            <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
             <Field label="Default Discount % (optional)">
-              <input
-                className={inputClass}
-                type="number"
-                min="0"
-                max="100"
-                value={form.discountPercent}
-                onChange={(e) => setForm({ ...form, discountPercent: e.target.value })}
-                placeholder="e.g. 10 for 10% off"
-              />
+              <input className={inputClass} type="number" min="0" max="100" value={form.discountPercent} onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} placeholder="e.g. 10 for 10% off" />
             </Field>
-            <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Save Shop</button>
+            <div className="flex gap-2">
+              <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>
+                {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}
+              </button>
+              {editingShopId && <button className={softButton} onClick={cancelEdit}>Cancel</button>}
+            </div>
           </Card>
           <Card className="space-y-2">
             <h3 className="font-black">Shops</h3>
-            {shops.length === 0 ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here. You can update the full shop list later." /> : shops.map((shop) => (
-              <button key={shop.id} onClick={() => setSelectedShopId(shop.id)} className={cn('w-full rounded-2xl border p-3 text-left transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border hover:bg-muted/50')}>
-                <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
-                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
-                {shop.discountPercent > 0 && (
-                  <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
-                )}
-              </button>
-            ))}
+            {shops.length === 0
+              ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here." />
+              : shops.map((shop) => (
+                <div key={shop.id} className={cn('rounded-2xl border p-3 transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border')}>
+                  <button className="w-full text-left" onClick={() => setSelectedShopId(shop.id)}>
+                    <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
+                    {shop.discountPercent > 0 && <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied</p>}
+                  </button>
+                  <div className="mt-2 flex gap-2">
+                    <button className={softButton} onClick={() => startEditShop(shop)}>Edit</button>
+                    <button className="rounded-2xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 hover:bg-red-100" disabled={busy} onClick={() => withBusy(() => deleteShop(shop.id), 'Shop deactivated.')}>Delete</button>
+                  </div>
+                </div>
+              ))}
           </Card>
         </div>
         <Card className="space-y-4">
@@ -1445,18 +1485,21 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
-          <div className="overflow-x-auto rounded-2xl border">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Default</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
-              <tbody className="divide-y">
-                {filteredItems.map((item) => {
-                  const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
-                  const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
-                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
-                })}
-              </tbody>
-            </table>
-          </div>
+          {shopPriceItems.length === 0
+            ? <EmptyState icon={<Receipt className="size-6" />} title="No items in this shop's price list" subtitle="Use 'Add Item' above to add items for this shop." />
+            : (
+              <div className="overflow-x-auto rounded-2xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+                  <tbody className="divide-y">
+                    {shopPriceItems.map((item) => {
+                      const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
+                      return <tr key={item.name} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}</td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>Update</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed.')}>Delete</button></div></td></tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
         </Card>
       </div>
     </div>
@@ -1473,7 +1516,6 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
 }) {
   const [shopId, setShopId] = useState('');
   const [search, setSearch] = useState('');
-  const [category, setCategory] = useState<string>('All');
   const [cart, setCart] = useState<Record<string, DraftOrderItem>>({});
   const [notes, setNotes] = useState('');
   const [orderSubTab, setOrderSubTab] = useState<'catalog' | 'custom'>('catalog');
@@ -1497,10 +1539,9 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
         };
       })
     : SNB_ITEMS.map((item) => ({ ...item, source: 'master' as const }));
-  const filteredItems = catalogItems.filter((item) => {
-    if (search.trim()) return normalize(item.name).includes(normalize(search));
-    return category === 'All' || item.category === category;
-  });
+  const filteredItems = catalogItems.filter((item) =>
+    !search.trim() || normalize(item.name).includes(normalize(search))
+  );
   const cartItems = Object.values(cart);
   const subtotal = cartItems.reduce((sum, item) => sum + item.lineTotal, 0);
 
@@ -1604,9 +1645,6 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
               </div>
             ) : (
               <>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {['All', ...SNB_CATEGORIES].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
-            </div>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {filteredItems.slice(0, 120).map((item) => {
                 const current = cart[item.name]?.quantity ?? 0;
