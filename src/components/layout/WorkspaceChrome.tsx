@@ -278,10 +278,6 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     || /^\/admin-(snb|vrsnb)/.test(location.pathname)
     || /^\/owner/.test(location.pathname)
     || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
-  // Hide the WorkspaceChrome sidebar on routes that have their own full-page sidebar navigation
-  const hideSidebar = /^\/admin-dashboard/.test(location.pathname)
-    || /^\/owner/.test(location.pathname)
-    || /^\/admin-(snb|vrsnb)/.test(location.pathname);
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
     const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
@@ -290,7 +286,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
 
   return (
     <div className="workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]">
-      <aside className={cn("workspace-sidebar hidden md:flex", hideSidebar && "!hidden")}>
+      <aside className="workspace-sidebar hidden md:flex">
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
           <div>
