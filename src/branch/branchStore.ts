@@ -28,6 +28,13 @@ const decrementBranchStockStrict = async (branch: Branch, itemName: string, qty:
   });
 };
 
+const defaultMinThreshold = (unit?: string) => {
+  const normalized = (unit ?? '').toLowerCase();
+  if (normalized.includes('kg') || normalized.includes('ltr') || normalized.includes('lit')) return 2;
+  if (normalized.includes('g')) return 500;
+  return 10;
+};
+
 export interface StockItem {
   itemName: string;
   quantity: number;
@@ -248,7 +255,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('branch_sales').select('*').eq('branch', branch)
           .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
-        supabase.from('branch_incoming').select('*').eq('branch', branch)
+        supabase.from('branch_incoming').select('*').eq('branch', branch).order('created_at', { ascending: false }).limit(500)
           .order('received_at', { ascending: false }),
         supabase.from('branch_thresholds').select('*').eq('branch', branch),
         supabase.from('bakery_items').select('name, price'),
@@ -779,7 +786,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         }
       } else {
         const { error: insErr } = await supabase.from('branch_stock')
-          .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: 10 });
+          .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: defaultMinThreshold(inc.unit) });
         if (insErr) return `Failed to create stock entry: ${insErr.message}`;
       }
     }
@@ -980,7 +987,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       item_name:     item.name,
       quantity:      0,
       unit:          item.uom === 'Kgs' || item.uom === 'kg' ? 'kg' : 'pcs',
-      min_threshold: 10,
+      min_threshold: defaultMinThreshold(item.uom),
     }));
     for (let i = 0; i < rows.length; i += 50) {
       await supabase

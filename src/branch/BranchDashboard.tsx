@@ -1,5 +1,5 @@
 // src/branch/BranchDashboard.tsx
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -116,11 +116,11 @@ export default function BranchDashboard({ branch }: Props) {
   const alertShownRef = useRef<string>('');
   const [showDeliveryAlert, setShowDeliveryAlert] = useState(false);
 
-  const branchStock      = stock[branch]           || [];
-  const branchIncoming   = incoming[branch]        || [];
-  const branchAdvance    = advanceOrders?.[branch] || [];
-  const branchSales      = sales[branch]           || [];
-  const branchThresholds = thresholds[branch]      || {};
+  const branchStock = useMemo(() => stock[branch] || [], [stock, branch]);
+  const branchIncoming = useMemo(() => incoming[branch] || [], [incoming, branch]);
+  const branchAdvance = useMemo(() => advanceOrders?.[branch] || [], [advanceOrders, branch]);
+  const branchSales = useMemo(() => sales[branch] || [], [sales, branch]);
+  const branchThresholds = useMemo(() => thresholds[branch] || {}, [thresholds, branch]);
   const colors           = BRANCH_COLORS[branch];
   const role = currentUser?.role || '';
   const isAdminUser = role === 'admin' || role === 'owner' || (branch === 'SNB' && role === 'admin_snb') || (branch === 'VRSNB' && role === 'admin_vrsnb');
@@ -132,19 +132,19 @@ export default function BranchDashboard({ branch }: Props) {
       ? isSnbAdmin
       : isAdminUser;
   const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : isAdminUser;
-  const tabs = BASE_TABS.filter((t) => {
+  const tabs = useMemo(() => BASE_TABS.filter((t) => {
     if (branch === 'VRSNB' && VRSNB_HIDDEN_TABS.includes(t.id)) return false;
     if (t.id === 'reports') return canViewReports;
     if (t.id === 'salesperson') return canViewSalespersonReport;
     return !t.adminOnly || isAdminUser;
-  });
+  }), [branch, canViewReports, canViewSalespersonReport, isAdminUser]);
   const requestedTab = searchParams.get('tab') as TabId | null;
   const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
-  const openTab = (id: TabId | string) => {
+  const openTab = useCallback((id: TabId | string) => {
     const next = id as TabId;
     if (next === 'bill') setSearchParams({});
     else setSearchParams({ tab: next });
-  };
+  }, [setSearchParams]);
 
   useEffect(() => {
     if (useBranchOpsStore.persist.hasHydrated()) {
@@ -169,7 +169,8 @@ export default function BranchDashboard({ branch }: Props) {
     }
 
     const unsubscribe = subscribeToStock(branch);
-    const id = setInterval(() => fetchBranchData(branch), 3_000);
+    const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
+    const id = setInterval(refresh, 45_000);
     const syncId = setInterval(() => syncIncomingFromDispatches(branch), 60 * 1000);
 
     return () => {
@@ -177,7 +178,7 @@ export default function BranchDashboard({ branch }: Props) {
       clearInterval(id);
       clearInterval(syncId);
     };
-  }, [branch]);
+  }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
   useEffect(() => {
     let active = true;
@@ -201,7 +202,7 @@ export default function BranchDashboard({ branch }: Props) {
 
   useEffect(() => {
     if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
-  }, [requestedTab, tabs]);
+  }, [requestedTab, tabs, openTab]);
 
   const lowStockCount = useMemo(
     () => branchStock.filter((s) => s.quantity <= (branchThresholds[s.itemName] ?? s.minThreshold ?? 10)).length,
@@ -221,12 +222,13 @@ export default function BranchDashboard({ branch }: Props) {
   const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
 
   useEffect(() => {
-    const key = `${branch}-${todayIso}-${todayDeliveryCount}`;
+    const deliveryIds = [...todayLegacyDeliveries, ...todayCakeDeliveries].map((d: any) => d.id).sort().join(',');
+    const key = `${branch}-${todayIso}-${deliveryIds}`;
     if (todayDeliveryCount > 0 && alertShownRef.current !== key) {
       alertShownRef.current = key;
       setShowDeliveryAlert(true);
     }
-  }, [branch, todayDeliveryCount, todayIso]);
+  }, [branch, todayDeliveryCount, todayIso, todayLegacyDeliveries, todayCakeDeliveries]);
 
   const todayString = new Date().toDateString();
   const todayBills = useMemo(
@@ -411,8 +413,4 @@ function BranchAlertsTab({
       </section>
     </div>
   );
-}
-
-function HeroKpi({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
-  return <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10"><div className="flex items-center justify-between text-white/60"><p className="text-[10px] font-black uppercase tracking-wide">{label}</p>{icon}</div><p className="mt-1 text-xl font-black tabular-nums text-white">{value}</p></div>;
 }
