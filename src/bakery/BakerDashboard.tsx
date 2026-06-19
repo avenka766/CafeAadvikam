@@ -185,14 +185,14 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
     .from('bakery_orders')
     .select('*')
     .in('status', ['packed', 'dispatched'])
-    .gte('sent_to_packing_at', from.toISOString())
-    .lte('sent_to_packing_at', to.toISOString())
-    .order('sent_to_packing_at', { ascending: false });
+    .order('sent_to_packing_at', { ascending: false, nullsFirst: false });
 
   if (error) { console.warn('BakerReport fetch error:', error.message); return []; }
 
   const rows: BakerReportRow[] = [];
   for (const r of data ?? []) {
+    const reportDate = new Date((r.sent_to_packing_at as string | null) ?? (r.created_at as string));
+    if (reportDate < from || reportDate > to) continue;
     const preparedItems = (r.prepared_items as PreparedItem[]) ?? [];
     const requestedItems = (r.items as { itemId: string; itemName: string; quantity: number; dispatchUnit?: string; originalPcs?: number }[]) ?? [];
 
@@ -570,8 +570,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   const [prepQty, setPrepQty] = useState<Record<string, string>>({});
   useEffect(() => {
     setPrepQty(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order.id, (order as { updatedAt?: string }).updatedAt]);
+  }, [order.id, order.updatedAt, order.items]);
 
   const [submitting, setSubmitting] = useState(false);
   const [done,       setDone]       = useState(false);
@@ -581,7 +580,8 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
   // FIX M-17: use parseInt + isFinite to reject scientific notation (1e3) and Infinity.
   const valid = order.items.every(i => {
     const v = Number.parseFloat(prepQty[i.itemId] ?? '');
-    return Number.isFinite(v) && v > 0;
+    const minimum = i.dispatchUnit === 'pcs' ? 1 : 0.01;
+    return Number.isFinite(v) && v >= minimum;
   });
 
   const handleSend = async () => {
@@ -940,7 +940,7 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {[
-          { label: 'Completed', value: orders.length, color: 'text-emerald-600' },
+          { label: 'Completed', value: filteredOrders.length, color: 'text-emerald-600' },
           { label: 'Today', value: todayCompleted, color: 'text-primary' },
           { label: 'At Packing', value: atPacking, color: 'text-purple-600' },
           { label: 'Dispatched', value: dispatched, color: 'text-emerald-700' },

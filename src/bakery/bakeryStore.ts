@@ -27,6 +27,7 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     status: d.status as WorkflowStatus,
     createdBy: d.created_by as string,
     createdAt: d.created_at as string,
+    updatedAt: d.updated_at as string | undefined,
     expectedOutput: d.expected_output as number | undefined,
     materialsCalculatedAt: d.materials_calculated_at as string | undefined,
     preparedItems: (d.prepared_items as PreparedItem[]) || [],
@@ -229,7 +230,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log, prepared_items, order_number')
+      .select('dispatch_log, prepared_items, order_number, items, notes, target_branch')
       .eq('id', orderId)
       .single();
     if (fetchErr || !freshOrder) {
@@ -254,13 +255,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Without this, 7 pcs dispatched from 1.5 kg never satisfies "7 >= 1.5" → stuck forever.
     const preparedItems = (freshOrder.prepared_items as PreparedItem[]) || [];
 
-    // We need order items for weightGrams/dispatchUnit — fetch lazily; reused below too.
-    const { data: fullOrderData } = await supabase
-      .from('bakery_orders')
-      .select('items, order_number, notes, target_branch')
-      .eq('id', orderId)
-      .single();
-    const orderItems = (fullOrderData?.items as import('./types').BakeryOrderItem[]) ?? [];
+    // Reuse the single fresh-order query for item metadata and notifications.
+    const fullOrderData = freshOrder;
+    const orderItems = (freshOrder.items as import('./types').BakeryOrderItem[]) ?? [];
     const { kgToPcs } = await import('./itemMatcher');
 
     const allFullyDispatched = preparedItems.length > 0 && preparedItems.every(p => {
@@ -436,9 +433,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Otherwise (or if log is empty) → back to 'packed' so packing can continue.
     const preparedItems = order.preparedItems || [];
     const allStillCovered = updatedLog.length > 0 && preparedItems.length > 0 && preparedItems.every(p => {
+      const orderItem = order.items.find(i => i.itemName === p.itemName);
       const totalDispatched = updatedLog
         .filter(d => d.itemName === p.itemName)
-        .reduce((s, d) => s + d.quantity, 0);
+        .reduce((sum, d) => sum + d.quantity, 0);
+      if (orderItem?.dispatchUnit === 'pcs' && orderItem.weightGrams && orderItem.weightGrams > 0) {
+        const requiredPcs = Math.floor((p.quantityPrepared * 1000) / orderItem.weightGrams);
+        return totalDispatched >= requiredPcs;
+      }
       return totalDispatched >= p.quantityPrepared - 0.001;
     });
     const newStatus: WorkflowStatus = allStillCovered ? 'dispatched' : 'packed';

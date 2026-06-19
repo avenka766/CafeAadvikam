@@ -93,7 +93,7 @@ function printItemRecipe(
   mats: { material: string; quantity: number; unit: string }[],
 ) {
   const printWindow = window.open('', '_blank', 'width=400,height=600');
-  if (!printWindow) return;
+  if (!printWindow) { window.alert('Popup blocked — please allow popups for this site to print.'); return; }
 
   const qtyLabel = item.dispatchUnit === 'pcs'
     ? `${item.originalPcs ?? item.quantity} pcs${item.originalPcs != null ? ` → ${item.quantity} kg` : ''}`
@@ -361,6 +361,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   }, [order]);
 
   const handleSendToBaker = async () => {
+    if (anyOut) { setSendError('Cannot send to baker: one or more required materials are out of stock.'); return; }
     setSending(true); setSendError(null);
     try {
       // BUG-FIX: sendToBaker FIRST — if it fails, no stock deducted (was reversed before)
@@ -452,7 +453,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 : <><CheckCircle2 className="size-4" /> Accept Order</>}
             </button>
           ) : (
-            <button onClick={handleSendToBaker} disabled={sending || sent}
+            <button onClick={handleSendToBaker} disabled={sending || sent || anyOut}
               className={cn(
                 'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
                 sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
@@ -509,7 +510,7 @@ function StockRow({ item, onEdit, onDelete }: { item: StockItem; onEdit: (i: Sto
 }
 
 // ─── Add Stock modal ──────────────────────────────────────────────────────────
-function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string, unit: StockUnit, qty: number, min: number) => Promise<void> }) {
+function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string, unit: StockUnit, qty: number, min: number, suppliers: string[]) => Promise<void> }) {
   const recipeMats = useMemo(() => getAllRecipeMaterials(), []);
   const { items: existingItems } = useStoreStockStore();
   const [search, setSearch] = useState('');
@@ -548,7 +549,7 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
     const q = parseFloat(qty), m = parseFloat(min);
     if (isNaN(q) || q < 0 || isNaN(m) || m < 0) { setError('Invalid quantity or minimum'); return; }
     setSaving(true); setError('');
-    await onSave(name, unit, q, m);
+    await onSave(name, unit, q, m, selectedSuppliers);
     setSaving(false); onClose();
   };
 
@@ -687,7 +688,7 @@ function InlineDeductionsView() {
   const [loading, setLoading] = useState(false);
   const [search, setSearch]   = useState('');
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     const today = new Date();
     const from = new Date(today); from.setHours(0,0,0,0);
@@ -712,9 +713,13 @@ function InlineDeductionsView() {
       })));
     }
     setLoading(false);
-  };
+  }, []);
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => { void load(); }, 30_000);
+    return () => window.clearInterval(id);
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -814,6 +819,7 @@ function StoreInventoryTab() {
     if (result.error) {
       setImportError(result.error);
     } else {
+      setImportError(null);
       setImportToast({ added: result.added, skipped: result.skipped });
       setTimeout(() => setImportToast(null), 4000);
     }
@@ -937,9 +943,9 @@ function StoreInventoryTab() {
           }
         </>
 
-      {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m) => {
+      {showAdd && <AddItemModal onClose={() => setShowAdd(false)} onSave={async (n, u, q, m, suppliers) => {
         const before = items.length;
-        const err = await addItem(n, u, q, m);
+        const err = await addItem(n, u, q, m, suppliers);
         if (!err) {
           const created = useStoreStockStore.getState().items.find(item => normaliseName(item.name) === normaliseName(n));
           await notifyStockChange('created', created?.id || n, n, `stock ${q} ${u}, low alert ${m}`);

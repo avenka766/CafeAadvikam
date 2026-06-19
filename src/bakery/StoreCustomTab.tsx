@@ -263,7 +263,7 @@ export default function StoreCustomTab() {
   const [error, setError]             = useState('');
   const [success, setSuccess]         = useState('');
 
-  useEffect(() => { if (!stockLoaded) loadStock(); }, [stockLoaded]);
+  useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
   useEffect(() => {
     fetchDeductions().then(({ records, tableReady: tr }) => {

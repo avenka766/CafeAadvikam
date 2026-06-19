@@ -189,16 +189,16 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
   const [dispatchError,    setDispatchError]    = useState<string | null>(null);
 
-  const initialised = useRef(false);
   const [packedEntries, setPackedEntries] = useState<PackedEntry[]>([]);
   useEffect(() => {
-    if (!initialised.current && order.preparedItems?.length) {
-      setPackedEntries(order.preparedItems.map(p => {
-        const oi = order.items.find(i => i.itemId === p.itemId);
-        return { itemId: p.itemId, itemName: p.itemName, qty: p.quantityPrepared, confirmed: false, weightGrams: oi?.weightGrams, dispatchUnit: oi?.dispatchUnit ?? 'kg' };
-      }));
-      initialised.current = true;
-    }
+    if (!order.preparedItems?.length) { setPackedEntries([]); return; }
+    setPackedEntries(previous => order.preparedItems!.map(p => {
+      const prior = previous.find(entry => entry.itemId === p.itemId);
+      const oi = order.items.find(i => i.itemId === p.itemId);
+      // Preserve locally confirmed rows; refresh every unconfirmed row from realtime baker data.
+      if (prior?.confirmed) return prior;
+      return { itemId: p.itemId, itemName: p.itemName, qty: p.quantityPrepared, confirmed: false, weightGrams: oi?.weightGrams, dispatchUnit: oi?.dispatchUnit ?? 'kg' };
+    }));
   }, [order.preparedItems, order.items]);
 
   const isCustomItem   = (itemId: string) => order.items.find(i => i.itemId === itemId)?.isCustom ?? false;
@@ -241,7 +241,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const allDispatched = preparedItems.length > 0 && preparedItems.every(p => (stockByItem[p.itemName]?.available ?? 1) <= 0);
 
   const handleDispatch = async (itemName: string, qty: number, branch: Branch, unit?: 'pcs' | 'kg') => {
-    if (!currentUser || dispatchingItems.size > 0) return;
+    if (!currentUser || dispatchingItems.has(itemName)) return;
     setDispatchingItems(prev => new Set(prev).add(itemName));
     setDispatchError(null);
     try {
@@ -657,6 +657,7 @@ function printDailyClosure(payload: {
   </body></html>`);
   win.document.close();
   win.focus();
+  window.setTimeout(() => win.print(), 300);
 }
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
@@ -667,6 +668,7 @@ export default function PackingDashboard() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
   const [isExporting, setIsExporting] = useState(false);
   const [branchFilter, setBranchFilter] = useState<BranchFilter>('all');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
@@ -693,30 +695,33 @@ export default function PackingDashboard() {
   const filteredPackingOrders = useMemo(() => {
     return readyToPackOrders
       .filter(o => branchFilter === 'all' ? true : o.targetBranch === branchFilter)
+      .filter(o => orderMatchesSearch(o, search))
       .sort((a, b) => {
         const aTime = new Date(a.sentToPackingAt || a.createdAt).getTime();
         const bTime = new Date(b.sentToPackingAt || b.createdAt).getTime();
         return bTime - aTime;
       });
-  }, [readyToPackOrders, branchFilter]);
+  }, [readyToPackOrders, branchFilter, search]);
 
   const filteredDispatchedOrders = useMemo(() => {
     return dispatchedOrders
       .filter(o => branchFilter === 'all' ? true : o.targetBranch === branchFilter)
+      .filter(o => orderMatchesSearch(o, search))
       .sort((a, b) => {
         const aTime = new Date(orderLastDispatchAt(a) || a.sentToPackingAt || a.createdAt).getTime();
         const bTime = new Date(orderLastDispatchAt(b) || b.sentToPackingAt || b.createdAt).getTime();
         return bTime - aTime;
       });
-  }, [branchFilter, dispatchedOrders]);
+  }, [branchFilter, dispatchedOrders, search]);
 
   const cutoff = useMemo(() => getCutoff(timeFilter), [timeFilter]);
   const periodLabel = TIME_FILTERS.find(t => t.key === timeFilter)?.label ?? 'Today';
 
   const closureOrders = useMemo(() => {
     return packingOrders.filter(order => {
+      if (order.status !== 'dispatched') return false;
       if (branchFilter !== 'all' && order.targetBranch !== branchFilter) return false;
-      const dateValue = order.status === 'dispatched' ? orderLastDispatchAt(order) : (order.sentToPackingAt || order.createdAt);
+      const dateValue = orderLastDispatchAt(order);
       return dateValue ? new Date(dateValue) >= cutoff : false;
     });
   }, [packingOrders, branchFilter, cutoff]);
@@ -757,9 +762,9 @@ export default function PackingDashboard() {
     return totals;
   }, [closureDispatchEntries]);
 
-  const totalPackedForPeriod = closureOrders.filter(order => ['packed', 'dispatched'].includes(order.status)).length;
-  const totalDispatchedForPeriod = closureOrders.filter(order => order.status === 'dispatched').length;
-  const pendingForPeriod = closureOrders.filter(order => order.status === 'packed').length;
+  const totalPackedForPeriod = closureOrders.length;
+  const totalDispatchedForPeriod = closureOrders.length;
+  const pendingForPeriod = readyToPackOrders.filter(order => branchFilter === 'all' || order.targetBranch === branchFilter).length;
   const holdCancelledForPeriod = 0;
 
   const handleExport = () => {
@@ -844,6 +849,8 @@ export default function PackingDashboard() {
                   <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">
                     {filteredPackingOrders.length} baker-ready order{filteredPackingOrders.length !== 1 ? 's' : ''}
                   </p>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search order, item or branch" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25" />
                   <select
                     value={branchFilter}
                     onChange={e => setBranchFilter(e.target.value as BranchFilter)}
@@ -851,6 +858,7 @@ export default function PackingDashboard() {
                     <option value="all">All Branches</option>
                     {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
                   </select>
+                  </div>
                 </div>
               </div>
 
@@ -882,6 +890,8 @@ export default function PackingDashboard() {
                   <p className="text-xs font-body font-bold text-muted-foreground uppercase tracking-wide">
                     {filteredDispatchedOrders.length} dispatched order{filteredDispatchedOrders.length !== 1 ? 's' : ''}
                   </p>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search order, item or branch" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25" />
                   <select
                     value={branchFilter}
                     onChange={e => setBranchFilter(e.target.value as BranchFilter)}
@@ -889,6 +899,7 @@ export default function PackingDashboard() {
                     <option value="all">All Branches</option>
                     {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
                   </select>
+                  </div>
                 </div>
               </div>
 

@@ -16,6 +16,7 @@ export interface StockItem {
   quantity: number;
   minThreshold: number;
   archivedAt?: string;
+  suppliers?: string[];
 }
 
 export interface MaterialDeductionLog {
@@ -42,7 +43,7 @@ interface StoreStockState {
   loaded: boolean;
   loading: boolean;
   load: () => Promise<void>;
-  addItem: (name: string, unit: StockUnit, quantity: number, minThreshold: number) => Promise<string | null>;
+  addItem: (name: string, unit: StockUnit, quantity: number, minThreshold: number, suppliers?: string[]) => Promise<string | null>;
   updateQuantity: (id: string, quantity: number) => Promise<string | null>;
   updateItem: (id: string, updates: Partial<Pick<StockItem, 'name' | 'unit' | 'quantity' | 'minThreshold'>>) => Promise<string | null>;
   deleteItem: (id: string) => Promise<void>;
@@ -114,6 +115,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
             quantity: Number(r.quantity),
             minThreshold: Number(r.min_threshold),
             archivedAt: (r.archived_at as string | null) ?? undefined,
+            suppliers: Array.isArray(r.suppliers) ? r.suppliers as string[] : [],
           })),
           loaded: true,
         });
@@ -123,12 +125,12 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     }
   },
 
-  addItem: async (name, unit, quantity, minThreshold) => {
+  addItem: async (name, unit, quantity, minThreshold, suppliers = []) => {
     const existing = get().items.find(i => normaliseName(i.name) === normaliseName(name));
     if (existing) return 'Item already exists in stock list';
     const { data, error } = await supabase
       .from('store_raw_stock')
-      .insert({ name: name.trim(), unit, quantity, min_threshold: minThreshold })
+      .insert({ name: name.trim(), unit, quantity, min_threshold: minThreshold, suppliers })
       .select()
       .single();
     if (error) return error.message;
@@ -139,6 +141,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
         unit: data.unit as StockUnit,
         quantity: Number(data.quantity),
         minThreshold: Number(data.min_threshold),
+        suppliers: Array.isArray(data.suppliers) ? data.suppliers as string[] : suppliers,
       };
       set(s => ({ items: [...s.items, item].sort((a, b) => a.name.localeCompare(b.name)) }));
     }

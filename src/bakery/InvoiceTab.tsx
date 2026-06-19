@@ -212,7 +212,7 @@ function CreateInvoiceModal({
   const { items: stockItems, addItem, updateItem } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
-  useEffect(() => { if (!suppLoaded) loadSuppliers(); }, [suppLoaded]);
+  useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
 
   const [supplierId, setSupplierId]   = useState('');
   const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().slice(0, 10));
@@ -557,7 +557,7 @@ function SuccessToast({ invoiceNumber, onClose }: { invoiceNumber: string; onClo
   useEffect(() => {
     const t = setTimeout(onClose, 5000);
     return () => clearTimeout(t);
-  }, []);
+  }, [onClose]);
   return (
     <div className="fixed bottom-32 left-4 right-4 z-50 bg-emerald-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
       <CheckCircle2 className="size-5 shrink-0" />
@@ -578,7 +578,7 @@ export default function InvoiceTab() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
   const [toast, setToast]           = useState<string | null>(null);
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();

@@ -20,6 +20,7 @@ interface ActivityLogState {
   entries: ActivityEntry[];
   loaded: boolean;
   loading: boolean;
+  error: string | null;
   load: (limit?: number) => Promise<void>;
   log: (entry: Omit<ActivityEntry, 'id' | 'createdAt'>) => Promise<void>;
 }
@@ -41,19 +42,21 @@ export const useActivityLogStore = create<ActivityLogState>((set, get) => ({
   entries: [],
   loaded:  false,
   loading: false,
+  error: null,
 
   load: async (limit = 200) => {
     if (get().loading) return;
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
       const { data, error } = await supabase
         .from('staff_activity_log')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(limit);
-      if (!error && data) {
-        set({ entries: data.map(r => mapRow(r as Record<string, unknown>)), loaded: true });
-      }
+      if (error) throw error;
+      if (data) set({ entries: data.map(r => mapRow(r as Record<string, unknown>)), loaded: true, error: null });
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : 'Failed to load activity log', loaded: true });
     } finally {
       set({ loading: false });
     }

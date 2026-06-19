@@ -32,6 +32,7 @@ export interface BakeryOrder {
   status: WorkflowStatus;
   createdBy: string;
   createdAt: string;
+  updatedAt?: string;
   acceptedBy?: string;
   approvedBy?: string;
   acceptedAt?: string;

@@ -559,13 +559,15 @@ export default function AdminNotificationsTab() {
   const [selected, setSelected] = useState<AdminNotification | null>(null);
   const [filterType, setFilterType] = useState<'all' | NotificationType>('all');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
   // Poll every 20 seconds
   useEffect(() => {
-    const id = setInterval(() => load(), 20_000);
-    return () => clearInterval(id);
-  }, []);
+    const refresh = () => { if (!document.hidden) void load(); };
+    const id = setInterval(refresh, 30_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
+  }, [load]);
 
   const unread = unreadCount();
 
