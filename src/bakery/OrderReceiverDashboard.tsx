@@ -1463,12 +1463,26 @@ export default function OrderReceiverDashboard() {
   }, [loadHosurReceiverData, refreshKey]);
 
   useEffect(() => {
-    if (branch !== "SNB") return;
-    fetchBranchData("SNB");
-    fetchStockMismatches();
-    const unsubscribe = subscribeToStock("SNB");
-    return unsubscribe;
-  }, [branch, fetchBranchData, fetchStockMismatches, subscribeToStock]);
+    if (branch !== "SNB" && branch !== "VRSNB") return;
+
+    let cancelled = false;
+    const refreshStock = async (forceIncomingSync = false) => {
+      await useBranchStore.getState().syncIncomingFromDispatches(branch, forceIncomingSync);
+      if (!cancelled) await fetchStockMismatches();
+    };
+
+    void refreshStock(true);
+    const unsubscribe = subscribeToStock(branch);
+    const refreshId = window.setInterval(() => {
+      void refreshStock(false);
+    }, 30_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshId);
+      unsubscribe();
+    };
+  }, [branch, fetchStockMismatches, subscribeToStock]);
 
   // Guard — should never happen if routing is correct
   if (!meta || !branch) {

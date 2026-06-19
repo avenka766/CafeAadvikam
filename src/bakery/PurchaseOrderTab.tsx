@@ -2,7 +2,7 @@
 // Store dashboard tab - raise and manage purchase orders for raw materials.
 
 import { useState, useEffect } from 'react';
-import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban } from 'lucide-react';
+import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban, Search, X } from 'lucide-react';
 import { usePurchaseOrderStore, type POItem, type POStatus } from './purchaseOrderStore';
 import { useStoreStockStore } from './storeStockStore';
 import { useSupplierStore } from './supplierStore';
@@ -115,10 +115,15 @@ function POCard({ po, onStatusChange, onDelete }: {
 }
 
 function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: ReceiverBranchScope }) {
-  const { items: stockItems } = useStoreStockStore();
-  const { suppliers }         = useSupplierStore();
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
+  const { suppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
   const { currentUser }       = useAuthStore();
   const { createPO }          = usePurchaseOrderStore();
+
+  useEffect(() => {
+    if (!suppliersLoaded) void loadSuppliers();
+    if (!branchScope && !stockLoaded) void loadStock();
+  }, [branchScope, loadStock, loadSuppliers, stockLoaded, suppliersLoaded]);
 
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '');
   const [notes,      setNotes]      = useState('');
@@ -141,6 +146,21 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
     setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: selected?.unit ?? l.unit } : l));
   };
   const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: qty } : l));
+
+  useEffect(() => {
+    if (!supplierId && suppliers.length > 0) setSupplierId(suppliers[0].id);
+  }, [supplierId, suppliers]);
+
+  const chooseSearchResult = (name: string) => {
+    const emptyIndex = lines.findIndex((line) => !line.materialName);
+    if (emptyIndex >= 0) setItem(emptyIndex, name);
+    else if (lines.length === 1 && lines[0].materialName === firstMaterial?.name) setItem(0, name);
+    else {
+      const selected = materialOptions.find((item) => item.name === name);
+      setLines((prev) => [...prev, { materialName: name, quantity: 1, unit: selected?.unit ?? 'pcs' }]);
+    }
+    setItemSearch('');
+  };
 
   const supplier = suppliers.find(s => s.id === supplierId);
 
@@ -184,13 +204,38 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
               <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">SNB items</p>
               <p className="text-[11px] font-body font-semibold text-muted-foreground">Add multiple items in one purchase order.</p>
             </div>
-            <input
-              value={itemSearch}
-              onChange={(e) => setItemSearch(e.target.value)}
-              placeholder="Search item/category"
-              className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-body font-bold focus:outline-none sm:w-64"
-            />
+            <div className="relative sm:w-72">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={itemSearch}
+                onChange={(e) => setItemSearch(e.target.value)}
+                placeholder="Search item or category"
+                className="h-10 w-full rounded-xl border border-border bg-background pl-9 pr-9 text-sm font-body font-bold focus:outline-none"
+              />
+              {itemSearch && (
+                <button type="button" onClick={() => setItemSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <X className="size-4 text-muted-foreground" />
+                </button>
+              )}
+            </div>
           </div>
+          {itemSearch.trim() && (
+            <div className="max-h-52 overflow-y-auto rounded-2xl border border-border bg-card p-2 shadow-sm">
+              {filteredMaterialOptions.length === 0 ? (
+                <p className="px-3 py-5 text-center text-xs font-semibold text-muted-foreground">No matching SNB item.</p>
+              ) : filteredMaterialOptions.slice(0, 40).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => chooseSearchResult(item.name)}
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-muted"
+                >
+                  <span className="text-sm font-bold text-foreground">{item.name}</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground">{item.category} · {item.unit}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {lines.map((line, i) => (
             (() => {
               const selected = materialOptions.find((item) => item.name === line.materialName);
