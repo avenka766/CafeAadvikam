@@ -259,7 +259,19 @@ export default function DailyClosure() {
     // old app version, or a bypass). Surface the collected amount separately so the owner
     // can see cash that is physically in the drawer but not in any revenue line.
     const cancelledButPaid = cancelled.filter(o => o.paymentType !== 'unpaid');
-    const cancelledButPaidAmount = cancelledButPaid.reduce((s, o) => s + safeNumber(o.total), 0);
+    const cancelledButPaidAmount = cancelledButPaid.reduce((s, o) => s + (o.paymentType === 'advance' ? safeNumber(o.fullyPaidAt ? (o.fullAmount || o.total) : (o.advanceAmount || o.total)) : safeNumber(o.total)), 0);
+    const refundPayments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
+    for (const order of cancelledButPaid) {
+      if (order.paymentBreakdown) {
+        addPayment(refundPayments, 'cash', safeNumber(order.paymentBreakdown.cash));
+        addPayment(refundPayments, 'upi', safeNumber(order.paymentBreakdown.upi));
+        addPayment(refundPayments, 'card', safeNumber(order.paymentBreakdown.card));
+      } else if (order.paymentType === 'advance') {
+        addPayment(refundPayments, order.advancePaidBy, safeNumber(order.fullyPaidAt ? (order.fullAmount || order.total) : (order.advanceAmount || order.total)));
+      } else {
+        addPayment(refundPayments, order.paymentType, safeNumber(order.total));
+      }
+    }
     const unpaid = dayOrders.filter(order => order.status !== 'cancelled' && order.paymentType === 'unpaid');
     // CRITICAL FIX: Exclude balance-collection orders (those that have a balanceOrderId set on the
     // *original* advance row).  When balance is collected on the same day, the balance-collection
@@ -386,6 +398,7 @@ export default function DailyClosure() {
       cancelled,
       cancelledButPaid,
       cancelledButPaidAmount,
+      refundPayments,
       unpaid,
       payments,
       creditCollectionPayments,
@@ -417,7 +430,7 @@ export default function DailyClosure() {
   // The correct formula is: expected = openingCash + cashSales - cashExpenses - cashRefunds.
   const cafeOpeningCash = safeNumber(openingCash);
   const cafeCashExpenses = safeNumber(cashExpenses);
-  const expectedCash = cafeOpeningCash + closure.payments.cash + closure.creditCollectionPayments.cash - cafeCashExpenses;
+  const expectedCash = cafeOpeningCash + closure.payments.cash + closure.creditCollectionPayments.cash - closure.refundPayments.cash - cafeCashExpenses;
   const collectionByMode: PaymentTotals = {
     cash: closure.payments.cash + closure.creditCollectionPayments.cash,
     upi: closure.payments.upi + closure.creditCollectionPayments.upi,
@@ -506,7 +519,7 @@ export default function DailyClosure() {
       credit_collected: closure.creditCollected,
       advance_collected: closure.advanceReceived,
       advance_balance_collected: closure.advanceBalanceCollected,
-      refunds: 0,
+      refunds: closure.cancelledButPaidAmount,
       expenses: cafeCashExpenses,
       discounts: closure.discountTotal,
       tax_total: 0,
@@ -531,7 +544,7 @@ export default function DailyClosure() {
       cash: closure.payments.cash,
       upi: closure.payments.upi,
       card: closure.payments.card,
-      returns: 0,
+      returns: closure.cancelledButPaidAmount,
       discounts: closure.discountTotal,
       billsCount: closure.billable.length,
       duplicateBills: 0,
@@ -539,6 +552,16 @@ export default function DailyClosure() {
       creditCollections: closure.creditCollected,
       notes,
     });
+    await supabase.from('admin_notifications').insert({
+      type: 'counter_closure',
+      title: 'Cafe counter closed',
+      body: `${activeCashierName} closed the Cafe counter for ${selectedDate}. Collection ${formatCurrency(closure.collectionTotal)}, difference ${formatCurrency(cashDifference)}.`,
+      ref_label: selectedDate,
+      meta: { branch: 'Cafe', closureDate: selectedDate, cashier: activeCashierName, expectedCash, actualCash: closingCashValue, difference: cashDifference },
+      is_read: false,
+      recipient_role: 'admin_vrsnb',
+    }).then(() => undefined, () => undefined);
+
     if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
       setClosureSavedMessage(`Closure saved in operation records, but daily closure table save failed: ${error.message}`);
     } else if (error) {
@@ -548,6 +571,28 @@ export default function DailyClosure() {
     }
     setSavingClosure(false);
     setTimeout(() => setClosureSavedMessage(''), 3500);
+  };
+
+  const handleReopenCounter = async () => {
+    setOpeningCounter(true);
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('branch_daily_closures')
+      .update({ status: 'open', notes: `${notes ? `${notes} | ` : ''}Counter reopened by ${cashierName} at ${now}`, updated_at: now })
+      .eq('branch', 'Cafe')
+      .eq('closure_date', selectedDate)
+      .eq('status', 'finalized');
+    if (!error) {
+      openCounter({ branch: 'Cafe', date: selectedDate, cashier: activeCashierName, openingCash: closingCashValue, denominations: {}, openedBy: cashierName });
+      setRemoteClosureFinalized(false);
+      setRemoteCounterOpenRecord({ id: `reopened-${selectedDate}`, branch: 'Cafe', date: selectedDate, cashier: activeCashierName, openingCash: closingCashValue, denominations: {}, openedAt: now, openedBy: cashierName });
+      await supabase.from('admin_notifications').insert({ type: 'counter_reopened', title: 'Cafe counter reopened', body: `${cashierName} reopened the Cafe counter for ${selectedDate}.`, ref_label: selectedDate, meta: { branch: 'Cafe', closureDate: selectedDate, reopenedBy: cashierName }, is_read: false, recipient_role: 'admin_vrsnb' }).then(() => undefined, () => undefined);
+      setClosureSavedMessage('Counter reopened. Billing and collection are available again.');
+    } else {
+      setClosureSavedMessage(`Unable to reopen counter: ${error.message}`);
+    }
+    setOpeningCounter(false);
+    setTimeout(() => setClosureSavedMessage(''), 4000);
   };
 
   const handlePrint = () => {
@@ -799,11 +844,11 @@ export default function DailyClosure() {
                 <p className="text-xl font-black tabular-nums">{formatCurrency(openingDenomTotal)}</p>
               </div>
               <button
-                onClick={() => void handleOpenCounter()}
-                disabled={Boolean(cafeCounterOpenRecord) || openingCounter || closureAlreadySaved}
+                onClick={() => void (closureAlreadySaved ? handleReopenCounter() : handleOpenCounter())}
+                disabled={Boolean(cafeCounterOpenRecord) || openingCounter}
                 className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
               >
-                {openingCounter ? 'Opening...' : closureAlreadySaved ? 'Counter Closed' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+                {openingCounter ? 'Saving...' : closureAlreadySaved ? 'Reopen Counter' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
               </button>
             </div>
           </div>

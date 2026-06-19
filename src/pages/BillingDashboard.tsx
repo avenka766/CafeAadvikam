@@ -2249,12 +2249,12 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit'>('new_bill');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | null>(null);
 
   // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance') => {
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -2296,6 +2296,19 @@ export default function BillingDashboard() {
     [orders]
   );
 
+  const deliveryAlerts = useMemo(() => orders
+    .filter(o => o.status !== 'cancelled' && o.paymentType === 'advance' && Boolean(o.deliveryDate))
+    .sort((a, b) => new Date(a.deliveryDate!).getTime() - new Date(b.deliveryDate!).getTime()), [orders]);
+  const todayDeliveryAlerts = useMemo(() => deliveryAlerts.filter(o => todayIso(new Date(o.deliveryDate!)) === todayIso()), [deliveryAlerts]);
+  const [showDeliveryPopup, setShowDeliveryPopup] = useState(false);
+  useEffect(() => {
+    if (todayDeliveryAlerts.length === 0 || !currentUser?.username) return;
+    const key = `biller-delivery-popup:${currentUser.username}:${todayIso()}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, 'shown');
+    setShowDeliveryPopup(true);
+  }, [todayDeliveryAlerts.length, currentUser?.username]);
+
   // Regular orders: exclude OPEN advance orders (pending balance) only.
   // Closed advance orders (balanceDue=0) ARE included so they appear in All/status tabs.
   // QR-FIX: QR orders that are still pending/preparing belong to the kitchen, NOT the biller.
@@ -2310,7 +2323,7 @@ export default function BillingDashboard() {
   );
 
   const isUnpaidOpenOrder = useCallback((order: Order) =>
-    order.paymentType === 'unpaid' && order.status !== 'served' && order.status !== 'cancelled',
+    order.paymentType === 'unpaid' && order.status !== 'cancelled',
     []
   );
 
@@ -2321,7 +2334,7 @@ export default function BillingDashboard() {
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts') return [];
     let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
@@ -2359,6 +2372,19 @@ export default function BillingDashboard() {
                 Clear & switch
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showDeliveryPopup && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 px-5">
+          <div className="w-full max-w-md rounded-3xl border border-amber-200 bg-background p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex gap-3"><div className="size-11 rounded-2xl bg-amber-100 flex items-center justify-center"><Bell className="size-5 text-amber-700" /></div><div><h2 className="font-display text-lg font-black">Delivery due today</h2><p className="text-sm text-muted-foreground">{todayDeliveryAlerts.length} advance order{todayDeliveryAlerts.length === 1 ? '' : 's'} require delivery today.</p></div></div>
+              <button onClick={() => setShowDeliveryPopup(false)} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
+            </div>
+            <div className="mt-4 max-h-64 overflow-y-auto space-y-2">{todayDeliveryAlerts.map(o => <div key={o.id} className="rounded-2xl border border-border p-3"><div className="flex justify-between gap-3"><span className="font-bold">#{String(o.orderNumber).padStart(4,'0')} · {o.customerName || 'Customer'}</span><span className="text-xs font-bold text-amber-700">{new Date(o.deliveryDate!).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div><p className="text-xs text-muted-foreground mt-1">Balance: {formatCurrency(o.balanceDue ?? 0)}</p></div>)}</div>
+            <button onClick={() => { setShowDeliveryPopup(false); setActiveTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
           </div>
         </div>
       )}
@@ -2414,10 +2440,12 @@ export default function BillingDashboard() {
           </button>
 
 
-          <button onClick={() => switchTab('credit')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'credit' ? 'bg-orange-600 text-white shadow-md' : 'bg-orange-50 border border-orange-200 text-orange-700')}>
-            <CreditCard className="size-3.5" />Credit
+
+
+          <button onClick={() => switchTab('alerts')}
+            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
+            <Bell className="size-3.5" />Alerts
+            {deliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{deliveryAlerts.length}</span>}
           </button>
 
           {STATUS_TABS.map(tab => {
@@ -2449,8 +2477,11 @@ export default function BillingDashboard() {
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
-      ) : activeTab === 'credit' ? (
-        <div className="flex-1 min-h-0 overflow-y-auto"><BillerCreditTab /></div>
+      ) : activeTab === 'alerts' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Advance Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Today and upcoming delivery commitments.</p></div>
+          {deliveryAlerts.length === 0 ? <EmptyState icon={Bell} title="No delivery alerts" description="Advance orders with delivery dates will appear here." /> : deliveryAlerts.map(o => { const isToday = todayIso(new Date(o.deliveryDate!)) === todayIso(); return <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />; })}
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
