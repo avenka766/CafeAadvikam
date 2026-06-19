@@ -184,23 +184,17 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Advance Orders', path: '/branch/vrsnb?tab=advance', icon: <FileText className="size-4" />, group: 'Main' },
         { label: 'Alerts', path: '/branch/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/vrsnb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
-        { label: 'Stock / Incoming', path: '/branch/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
-        { label: 'Credit', path: '/branch/vrsnb?tab=credit-sales', icon: <CreditCard className="size-4" />, group: 'Reports' },
-        { label: 'Daily Closure', path: '/branch/vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
+        { label: 'Cashier Closure', path: '/branch/vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
       ];
     case 'branch_snb':
       return [
         { label: 'New Bill', path: '/branch/snb', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'Advance Orders', path: '/branch/snb?tab=advance', icon: <FileText className="size-4" />, group: 'Main' },
-        { label: 'Quotation', path: '/branch/snb?tab=quotation', icon: <FileText className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/snb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
-        { label: 'Stock / Incoming', path: '/branch/snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/snb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
-        { label: 'Credit', path: '/branch/snb?tab=credit-sales', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Cashier Closure', path: '/branch/snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/branch/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
-        { label: 'Daily Closure', path: '/branch/snb?tab=daily-closure', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
       ];
     case 'branch_hosur':
       return [
