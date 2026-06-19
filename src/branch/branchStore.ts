@@ -255,8 +255,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('branch_sales').select('*').eq('branch', branch)
           .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
-        supabase.from('branch_incoming').select('*').eq('branch', branch).order('created_at', { ascending: false }).limit(500)
-          .order('received_at', { ascending: false }),
+        supabase.from('branch_incoming').select('*').eq('branch', branch)
+          .order('received_at', { ascending: false }).limit(500),
         supabase.from('branch_thresholds').select('*').eq('branch', branch),
         supabase.from('bakery_items').select('name, price'),
         supabase.from('branch_advance_orders').select('*')

@@ -280,6 +280,9 @@ export interface CounterOpenRecord {
   denominations: Record<string, string>;
   openedBy: string;
   openedAt: string;
+  active?: boolean;
+  closedAt?: string;
+  closedBy?: string;
 }
 
 export interface BankDeposit {
@@ -587,8 +590,9 @@ interface BranchOpsState {
     movement: Omit<CashMovement, "id" | "dateTime">,
   ) => CashMovement;
   openCounter: (
-    opening: Omit<CounterOpenRecord, "id" | "openedAt">,
+    opening: Omit<CounterOpenRecord, "id" | "openedAt" | "active" | "closedAt" | "closedBy">,
   ) => CounterOpenRecord;
+  closeCounter: (branch: Branch, date: string, closedBy: string) => CounterOpenRecord | undefined;
   addBankDeposit: (
     deposit: Omit<BankDeposit, "id" | "createdAt">,
   ) => BankDeposit;
@@ -749,13 +753,13 @@ const mergeOperationRecordsIntoState = (
 
   for (const [stateKey, recordType] of buckets) {
     const current = Array.isArray(state[stateKey]) ? ([...(state[stateKey] as unknown[])] as Array<{ id?: string; createdAt?: string }>) : [];
-    const existing = new Set(current.map((item) => item.id).filter(Boolean));
     const recovered = rows
       .filter((row) => row.record_type === recordType)
       .map((row) => row.payload as { id?: string; createdAt?: string })
-      .filter((payload) => payload?.id && !existing.has(payload.id));
+      .filter((payload) => payload?.id);
     if (recovered.length > 0) {
-      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current]
+      const recoveredIds = new Set(recovered.map((item) => item.id));
+      (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id))]
         .sort((a, b) => Number(new Date((b as { createdAt?: string }).createdAt || 0)) - Number(new Date((a as { createdAt?: string }).createdAt || 0)))
         .slice(0, 5000);
     }
@@ -2067,6 +2071,9 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           openingCash: Number(opening.openingCash || 0),
           denominations: opening.denominations || {},
           openedAt: now,
+          active: true,
+          closedAt: undefined,
+          closedBy: undefined,
         };
         set((s) => ({
           counterOpenings: [
@@ -2093,6 +2100,26 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           actor: opening.openedBy,
         });
         return newOpening;
+      },
+      closeCounter: (branch, date, closedBy) => {
+        const current = get().counterOpenings.find(
+          (record) => record.branch === branch && record.date === date && record.active !== false,
+        );
+        if (!current) return undefined;
+        const closed: CounterOpenRecord = {
+          ...current,
+          active: false,
+          closedAt: new Date().toISOString(),
+          closedBy,
+        };
+        set((state) => ({
+          counterOpenings: state.counterOpenings.map((record) => record.id === current.id ? closed : record),
+          auditLogs: [audit(branch, closedBy, "Counter Closed", "Open", `${current.cashier} ${current.openingCash}`), ...state.auditLogs],
+        }));
+        mirrorOperationRecord(branch, "counter_opening", closed.id, closed, {
+          recordNo: date, amount: closed.openingCash, status: "Closed", actor: closedBy,
+        });
+        return closed;
       },
       addBankDeposit: (deposit) => {
         const newDeposit = {
@@ -2144,35 +2171,17 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         return newDeposit;
       },
       addCashierClosure: (closure) => {
-        const todayKey = new Date().toISOString().slice(0, 10);
-        const existing = useBranchOpsStore.getState().cashierClosures.find(
-          (c) => c.branch === closure.branch && c.cashier === closure.cashier && c.createdAt.slice(0, 10) === todayKey,
-        );
         const newClosure = {
           ...closure,
-          id: existing?.id ?? uid("closure"),
-          createdAt: existing?.createdAt ?? new Date().toISOString(),
+          id: uid("closure"),
+          createdAt: new Date().toISOString(),
         };
-        set((s) => ({
-          cashierClosures: existing
-            ? s.cashierClosures.map((c) => (c.id === existing.id ? newClosure : c))
-            : [newClosure, ...s.cashierClosures],
-          auditLogs: [
-            audit(
-              closure.branch,
-              closure.cashier,
-              "Cashier Closure",
-              "-",
-              `Difference ${closure.difference}`,
-            ),
-            ...s.auditLogs,
-          ],
+        set((state) => ({
+          cashierClosures: [newClosure, ...state.cashierClosures],
+          auditLogs: [audit(closure.branch, closure.cashier, "Cashier Closure", "-", `Difference ${closure.difference}`), ...state.auditLogs],
         }));
         mirrorOperationRecord(closure.branch, "cashier_closure", newClosure.id, newClosure, {
-          recordNo: newClosure.createdAt.slice(0, 10),
-          amount: closure.expectedCash,
-          status: String(closure.difference),
-          actor: closure.cashier,
+          recordNo: newClosure.createdAt.slice(0, 10), amount: closure.expectedCash, status: String(closure.difference), actor: closure.cashier,
         });
         return newClosure;
       },
