@@ -2,7 +2,7 @@
 // Hosur branch workflow dashboard: shop master, shop-wise pricing, receiving,
 // billing, credit, WhatsApp logs, reminders, disputes, daily closure and reports.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -15,7 +15,6 @@ import {
   CreditCard,
   Download,
   FileSpreadsheet,
-  History,
   IndianRupee,
   Loader2,
   MessageCircle,
@@ -26,11 +25,9 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings2,
   ShieldCheck,
   ShoppingCart,
   Store,
-  UserRound,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -53,7 +50,12 @@ const num = (value: number | null | undefined) =>
 
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const cleanPhone = (value: string | null | undefined) => String(value ?? '').replace(/\D/g, '');
-const toDateLabel = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+const toDateLabel = (value?: string | null) => {
+  if (!value) return '—';
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const date = dateOnly ? new Date(`${value}T00:00:00`) : new Date(value);
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: dateOnly ? 'Asia/Kolkata' : undefined });
+};
 const toDateTimeLabel = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const daysBetween = (from: string, to = new Date()) => Math.floor((to.getTime() - new Date(`${from}T00:00:00`).getTime()) / 86_400_000);
 
@@ -181,6 +183,7 @@ interface HosurCreditPayment {
   amountCollected: number;
   paymentMode: PaymentMode;
   remarks: string | null;
+  payment_purpose: 'credit_collection' | 'partial_at_billing' | string | null;
   collectedBy: string;
   collectedRole: string;
   createdAt: string;
@@ -444,6 +447,7 @@ function mapPayment(row: any): HosurCreditPayment {
     amountCollected: Number(row.amount ?? 0),
     paymentMode: row.payment_mode ?? 'cash',
     remarks: row.remarks ?? null,
+    payment_purpose: row.payment_purpose ?? null,
     collectedBy: row.collected_by ?? 'Staff',
     collectedRole: row.collected_role ?? 'branch_hosur',
     createdAt: row.created_at ?? new Date().toISOString(),
@@ -515,7 +519,7 @@ function mapNotification(row: any): AdminNotification {
 }
 
 async function notifyAdmin(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
-  await supabase.from('admin_notifications').insert({
+  const { error } = await supabase.from('admin_notifications').insert({
     type: 'hosur_branch',
     title,
     body,
@@ -525,10 +529,11 @@ async function notifyAdmin(title: string, body: string, refId?: string, refLabel
     recipient_role: 'admin',
     is_read: false,
   });
+  if (error) throw new Error(`Admin notification failed: ${error.message}`);
 }
 
 async function notifyBranch(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
-  await supabase.from('admin_notifications').insert({
+  const { error } = await supabase.from('admin_notifications').insert({
     type: 'hosur_branch',
     title,
     body,
@@ -538,11 +543,12 @@ async function notifyBranch(title: string, body: string, refId?: string, refLabe
     recipient_role: 'branch_hosur',
     is_read: false,
   });
+  if (error) throw new Error(`Branch notification failed: ${error.message}`);
 }
 
 function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
   const lines = items.map((item, idx) =>
-    `${idx + 1}. ${item.itemName} - ${num(item.quantity)} ${item.unit} × ₹${item.unitPrice} = ${money(item.lineTotal)}`,
+    `${idx + 1}. ${item.itemName} - ${num(item.quantity)} ${item.unit} × ${money(item.unitPrice)} = ${money(item.lineTotal)}`,
   ).join('\n');
   return [
     `Sri Nanjundeshwara Bakery - Hosur Branch`,
@@ -733,6 +739,11 @@ export default function HosurDashboard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  useEffect(() => {
+    if (!success) return;
+    const timer = window.setTimeout(() => setSuccess(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [success]);
 
   const [shops, setShops] = useState<HosurShop[]>([]);
   const [prices, setPrices] = useState<HosurShopPrice[]>([]);
@@ -752,8 +763,8 @@ export default function HosurDashboard() {
   const isAdminRef = useRef(isAdmin);
   useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+  const refresh = useCallback(async () => {
+    setLoading(true);
     setError('');
     try {
       const [
@@ -770,12 +781,12 @@ export default function HosurDashboard() {
         disputesRes,
         notificationsRes,
       ] = await Promise.all([
-        supabase.from('hosur_shops').select('*').order('shop_name', { ascending: true }),
-        supabase.from('hosur_shop_price_lists').select('*'),
+        supabase.from('hosur_shops').select('*').eq('is_active', true).order('shop_name', { ascending: true }),
+        supabase.from('hosur_shop_price_lists').select('*').eq('is_active', true),
         supabase.from('hosur_orders').select('*').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(3000),
+        supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(10000),
         supabase.from('hosur_bills').select('*').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_bill_items').select('*').order('created_at', { ascending: true }).limit(3000),
+        supabase.from('hosur_bill_items').select('*').order('created_at', { ascending: true }).limit(10000),
         // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
         // (added by migration 20260613_0004_hosur_credit_type.sql), fetch all rows.
         // The HosurCreditTab already shows wholesale (shop-supply) and retail separately
@@ -830,7 +841,7 @@ export default function HosurDashboard() {
     } catch (err: any) {
       setError(err?.message ?? 'Failed to load Hosur dashboard data.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [fetchBranchData, fetchCreditSales, syncIncomingFromDispatches]);
 
@@ -838,8 +849,8 @@ export default function HosurDashboard() {
   useEffect(() => { refreshRef.current = refresh; }, [refresh]);
 
   useEffect(() => {
-    void refreshRef.current(false);
-    const id = window.setInterval(() => void refreshRef.current(true), 45_000);
+    void refreshRef.current();
+    const id = window.setInterval(() => void refreshRef.current(), 45_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -851,13 +862,12 @@ export default function HosurDashboard() {
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
     setSearchParams(nextTab === 'newOrder' ? {} : { tab: nextTab });
+    setSidebarOpen(false);
   };
 
   const activeShops = shops.filter((shop) => shop.isActive);
   // FIX (MD Bug #21): separate wholesale and retail open credits using creditType column
   const openCredits = credits.filter((credit) => credit.status !== 'cleared' && credit.balanceAmount > 0);
-  const openWholesaleCredits = openCredits.filter(c => c.creditType === 'wholesale');
-  const openRetailCredits    = openCredits.filter(c => c.creditType === 'retail');
   const overdueCredits = openCredits.filter((credit) => credit.dueDate && daysBetween(credit.dueDate) > 0);
   const draftBills = bills.filter((bill) => bill.status === 'draft');
   const openDisputes = disputes.filter((dispute) => dispute.status === 'open');
@@ -892,20 +902,20 @@ export default function HosurDashboard() {
 
   const filteredTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
-  const withBusy = useCallback(async (fn: () => Promise<void>, successMessage?: string) => {
+  const withBusy = async (fn: () => Promise<void>, successMessage?: string) => {
     setBusy(true);
     setError('');
     setSuccess('');
     try {
       await fn();
       if (successMessage) setSuccess(successMessage);
-      await refreshRef.current(true);
+      await refresh();
     } catch (err: any) {
       setError(err?.message ?? 'Action failed. Please try again.');
     } finally {
       setBusy(false);
     }
-  }, []);
+  };
 
   const sendWhatsapp = async ({
     shopId,
@@ -971,8 +981,11 @@ export default function HosurDashboard() {
   const createDraftBill = async (order: HosurOrder, items: HosurOrderItem[]) => {
     const existing = bills.find((bill) => bill.orderId === order.id && bill.status !== 'cancelled');
     if (existing) return existing.id;
+    const { data: serverExisting, error: lookupError } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
+    if (lookupError) throw lookupError;
+    if (serverExisting?.id) return serverExisting.id;
     const billNo = await nextBillNo();
-    const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+    const subtotal = Math.round(items.reduce((sum, item) => sum + (item.receivedQuantity ?? item.quantity) * item.unitPrice, 0) * 100) / 100;
     const { data: billData, error: billError } = await supabase.from('hosur_bills').insert({
       bill_no: billNo,
       order_id: order.id,
@@ -985,7 +998,13 @@ export default function HosurDashboard() {
       status: 'draft',
       whatsapp_status: 'pending',
     }).select('*').single();
-    if (billError) throw billError;
+    if (billError) {
+      if (billError.code === '23505') {
+        const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
+        if (existingBill?.id) return existingBill.id;
+      }
+      throw billError;
+    }
 
     const rows = items.map((item) => ({
       bill_id: billData.id,
@@ -1039,7 +1058,13 @@ export default function HosurDashboard() {
       confirmed_by: userName,
       confirmed_at: now,
     }).eq('id', bill.id);
-    if (billError) throw billError;
+    if (billError) {
+      if (billError.code === '23505') {
+        const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
+        if (existingBill?.id) return existingBill.id;
+      }
+      throw billError;
+    }
 
     if (bill.orderId) await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
 
@@ -1156,7 +1181,13 @@ export default function HosurDashboard() {
       credit_amount: newBalance,
       status: cleared ? 'settled' : 'partial_credit',
     }).eq('id', ledger.billId);
-    if (billError) throw billError;
+    if (billError) {
+      if (billError.code === '23505') {
+        const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
+        if (existingBill?.id) return existingBill.id;
+      }
+      throw billError;
+    }
 
     const notificationBody = `${ledger.shopName} credit payment ${money(amount)} collected by ${userName}. Balance: ${money(newBalance)}.`;
     if (isAdmin) await notifyBranch('Hosur credit cleared by Admin', notificationBody, ledger.billId, ledger.billNo, { ledgerId: ledger.id, amount });
@@ -1208,7 +1239,7 @@ export default function HosurDashboard() {
     <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
       <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="flex items-center justify-end gap-3 px-4 py-3 md:px-5 xl:px-6">
-          <button className={softButton} disabled={loading || busy} onClick={() => void refresh(false)}>
+          <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             <span className="hidden sm:inline">Refresh</span>
           </button>
@@ -1223,8 +1254,12 @@ export default function HosurDashboard() {
 
       <div className="min-h-[calc(100dvh-230px)]">
         <main className="p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white">
+            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+          </div>
+
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
-          {success && <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{success}</div>}
+          {success && <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{success}<button type="button" className="float-right" onClick={() => setSuccess('')} aria-label="Dismiss success message"><X className="size-4" /></button></div>}
           {loading ? (
             <div className="flex min-h-[360px] items-center justify-center"><Loader2 className="size-8 animate-spin text-emerald-600" /></div>
           ) : (
@@ -1272,7 +1307,6 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
-  const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
@@ -1281,62 +1315,21 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   useEffect(() => { if (!selectedShopId && shops[0]) setSelectedShopId(shops[0].id); }, [shops, selectedShopId]);
 
-  // Only show items that belong to the selected shop's price list
-  const shopPriceItems: HosurCatalogItem[] = prices
-    .filter((p) => p.shopId === selectedShop?.id && p.isActive)
-    .filter((p) => !priceSearch || normalize(p.itemName).includes(normalize(priceSearch)))
-    .map((p, index) => {
-      const master = masterItemFor(p.itemName);
-      return {
-        barcode: master?.barcode ?? 90_000 + index,
-        name: p.itemName,
-        price: p.unitPrice,
-        uom: p.itemUnit === 'kg' ? 'Kgs' : 'Nos',
-        category: master?.category ?? inferHosurItemCategory(p.itemName),
-        source: (master ? 'master' : 'shop') as 'master' | 'shop',
-      };
-    });
-
-  const startEditShop = (shop: HosurShop) => {
-    setEditingShopId(shop.id);
-    setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') });
-  };
-
-  const cancelEdit = () => {
-    setEditingShopId(null);
-    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
-  };
+  const catalogItems = buildHosurCatalogItems(prices, selectedShop?.id);
+  const filteredItems = catalogItems.filter((item) => normalize(item.name).includes(normalize(priceSearch))).slice(0, 120);
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
     if (!cleanPhone(form.whatsappNumber)) throw new Error('WhatsApp number is required.');
-    if (editingShopId) {
-      const { error } = await supabase.from('hosur_shops').update({
-        shop_name: form.shopName.trim(),
-        whatsapp_number: cleanPhone(form.whatsappNumber),
-        address: form.address.trim(),
-        discount_percent: Number(form.discountPercent) || 0,
-        updated_at: new Date().toISOString(),
-      }).eq('id', editingShopId);
-      if (error) throw error;
-      setEditingShopId(null);
-    } else {
-      const { error } = await supabase.from('hosur_shops').insert({
-        shop_name: form.shopName.trim(),
-        whatsapp_number: cleanPhone(form.whatsappNumber),
-        address: form.address.trim(),
-        discount_percent: Number(form.discountPercent) || 0,
-        is_active: true,
-      });
-      if (error) throw error;
-    }
-    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
-  };
-
-  const deleteShop = async (shopId: string) => {
-    const { error } = await supabase.from('hosur_shops').update({ is_active: false }).eq('id', shopId);
+    const { error } = await supabase.from('hosur_shops').insert({
+      shop_name: form.shopName.trim(),
+      whatsapp_number: cleanPhone(form.whatsappNumber),
+      address: form.address.trim(),
+      discount_percent: Number(form.discountPercent) || 0,
+      is_active: true,
+    });
     if (error) throw error;
-    if (selectedShopId === shopId) setSelectedShopId('');
+    setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   };
 
   const importVrsnbPriceList = async () => {
@@ -1435,78 +1428,64 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   return (
     <div className="space-y-4">
       <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr] xl:items-start">
-
-        {/* LEFT: Add/Edit form + scrollable shop list */}
-        <div className="flex flex-col gap-4 xl:sticky xl:top-[140px] xl:max-h-[calc(100dvh-160px)]">
-          <Card className="shrink-0 space-y-3">
-            <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
+      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+        <div className="space-y-4">
+          <Card className="space-y-3">
+            <h3 className="font-black">Add Shop</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
-            <Field label="Address"><textarea className={cn(inputClass, 'min-h-20 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
+            <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
             <Field label="Default Discount % (optional)">
-              <input className={inputClass} type="number" min="0" max="100" value={form.discountPercent} onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} placeholder="e.g. 10 for 10% off" />
+              <input
+                className={inputClass}
+                type="number"
+                min="0"
+                max="100"
+                value={form.discountPercent}
+                onChange={(e) => setForm({ ...form, discountPercent: e.target.value })}
+                placeholder="e.g. 10 for 10% off"
+              />
             </Field>
-            <div className="flex gap-2">
-              <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>
-                {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}
-              </button>
-              {editingShopId && <button className={softButton} onClick={cancelEdit}>Cancel</button>}
-            </div>
+            <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Save Shop</button>
           </Card>
-
-          {/* Scrollable shop list */}
-          <Card className="flex min-h-0 flex-col space-y-2 overflow-hidden">
-            <h3 className="shrink-0 font-black">Shops ({shops.length})</h3>
-            <div className="min-h-0 flex-1 overflow-y-auto space-y-2 pr-1">
-              {shops.length === 0
-                ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details above." />
-                : shops.map((shop) => (
-                  <div key={shop.id} className={cn('rounded-2xl border p-3 transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border')}>
-                    <button className="w-full text-left" onClick={() => setSelectedShopId(shop.id)}>
-                      <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
-                      {shop.discountPercent > 0 && <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied</p>}
-                    </button>
-                    <div className="mt-2 flex gap-2">
-                      <button className={softButton} onClick={() => startEditShop(shop)}>Edit</button>
-                      <button className="rounded-2xl bg-red-50 px-3 py-1.5 text-xs font-black text-red-700 hover:bg-red-100" disabled={busy} onClick={() => withBusy(() => deleteShop(shop.id), 'Shop deactivated.')}>Delete</button>
-                    </div>
-                  </div>
-                ))}
-            </div>
+          <Card className="space-y-2">
+            <h3 className="font-black">Shops</h3>
+            {shops.length === 0 ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here. You can update the full shop list later." /> : shops.map((shop) => (
+              <button key={shop.id} onClick={() => setSelectedShopId(shop.id)} className={cn('w-full rounded-2xl border p-3 text-left transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border hover:bg-muted/50')}>
+                <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
+                <p className="mt-0.5 text-xs text-muted-foreground">{shop.whatsappNumber}</p>
+                <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{shop.address || 'No address'}</p>
+                {shop.discountPercent > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
+                )}
+              </button>
+            ))}
           </Card>
         </div>
-
-        {/* RIGHT: Sticky price list panel with its own scroll */}
-        <Card className="flex flex-col gap-4 xl:sticky xl:top-[140px] xl:max-h-[calc(100dvh-160px)]">
-          <div className="shrink-0 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Card className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div><h3 className="font-black">Shop-wise Item Price List</h3><p className="text-sm text-muted-foreground">{selectedShop ? `Editing prices for ${selectedShop.shopName}` : 'Select a shop to edit prices.'}</p></div>
-            <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+              <div className="relative w-full sm:w-72"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={priceSearch} onChange={(e) => setPriceSearch(e.target.value)} placeholder="Search item" /></div>
+            </div>
           </div>
-          <div className="shrink-0 grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
+          <div className="grid gap-2 rounded-2xl border bg-muted/20 p-3 md:grid-cols-[1fr_120px_140px_auto]">
             <input className={inputClass} value={customItem.itemName} onChange={(e) => setCustomItem((prev) => ({ ...prev, itemName: e.target.value }))} placeholder="Add custom item name" />
             <select className={inputClass} value={customItem.unit} onChange={(e) => setCustomItem((prev) => ({ ...prev, unit: e.target.value as 'pcs' | 'kg' }))}><option value="pcs">pcs</option><option value="kg">kg</option></select>
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {shopPriceItems.length === 0
-              ? <EmptyState icon={<Receipt className="size-6" />} title="No items in this shop's price list" subtitle="Use 'Add Item' above to add items for this shop." />
-              : (
-                <div className="overflow-x-auto rounded-2xl border">
-                  <table className="min-w-full text-sm">
-                    <thead className="sticky top-0 bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground z-10"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
-                    <tbody className="divide-y">
-                      {shopPriceItems.map((item) => {
-                        const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
-                        return <tr key={item.name} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}</td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>Update</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed.')}>Delete</button></div></td></tr>;
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+          <div className="overflow-x-auto rounded-2xl border">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Default</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredItems.map((item) => {
+                  const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
+                  const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
+                  return <tr key={`${item.source}-${item.name}`} className="bg-card"><td className="px-3 py-2 font-semibold">{item.name}<p className="text-[10px] text-muted-foreground">{item.category} · {item.source === 'shop' ? 'shop item' : 'master item'}</p></td><td className="px-3 py-2">{item.uom === 'Kgs' ? 'kg' : 'pcs'}</td><td className="px-3 py-2">{item.source === 'master' ? money(item.price) : '—'}</td><td className="px-3 py-2"><input className="w-28 rounded-xl border px-2 py-1.5 text-sm" type="number" value={priceEdits[item.name] ?? String(current)} onChange={(e) => setPriceEdits((prev) => ({ ...prev, [item.name]: e.target.value }))} /></td><td className="px-3 py-2 text-right"><div className="flex justify-end gap-2"><button className={softButton} disabled={!selectedShop || busy} onClick={() => withBusy(() => savePrice(item), 'Price updated.')}>{custom?.isActive ? 'Update' : 'Save'}</button><button className="rounded-2xl bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100" disabled={!selectedShop || busy} onClick={() => withBusy(() => deletePrice(item), 'Item removed from this shop list.')}>Delete</button></div></td></tr>;
+                })}
+              </tbody>
+            </table>
           </div>
         </Card>
       </div>
@@ -1524,6 +1503,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
 }) {
   const [shopId, setShopId] = useState('');
   const [search, setSearch] = useState('');
+  const [category, setCategory] = useState<string>('All');
   const [cart, setCart] = useState<Record<string, DraftOrderItem>>({});
   const [notes, setNotes] = useState('');
   const [orderSubTab, setOrderSubTab] = useState<'catalog' | 'custom'>('catalog');
@@ -1547,9 +1527,10 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
         };
       })
     : SNB_ITEMS.map((item) => ({ ...item, source: 'master' as const }));
-  const filteredItems = catalogItems.filter((item) =>
-    !search.trim() || normalize(item.name).includes(normalize(search))
-  );
+  const filteredItems = catalogItems.filter((item) => {
+    if (search.trim()) return normalize(item.name).includes(normalize(search));
+    return category === 'All' || item.category === category;
+  });
   const cartItems = Object.values(cart);
   const subtotal = cartItems.reduce((sum, item) => sum + item.lineTotal, 0);
 
@@ -1653,6 +1634,9 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
               </div>
             ) : (
               <>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {['All', ...SNB_CATEGORIES].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
+            </div>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {filteredItems.slice(0, 120).map((item) => {
                 const current = cart[item.name]?.quantity ?? 0;
@@ -1734,7 +1718,7 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
       }
     }
     await supabase.from('hosur_orders').update({ status: 'received_confirmed', received_at: new Date().toISOString() }).eq('id', order.id);
-    const freshItems = items.map((item) => ({ ...item, receivedQuantity: Number(receivedQty[item.id] ?? item.quantity), dispatchedQuantity: item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity }));
+    const freshItems = items.map((item) => { const receivedQuantity = Number(receivedQty[item.id] ?? item.quantity); return { ...item, receivedQuantity, dispatchedQuantity: item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity, lineTotal: Math.round(receivedQuantity * item.unitPrice * 100) / 100 }; });
     await createDraftBill(order, freshItems);
     if (hasMismatch) {
       await notifyAdmin('Hosur receiving mismatch raised', `${order.shopName} order ${order.orderNumber} has received quantity mismatch.`, order.id, order.orderNumber, { orderId: order.id });
@@ -1934,7 +1918,7 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
   const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
   const clearedCredit = dayPayments.filter((p) =>
-    p.payment_purpose != null ? p.payment_purpose === 'credit_collection' : p.remarks !== 'Hosur partial payment at billing'
+    p.payment_purpose === 'credit_collection'
   ).reduce((s, p) => s + p.amountCollected, 0);
 
   const totalCollection = fullPayments + partialPaid + clearedCredit;

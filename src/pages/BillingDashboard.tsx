@@ -1,4 +1,4 @@
-﻿import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -23,6 +23,7 @@ import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } fro
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
+import { useNotificationStore } from '@/bakery/notificationStore';
 
 // -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
@@ -45,16 +46,24 @@ async function notifyCreditSale(params: {
 }) {
   // Best-effort fire-and-forget - biller UI must never block on this
   try {
-    const { pushCreditSale } = (await import('@/bakery/notificationStore')).useNotificationStore.getState();
+    const { pushCreditSale } = useNotificationStore.getState();
     await pushCreditSale(params);
-  } catch {
-    // Silent - notification failure must never break billing
+  } catch (error) {
+    console.error('Credit-sale notification failed', error);
   }
 }
 
 const ROLE_BRANCHES: Record<string, Branch[]> = {
-  admin:       ALL_BRANCHES,
-  admin_vrsnb: ['Cafe', 'VRSNB'],
+  owner: ALL_BRANCHES,
+  admin: ALL_BRANCHES,
+  billing: ['Cafe'],
+  biller: ['Cafe'],
+  admin_vrsnb: ['VRSNB'],
+  branch_vrsnb: ['VRSNB'],
+  admin_snb: ['SNB'],
+  branch_snb: ['SNB'],
+  branch_hosur: ['Hosur'],
+  hosur_biller: ['Hosur'],
 };
 
 function todayIso(value = new Date()) {
@@ -104,10 +113,7 @@ function useCafeCounterOpened() {
     const unsubscribe = useBranchOpsStore.subscribe((state) => {
       const opened = state.counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
       const closed = state.cashierClosures.some((record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today);
-      setRemoteCounter((current) => ({
-        opened: current.opened || opened,
-        closed: current.closed || closed,
-      }));
+      setRemoteCounter({ opened, closed });
     });
     return () => {
       alive = false;
@@ -122,19 +128,20 @@ function useCafeCounterOpened() {
 
 function BillerCreditTab() {
   const { currentUser } = useAuthStore();
-  const branches: Branch[] = ROLE_BRANCHES[currentUser?.role ?? ''] ?? ['Cafe'];
+  const branches = useMemo<Branch[]>(() => ROLE_BRANCHES[currentUser?.role ?? ''] ?? [], [currentUser?.role]);
   const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
 
+  const branchesKey = branches.join('|');
   useEffect(() => {
-    branches.forEach(b => fetchCreditSales(b));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchCreditSales]);
+    branches.forEach((branch) => void fetchCreditSales(branch));
+  }, [fetchCreditSales, branchesKey, branches]);
 
   const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [settling, setSettling] = useState<string | null>(null);
   const [settleAmts, setSettleAmts] = useState<Record<string, string>>({});
+  const [settleModes, setSettleModes] = useState<Record<string, 'cash' | 'upi' | 'card'>>({});
   const [error, setError] = useState('');
 
   // Flatten all branch credit sales with branch tag
@@ -153,18 +160,20 @@ function BillerCreditTab() {
   }, [allSales, filter, branchFilter]);
 
   const totalDue = useMemo(() =>
-    allSales.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
-    [allSales]
+    filtered.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
+    [filtered]
   );
 
-  const pendingCount = allSales.filter(cs => cs.status !== 'settled').length;
+  const pendingCount = filtered.filter(cs => cs.status !== 'settled').length;
 
   const handleSettle = async (cs: CreditSale & { branch: Branch }) => {
     const amt = parseFloat(settleAmts[cs.id] || '0');
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
     if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
     setSettling(cs.id); setError('');
-    const err = await settleCreditSale(cs.branch, cs.id, amt);
+    const mode = settleModes[cs.id];
+    if (!mode) { setError('Select Cash, UPI, or Card'); setSettling(null); return; }
+    const err = await settleCreditSale(cs.branch, cs.id, amt, { mode, collectedBy: currentUser?.username ?? 'Biller', collectedRole: currentUser?.role ?? null });
     setSettling(null);
     if (err) setError(err);
     else setSettleAmts(prev => { const n = { ...prev }; delete n[cs.id]; return n; });
@@ -312,6 +321,14 @@ function BillerCreditTab() {
               {cs.status !== 'settled' && (
                 <div className="px-4 py-3 border-t border-border bg-muted/10 space-y-2">
                   <p className="text-[10px] font-bold text-muted-foreground uppercase">Collect Payment</p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['cash', 'upi', 'card'] as const).map((mode) => (
+                      <button key={mode} type="button" onClick={() => { setSettleModes(prev => ({ ...prev, [cs.id]: mode })); setError(''); }}
+                        className={cn('py-1.5 rounded-lg border text-[11px] font-bold uppercase', settleModes[cs.id] === mode ? 'bg-amber-500 text-white border-amber-500' : 'bg-card border-border text-muted-foreground')}>
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
@@ -337,8 +354,9 @@ function BillerCreditTab() {
 }
 
 const STATUS_TABS: { key: OrderStatus; label: string; dotColor: string }[] = [
-  { key: 'pending',    label: 'New',        dotColor: 'bg-amber-500' },
-  { key: 'cancelled',  label: 'Cancelled',  dotColor: 'bg-red-500' },
+  { key: 'pending', label: 'New', dotColor: 'bg-amber-500' },
+  { key: 'served', label: 'Completed', dotColor: 'bg-emerald-500' },
+  { key: 'cancelled', label: 'Cancelled', dotColor: 'bg-red-500' },
 ];
 
 const QUICK_NOTES = [
@@ -956,16 +974,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     setAdvanceError('');
     setSubmitting(true);
 
-    // Inject custom items into the cart as synthetic menu items
-    for (const ci of customItems) {
-      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-    }
-
-    // Small delay to let Zustand batch the addToCart calls
-    await new Promise(r => setTimeout(r, 50));
-
     try {
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
       const advanceNotes = [
         `Mobile: ${mobileNumber.trim()}`,
         `Order date: ${orderDate}`,
@@ -990,6 +1004,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
     } catch (err) {
+      clearCart();
       setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
     } finally {
       setSubmitting(false);
@@ -1466,8 +1481,8 @@ function NewBillPanel() {
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
   const filteredItems = useMemo(() => {
     let filtered = enabledItems;
+    if (search.trim()) return filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
     if (selectedCategory !== 'all') filtered = filtered.filter(i => i.category === selectedCategory);
-    if (search.trim()) filtered = filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
     return filtered;
   }, [enabledItems, selectedCategory, search]);
 
@@ -1543,14 +1558,12 @@ function NewBillPanel() {
       setCreditError('');
       setSubmitting(true);
 
-      // Inject custom items as synthetic menu items first
-      for (const ci of customItems) {
-        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-      }
-      await new Promise(r => setTimeout(r, 50));
-
       try {
+        for (const ci of customItems) {
+          const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+          for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+        }
+        await new Promise(r => setTimeout(r, 0));
         const { recordCreditSale } = useBranchStore.getState();
         const branchFromRole: Record<string, Branch> = {
           billing:      'Cafe',
@@ -1558,7 +1571,8 @@ function NewBillPanel() {
           admin_snb:    'SNB',   branch_snb:   'SNB',
           branch_hosur: 'Hosur',
         };
-        const branch: Branch = branchFromRole[currentUser.role] ?? 'Cafe';
+        const branch = branchFromRole[currentUser.role];
+        if (!branch) throw new Error(`Billing role ${currentUser.role || 'unknown'} is not mapped to a branch.`);
         const orderId = await submitOrder({
           tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
           orderType,
@@ -1616,6 +1630,7 @@ function NewBillPanel() {
         setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
+        clearCart();
         setSubmitError(err instanceof Error ? err.message : 'Failed to record credit sale.');
       } finally {
         setSubmitting(false);
@@ -1642,15 +1657,13 @@ function NewBillPanel() {
     }
     setSubmitting(true);
 
-    // Inject custom items as synthetic menu items
-    for (const ci of customItems) {
-      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-    }
-    await new Promise(r => setTimeout(r, 50));
-
     setSubmitError('');
     try {
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
       const billedBy = currentUser.displayName || currentUser.username;
       const orderId = await submitOrder({
         tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
@@ -2236,7 +2249,7 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance'>('new_bill');
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'credit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
   const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | null>(null);
 
@@ -2308,7 +2321,7 @@ export default function BillingDashboard() {
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
     let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
@@ -2330,7 +2343,7 @@ export default function BillingDashboard() {
             </div>
             <h2 className="font-display text-lg font-bold text-foreground mb-1">Clear cart?</h2>
             <p className="text-sm font-body text-muted-foreground mb-5">
-              Switching tabs will clear your current cart ({cart.length} item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
+              Switching tabs will clear all current bill items, including any custom lines ({cart.length} saved cart item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
             </p>
             <div className="flex gap-3">
               <button
@@ -2400,6 +2413,13 @@ export default function BillingDashboard() {
             )}
           </button>
 
+
+          <button onClick={() => switchTab('credit')}
+            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
+              activeTab === 'credit' ? 'bg-orange-600 text-white shadow-md' : 'bg-orange-50 border border-orange-200 text-orange-700')}>
+            <CreditCard className="size-3.5" />Credit
+          </button>
+
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const count = sourceFilter === 'all'
@@ -2429,6 +2449,8 @@ export default function BillingDashboard() {
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      ) : activeTab === 'credit' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto"><BillerCreditTab /></div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (

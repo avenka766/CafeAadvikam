@@ -473,7 +473,7 @@ export default function AdminVRSNBDashboard() {
   }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = useMemo(() => dedupeStockRows(stock[BRANCH] || []), [stock]);
-  const branchSalesRows = sales[BRANCH] || [];
+  const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
   const branchBills = useMemo(
     () =>
       bills.filter(
@@ -567,7 +567,7 @@ export default function AdminVRSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
   const hasLedgerRows = ledgerRows.length > 0;
-  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total) + adminLedger.toNumber(row.advance_collected) + adminLedger.toNumber(row.advance_balance_collected), 0);
+  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
   const ledgerUpiSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
   const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
@@ -3217,7 +3217,7 @@ function CreditTab() {
     const error = await settleCreditSale(sale.branch, sale.id, amount, {
       mode: modes[sale.id] || "cash",
       collectedBy: currentUser?.displayName || currentUser?.username || "VRSNB Admin",
-      collectedRole: currentUser?.role || "admin_vrsnb",
+      collectedRole: currentUser?.role || "unknown",
       remarks: "Collected from VRSNB Admin credit tab",
     });
     if (error) {
@@ -3687,9 +3687,7 @@ function ReportsTab(props: any) {
   const { creditSales } = useBranchStore();
   const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations, cashierClosures } =
     useBranchOpsStore();
-  const dueCredits = (["Cafe", BRANCH] as const)
-    .flatMap((branch) => creditSales[branch] || [])
-    .filter((c) => c.status !== "settled");
+  const dueCredits = (creditSales[BRANCH] || []).filter((c) => c.status !== "settled");
   const whatsappRows: any[] = [];
   const reminderRows: any[] = [];
   const disputeRows: any[] = [];

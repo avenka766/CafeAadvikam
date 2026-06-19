@@ -2,17 +2,15 @@
 // SNB Admin → History: SNB branch sales only
 import { useState, useMemo, useEffect } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
-import { useOrderStore } from '@/stores/orderStore';
 import { cn } from '@/lib/utils';
 import { History, ShoppingBag } from 'lucide-react';
 import EmptyState from '@/components/ui/EmptyState';
 
 export default function SNBHistoryPage() {
   const { sales, fetchBranchData } = useBranchStore();
-  const { startPolling, stopPolling } = useOrderStore();
   const [filter, setFilter] = useState<'all' | 'today'>('all');
 
-  useEffect(() => { fetchBranchData('SNB'); startPolling(60); return () => stopPolling(); }, [fetchBranchData, startPolling, stopPolling]);
+  useEffect(() => { fetchBranchData('SNB'); }, [fetchBranchData]);
 
   const isToday = (d: string) => new Date(d).toDateString() === new Date().toDateString();
   const snbSales = useMemo(() => {
@@ -59,7 +57,7 @@ export default function SNBHistoryPage() {
         ) : (
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="divide-y">
-              {snbSales.slice(0, 100).map(s => (
+              {snbSales.map(s => (
                 <div key={s.id} className="flex items-center justify-between px-4 py-3">
                   <div>
                     <p className="text-sm font-medium">{s.itemName}</p>

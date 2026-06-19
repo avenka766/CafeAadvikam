@@ -473,7 +473,7 @@ export default function AdminSNBDashboard() {
   }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = useMemo(() => dedupeStockRows(stock[BRANCH] || []), [stock]);
-  const branchSalesRows = sales[BRANCH] || [];
+  const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
   const branchBills = useMemo(
     () =>
       bills.filter(
@@ -567,7 +567,7 @@ export default function AdminSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
   const hasLedgerRows = ledgerRows.length > 0;
-  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total) + adminLedger.toNumber(row.advance_collected) + adminLedger.toNumber(row.advance_balance_collected), 0);
+  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
   const ledgerUpiSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
   const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
@@ -3461,7 +3461,8 @@ function DailyClosureTab({ userName, ...props }: any) {
       advance_collected: props.advanceCollected,
       advance_balance_collected: props.advanceBalanceCollected,
       refunds: props.returnAmount,
-      expenses: props.purchasePaid + props.expenseAmount,
+      expenses: props.expenseAmount,
+      purchase_payments: props.purchasePaid,
       discounts: 0,
       bill_count: props.billsCount,
       duplicate_prints: 0,

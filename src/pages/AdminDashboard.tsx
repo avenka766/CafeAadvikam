@@ -189,7 +189,8 @@ function AdminDashboard() {
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
   const requestedTab = searchParams.get('tab') as AdminTab | null;
-  const initialTab = requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
+  const allowedNavItems = NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(currentUser?.role ?? ''));
+  const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [fromDate, setFromDate] = useState(lastWeekInput());
   const [toDate, setToDate] = useState(todayInput());
@@ -260,7 +261,11 @@ function AdminDashboard() {
   const opsBillsInRange = useMemo(() => bills.filter(b => inRange(b.createdAt, fromDate, toDate)), [bills, fromDate, toDate]);
   const branchRevenueFromSales = useMemo(() => branchTransactions.reduce((sum, t) => sum + t.revenue, 0), [branchTransactions]);
   const opsBillRevenue = useMemo(() => opsBillsInRange.reduce((sum, b) => sum + Number(b.total || 0), 0), [opsBillsInRange]);
-  const branchSalesTotal = Math.max(branchRevenueFromSales, opsBillRevenue);
+  const billedNumbers = new Set(opsBillsInRange.map((bill) => bill.billNo));
+  const legacyOnlyRevenue = branchTransactions
+    .filter((transaction) => !transaction.billNo || !billedNumbers.has(transaction.billNo))
+    .reduce((sum, transaction) => sum + moneyNumber(transaction.amount), 0);
+  const branchSalesTotal = opsBillRevenue + legacyOnlyRevenue;
   const businessTotalSales = cafeSalesTotal + branchSalesTotal;
 
   const branchSalesByBranch = useMemo(() => {
@@ -383,7 +388,7 @@ function AdminDashboard() {
           returns: returnsDay,
           netSales: Math.max(0, totalSales - returnsDay),
           expenses: expensesDay,
-          purchasePayments: expensesDay,
+          purchasePayments: ownerLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
           bankDeposits: 0,
           closingBalance,
           differenceAmount,
@@ -415,7 +420,7 @@ function AdminDashboard() {
       const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
       return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-' };
     });
-  }, [adminLedger.closureByBranchDate, adminLedger.savedClosureByBranchDate, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+  }, [adminLedger, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
 
   const closureStatusChart = useMemo(() => [
     { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },

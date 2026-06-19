@@ -32,6 +32,8 @@ import EmptyState from '@/components/ui/EmptyState';
 
 type KitchenTab = 'active' | 'cancelled' | 'waste';
 
+const businessDateKey = (value: string | Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+
 const TABS: { key: KitchenTab; label: string; hint: string }[] = [
   { key: 'active', label: 'Active', hint: 'New and cooking' },
   { key: 'cancelled', label: 'Cancelled', hint: 'Stop / verify' },
@@ -54,14 +56,16 @@ function WasteTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [voidTarget, setVoidTarget] = useState<WasteEntry | null>(null);
+  const [voidReason, setVoidReason] = useState('');
 
-  const todayKey = new Date().toDateString();
+  const todayKey = businessDateKey(new Date());
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       const historyStart = new Date();
-      historyStart.setDate(historyStart.getDate() - 30);
+      historyStart.setDate(historyStart.getDate() - 31);
       const { data } = await supabase
         .from('kitchen_waste_log')
         .select('*')
@@ -74,11 +78,11 @@ function WasteTab() {
   }, []);
 
   const todaysEntries = useMemo(
-    () => entries.filter(entry => new Date(entry.logged_at).toDateString() === todayKey),
+    () => entries.filter(entry => businessDateKey(entry.logged_at) === todayKey),
     [entries, todayKey]
   );
   const historyEntries = useMemo(
-    () => entries.filter(entry => new Date(entry.logged_at).toDateString() !== todayKey),
+    () => entries.filter(entry => businessDateKey(entry.logged_at) !== todayKey),
     [entries, todayKey]
   );
 
@@ -97,17 +101,16 @@ function WasteTab() {
     setSaving(false);
   };
 
-  const handleDelete = async (id: string) => {
-    setDeleting(id);
-    const reason = window.prompt('Enter reason to void this waste log. The record will stay in Supabase for audit.');
-    if (!reason?.trim()) { setDeleting(null); return; }
+  const handleDelete = async () => {
+    if (!voidTarget || !voidReason.trim()) { setError('Enter a reason to void this waste log'); return; }
+    setDeleting(voidTarget.id);
     const { error: err } = await supabase
       .from('kitchen_waste_log')
-      .update({ voided_at: new Date().toISOString(), void_reason: reason.trim() })
-      .eq('id', id);
+      .update({ voided_at: new Date().toISOString(), void_reason: voidReason.trim() })
+      .eq('id', voidTarget.id);
     if (err) { setError(err.message); setDeleting(null); return; }
-    setEntries(prev => prev.filter(e => e.id !== id));
-    setDeleting(null);
+    setEntries(prev => prev.filter(e => e.id !== voidTarget.id));
+    setDeleting(null); setVoidTarget(null); setVoidReason('');
   };
 
   const renderEntries = (items: WasteEntry[], emptyMessage: string) => (
@@ -121,7 +124,7 @@ function WasteTab() {
               <h4>{entry.food_item}</h4>
               <p>{entry.quantity} - {new Date(entry.logged_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
             </div>
-            <button type="button" onClick={() => handleDelete(entry.id)} disabled={deleting === entry.id} aria-label={`Delete ${entry.food_item}`}>
+            <button type="button" onClick={() => { setVoidTarget(entry); setVoidReason(''); setError(''); }} disabled={deleting === entry.id} aria-label={`Delete ${entry.food_item}`}>
               {deleting === entry.id ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />}
             </button>
           </article>
@@ -183,6 +186,20 @@ function WasteTab() {
           {loading ? <LoadingSkeleton variant="list" count={3} /> : renderEntries(historyEntries, 'No previous waste logs in the last 30 days')}
         </div>
       </section>
+      {voidTarget && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="void-waste-title">
+          <div className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
+            <h3 id="void-waste-title" className="text-lg font-bold">Void waste log</h3>
+            <p className="mt-1 text-sm text-muted-foreground">{voidTarget.food_item} · {voidTarget.quantity}</p>
+            <label className="mt-4 block text-sm font-semibold">Reason</label>
+            <textarea value={voidReason} onChange={e => setVoidReason(e.target.value)} className="mt-2 min-h-24 w-full rounded-xl border border-border bg-background p-3" autoFocus />
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => { setVoidTarget(null); setVoidReason(''); }} className="rounded-xl border px-4 py-2">Cancel</button>
+              <button type="button" onClick={handleDelete} disabled={!voidReason.trim() || deleting === voidTarget.id} className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground">{deleting === voidTarget.id ? 'Voiding…' : 'Confirm void'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -245,7 +262,7 @@ ${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6
 <div class="d"></div><div class="c" style="font-size:11px">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
 </body></html>`);
   win.document.close();
-  setTimeout(() => { win.print(); win.close(); }, 400);
+  win.addEventListener('load', () => { win.focus(); win.print(); win.close(); }, { once: true });
 }
 
 export default function KitchenDashboard() {
@@ -268,7 +285,9 @@ export default function KitchenDashboard() {
   const alertRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastCancelledIdsRef = useRef<Set<string>>(new Set());
   const [newlyCancelledIds, setNewlyCancelledIds] = useState<Set<string>>(new Set());
-  const seededRef = useRef(false);
+  const seededRef = useRef<Set<string> | null>(null);
+  const soundEnabledRef = useRef(soundEnabled);
+  const pendingCountRef = useRef(0);
 
   useEffect(() => {
     if (wasteLogRequested) {
@@ -298,21 +317,22 @@ export default function KitchenDashboard() {
 
   const pending = useMemo(() => todayOrders.filter(o => o.status === 'pending'), [todayOrders]);
   const preparing = useMemo(() => todayOrders.filter(o => o.status === 'preparing'), [todayOrders]);
-  const activeKitchenOrders = useMemo(() => [...pending, ...preparing], [pending, preparing]);
+  const ready = useMemo(() => todayOrders.filter(o => o.status === 'ready'), [todayOrders]);
+  const activeKitchenOrders = useMemo(() => [...pending, ...preparing, ...ready], [pending, preparing, ready]);
   const cancelled = useMemo(() => todayOrders.filter(o => o.status === 'cancelled'), [todayOrders]);
 
   useEffect(() => {
-    if (seededRef.current) return;
-    if (orders.length === 0) return;
-    lastIdsRef.current = new Set(orders.filter(o => o.status === 'pending').map(o => o.id));
+    if (seededRef.current !== null || orders.length === 0) return;
+    const initialPending = new Set(orders.filter(o => o.status === 'pending').map(o => o.id));
+    lastIdsRef.current = initialPending;
     lastCancelledIdsRef.current = new Set(orders.filter(o => o.status === 'cancelled').map(o => o.id));
-    seededRef.current = true;
+    seededRef.current = initialPending;
   }, [orders]);
 
   useEffect(() => {
     const curr = new Set(pending.map(o => o.id));
     const newO = pending.filter(o => !lastIdsRef.current.has(o.id));
-    if (newO.length > 0 && seededRef.current) {
+    if (newO.length > 0 && seededRef.current !== null) {
       if (soundEnabled) playBeep();
       newO.forEach(o => {
         if ('Notification' in window && Notification.permission === 'granted') {
@@ -328,7 +348,7 @@ export default function KitchenDashboard() {
   useEffect(() => {
     const currCancelled = new Set(cancelled.map(o => o.id));
     const newCancelledOrders = cancelled.filter(o => !lastCancelledIdsRef.current.has(o.id));
-    if (newCancelledOrders.length > 0 && seededRef.current) {
+    if (newCancelledOrders.length > 0 && seededRef.current !== null) {
       const freshIds = new Set(newCancelledOrders.map(o => o.id));
       setNewlyCancelledIds(prev => new Set([...prev, ...freshIds]));
       if (soundEnabled) playCancelBeep();
@@ -350,10 +370,17 @@ export default function KitchenDashboard() {
     lastCancelledIdsRef.current = currCancelled;
   }, [cancelled, soundEnabled]);
 
+  useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
+  useEffect(() => { pendingCountRef.current = pending.length; }, [pending.length]);
   useEffect(() => {
-    if (alertRef.current) { clearInterval(alertRef.current); alertRef.current = null; }
-    if (pending.length > 0 && soundEnabled) alertRef.current = setInterval(playBeep, 8000);
-    return () => { if (alertRef.current) clearInterval(alertRef.current); };
+    if (alertRef.current) clearInterval(alertRef.current);
+    alertRef.current = null;
+    if (pending.length > 0 && soundEnabled) {
+      alertRef.current = setInterval(() => {
+        if (soundEnabledRef.current && pendingCountRef.current > 0) playBeep();
+      }, 8000);
+    }
+    return () => { if (alertRef.current) clearInterval(alertRef.current); alertRef.current = null; };
   }, [pending.length, soundEnabled]);
 
   const filtered = useMemo(() => {
@@ -386,14 +413,6 @@ export default function KitchenDashboard() {
       setUpdatingId(null);
     }
   };
-
-  if (activeTab === 'waste') {
-    return (
-      <div className="kitchen-screen dashboard-screen kitchen-waste-screen">
-        <WasteTab />
-      </div>
-    );
-  }
 
   return (
     <div className="kitchen-screen dashboard-screen">
@@ -455,6 +474,7 @@ export default function KitchenDashboard() {
       </nav>
 
       <section className="kitchen-board">
+        {activeTab === 'waste' ? <WasteTab /> : <>
           <div className="kitchen-section-heading">
             <span>{activeTab === 'active' ? 'Live kitchen tickets' : TABS.find(tab => tab.key === activeTab)?.label}</span>
             <strong>{filtered.length} order{filtered.length !== 1 ? 's' : ''}</strong>
@@ -542,7 +562,8 @@ export default function KitchenDashboard() {
               })}
             </div>
           )}
-        </section>
+          </>}
+      </section>
 
     </div>
   );

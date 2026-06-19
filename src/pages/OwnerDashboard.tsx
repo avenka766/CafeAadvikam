@@ -749,7 +749,7 @@ function AttendanceSalaryTab() {
       setLoading(false);
     });
   };
-  useEffect(() => { loadEmployees(); }, []);
+  useEffect(() => { void loadEmployees(); }, [loadEmployees]);
 
   const branchGroups = useMemo(() => {
     const groups: Record<string, typeof employees> = {};
@@ -1460,27 +1460,29 @@ function BranchOverviewTab() {
     const dbSales = (sales[branch] || []).filter(s => ownerInRange(s.soldAt, from, to));
     const localBills = bills.filter(b => b.branch === branch && ownerInRange(b.createdAt, from, to) && b.status !== 'Returned');
     const branchReturns = returns.filter(r => r.branch === branch && ownerInRange(r.createdAt, from, to));
-    const gross = dbSales.reduce((sum, s) => sum + moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold), 0) + localBills.reduce((sum, b) => sum + moneyNumber(b.total), 0);
+    const billedNumbers = new Set(localBills.map((bill) => bill.billNo));
+    const legacyOnly = dbSales.filter((sale) => !sale.billNo || !billedNumbers.has(sale.billNo));
+    const gross = legacyOnly.reduce((sum, s) => sum + moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold), 0) + localBills.reduce((sum, b) => sum + moneyNumber(b.total), 0);
     const ret = branchReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
     const branchPurchases = purchases.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
     const purchasePaid = purchasePayments.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
     const lowStock = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
     const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
-    const openCredit = [
-      ...(creditSales[branch] || []).map(c => moneyNumber(c.creditAmount)),
-    ].reduce((a, b) => a + b, 0);
+    const openCredit = (creditSales[branch] || [])
+      .filter((credit) => credit.status !== 'settled' && ownerInRange(credit.createdAt, from, to))
+      .reduce((sum, credit) => sum + moneyNumber(credit.creditAmount), 0);
     const lastClosure = cashierClosures.find(c => c.branch === branch && ownerInRange(c.createdAt, from, to));
     const cash = localBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.cash) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('cash') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     const upi = localBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.upi) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('upi') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     const card = localBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.card) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('card') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     return {
       unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
-      expenses: purchasePaid, purchases: branchPurchases, pendingPayments: Math.max(0, branchPurchases - purchasePaid),
+      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchases, pendingPayments: Math.max(0, branchPurchases - purchasePaid),
       stockAlerts: lowStock + outStock + (incoming[branch] || []).filter(i => !i.confirmed).length,
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
     };
-  }), [ownerLedger.closureRows, ownerLedger.savedClosures, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
+  }), [ownerLedger, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
 
   // CHANGE 4a: filter by selected view
   const visibleRows = branchRows.filter(r =>
@@ -1646,7 +1648,7 @@ function OwnerDailyClosureTab() {
     const dayReturns = returns.filter(ret => ret.branch === b && ownerLocalDay(ret.createdAt) === date);
     const dayPayments = purchasePayments.filter(pay => pay.branch === b && ownerLocalDay(pay.createdAt) === date).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
     const dayDeposits = bankDeposits.filter(dep => dep.branch === b && ownerLocalDay(dep.createdAt) === date).reduce((sum, d) => sum + moneyNumber(d.amount), 0);
-    const dayExpenses = cashMovements.filter(m => m.branch === b && ownerLocalDay(m.dateTime) === date && m.direction === 'out').reduce((sum, m) => sum + moneyNumber(m.amount), 0);
+    const dayExpenses = cashMovements.filter(m => m.branch === b && ownerLocalDay(m.dateTime) === date && m.direction === 'out' && !String(m.purpose || '').toLowerCase().startsWith('purchase payment')).reduce((sum, m) => sum + moneyNumber(m.amount), 0);
     const closure = cashierClosures.find(c => c.branch === b && ownerLocalDay(c.createdAt) === date);
     const gross = dayBills.reduce((sum, bill) => sum + moneyNumber(bill.total), 0);
     const ret = dayReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
@@ -1663,11 +1665,11 @@ function OwnerDailyClosureTab() {
       status: (closure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
       closedBy: closure?.cashier || 'Pending', closedAt: closure?.createdAt || '', remarks: closure?.notes || (closure ? 'Closed' : 'Closure not submitted'),
     };
-  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [ownerLedger.closureByBranchDate, ownerLedger.savedClosureByBranchDate, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
+  }).filter(row => branch === 'all' || row.branch === ownerBranchDisplay(branch)), [ownerLedger, orders, bills, returns, purchasePayments, bankDeposits, cashierClosures, cashMovements, date, branch]);
 
   const totals = rows.reduce((acc, r) => ({ net: acc.net + r.netSales, cash: acc.cash + r.cash, diff: acc.diff + r.difference, pending: acc.pending + (r.status === 'Pending' ? 1 : 0) }), { net: 0, cash: 0, diff: 0, pending: 0 });
 
-  const print = () => ownerPrintSection('Owner Daily Closure Overview', `<table><thead><tr><th>Branch</th><th>Status</th><th>Net sales</th><th>Cash</th><th>Expected cash</th><th>Counted cash</th><th>Difference</th><th>Closed by</th><th>Remarks</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.branch}</td><td>${r.status}</td><td>${r.netSales}</td><td>${r.cash}</td><td>${r.expectedCash}</td><td>${r.countedCash}</td><td>${r.difference}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('')}</tbody></table>`);
+  const print = () => ownerPrintSection('Owner Daily Closure Overview', `<table><thead><tr><th>Branch</th><th>Status</th><th>Net sales</th><th>Cash</th><th>Expected cash</th><th>Counted cash</th><th>Difference</th><th>Closed by</th><th>Remarks</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.branch}</td><td>${r.status}</td><td>${formatCurrency(r.netSales)}</td><td>${formatCurrency(r.cash)}</td><td>${formatCurrency(r.expectedCash)}</td><td>${formatCurrency(r.countedCash)}</td><td>${formatCurrency(r.difference)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('')}</tbody></table>`);
 
   return (
     <div className="owner-tab-stack">
@@ -2202,7 +2204,7 @@ type OwnerDashboardTab =
 export default function OwnerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') as OwnerDashboardTab | null;
-  const ownerTabIds: OwnerDashboardTab[] = ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'];
+  const ownerTabIds = useMemo<OwnerDashboardTab[]>(() => ['branches', 'sales', 'credit', 'purchases', 'closure', 'variance', 'alerts', 'attendance', 'waste', 'complaints', 'audit'], []);
   const initialTab = requestedTab && ownerTabIds.includes(requestedTab) ? requestedTab : 'branches';
   const [tab, setTab] = useState<OwnerDashboardTab>(initialTab);
   const selectTab = (next: OwnerDashboardTab) => {
@@ -2214,7 +2216,7 @@ export default function OwnerDashboard() {
     if (requestedTab && ownerTabIds.includes(requestedTab) && requestedTab !== tab) {
       setTab(requestedTab);
     }
-  }, [requestedTab, tab]);
+  }, [requestedTab, tab, ownerTabIds]);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },

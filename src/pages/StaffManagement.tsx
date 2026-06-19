@@ -129,6 +129,7 @@ export default function StaffManagement() {
   // removeError: per-card inline error keyed by userId
   const [removingId, setRemovingId]     = useState<string | null>(null);
   const [removeError, setRemoveError]   = useState<Record<string, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; displayName: string } | null>(null);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
 
@@ -166,13 +167,14 @@ export default function StaffManagement() {
   // SM-FIX: replace window.confirm + fire-and-forget .catch(alert) with proper
   // async handler — shows a loading spinner on the button, collapses to an
   // inline error message inside the card on failure, never uses blocking dialogs.
-  const handleRemoveStaff = async (userId: string, displayName: string) => {
-    if (!window.confirm(`Remove ${displayName}? This cannot be undone.`)) return;
+  const handleRemoveStaff = async () => {
+    if (!deleteTarget) return;
+    const userId = deleteTarget.id;
     setRemovingId(userId);
     setRemoveError((prev) => ({ ...prev, [userId]: '' }));
     try {
       await removeStaff(userId);
-      // On success the store filters the user out of staffList — card disappears naturally.
+      setDeleteTarget(null);
     } catch {
       setRemoveError((prev) => ({ ...prev, [userId]: 'Failed to remove — please try again.' }));
     } finally {
@@ -181,6 +183,7 @@ export default function StaffManagement() {
   };
 
   const startEdit = (user: { id: string; username: string; displayName: string }) => {
+    setChangingPwId(null); setNewPw(''); setPwError('');
     setEditingId(user.id);
     setEditUsername(user.username);
     setEditDisplayName(user.displayName);
@@ -189,8 +192,10 @@ export default function StaffManagement() {
 
   const handleSaveDetails = async (userId: string) => {
     setEditError('');
+    if (!editDisplayName.trim()) { setEditError('Display name is required'); return; }
+    if (!editUsername.trim()) { setEditError('Username is required'); return; }
     const err = await updateStaffDetails(userId, {
-      username: editUsername, displayName: editDisplayName,
+      username: editUsername.trim(), displayName: editDisplayName.trim(),
     });
     if (err) { setEditError(err); return; }
     setEditingId(null);
@@ -278,6 +283,9 @@ export default function StaffManagement() {
           const isExpanded  = expandedId === user.id;
           const isEditing   = editingId  === user.id;
           const isChangingPw = changingPwId === user.id;
+          const actorRole = currentUser?.role;
+          const protectedRole = user.role === 'owner' || user.role === 'admin';
+          const canManage = actorRole === 'owner' || (!protectedRole && actorRole === 'admin');
 
           return (
             <div key={user.id} className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
@@ -334,20 +342,22 @@ export default function StaffManagement() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => startEdit(user)}
+                        disabled={!canManage}
                         className="flex-1 py-2.5 rounded-xl bg-card border border-border text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
                       >
                         <Pencil className="size-3" />Edit
                       </button>
                       <button
                         onClick={() => { setChangingPwId(user.id); setEditingId(null); setNewPw(''); }}
+                        disabled={!canManage}
                         className="flex-1 py-2.5 rounded-xl bg-card border border-border text-foreground text-xs font-body font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-all"
                       >
                         <Key className="size-3" />Password
                       </button>
                       {user.id !== currentUser?.id && (
                         <button
-                          onClick={() => handleRemoveStaff(user.id, user.displayName)}
-                          disabled={removingId === user.id}
+                          onClick={() => setDeleteTarget({ id: user.id, displayName: user.displayName })}
+                          disabled={!canManage || removingId === user.id}
                           className="px-3 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-body font-semibold flex items-center gap-1 active:scale-95 transition-all disabled:opacity-50"
                         >
                           <Trash2 className="size-3" />
@@ -439,6 +449,18 @@ export default function StaffManagement() {
           );
         })}
       </div>
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="alertdialog" aria-modal="true" aria-labelledby="delete-staff-title">
+          <div className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
+            <h2 id="delete-staff-title" className="text-lg font-bold">Remove staff member?</h2>
+            <p className="mt-2 text-sm text-muted-foreground">Remove {deleteTarget.displayName}? This action cannot be undone.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" className="rounded-xl border px-4 py-2" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button type="button" className="rounded-xl bg-destructive px-4 py-2 text-destructive-foreground" onClick={handleRemoveStaff} disabled={removingId === deleteTarget.id}>{removingId === deleteTarget.id ? 'Removing…' : 'Remove'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

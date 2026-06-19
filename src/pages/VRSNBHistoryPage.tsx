@@ -40,12 +40,9 @@ export default function VRSNBHistoryPage() {
   const todayTotal = orders.filter(o => isToday(o.createdAt) && o.status === 'served').reduce((s, o) => s + o.total, 0);
   const vrsnbTodayQty = (sales['VRSNB'] || []).filter(s => isToday(s.soldAt)).reduce((a, s) => a + s.quantitySold, 0);
 
-  const FILTERS = [
-    { key: 'all' as const, label: 'All' },
-    { key: 'today' as const, label: 'Today' },
-    { key: 'served' as const, label: 'Completed' },
-    { key: 'cancelled' as const, label: 'Cancelled' },
-  ];
+  const FILTERS = mode === 'vrsnb'
+    ? [{ key: 'all' as const, label: 'All sales' }, { key: 'today' as const, label: 'Today' }]
+    : [{ key: 'all' as const, label: 'All' }, { key: 'today' as const, label: 'Today' }, { key: 'served' as const, label: 'Completed' }, { key: 'cancelled' as const, label: 'Cancelled' }];
 
   return (
     <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
@@ -73,7 +70,7 @@ export default function VRSNBHistoryPage() {
         <button onClick={() => setMode('cafe')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all', mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground')}>
           ☕ Cafe
         </button>
-        <button onClick={() => setMode('vrsnb')} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all', mode === 'vrsnb' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground')}>
+        <button onClick={() => { setMode('vrsnb'); if (filter === 'served' || filter === 'cancelled') setFilter('all'); }} className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all', mode === 'vrsnb' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground')}>
           🥐 VRSNB
         </button>
       </div>
@@ -101,7 +98,7 @@ export default function VRSNBHistoryPage() {
           ) : (
             <div className="bg-card border border-border rounded-xl overflow-hidden">
               <div className="divide-y">
-                {vrsnbSales.slice(0, 100).map(s => (
+                {vrsnbSales.map(s => (
                   <div key={s.id} className="flex items-center justify-between px-4 py-3">
                     <div>
                       <p className="text-sm font-medium">{s.itemName}</p>
