@@ -360,7 +360,27 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     return combined;
   }, [order]);
 
+  // Bug 1 fix: anyOut must be computed in OrderCard scope (was only defined in ItemRow)
+  const { items: stockItems } = useStoreStockStore();
+  const anyOut = useMemo(() => {
+    for (const item of order.items) {
+      const mats = matForItem(item);
+      for (const m of mats) {
+        const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
+        if (!stock) continue;
+        let needed = m.quantity;
+        const from = m.unit.toLowerCase();
+        const to   = stock.unit.toLowerCase();
+        if (from === 'g'  && to === 'kg')  needed /= 1000;
+        if (from === 'kg' && to === 'g')   needed *= 1000;
+        if (needed > stock.quantity) return true;
+      }
+    }
+    return false;
+  }, [order.items, stockItems]);
+
   const handleSendToBaker = async () => {
+    if (sent) return; // Bug 2 fix: guard against double-fire before React disables the button
     if (anyOut) { setSendError('Cannot send to baker: one or more required materials are out of stock.'); return; }
     setSending(true); setSendError(null);
     try {
@@ -549,8 +569,14 @@ function AddItemModal({ onClose, onSave }: { onClose: () => void; onSave: (name:
     const q = parseFloat(qty), m = parseFloat(min);
     if (isNaN(q) || q < 0 || isNaN(m) || m < 0) { setError('Invalid quantity or minimum'); return; }
     setSaving(true); setError('');
-    await onSave(name, unit, q, m, selectedSuppliers);
-    setSaving(false); onClose();
+    try {
+      await onSave(name, unit, q, m, selectedSuppliers);
+      onClose();
+    } catch {
+      setError('Save failed — please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -641,7 +667,15 @@ function EditItemModal({ item, onClose, onSave }: { item: StockItem; onClose: ()
   const handleSave = async () => {
     const q = parseFloat(qty), m = parseFloat(min);
     if (isNaN(q) || isNaN(m)) return;
-    setSaving(true); await onSave({ quantity: q, minThreshold: m, unit }); setSaving(false); onClose();
+    setSaving(true);
+    try {
+      await onSave({ quantity: q, minThreshold: m, unit });
+      onClose();
+    } catch {
+      // silent — parent shows errors via its own mechanism
+    } finally {
+      setSaving(false);
+    }
   };
   return (
     <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={onClose}>
@@ -814,14 +848,18 @@ function StoreInventoryTab() {
   const handleImport = async () => {
     setImporting(true);
     setImportError(null);
-    const result = await bulkImportFromRecipes();
-    setImporting(false);
-    if (result.error) {
-      setImportError(result.error);
-    } else {
-      setImportError(null);
-      setImportToast({ added: result.added, skipped: result.skipped });
-      setTimeout(() => setImportToast(null), 4000);
+    try {
+      const result = await bulkImportFromRecipes();
+      if (result.error) {
+        setImportError(result.error);
+      } else {
+        setImportToast({ added: result.added, skipped: result.skipped });
+        setTimeout(() => setImportToast(null), 4000);
+      }
+    } catch {
+      setImportError('Import failed — please try again.');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -1147,8 +1185,14 @@ function SupplierModal({
     if (!form.businessName.trim()) { setError('Business name is required'); return; }
     if (!form.phone.trim()) { setError('Phone number is required'); return; }
     setSaving(true); setError('');
-    await onSave(form);
-    setSaving(false); onClose();
+    try {
+      await onSave(form);
+      onClose();
+    } catch {
+      setError('Save failed — please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const Field = ({ label, field, placeholder, type = 'text' }: { label: string; field: keyof SupplierFormData; placeholder?: string; type?: string }) => (
