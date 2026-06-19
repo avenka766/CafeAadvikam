@@ -31,6 +31,7 @@ interface OrderState {
   submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
+  refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
   setAdvancePayment: (orderId: string, advanceAmount: number, advancePaidBy: string, billedBy: string) => Promise<void>;
@@ -337,6 +338,48 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (error || !statusLock || statusLock.length === 0) {
       set({ orders: prev });
       throw new Error(!statusLock || statusLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to update order status');
+    }
+  },
+
+
+  refundAndCancel: async (orderId, cancelReason, refundedBy) => {
+    const prev = get().orders;
+    const order = prev.find((o) => o.id === orderId);
+    if (!order) throw new Error('Order not found. Refresh and try again.');
+    if (order.status === 'cancelled') throw new Error('Order is already cancelled.');
+    if (order.paymentType === 'unpaid') {
+      await get().updateOrderStatus(orderId, 'cancelled', cancelReason);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const refundMode = order.paymentType === 'part_payment'
+      ? 'split'
+      : order.paymentType === 'advance'
+        ? (order.advancePaidBy || 'unknown')
+        : order.paymentType;
+    const refundAmount = order.paymentType === 'advance'
+      ? Number(order.fullyPaidAt ? (order.fullAmount || order.total) : (order.advanceAmount || order.total))
+      : Number(order.total || 0);
+    const audit = `[REFUND ${now}] mode=${refundMode}; amount=${refundAmount.toFixed(2)}; by=${refundedBy}; reason=${cancelReason}`;
+    const notes = [order.notes, audit].filter(Boolean).join('\n');
+    const updates = { status: 'cancelled', cancel_reason: cancelReason, notes, updated_at: now };
+
+    set((state) => ({
+      orders: state.orders.map((o) => o.id === orderId
+        ? { ...o, status: 'cancelled', cancelReason, notes, updatedAt: now }
+        : o),
+    }));
+
+    const { data, error } = await supabase
+      .from('orders')
+      .update(updates)
+      .eq('id', orderId)
+      .eq('updated_at', order.updatedAt)
+      .select('id');
+    if (error || !data || data.length === 0) {
+      set({ orders: prev });
+      throw new Error(!data || data.length === 0 ? 'Order changed on another device. Refresh and try again.' : error.message);
     }
   },
 
