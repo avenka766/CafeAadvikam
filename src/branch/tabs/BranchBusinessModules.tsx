@@ -391,7 +391,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const [cake, setCake] = useState({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
-  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso());
+  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false);
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const staff = isVRSNB ? user : common.salesperson;
@@ -802,7 +802,7 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
 
 export function CashierClosureTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, addCashierClosure, openCounter } = useBranchOpsStore();
+  const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
   const [closing, setClosing] = useState('');
@@ -821,7 +821,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
   const openTotal = denomTotal(openDenominations);
   const closeTotal = denomTotal(closeDenominations);
-  const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso());
+  const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false);
   const branchClosureRecord = cashierClosures.find((record) => record.branch === branch && today(record.createdAt));
 
   useEffect(() => {
@@ -963,7 +963,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       const saved = data as SavedClosureRow;
       return [saved, ...current.filter((row) => row.id !== saved.id)].slice(0, 30);
     });
-    setSavedMessage('Closure saved in Supabase successfully.');
+    closeCounter(branch, todayIso(), user);
+    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, message: `${user} closed the counter. Collection ${money(totalCollection)}; difference ${money(diff)}.`, status: 'Unread' });
+    setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setClosing('');
     setNotes('');
     setTimeout(() => setSavedMessage(''), 3000);
@@ -1050,7 +1052,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
             <div className="size-2 rounded-full bg-emerald-400" />
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">{BRANCH_LABELS[branch]} cashier closure</p>
           </div>
-          <p className="mt-1 text-sm font-black text-foreground">Daily Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
+          <p className="mt-1 text-sm font-black text-foreground">Cashier Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
@@ -1134,7 +1136,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         </div>
         {openSavedMessage && <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">{openSavedMessage}</p>}
         {closureMessage && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-800">{closureMessage}</p>}
-        {savedMessage && <p className={cn('mt-3 rounded-xl px-3 py-2 text-sm font-black', savedMessage.startsWith('Closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
+        {savedMessage && <p className={cn('mt-3 rounded-xl px-3 py-2 text-sm font-black', savedMessage.includes('closure saved') || savedMessage.includes('Cashier closure saved') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>{savedMessage}</p>}
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">

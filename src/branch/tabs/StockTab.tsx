@@ -28,6 +28,10 @@ interface Props {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function normalizeItemName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 function detectSellUnit(itemName: string): 'kg' | 'pcs' {
   const lower = itemName.toLowerCase();
   const weightKeywords = [
@@ -138,7 +142,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
     : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }));
 
   // Build a quick lookup: itemName → current quantity from DB
-  const stockMap = new Map(branchStock.map((s) => [s.itemName, s.quantity]));
+  const stockMap = new Map(branchStock.map((s) => [normalizeItemName(s.itemName), s.quantity]));
 
   const [search, setSearch]         = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -213,7 +217,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
           const wasSaved   = saved[item.name];
           // Use price list uom as authority: 'Kgs' → kg, anything else → pcs
           const isKg       = item.uom === 'Kgs' || item.uom === 'kg';
-          const currentQty = stockMap.get(item.name) ?? 0;
+          const currentQty = stockMap.get(normalizeItemName(item.name)) ?? 0;
           return (
             <div key={item.name} className={cn('flex items-center gap-3 px-4 py-3', wasSaved && 'bg-emerald-50/40')}>
               <div className="flex-1 min-w-0">
@@ -425,7 +429,8 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       : VRSNB_ITEMS.map((i) => i.name)
   );
 
-  const filteredStock = branchStock.filter((s) => allowedItemNames.has(s.itemName));
+  const allowedNormalizedNames = new Set(Array.from(allowedItemNames, normalizeItemName));
+  const filteredStock = branchStock.filter((s) => allowedNormalizedNames.has(normalizeItemName(s.itemName)));
 
   // Build uom lookup from price list — 'Kgs' → 'kg', 'Nos'/'pcs' → 'pcs'
   const uomMap = new Map<string, 'kg' | 'pcs'>(
@@ -439,9 +444,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const allBranchItemNames = isSNBBranch
     ? SNB_ITEMS.map((i) => i.name)
     : VRSNB_ITEMS.map((i) => i.name);
-  const stockMap = new Map(filteredStock.map((s) => [s.itemName, s]));
+  const stockMap = new Map(filteredStock.map((s) => [normalizeItemName(s.itemName), s]));
   const completeStock = allBranchItemNames.map((name) => {
-    const s = stockMap.get(name);
+    const s = stockMap.get(normalizeItemName(name));
     const unit = uomMap.get(name);
     // Use saved threshold from store, fallback to DB row value, then default 10
     const minThreshold = branchThresholds[name] ?? s?.minThreshold ?? 10;
@@ -453,9 +458,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // NEGATIVE-ITEM FIX: also include any DB rows with negative quantity that aren't
   // in the price list (e.g. newly added items sold before being seeded into stock).
   // Without this, items sold from zero stock are invisible in the Negative tab.
-  const completeStockNames = new Set(allBranchItemNames);
+  const completeStockNames = new Set(allBranchItemNames.map(normalizeItemName));
   const extraNegativeItems = branchStock.filter(
-    (s) => s.quantity < 0 && !completeStockNames.has(s.itemName)
+    (s) => s.quantity < 0 && !completeStockNames.has(normalizeItemName(s.itemName))
   ).map((s) => ({
     ...s,
     unit: s.unit ?? (detectSellUnit(s.itemName) as 'kg' | 'pcs'),

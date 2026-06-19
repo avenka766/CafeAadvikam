@@ -215,7 +215,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   useEffect(() => setDropdownIndex(0), [query, category]);
 
   const todayKey = new Date().toISOString().slice(0, 10);
-  const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey);
+  const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey && record.active !== false);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
