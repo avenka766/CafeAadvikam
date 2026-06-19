@@ -43,6 +43,7 @@ type Props = {
 };
 
 const TAX_RATE = 0;
+const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 const BASE_SHORTCUTS = [
   ['F1', 'Change Salesperson'],
   ['F2', 'Search Items'],
@@ -112,8 +113,8 @@ function normalizeQtyInput(value: string, unit: 'pcs' | 'kg') {
 
 function recalcLine(item: BranchBillItem, qty: number): BranchBillItem {
   const quantity = Number(qty.toFixed(3));
-  const subtotal = item.price * quantity;
-  const tax = subtotal * TAX_RATE;
+  const subtotal = roundMoney(item.price * quantity);
+  const tax = roundMoney(subtotal * TAX_RATE);
   // FIX (Bug #6): per-item discount must scale proportionally with quantity.
   // Previously the stored fixed discount amount was applied regardless of qty,
   // so changing qty from 1 to 5 still only subtracted the 1-unit discount.
@@ -215,7 +216,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
 
   const todayKey = new Date().toISOString().slice(0, 10);
   const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey);
-  const isCounterOpen = () => counterOpenedToday;
+  const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
     setQtyPopupValue(unitOf(item) === 'kg' ? '0.25' : '1');
@@ -277,7 +278,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
       if (existing) return current.map((c) => c.itemName === item.name ? recalcLine(c, newQty) : c);
       return [toBillItem(item, amount), ...current];
     });
-  }, [branchStock, stockMap, counterOpenedToday]);
+  }, [branchStock, stockMap, isCounterOpen]);
 
   const reduceItem = (itemName: string) => setCart((current) => current.flatMap((c) => {
     if (c.itemName !== itemName) return [c];
@@ -390,14 +391,18 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     setSaving(true);
     setError('');
     try {
+      const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
+      if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
+        throw new Error('Split payment must exactly match the bill total.');
+      }
       const paymentRows =
         paymentMode === 'credit'
           ? (creditPaid > 0 ? [{ mode: creditPaidMode, amount: creditPaid, remarks: creditRemarks.trim() || 'Credit upfront collection' }] : [])
           : paymentMode === 'split'
             ? [
-                { mode: 'cash', amount: Number(split.cash || 0) },
-                { mode: 'upi', amount: Number(split.upi || 0) },
-                { mode: 'card', amount: Number(split.card || 0) },
+                { mode: 'cash', amount: checkoutSplit.cash },
+                { mode: 'upi', amount: checkoutSplit.upi },
+                { mode: 'card', amount: checkoutSplit.card },
               ].filter((row) => row.amount > 0)
             : [{ mode: paymentMode, amount: total }];
 
@@ -484,7 +489,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, holdBill, items, selectedIndex, total, visibleItems]);
+  }, [cart, checkout, holdBill, items, selectPaymentMode, selectedIndex, total, visibleItems]);
 
   return (
     <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 md:h-[calc(100dvh-var(--header-h,4rem)-7rem)] md:overflow-hidden">

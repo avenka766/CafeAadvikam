@@ -367,7 +367,7 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
   const branchIncoming = incoming[branch] || [];
 
   // Fetch credit sales on mount
-  useEffect(() => { fetchCreditSales(branch); }, [branch]);
+  useEffect(() => { fetchCreditSales(branch); }, [branch, fetchCreditSales]);
 
   // FIX #8 — compare using local date strings instead of epoch milliseconds
   const rangeSales = useMemo(() => {
