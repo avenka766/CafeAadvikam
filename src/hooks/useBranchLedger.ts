@@ -125,10 +125,9 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       if (!active) return;
       const firstError = [closureRes.error, savedRes.error, operationsRes.error, billsRes.error].find(Boolean);
       if (firstError) {
-        const message = firstError.message || '';
-        if (!/branch_daily_closure_ledger|branch_daily_closures|branch_operation_records|branch_bill_headers|does not exist|schema cache/i.test(message)) {
-          setError(message);
-        }
+        setError(firstError.message || 'Unable to load branch ledger data.');
+        setLoading(false);
+        return;
       }
 
       setClosureRows((closureRes.data || []) as LedgerClosureRow[]);
@@ -140,7 +139,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
     void load();
     return () => { active = false; };
-  }, [fromDate, toDate, branchesKey]);
+  }, [fromDate, toDate, branchesKey, branches]);
 
   const closureByBranchDate = useMemo(() => {
     const map = new Map<string, LedgerClosureRow>();
