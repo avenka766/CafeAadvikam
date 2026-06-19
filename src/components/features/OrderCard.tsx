@@ -39,7 +39,7 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
 type SplitMethod = 'cash' | 'upi' | 'card';
 
 export default function OrderCard({ order, showActions = false, counterOpenedToday = true }: OrderCardProps) {
-  const { updateOrderStatus, applyDiscount, setPaymentType } = useOrderStore();
+  const { updateOrderStatus, refundAndCancel, applyDiscount, setPaymentType } = useOrderStore();
   const { currentUser } = useAuthStore();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
@@ -88,15 +88,11 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
         setCancelPasswordError('Incorrect password. Try again.');
         return;
       }
-      // FIX (MD Bug #23): block cancellation if advance payment was already collected.
-      // Cancelling such an order hides collected cash from the Daily Closure — the advance
-      // amount vanishes from cashMovements without a corresponding refund or reversal entry.
-      // A biller must manually process the refund/reversal before the order can be cancelled.
-      if (order.paymentType === 'advance' && (order.advanceAmount ?? 0) > 0) {
-        setCancelPasswordError('Cannot cancel: advance payment already collected. Process a refund first, then cancel.');
-        return;
+      if (order.paymentType === 'unpaid') {
+        await updateOrderStatus(order.id, 'cancelled', finalReason);
+      } else {
+        await refundAndCancel(order.id, finalReason, billerName || currentUser!.username);
       }
-      await updateOrderStatus(order.id, 'cancelled', finalReason);
       setShowCancelPrompt(false);
       setCancelReason('');
       setCancelCustomReason('');
@@ -466,14 +462,20 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
             <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
               <Printer className="size-4" />
             </button>
-            {/* FIX (MD Bug #23): hide cancel button once any payment has been collected.
-                A paid order must go through refund/return flow — bare cancel hides cash. */}
-            {order.paymentType === 'unpaid' && (
-              <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
-            )}
-            {order.paymentType !== 'unpaid' && (
-              <span className="px-3 py-2.5 rounded-lg bg-amber-100 text-amber-700 text-xs font-body font-semibold select-none" title="Payment collected — process a refund before cancelling">💳 Paid</span>
-            )}
+            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">
+              {order.paymentType === 'unpaid' ? '✕' : 'Refund & Cancel'}
+            </button>
+          </div>
+        )}
+
+        {showActions && isBiller && order.status !== 'cancelled' && order.paymentType !== 'unpaid' && (
+          <div className="px-4 py-3 border-t border-border flex gap-2">
+            <button onClick={() => setShowReceipt(true)} className="flex-1 py-2.5 rounded-xl bg-muted text-foreground text-sm font-body font-semibold border border-border flex items-center justify-center gap-2">
+              <Printer className="size-4" /> Print Duplicate
+            </button>
+            <button onClick={() => setShowCancelPrompt(true)} className="flex-1 py-2.5 rounded-xl bg-destructive/10 text-destructive text-sm font-body font-bold border border-destructive/20">
+              Refund & Cancel
+            </button>
           </div>
         )}
 
@@ -491,7 +493,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
           <div className="px-3.5 py-3 border-t border-destructive/30 bg-destructive/5 space-y-3">
               <div className="flex items-center gap-2">
                 <AlertCircle className="size-4 text-destructive shrink-0" />
-                <p className="text-xs font-body font-bold text-destructive">Cancel Order #{String(order.orderNumber).padStart(3, '0')}</p>
+                <p className="text-xs font-body font-bold text-destructive">{order.paymentType === 'unpaid' ? 'Cancel Order' : 'Refund & Cancel'} #{String(order.orderNumber).padStart(3, '0')}</p>
               </div>
 
               {/* Pre-populated reason chips */}
