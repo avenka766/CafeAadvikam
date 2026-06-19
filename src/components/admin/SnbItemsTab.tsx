@@ -236,7 +236,7 @@ export default function SnbItemsTab() {
   useEffect(() => {
     fetchOverrides('SNB');
     fetchBranchData('SNB');
-  }, []);
+  }, [fetchBranchData, fetchOverrides]);
 
   const nextBarcode = useMemo(() => {
     const allBarcodes = [...SNB_ITEMS.map(i => i.barcode), ...customItems.map(i => i.barcode)];

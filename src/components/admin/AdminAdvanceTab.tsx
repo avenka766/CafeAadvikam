@@ -46,7 +46,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
 
   useEffect(() => {
     branches.forEach(b => fetchBranchData(b));
-  }, []);
+  }, [branches, fetchBranchData]);
 
   // Merge all advance orders across branches
   const allOrders = useMemo((): Array<BranchAdvanceOrder & { branch: Branch }> => {

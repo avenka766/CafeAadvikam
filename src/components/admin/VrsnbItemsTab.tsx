@@ -237,7 +237,7 @@ export default function VrsnbItemsTab() {
     fetchStockMismatches();
     fetchOverrides('VRSNB');
     fetchBranchData('VRSNB');
-  }, []);
+  }, [fetchBranchData, fetchOverrides, fetchStockMismatches]);
 
   const nextBarcode = useMemo(() => {
     const allBarcodes = [...VRSNB_ITEMS.map(i => i.barcode), ...customItems.map(i => i.barcode)];
@@ -245,7 +245,6 @@ export default function VrsnbItemsTab() {
   }, [customItems]);
 
   const mismatchSummary = useMemo(() => {
-    return [] as Array<{ itemName: string; branch: string; totalShortage: number; lastDate: string }>;
     const map: Record<string, { branch: string; totalShortage: number; lastDate: string }> = {};
     stockMismatches
       .filter((m) => m.branch === 'VRSNB')

@@ -312,7 +312,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   // KPI aggregates
   const totalGiven = allSales.reduce((a, s) => a + s.subtotal, 0);
   const totalCollected = allSales.reduce((a, s) => a + s.amountPaid, 0);
-  const totalOutstanding = allSales.reduce((a, s) => a + s.creditAmount, 0);
+  const totalOutstanding = allSales.filter((sale) => sale.status !== 'settled').reduce((a, s) => a + s.creditAmount, 0);
   const overdueCount = allSales.filter(
     s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date(),
   ).length;
