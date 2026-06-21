@@ -1,5 +1,5 @@
 export type CellValue = string | number | boolean | null | undefined | Date;
-export type RowObject = Record<string, CellValue>;
+export type RowObject = Record<string, unknown>;
 export type WorkSheet = {
   name?: string;
   rows: CellValue[][];
@@ -23,13 +23,19 @@ function book_new(): WorkBook {
   return { SheetNames: [], Sheets: {} };
 }
 
-function json_to_sheet<T extends RowObject>(rows: T[]): WorkSheet {
+const toCellValue = (value: unknown): CellValue => {
+  if (value == null) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Date) return value;
+  return JSON.stringify(value);
+};
+
+function json_to_sheet(rows: RowObject[]): WorkSheet {
   const headers = Array.from(rows.reduce((set, row) => {
     Object.keys(row).forEach((key) => set.add(key));
     return set;
   }, new Set<string>()));
   return {
-    rows: [headers, ...rows.map((row) => headers.map((header) => row[header]))],
+    rows: [headers, ...rows.map((row) => headers.map((header) => toCellValue(row[header])))],
   };
 }
 
