@@ -1732,11 +1732,20 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           };
         }),
       markAdvanceSentToStore: (id) =>
-        set((s) => ({
-          advanceCakeOrders: s.advanceCakeOrders.map((o) =>
-            o.id === id ? { ...o, sentToStoreAt: new Date().toISOString() } : o,
-          ),
-        })),
+        set((s) => {
+          const prev = s.advanceCakeOrders.find((o) => o.id === id);
+          if (!prev) return {};
+          const next = { ...prev, sentToStoreAt: new Date().toISOString() };
+          mirrorOperationRecord(prev.branch, "advance_order", prev.id, next, {
+            recordNo: prev.orderNo,
+            amount: prev.orderValue,
+            status: "sent_to_store",
+            actor: prev.salesperson,
+          });
+          return {
+            advanceCakeOrders: s.advanceCakeOrders.map((o) => o.id === id ? next : o),
+          };
+        }),
       addQuotation: (quote) => {
         const quoteNo = `${quote.branch}-QT-${String(seq(`quote-${quote.branch}`)).padStart(4, "0")}`;
         const newQuote = {
