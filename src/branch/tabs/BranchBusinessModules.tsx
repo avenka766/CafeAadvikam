@@ -980,9 +980,27 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       notes: notes || null,
       status: 'finalized',
     };
+    const { data: existingClosure, error: existingClosureError } = await supabase
+      .from('branch_daily_closures')
+      .select('*')
+      .eq('branch', branch)
+      .eq('closure_date', todayIso())
+      .maybeSingle();
+    if (existingClosureError) {
+      const missingLedger = existingClosureError.code === '42P01' || existingClosureError.code === 'PGRST205' || /does not exist|schema cache/i.test(existingClosureError.message);
+      setSavedMessage(missingLedger
+        ? 'Supabase closure table is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql first.'
+        : `Failed to check today’s closure in Supabase: ${existingClosureError.message}`);
+      return;
+    }
+    if (existingClosure && String(existingClosure.status || '').toLowerCase() === 'finalized') {
+      closeCounter(branch, todayIso(), user);
+      setSavedMessage('Today’s cashier closure is already finalized. It cannot be saved again unless an admin reopens it.');
+      return;
+    }
     const { data, error } = await supabase
       .from('branch_daily_closures')
-      .upsert(closurePayload, { onConflict: 'branch,closure_date' })
+      .insert(closurePayload)
       .select()
       .single();
     if (error) {
