@@ -563,6 +563,9 @@ function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
     `Credit Amount: ${money(bill.creditAmount)}`,
     bill.dueDate ? `Due Date: ${toDateLabel(bill.dueDate)}` : '',
     '',
+    `Payment UPI ID: 328969176350835@cnrb`,
+    `Scan the attached QR code to pay through any UPI app.`,
+    '',
     `Please keep this bill for your records. Thank you.`,
   ].filter(Boolean).join('\n');
 }
@@ -576,6 +579,9 @@ function buildReminderMessage(ledger: HosurCreditLedger) {
     `Pending Bill No: ${ledger.billNo}`,
     `Pending Amount: ${money(ledger.balanceAmount)}`,
     `Due Date: ${toDateLabel(ledger.dueDate)}`,
+    '',
+    `Payment UPI ID: 328969176350835@cnrb`,
+    `Scan the attached QR code to pay through any UPI app.`,
     '',
     `Kindly clear the pending payment at the earliest. Thank you.`,
   ].join('\n');
@@ -940,8 +946,22 @@ export default function HosurDashboard() {
     let status: HosurWhatsappLog['status'] = 'sent';
     let errorMessage: string | null = null;
     try {
+      const shouldAttachPaymentQr = messageType === 'bill' || messageType === 'reminder';
+      const paymentQrUrl = shouldAttachPaymentQr
+        ? new URL('/hosur-payment-qr.jpeg', window.location.origin).toString()
+        : null;
       const { error: fnError } = await supabase.functions.invoke('send-hosur-whatsapp', {
-        body: { phone: normalizedPhone, message: body, shopId, billId, billNo, messageType },
+        body: {
+          phone: normalizedPhone,
+          message: body,
+          shopId,
+          billId,
+          billNo,
+          messageType,
+          mediaUrl: paymentQrUrl,
+          mediaType: shouldAttachPaymentQr ? 'image' : null,
+          fileName: shouldAttachPaymentQr ? 'VRSNB-UPI-Payment-QR.jpeg' : null,
+        },
       });
       if (fnError) throw fnError;
     } catch (err: any) {
