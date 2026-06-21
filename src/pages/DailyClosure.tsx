@@ -157,7 +157,7 @@ export default function DailyClosure() {
     }))
   );
   const { creditSales: branchCreditSales, creditPayments: branchCreditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
-  const { counterOpenings, openCounter, addCashierClosure, cashierClosures } = useBranchOpsStore();
+  const { counterOpenings, openCounter, closeCounter, addCashierClosure, cashierClosures } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
   const [selectedDate, setSelectedDate] = useState(toDateInput());
   const [closingCash, setClosingCash] = useState('');
@@ -186,7 +186,7 @@ export default function DailyClosure() {
   const denominations = [500, 200, 100, 50, 20, 10, 5, 2, 1];
   const openingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(openDenominations[denom]), 0);
   const closingDenomTotal = denominations.reduce((sum, denom) => sum + denom * safeNumber(closeDenominations[denom]), 0);
-  const localCafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate);
+  const localCafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate && record.active !== false);
   const cafeCounterOpenRecord = localCafeCounterOpenRecord ?? remoteCounterOpenRecord;
   const cafeClosureRecord = cashierClosures.find((record) => record.branch === 'Cafe' && sameBusinessDate(record.createdAt, selectedDate));
   const closureAlreadySaved = Boolean(cafeClosureRecord) || remoteClosureFinalized;
@@ -446,24 +446,16 @@ export default function DailyClosure() {
       return;
     }
     setOpeningCounter(true);
-    const record = openCounter({
-      branch: 'Cafe',
-      date: selectedDate,
-      cashier: openCashier || cashierName,
-      openingCash: openingDenomTotal,
-      denominations: Object.fromEntries(
-        Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
-      ),
-      openedBy: cashierName,
-    });
+    const openingCashValue = openingDenomTotal;
+    const openingCashier = openCashier || cashierName;
     const { error } = await supabase
       .from('branch_daily_closures')
-      .upsert(
+      .insert(
         {
           branch: 'Cafe',
           closure_date: selectedDate,
-          cashier: record.cashier,
-          opening_cash: record.openingCash,
+          cashier: openingCashier,
+          opening_cash: openingCashValue,
           cash_total: 0,
           upi_total: 0,
           card_total: 0,
@@ -477,19 +469,34 @@ export default function DailyClosure() {
           tax_total: 0,
           bill_count: 0,
           duplicate_prints: 0,
-          expected_cash: record.openingCash,
+          expected_cash: openingCashValue,
           actual_cash: 0,
           difference: 0,
           notes: 'Counter opened',
           status: 'open',
         },
-        { onConflict: 'branch,closure_date,cashier' },
       );
+    if (error) {
+      setClosureSavedMessage(error.code === '23505'
+        ? 'This cashier counter was already opened or closed for the selected date.'
+        : `Counter was not opened because Supabase could not save it: ${error.message}`);
+      setOpeningCounter(false);
+      setTimeout(() => setClosureSavedMessage(''), 4000);
+      return;
+    }
+    const record = openCounter({
+      branch: 'Cafe',
+      date: selectedDate,
+      cashier: openingCashier,
+      openingCash: openingCashValue,
+      denominations: Object.fromEntries(
+        Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
+      ),
+      openedBy: cashierName,
+    });
     setOpeningCash(String(record.openingCash));
     setClosureSavedMessage(
-      error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)
-        ? `Counter opened locally, but Supabase open status failed: ${error.message}`
-        : `Cafe counter opened by ${record.cashier}. Opening cash: ${formatCurrency(record.openingCash)}`,
+      `Cafe counter opened by ${record.cashier}. Opening cash: ${formatCurrency(record.openingCash)}`,
     );
     setOpeningCounter(false);
     setTimeout(() => setClosureSavedMessage(''), 3500);
@@ -531,9 +538,20 @@ export default function DailyClosure() {
       notes: notes || null,
       status: 'finalized',
     };
-    const { error } = await supabase
+    const { data: closureRows, error } = await supabase
       .from('branch_daily_closures')
-      .upsert(closurePayload, { onConflict: 'branch,closure_date,cashier' });
+      .update(closurePayload)
+      .eq('branch', 'Cafe')
+      .eq('closure_date', selectedDate)
+      .eq('cashier', activeCashierName)
+      .eq('status', 'open')
+      .select('id');
+    if (error || !closureRows || closureRows.length !== 1) {
+      setClosureSavedMessage(error ? `Closure was not saved: ${error.message}` : 'Closure was not saved because the open counter record was not found or was already finalized.');
+      setSavingClosure(false);
+      setTimeout(() => setClosureSavedMessage(''), 4000);
+      return;
+    }
     addCashierClosure({
       branch: 'Cafe',
       cashier: activeCashierName,
@@ -552,6 +570,9 @@ export default function DailyClosure() {
       creditCollections: closure.creditCollected,
       notes,
     });
+    closeCounter('Cafe', selectedDate, activeCashierName);
+    setRemoteCounterOpenRecord(null);
+    setRemoteClosureFinalized(true);
     await supabase.from('admin_notifications').insert({
       type: 'counter_closure',
       title: 'Cafe counter closed',
@@ -562,37 +583,9 @@ export default function DailyClosure() {
       recipient_role: 'admin_vrsnb',
     }).then(() => undefined, () => undefined);
 
-    if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
-      setClosureSavedMessage(`Closure saved in operation records, but daily closure table save failed: ${error.message}`);
-    } else if (error) {
-      setClosureSavedMessage('Closure saved in operation records. Run the daily closure SQL table migration for formal closure history.');
-    } else {
-      setClosureSavedMessage('Cafe cashier closure saved in Supabase.');
-    }
+    setClosureSavedMessage('Cafe cashier closure saved in Supabase. The counter is now closed.');
     setSavingClosure(false);
     setTimeout(() => setClosureSavedMessage(''), 3500);
-  };
-
-  const handleReopenCounter = async () => {
-    setOpeningCounter(true);
-    const now = new Date().toISOString();
-    const { error } = await supabase
-      .from('branch_daily_closures')
-      .update({ status: 'open', notes: `${notes ? `${notes} | ` : ''}Counter reopened by ${cashierName} at ${now}`, updated_at: now })
-      .eq('branch', 'Cafe')
-      .eq('closure_date', selectedDate)
-      .eq('status', 'finalized');
-    if (!error) {
-      openCounter({ branch: 'Cafe', date: selectedDate, cashier: activeCashierName, openingCash: closingCashValue, denominations: {}, openedBy: cashierName });
-      setRemoteClosureFinalized(false);
-      setRemoteCounterOpenRecord({ id: `reopened-${selectedDate}`, branch: 'Cafe', date: selectedDate, cashier: activeCashierName, openingCash: closingCashValue, denominations: {}, openedAt: now, openedBy: cashierName });
-      await supabase.from('admin_notifications').insert({ type: 'counter_reopened', title: 'Cafe counter reopened', body: `${cashierName} reopened the Cafe counter for ${selectedDate}.`, ref_label: selectedDate, meta: { branch: 'Cafe', closureDate: selectedDate, reopenedBy: cashierName }, is_read: false, recipient_role: 'admin_vrsnb' }).then(() => undefined, () => undefined);
-      setClosureSavedMessage('Counter reopened. Billing and collection are available again.');
-    } else {
-      setClosureSavedMessage(`Unable to reopen counter: ${error.message}`);
-    }
-    setOpeningCounter(false);
-    setTimeout(() => setClosureSavedMessage(''), 4000);
   };
 
   const handlePrint = () => {
@@ -844,11 +837,11 @@ export default function DailyClosure() {
                 <p className="text-xl font-black tabular-nums">{formatCurrency(openingDenomTotal)}</p>
               </div>
               <button
-                onClick={() => void (closureAlreadySaved ? handleReopenCounter() : handleOpenCounter())}
-                disabled={Boolean(cafeCounterOpenRecord) || openingCounter}
+                onClick={() => void handleOpenCounter()}
+                disabled={Boolean(cafeCounterOpenRecord) || closureAlreadySaved || openingCounter}
                 className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
               >
-                {openingCounter ? 'Saving...' : closureAlreadySaved ? 'Reopen Counter' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+                {openingCounter ? 'Saving...' : closureAlreadySaved ? 'Counter Closed for Today' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
               </button>
             </div>
           </div>

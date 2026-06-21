@@ -198,13 +198,13 @@ function OwnerToolbar({ children }: { children: React.ReactNode }) {
 
 // ── Shared KPI card ───────────────────────────────────────────────────────────
 function KPI({
-  icon, label, value, sub, color, trend,
+  icon, label, value, sub, color, trend, title,
 }: {
   icon: React.ReactNode; label: string; value: string;
-  sub?: string; color: string; trend?: 'up' | 'down' | null;
+  sub?: string; color: string; trend?: 'up' | 'down' | null; title?: string;
 }) {
   return (
-    <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
+    <div title={title} className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
       <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6"
         style={{ background: 'hsl(var(--primary))' }} />
       <div className="flex items-start justify-between mb-2">
@@ -1268,7 +1268,7 @@ function OwnerAuditTab() {
 
 // ── Owner Complaints Tab ──────────────────────────────────────────────────────
 function OwnerComplaintsTab() {
-  const { complaints } = useBranchOpsStore();
+  const { complaints, updateComplaintStatus } = useBranchOpsStore();
   const [statusUpdates, setStatusUpdates] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -1292,7 +1292,7 @@ function OwnerComplaintsTab() {
     const newStatus = statusUpdates[id] || currentStatus;
     if (newStatus === currentStatus) return;
     setSaving(id);
-    await supabase.from('branch_complaints').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', id);
+    updateComplaintStatus(id, newStatus as 'Open' | 'In Review' | 'Resolved', 'Owner');
     setSaving(null);
   };
 
@@ -1366,7 +1366,7 @@ function OwnerComplaintsTab() {
 function BranchOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const [unitView, setUnitView] = useState<'sales' | 'ops'>('sales');
 
@@ -1482,7 +1482,7 @@ function BranchOverviewTab() {
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashierClosures, storeOrders, from, to]);
+  }), [ownerLedger, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, from, to]);
 
   // CHANGE 4a: filter by selected view
   const visibleRows = branchRows.filter(r =>

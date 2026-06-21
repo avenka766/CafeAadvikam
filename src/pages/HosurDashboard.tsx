@@ -690,13 +690,14 @@ function SectionTitle({ icon, title, subtitle, action }: { icon: React.ReactNode
   );
 }
 
-function Metric({ label, value, icon, tone = 'emerald' }: { label: string; value: React.ReactNode; icon: React.ReactNode; tone?: 'emerald' | 'amber' | 'red' | 'blue' | 'violet' }) {
+function Metric({ label, value, icon, tone = 'emerald' }: { label: string; value: React.ReactNode; icon: React.ReactNode; tone?: 'emerald' | 'amber' | 'red' | 'blue' | 'violet' | 'slate' }) {
   const toneMap = {
     emerald: 'from-emerald-50 to-white text-emerald-700',
     amber: 'from-amber-50 to-white text-amber-700',
     red: 'from-red-50 to-white text-red-700',
     blue: 'from-blue-50 to-white text-blue-700',
     violet: 'from-violet-50 to-white text-violet-700',
+    slate: 'from-slate-50 to-white text-slate-700',
   };
   return (
     <Card className={cn('bg-gradient-to-br p-3', toneMap[tone])}>
@@ -763,8 +764,8 @@ export default function HosurDashboard() {
   const isAdminRef = useRef(isAdmin);
   useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError('');
     try {
       const [
@@ -862,7 +863,6 @@ export default function HosurDashboard() {
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
     setSearchParams(nextTab === 'newOrder' ? {} : { tab: nextTab });
-    setSidebarOpen(false);
   };
 
   const activeShops = shops.filter((shop) => shop.isActive);
@@ -1058,13 +1058,7 @@ export default function HosurDashboard() {
       confirmed_by: userName,
       confirmed_at: now,
     }).eq('id', bill.id);
-    if (billError) {
-      if (billError.code === '23505') {
-        const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
-        if (existingBill?.id) return existingBill.id;
-      }
-      throw billError;
-    }
+    if (billError) throw billError;
 
     if (bill.orderId) await supabase.from('hosur_orders').update({ status: 'billed' }).eq('id', bill.orderId);
 
@@ -1181,13 +1175,7 @@ export default function HosurDashboard() {
       credit_amount: newBalance,
       status: cleared ? 'settled' : 'partial_credit',
     }).eq('id', ledger.billId);
-    if (billError) {
-      if (billError.code === '23505') {
-        const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();
-        if (existingBill?.id) return existingBill.id;
-      }
-      throw billError;
-    }
+    if (billError) throw billError;
 
     const notificationBody = `${ledger.shopName} credit payment ${money(amount)} collected by ${userName}. Balance: ${money(newBalance)}.`;
     if (isAdmin) await notifyBranch('Hosur credit cleared by Admin', notificationBody, ledger.billId, ledger.billNo, { ledgerId: ledger.id, amount });

@@ -16,9 +16,9 @@ export default function AdminAlertsPage() {
 
   const summary = useMemo(() => ({
     total: notifications.length,
-    unread: notifications.filter(n => !n.read).length,
-    resolved: notifications.filter(n => n.resolved).length,
-    pending: notifications.filter(n => !n.resolved).length,
+    unread: notifications.filter(n => !n.isRead).length,
+    resolved: notifications.filter(n => n.isRead).length,
+    pending: notifications.filter(n => !n.isRead).length,
   }), [notifications]);
 
   return (

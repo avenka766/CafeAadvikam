@@ -25,11 +25,11 @@ export default function AdminInvoicesPage() {
 
   const summary = useMemo(() => ({
     total: invoices.length,
-    pending: invoices.filter(i => i.status === 'pending').length,
+    pending: invoices.filter(i => i.status === 'pending_review').length,
     approved: invoices.filter(i => i.status === 'approved').length,
     rejected: invoices.filter(i => i.status === 'rejected').length,
     totalValue: invoices.reduce((s, i) => s + (i.grandTotal || 0), 0),
-    pendingValue: invoices.filter(i => i.status === 'pending').reduce((s, i) => s + (i.grandTotal || 0), 0),
+    pendingValue: invoices.filter(i => i.status === 'pending_review').reduce((s, i) => s + (i.grandTotal || 0), 0),
   }), [invoices]);
 
   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;

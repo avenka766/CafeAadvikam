@@ -39,7 +39,7 @@ type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | '
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
-  payment: string; soldAt: string; soldBy: string;
+  payment: string; soldAt: string; soldBy: string; billNo: string | null;
 };
 
 type ClosureRow = {
@@ -189,7 +189,7 @@ function AdminDashboard() {
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
   const requestedTab = searchParams.get('tab') as AdminTab | null;
-  const allowedNavItems = NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(currentUser?.role ?? ''));
+  const allowedNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
   const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [fromDate, setFromDate] = useState(lastWeekInput());
@@ -205,7 +205,7 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
   const { invoices, load: loadInvoices } = useInvoiceStore();
   const { notifications: adminNotifications, load: loadAdminNotifications } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
@@ -252,7 +252,7 @@ function AdminDashboard() {
     const result: SalesTxn[] = [];
     BRANCHES.filter(b => b !== 'Cafe').forEach(branch => {
       (sales[branch] || []).filter(s => inRange(s.soldAt, fromDate, toDate)).forEach(s => {
-        result.push({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy });
+        result.push({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy, billNo: s.billNo });
       });
     });
     return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
@@ -264,7 +264,7 @@ function AdminDashboard() {
   const billedNumbers = new Set(opsBillsInRange.map((bill) => bill.billNo));
   const legacyOnlyRevenue = branchTransactions
     .filter((transaction) => !transaction.billNo || !billedNumbers.has(transaction.billNo))
-    .reduce((sum, transaction) => sum + moneyNumber(transaction.amount), 0);
+    .reduce((sum, transaction) => sum + transaction.revenue, 0);
   const branchSalesTotal = opsBillRevenue + legacyOnlyRevenue;
   const businessTotalSales = cafeSalesTotal + branchSalesTotal;
 
@@ -388,7 +388,7 @@ function AdminDashboard() {
           returns: returnsDay,
           netSales: Math.max(0, totalSales - returnsDay),
           expenses: expensesDay,
-          purchasePayments: ownerLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
+          purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
           bankDeposits: 0,
           closingBalance,
           differenceAmount,
@@ -845,19 +845,23 @@ function AdminDashboard() {
   const [disputeQtyById, setDisputeQtyById] = useState<Record<string, string>>({});
   const [savingDisputeId, setSavingDisputeId] = useState('');
   const [disputeMessage, setDisputeMessage] = useState('');
-  const stockDisputes = ADMIN_BRANCHES.flatMap(branch =>
+  const stockDisputes = useMemo(() => ADMIN_BRANCHES.flatMap(branch =>
     (incoming[branch] || [])
       .filter(item => item.disputed && !item.confirmed)
       .map(item => ({ ...item, branch })),
-  ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime());
+  ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime()), [incoming]);
 
   useEffect(() => {
     setDisputeQtyById(prev => {
       const next = { ...prev };
+      let changed = false;
       stockDisputes.forEach(item => {
-        if (next[item.id] === undefined) next[item.id] = String(item.quantity);
+        if (next[item.id] === undefined) {
+          next[item.id] = String(item.quantity);
+          changed = true;
+        }
       });
-      return next;
+      return changed ? next : prev;
     });
   }, [stockDisputes]);
 
@@ -1353,10 +1357,10 @@ function AdminDashboard() {
                     <option value="Resolved">Resolved</option>
                   </select>
                   <button
-                    onClick={async () => {
+                    onClick={() => {
                       const newStatus = complaintStatusUpdate[c.id] || c.status;
                       if (newStatus !== c.status) {
-                        await supabase.from('branch_complaints').update({ status: newStatus }).eq('id', c.id);
+                        updateComplaintStatus(c.id, newStatus as 'Open' | 'In Review' | 'Resolved', adminName);
                       }
                     }}
                     className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white">
