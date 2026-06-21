@@ -3448,8 +3448,11 @@ function DailyClosureTab({ userName, ...props }: any) {
       card_total: props.cardSales,
       credit_billed: props.creditBillAmount,
       credit_collected: props.clearedCredit,
+      advance_collected: props.advanceCollected,
+      advance_balance_collected: props.advanceBalanceCollected,
       refunds: props.returnAmount,
-      expenses: props.purchasePaid,
+      expenses: props.expenseAmount,
+      purchase_payments: props.purchasePaid,
       discounts: 0,
       bill_count: props.billsCount,
       duplicate_prints: 0,
@@ -3459,10 +3462,25 @@ function DailyClosureTab({ userName, ...props }: any) {
       notes: form.remarks || null,
       status: "finalized",
     };
-    const { error } = await supabase
+    const { data: existingClosure, error: lookupError } = await supabase
       .from("branch_daily_closures")
-      .upsert(payload, { onConflict: "branch,closure_date,cashier" });
-    if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
+      .select("id,status,cashier")
+      .eq("branch", BRANCH)
+      .eq("closure_date", closureDate)
+      .maybeSingle();
+    if (lookupError) {
+      window.alert(`Failed to check closure status: ${lookupError.message}`);
+      return;
+    }
+    if (existingClosure?.status === "finalized") {
+      window.alert(`The ${BRANCH} closure for ${closureDate} is already finalized by ${existingClosure.cashier}. Reopen it with admin approval before making changes.`);
+      return;
+    }
+    const saveQuery = existingClosure?.id
+      ? supabase.from("branch_daily_closures").update(payload).eq("id", existingClosure.id)
+      : supabase.from("branch_daily_closures").insert(payload);
+    const { error } = await saveQuery;
+    if (error) {
       window.alert(`Failed to save closure in Supabase: ${error.message}`);
       return;
     }

@@ -3510,10 +3510,25 @@ function DailyClosureTab({ userName, ...props }: any) {
       notes: form.remarks || null,
       status: "finalized",
     };
-    const { error } = await supabase
+    const { data: existingClosure, error: lookupError } = await supabase
       .from("branch_daily_closures")
-      .upsert(payload, { onConflict: "branch,closure_date,cashier" });
-    if (error && !/branch_daily_closures|does not exist|schema cache/i.test(error.message)) {
+      .select("id,status,cashier")
+      .eq("branch", BRANCH)
+      .eq("closure_date", closureDate)
+      .maybeSingle();
+    if (lookupError) {
+      window.alert(`Failed to check closure status: ${lookupError.message}`);
+      return;
+    }
+    if (existingClosure?.status === "finalized") {
+      window.alert(`The ${BRANCH} closure for ${closureDate} is already finalized by ${existingClosure.cashier}. Reopen it with admin approval before making changes.`);
+      return;
+    }
+    const saveQuery = existingClosure?.id
+      ? supabase.from("branch_daily_closures").update(payload).eq("id", existingClosure.id)
+      : supabase.from("branch_daily_closures").insert(payload);
+    const { error } = await saveQuery;
+    if (error) {
       window.alert(`Failed to save closure in Supabase: ${error.message}`);
       return;
     }

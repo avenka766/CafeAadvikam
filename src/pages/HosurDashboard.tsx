@@ -40,7 +40,7 @@ import type { SnbItem } from '@/branch/snbItems';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
 const BRANCH = 'Hosur' as const;
-const TODAY_ISO = () => new Date().toISOString().slice(0, 10);
+const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 const money = (value: number | null | undefined) =>
   `₹${Number(value ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1020,8 +1020,16 @@ export default function HosurDashboard() {
       line_total: Math.round((item.receivedQuantity != null ? item.receivedQuantity : item.quantity) * item.unitPrice * 100) / 100,
     }));
     const { error: itemsError } = await supabase.from('hosur_bill_items').insert(rows);
-    if (itemsError) throw itemsError;
-    await supabase.from('hosur_orders').update({ status: 'billing_draft', bill_id: billData.id }).eq('id', order.id);
+    if (itemsError) {
+      await supabase.from('hosur_bills').delete().eq('id', billData.id);
+      throw itemsError;
+    }
+    const { error: orderUpdateError } = await supabase.from('hosur_orders').update({ status: 'billing_draft', bill_id: billData.id }).eq('id', order.id);
+    if (orderUpdateError) {
+      await supabase.from('hosur_bill_items').delete().eq('bill_id', billData.id);
+      await supabase.from('hosur_bills').delete().eq('id', billData.id);
+      throw orderUpdateError;
+    }
     return billData.id;
   };
 

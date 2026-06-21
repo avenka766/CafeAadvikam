@@ -943,7 +943,7 @@ function WasteLogsTab() {
   const [error, setError] = useState('');
   const [activeSource, setActiveSource] = useState<'kitchen' | 'branches'>('kitchen');
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
 
