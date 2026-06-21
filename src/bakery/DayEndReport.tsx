@@ -150,7 +150,7 @@ export default function DayEndReport() {
           onChange={e => setDate(e.target.value)}
           className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
         />
-        <button onClick={() => fetchForDate(date)}
+        <button onClick={() => fetchForDate()}
           className="h-10 px-4 rounded-xl bg-primary text-primary-foreground text-sm font-body font-bold active:scale-95">
           Load
         </button>
