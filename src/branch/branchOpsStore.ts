@@ -619,6 +619,8 @@ interface BranchOpsState {
   addSupplier: (
     supplier: Omit<SupplierRecord, "id" | "createdAt" | "updatedAt">,
   ) => SupplierRecord;
+  updateSupplier: (id: string, updates: Partial<Omit<SupplierRecord, "id" | "branch" | "createdAt" | "updatedAt">>, user: string) => void;
+  removeSupplier: (id: string, user: string) => void;
   addExpense: (
     expense: Omit<ExpenseRecord, "id" | "createdAt">,
   ) => ExpenseRecord;
@@ -998,6 +1000,27 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newSupplier;
       },
+      updateSupplier: (id, updates, user) =>
+        set((state) => {
+          const previous = state.suppliers.find((supplier) => supplier.id === id);
+          if (!previous) return state;
+          const updated = { ...previous, ...updates, updatedAt: new Date().toISOString() };
+          mirrorOperationRecord(previous.branch, "supplier", id, updated, { recordNo: updated.mobile, status: "Active", actor: user });
+          return {
+            suppliers: state.suppliers.map((supplier) => supplier.id === id ? updated : supplier),
+            auditLogs: [audit(previous.branch, user, "Supplier Updated", previous.name, updated.name), ...state.auditLogs],
+          };
+        }),
+      removeSupplier: (id, user) =>
+        set((state) => {
+          const previous = state.suppliers.find((supplier) => supplier.id === id);
+          if (!previous) return state;
+          mirrorOperationRecord(previous.branch, "supplier", id, previous, { recordNo: previous.mobile, status: "Deleted", actor: user });
+          return {
+            suppliers: state.suppliers.filter((supplier) => supplier.id !== id),
+            auditLogs: [audit(previous.branch, user, "Supplier Deleted", previous.name, "Deleted"), ...state.auditLogs],
+          };
+        }),
       addExpense: (expense) => {
         const newExpense: ExpenseRecord = {
           ...expense,
