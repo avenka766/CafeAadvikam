@@ -818,7 +818,6 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const closeTotal = denomTotal(closeDenominations);
   const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false);
   const branchClosureRecord = cashierClosures.find((record) => record.branch === branch && today(record.createdAt));
-  const finalizedClosureToday = Boolean(branchClosureRecord) || savedClosures.some((row) => row.closure_date === todayIso() && row.cashier === user);
 
   useEffect(() => {
     setOpenCashier(user);
@@ -867,44 +866,50 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     void loadClosureLedger();
   }, [loadClosureLedger]);
 
-  const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt));
+  const sessionStartedAt = branchCounterOpenRecord?.openedAt ? new Date(branchCounterOpenRecord.openedAt).getTime() : 0;
+  const inCurrentSession = (value: string) => !sessionStartedAt || new Date(value).getTime() >= sessionStartedAt;
+  // While a counter is open, calculate only that counter session. The daily ledger
+  // remains useful after closing, but using it for a reopened session would count
+  // transactions from earlier closures again.
+  const closureLedger = branchCounterOpenRecord ? null : ledgerToday;
+  const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt) && inCurrentSession(b.createdAt));
   const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
-  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt));
-  const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt));
+  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt) && inCurrentSession(r.createdAt));
+  const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt) && inCurrentSession(p.createdAt));
   const branchCredits = creditSales[branch] || [];
   const branchCreditPayments = creditPayments[branch] || [];
-  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt));
-  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt));
-  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
+  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt) && inCurrentSession(c.createdAt));
+  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt) && inCurrentSession(m.createdAt));
+  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
   const grossBillSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
-  const advanceCollectedToday = ledgerToday
-    ? num(ledgerToday.advance_collected) + num(ledgerToday.advance_balance_collected)
+  const advanceCollectedToday = closureLedger
+    ? num(closureLedger.advance_collected) + num(closureLedger.advance_balance_collected)
     : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
   const normalCash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
   const normalUpi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
   const normalCard = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
-  const creditSalesTotal = ledgerToday ? num(ledgerToday.credit_billed) : todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
+  const creditSalesTotal = closureLedger ? num(closureLedger.credit_billed) : todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionUpi = todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
-  const creditCollectionTotal = ledgerToday ? num(ledgerToday.credit_collected) : creditCollectionCash + creditCollectionDigital;
+  const creditCollectionTotal = closureLedger ? num(closureLedger.credit_collected) : creditCollectionCash + creditCollectionDigital;
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
-  const cash = ledgerToday ? num(ledgerToday.cash_total) : normalCash + creditCollectionCash + advanceCash;
-  const upi = ledgerToday ? num(ledgerToday.upi_total) : normalUpi + creditCollectionUpi + advanceUpi;
-  const card = ledgerToday ? num(ledgerToday.card_total) : normalCard + creditCollectionCard + advanceCard;
-  const advancePaid = ledgerToday ? num(ledgerToday.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
-  const advanceFull = ledgerToday ? num(ledgerToday.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
+  const cash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash;
+  const upi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi;
+  const card = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard;
+  const advancePaid = closureLedger ? num(closureLedger.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
+  const advanceFull = closureLedger ? num(closureLedger.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
-  const totalSales = ledgerToday ? num(ledgerToday.sales_total) : grossBillSales - refunds;
+  const totalSales = closureLedger ? num(closureLedger.sales_total) : grossBillSales - refunds;
   const totalSalesIncAdvance = totalSales + advanceCollectedToday;
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
-  const discounts = ledgerToday ? num(ledgerToday.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
+  const discounts = closureLedger ? num(closureLedger.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
   // FIX (Bug #4): In ledger mode, cash = ledgerToday.cash_total. Verify that the
   // complete_branch_checkout and credit-collection RPCs both write credit-collection
@@ -912,7 +917,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // The non-ledger path already includes creditCollectionCash in cash (line above), so
   // the non-ledger path is correct. The fix here adds creditCollectionCash explicitly
   // when in ledger mode to guard against RPCs that omit it from cash_total.
-  const expected = Number(opening || 0) + cash - (ledgerToday ? 0 : refunds) - expenses;
+  const expected = Number(opening || 0) + cash - (closureLedger ? 0 : refunds) - expenses;
   const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -933,8 +938,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       refunds,
       expenses,
       discounts,
-      tax_total: ledgerToday ? num(ledgerToday.tax_total) : counterTodayBills.reduce((s, b) => s + b.tax, 0),
-      bill_count: ledgerToday ? num(ledgerToday.bill_count) : counterTodayBills.length,
+      tax_total: closureLedger ? num(closureLedger.tax_total) : counterTodayBills.reduce((s, b) => s + b.tax, 0),
+      bill_count: closureLedger ? num(closureLedger.bill_count) : counterTodayBills.length,
       duplicate_prints: duplicate,
       expected_cash: expected,
       actual_cash: countedCash,
@@ -968,10 +973,6 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   };
 
   const confirmCounterOpen = () => {
-    if (finalizedClosureToday) {
-      setOpenSavedMessage('This cashier counter is already closed for today and cannot be reopened.');
-      return;
-    }
     if (branchCounterOpenRecord) {
       setOpenSavedMessage('Counter is already opened today. Close the counter before opening again.');
       return;
@@ -1129,8 +1130,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
               <p className="text-xl font-black tabular-nums">{money(openTotal)}</p>
             </div>
-            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord) || finalizedClosureToday} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
-              {finalizedClosureToday ? 'Counter Closed for Today' : branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+              {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
             </button>
           </div>
         </div>
