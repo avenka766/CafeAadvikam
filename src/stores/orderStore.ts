@@ -9,6 +9,30 @@ import { useMenuStore } from '@/stores/menuStore';
 // migrate to Supabase Realtime subscriptions, but this constant makes it easy to tune.
 const POLL_INTERVAL_MS = 5_000;
 
+const moneyValue = (value: number) => Math.round(Number(value) * 100) / 100;
+
+export function validatePaymentBreakdown(breakdown: PaymentBreakdown | undefined, expected: number) {
+  if (!breakdown) throw new Error('Split payment details are required.');
+  const values = [breakdown.cash, breakdown.upi, breakdown.card].map(Number);
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error('Split payment amounts must be valid non-negative values.');
+  }
+  const collected = moneyValue(values.reduce((sum, value) => sum + value, 0));
+  if (collected !== moneyValue(expected)) {
+    throw new Error(`Split payment must equal the payable amount (${moneyValue(expected).toFixed(2)}).`);
+  }
+}
+
+function validateCart(cart: CartItem[]) {
+  if (cart.length === 0) throw new Error('Add at least one item before submitting the order.');
+  if (cart.some((item) => !Number.isFinite(item.quantity) || item.quantity <= 0)) {
+    throw new Error('Every item quantity must be greater than zero.');
+  }
+  if (cart.some((item) => !Number.isFinite(item.menuItem.price) || item.menuItem.price < 0)) {
+    throw new Error('An item has an invalid price. Refresh the menu and try again.');
+  }
+}
+
 interface OrderState {
   orders: Order[];
   cart: CartItem[];
@@ -157,6 +181,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
       return latest ? { ...cartItem, menuItem: latest } : cartItem;
     });
+    validateCart(cart);
     // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
     // A sophisticated user could mutate in-memory prices before adding to cart and submit
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
@@ -164,13 +189,17 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // Frontend mitigation: staff billing review before payment collection is the current guard.
     // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
-    const parcelCharges = params.parcelCharges ?? 0;
+    const parcelCharges = Number(params.parcelCharges ?? 0);
+    if (!Number.isFinite(parcelCharges) || parcelCharges < 0) {
+      throw new Error('Parcel charges must be a valid non-negative amount.');
+    }
     const total = subtotal + parcelCharges;
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
     const paymentType = params.paymentType || 'unpaid';
     const orderStatus = params.status || 'pending';
+    if (paymentType === 'part_payment') validatePaymentBreakdown(params.paymentBreakdown, total);
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) {
@@ -227,6 +256,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
       return latest ? { ...cartItem, menuItem: latest } : cartItem;
     });
+    validateCart(cart);
     // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
     // A sophisticated user could mutate in-memory prices before adding to cart and submit
     // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
@@ -237,6 +267,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const orderId = generateId();
     const now = new Date().toISOString();
     const isFullPayment = params.isFullPayment ?? false;
+    const requestedAdvance = Number(params.advanceAmount);
+    if (!isFullPayment && (!Number.isFinite(requestedAdvance) || requestedAdvance <= 0 || requestedAdvance > subtotal)) {
+      throw new Error('Advance amount must be greater than zero and cannot exceed the order total.');
+    }
     const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
     const total = isFullPayment ? subtotal : params.advanceAmount;
 
@@ -419,6 +453,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   setPaymentType: async (orderId, paymentType, billedBy, breakdown) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
+    if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, order.total);
     const prev = get().orders;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
@@ -455,6 +490,9 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     // already-advance order (where order.total was set to the previous advance amount) still
     // computes the balance correctly against the original full bill value.
     const billBase = order.fullAmount ?? order.subtotal;
+    if (!Number.isFinite(advanceAmount) || advanceAmount <= 0 || advanceAmount > billBase) {
+      throw new Error('Advance amount must be greater than zero and cannot exceed the bill total.');
+    }
     const balanceDue = Math.max(0, billBase - advanceAmount);
     const updates: Record<string, unknown> = {
       payment_type: 'advance', advance_amount: advanceAmount, advance_paid_by: advancePaidBy,
@@ -486,6 +524,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const prev = get().orders;
     const now = new Date().toISOString();
     const balanceAmount = order.balanceDue ?? 0;
+    if (!['cash', 'upi', 'card', 'part_payment'].includes(balancePaymentType)) {
+      throw new Error('Select cash, UPI, card, or split payment for the balance collection.');
+    }
+    if (balancePaymentType === 'part_payment') validatePaymentBreakdown(breakdown, balanceAmount);
 
     const balanceOrderId = generateId();
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
