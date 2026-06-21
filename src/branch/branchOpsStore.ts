@@ -1867,11 +1867,8 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(ret.branch, "return", newRet.id, newRet, {
-          recordNo: returnNo,
-          amount: ret.total,
-          actor: ret.returnedBy,
-        });
+        // process_branch_return already writes the canonical operation record.
+        // Mirroring it again created a duplicate return entry in reports and closure views.
         return newRet;
       },
       addPurchase: (purchase) => {

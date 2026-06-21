@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from './branchStore';
 import { SettingsTab } from './tabs/SettingsTab';
@@ -187,7 +188,7 @@ export default function BranchDashboard({ branch }: Props) {
         .from('branch_daily_closure_ledger')
         .select('sales_total, advance_collected, advance_balance_collected, cash_total, upi_total, card_total')
         .eq('branch', branch)
-        .eq('closure_date', new Date().toISOString().slice(0, 10))
+        .eq('closure_date', businessDate())
         .maybeSingle();
       if (!active) return;
       setTodayLedger(error ? null : (data as TodayLedger | null));
@@ -216,7 +217,7 @@ export default function BranchDashboard({ branch }: Props) {
   const visibleCreditSales = branchCreditSales[branch] || [];
   const pendingCreditSales = visibleCreditSales.filter((c) => c.status !== 'settled').length;
   const creditDue = visibleCreditSales.filter((c) => c.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0);
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = businessDate();
   const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
   const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && o.status !== 'Paid In Full' && o.deliveryDate === todayIso);
   const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
