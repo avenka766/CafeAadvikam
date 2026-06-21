@@ -33,6 +33,7 @@ export type LedgerSavedClosure = {
   advance_balance_collected: number | string;
   refunds: number | string;
   expenses: number | string;
+  purchase_payments?: number | string;
   discounts: number | string;
   bill_count: number | string;
   duplicate_prints: number | string;
