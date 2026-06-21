@@ -4,6 +4,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, Calendar, Download, ArrowDown, ArrowUp, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { cn } from '@/lib/utils';
 import EmptyState from '@/components/ui/EmptyState';
 
@@ -49,7 +50,7 @@ function StatusChip({ requested, dispatched }: { requested: number; dispatched: 
 }
 
 export default function DayEndReport() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = businessDate();
   const [date,    setDate]    = useState(today);
   const [orders,  setOrders]  = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(false);
