@@ -190,7 +190,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const branchPeople = useMemo(() => {
     if (isVRSNB) return [];
     const configured = salespeople.filter((p) => p.branch === branch && p.active).map((p) => p.name);
-    return Array.from(new Set([...configured, 'Counter Sales', 'Morning Salesperson', 'Evening Salesperson', userName].filter(Boolean)));
+    return Array.from(new Set(configured.filter(Boolean)));
   }, [branch, isVRSNB, salespeople, userName]);
 
   const billingStaff = requiresSalesperson ? salesperson : userName;

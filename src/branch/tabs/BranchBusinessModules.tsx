@@ -388,6 +388,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const [storeFullyPaid, setStoreFullyPaid] = useState(false);
   const [customFullyPaid, setCustomFullyPaid] = useState(false);
   const [custom, setCustom] = useState({ itemName:'', quantity:'1', unit:'pcs' as 'pcs' | 'kg', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' });
+  const [customLines, setCustomLines] = useState<BranchBillItem[]>([]);
   const [cake, setCake] = useState({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
@@ -420,6 +421,18 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   };
   const removeStoreLine = (idx: number) => setStoreLines((lines)=>lines.filter((_, i)=>i!==idx));
   const storeValue = storeLines.reduce((s,l)=>s+l.lineTotal,0);
+  const customDraftTotal = Number(custom.quantity || 0) * Number(custom.price || 0);
+  const customValue = customLines.reduce((sum, line) => sum + line.lineTotal, 0);
+  const addCustomLine = () => {
+    const quantity = Number(custom.quantity || 0);
+    const price = Number(custom.price || 0);
+    if (!custom.itemName.trim() || quantity <= 0 || price < 0) { setError('Enter a valid custom item, quantity and rate.'); return; }
+    const line: BranchBillItem = { itemName: custom.itemName.trim(), quantity, unit: custom.unit, price, tax: 0, discount: 0, lineTotal: quantity * price };
+    setCustomLines((lines) => [...lines, line]);
+    setCustom((current) => ({ ...current, itemName: '', quantity: '1', price: '' }));
+    setError('');
+  };
+  const removeCustomLine = (idx: number) => setCustomLines((lines) => lines.filter((_, i) => i !== idx));
 
   // When storeFullyPaid toggled on, auto-fill advance amount
   const handleStoreFullyPaid = (checked: boolean) => {
@@ -429,8 +442,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   };
   const handleCustomFullyPaid = (checked: boolean) => {
     setCustomFullyPaid(checked);
-    const customValue = Number(custom.quantity || 0) * Number(custom.price || 0);
-    if (checked) updateCommon('advanceAmount', String(customValue));
+    const value = customValue || customDraftTotal;
+    if (checked) updateCommon('advanceAmount', String(value));
     else updateCommon('advanceAmount', '');
   };
 
@@ -502,7 +515,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const sourceLines = orderType === 'store'
       ? storeLines
       : orderType === 'custom'
-        ? [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }]
+        ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
         : [{ itemName: `${cake.cakeKg}kg ${cake.flavor} ${cake.shape}`.trim(), quantity: Number(cake.cakeKg || 0) || 1, unit:'kg' as const, price: Number(cake.orderValue || 0), tax:0, discount:0, lineTotal: Number(cake.orderValue || 0) }];
     const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
     const message = validateCommon(orderValue);
@@ -551,7 +564,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     printAdvanceSalesOrder({ branch, orderNo: order.orderNo, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid });
     setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
     setStoreFullyPaid(false); setCustomFullyPaid(false);
-    setStoreLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
     setError('');
   };
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
@@ -639,8 +652,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
         </>}
         {mode === 'custom' && <>
           <Field label="Custom Item Name *"><Input value={custom.itemName} onChange={(e)=>setCustom({...custom,itemName:e.target.value})}/></Field>
-          <div className="grid grid-cols-3 gap-2"><Field label="Qty *"><Input type="number" value={custom.quantity} onChange={(e)=>setCustom({...custom,quantity:e.target.value})}/></Field><Field label="Unit"><Select value={custom.unit} onChange={(e)=>setCustom({...custom,unit:e.target.value as 'pcs'|'kg'})}><option value="pcs">Pcs</option><option value="kg">Kgs</option></Select></Field><Field label="Rate *"><Input type="number" value={custom.price} onChange={(e)=>setCustom({...custom,price:e.target.value})}/></Field></div>
+          <div className="grid grid-cols-3 gap-2"><Field label="Qty *"><Input type="number" min="0" value={custom.quantity} onChange={(e)=>setCustom({...custom,quantity:e.target.value})}/></Field><Field label="Unit"><Select value={custom.unit} onChange={(e)=>setCustom({...custom,unit:e.target.value as 'pcs'|'kg'})}><option value="pcs">Pcs</option><option value="kg">Kgs</option></Select></Field><Field label="Rate *"><Input type="number" min="0" value={custom.price} onChange={(e)=>setCustom({...custom,price:e.target.value})}/></Field></div>
+          <div className="rounded-2xl bg-slate-50 p-3 text-sm font-black text-slate-700">Current item total: {money(customDraftTotal)}</div>
+          <SoftButton onClick={addCustomLine}><Plus className="size-4"/>Add Custom Item</SoftButton>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{customLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No custom items added.</p> : customLines.map((line, idx)=><div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit} × {money(line.price)}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeCustomLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>)}</div>
+          <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(customValue || customDraftTotal)}</div>
           <Field label="Custom Notes"><Textarea value={custom.notes} onChange={(e)=>setCustom({...custom,notes:e.target.value})}/></Field>
+          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'custom')}/></Field>
+          {custom.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {custom.attachmentName}</p>}
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
             <label className="flex-1 text-sm font-black text-emerald-800">Fully Paid (no balance)</label>
@@ -671,7 +690,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
           {cake.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {cake.attachmentName}</p>}
           <Field label="Order Value *"><Input type="number" value={cake.orderValue} onChange={(e)=>setCake({...cake,orderValue:e.target.value})}/></Field>
         </>}
-        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.concat(['Counter Sales']).map(p=><option key={p}>{p}</option>)}</Select></Field>}
+        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.map(p=><option key={p}>{p}</option>)}</Select></Field>}
           {!storeFullyPaid && !customFullyPaid && <Field label="Advance Amount *"><Input type="number" value={common.advanceAmount} onChange={(e)=>updateCommon('advanceAmount',e.target.value)}/></Field>}
           <Field label="Payment Mode"><Select value={common.paymentMode} onChange={(e)=>updateCommon('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
         {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
@@ -688,7 +707,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); markAdvanceSentToStore(o.id); if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); setSendingToStore(null);}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[600px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Customer</th><th className="p-3">Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={5} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3">{o.deliveryDate}</td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
@@ -722,15 +741,23 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const [qtys, setQtys] = useState<Record<string, string>>({});
   const [reason, setReason] = useState('Customer return');
   const [returnPayMode, setReturnPayMode] = useState<'cash'|'upi'|'card'>('cash');
+  const [returning, setReturning] = useState(false);
+  const [returnError, setReturnError] = useState('');
   const find = () => setSelected(bills.find((b)=>b.branch===branch && b.billNo.toLowerCase()===billNo.toLowerCase()) || null);
   const doReturn = async () => {
-    if (!selected) return;
+    if (!selected || returning) return;
+    setReturnError('');
+    setReturning(true);
     const lines = selected.items.flatMap((i)=>{ const q = Number(qtys[i.itemName] || 0); return q > 0 ? [{ ...i, quantity: q, lineTotal: q * i.price }] : []; });
-    if (!lines.length) return;
-    for (const l of lines) await manualUpdateStock(branch, l.itemName, stockQty(branchStock,l.itemName)+l.quantity, currentUser?.displayName || 'Staff');
-    const ret = await addReturn({ branch, originalBillNo: selected.billNo, originalPaymentMode: returnPayMode, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), returnedBy: currentUser?.displayName || 'Staff', reason, returnPayMode });
-    await fetchBranchData(branch);
-    printCounterBill({
+    if (!lines.length) { setReturnError('Enter at least one return quantity.'); setReturning(false); return; }
+    try {
+      const ret = await addReturn({ branch, originalBillNo: selected.billNo, originalPaymentMode: returnPayMode, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), returnedBy: currentUser?.displayName || 'Staff', reason, returnPayMode });
+      for (const l of lines) {
+        const stockError = await manualUpdateStock(branch, l.itemName, stockQty(branchStock,l.itemName)+l.quantity, currentUser?.displayName || 'Staff');
+        if (stockError) throw new Error(stockError);
+      }
+      await fetchBranchData(branch);
+      printCounterBill({
       id: ret.id,
       branch,
       billNo: ret.returnNo,
@@ -752,9 +779,15 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
       _isReturn: true,
       _originalBillNo: selected.billNo,
       _returnReason: reason,
-    } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, false);
+      } as BranchBillRecord & { _isReturn: boolean; _originalBillNo: string; _returnReason: string }, false);
+      setSelected(null); setBillNo(''); setQtys({});
+    } catch (e) {
+      setReturnError(e instanceof Error ? e.message : 'Return could not be completed.');
+    } finally {
+      setReturning(false);
+    }
   };
-  return <div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]"><Section title="Return Bill" icon={<RotateCcw className="size-5"/>}><div className="space-y-3"><Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} placeholder="SNB-001"/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>{selected && <div className="rounded-3xl bg-slate-50 p-4"><p className="font-black">{selected.billNo} · {money(selected.total)}</p>{selected.items.map(i=><div key={i.itemName} className="mt-3 grid grid-cols-[1fr_90px] gap-2"><p className="font-bold">{i.itemName}<br/><span className="text-xs text-slate-500">Max {i.quantity}</span></p><Input type="number" max={i.quantity} value={qtys[i.itemName] || ''} onChange={(e)=>setQtys({...qtys,[i.itemName]:e.target.value})}/></div>)}<Field label="Reason for Return"><select value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field><Field label="Return Payment Mode"><div className="grid grid-cols-3 gap-2">{(['cash','upi','card'] as const).map(mode=><button key={mode} onClick={()=>setReturnPayMode(mode)} className={cn('rounded-2xl border-2 py-3 text-sm font-black capitalize', returnPayMode===mode?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode}</button>)}</div></Field><PrimaryButton onClick={()=>void doReturn()}><Printer className="size-4"/>Print Return Bill & Sync Stock</PrimaryButton></div>}</div></Section><Section title="Return History" icon={<History className="size-5"/>}><div className="space-y-3">{returns.filter(r=>r.branch===branch).map(r=><div key={r.id} className="rounded-2xl border p-4"><p className="font-black">{r.returnNo} · {money(r.total)}</p><p className="text-sm text-slate-500">Against {r.originalBillNo} · {new Date(r.createdAt).toLocaleString('en-IN')} {r.returnPayMode ? `· ${r.returnPayMode.toUpperCase()}` : ''}</p></div>)}</div></Section></div>;
+  return <div className="grid gap-5 xl:grid-cols-[430px_minmax(0,1fr)]"><Section title="Return Bill" icon={<RotateCcw className="size-5"/>}><div className="space-y-3"><Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} placeholder="SNB-001"/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>{selected && <div className="rounded-3xl bg-slate-50 p-4"><p className="font-black">{selected.billNo} · {money(selected.total)}</p>{selected.items.map(i=><div key={i.itemName} className="mt-3 grid grid-cols-[1fr_90px] gap-2"><p className="font-bold">{i.itemName}<br/><span className="text-xs text-slate-500">Max {i.quantity}</span></p><Input type="number" max={i.quantity} value={qtys[i.itemName] || ''} onChange={(e)=>setQtys({...qtys,[i.itemName]:e.target.value})}/></div>)}<Field label="Reason for Return"><select value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field><Field label="Return Payment Mode"><div className="grid grid-cols-3 gap-2">{(['cash','upi','card'] as const).map(mode=><button key={mode} onClick={()=>setReturnPayMode(mode)} className={cn('rounded-2xl border-2 py-3 text-sm font-black capitalize', returnPayMode===mode?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode}</button>)}</div></Field>{returnError && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{returnError}</p>}<PrimaryButton onClick={()=>void doReturn()} disabled={returning}><Printer className="size-4"/>{returning ? 'Processing Return...' : 'Print Return Bill & Sync Stock'}</PrimaryButton></div>}</div></Section><Section title="Return History" icon={<History className="size-5"/>}><div className="space-y-3">{returns.filter(r=>r.branch===branch).map(r=><div key={r.id} className="rounded-2xl border p-4"><p className="font-black">{r.returnNo} · {money(r.total)}</p><p className="text-sm text-slate-500">Against {r.originalBillNo} · {new Date(r.createdAt).toLocaleString('en-IN')} {r.returnPayMode ? `· ${r.returnPayMode.toUpperCase()}` : ''}</p></div>)}</div></Section></div>;
 }
 
 export function PurchaseTab({ branch, branchStock }: ModuleProps) {
@@ -949,11 +982,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     };
     const { data, error } = await supabase
       .from('branch_daily_closures')
-      .insert(closurePayload)
+      .upsert(closurePayload, { onConflict: 'branch,closure_date' })
       .select()
       .single();
     if (error) {
-      const missingLedger = /branch_daily_closures|does not exist|schema cache/i.test(error.message);
+      const missingLedger = error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache/i.test(error.message);
       setSavedMessage(missingLedger
         ? 'Supabase closure table is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql first.'
         : `Failed to save closure in Supabase: ${error.message}`);
