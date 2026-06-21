@@ -15,7 +15,7 @@ import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
-  money, nextBranchInvoiceAtomic, useBranchOpsStore,
+  money, nextBranchAdvanceOrderNumber, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
@@ -460,7 +460,16 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     }
     return '';
   };
+  const restoreStoreLines = async (lines: BranchBillItem[]) => {
+    await Promise.all(lines.map((line) => supabase.rpc('increment_branch_stock', {
+      p_branch: branch,
+      p_item_name: line.itemName,
+      p_qty: line.quantity,
+    })));
+    await fetchBranchData(branch);
+  };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
+    if (branch === 'Cafe') throw new Error('Cafe advance orders cannot be sent to the bakery branch workflow.');
     const bakeryItems: BakeryOrderItem[] = lines.map((line, idx) => ({
       itemId: `${order.orderNo}-${idx}`,
       itemName: line.itemName,
@@ -474,6 +483,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     await submitBakeryOrder(bakeryItems, `${user} - ${branch} advance`, branch, notes);
   };
   const sendCakeToStoreDashboard = async (order: CakeAdvanceOrder) => {
+    if (branch === 'Cafe') throw new Error('Cafe cake orders cannot be sent to the bakery branch workflow.');
     const bakeryItems: BakeryOrderItem[] = [{
       itemId: `${order.orderNo}-0`,
       itemName: `${order.cakeKg}kg ${order.flavor} ${order.shape}`.trim(),
@@ -500,49 +510,43 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     if (sourceLines.length === 0 || sourceLines.some((line)=>!line.itemName || line.quantity <= 0)) { setError('Add at least one valid item.'); return; }
     const adv = fullyPaid ? orderValue : Number(common.advanceAmount || 0);
     const balanceAmount = fullyPaid ? 0 : orderValue - adv;
+    let stockReserved = false;
     if (fullyPaid && orderType === 'store') {
       const stockError = await deductStoreLinesAtomically(sourceLines);
       if (stockError) { setError(`Fully paid advance not saved because stock could not be reserved: ${stockError}`); return; }
+      stockReserved = true;
     }
     const first = sourceLines[0];
     const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
+    const orderNo = nextBranchAdvanceOrderNumber(branch);
+    if (adv > 0) {
+      const { error: paymentError } = await supabase.rpc('record_branch_advance_payment', {
+        p_branch: branch,
+        p_order_no: orderNo,
+        p_bill_no: orderNo,
+        p_payment_stage: 'advance',
+        p_payment_mode: common.paymentMode,
+        p_amount: adv,
+        p_order_total: orderValue,
+        p_collected_by: staff,
+        p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
+      });
+      if (paymentError) {
+        if (stockReserved) await restoreStoreLines(sourceLines);
+        setError(/record_branch_advance_payment|could not find the function|schema cache/i.test(paymentError.message)
+          ? 'Advance payment RPC is not installed. Run 20260621_branch_advance_payment_rpc.sql before collecting an advance.'
+          : `Advance order was not saved: ${paymentError.message}`);
+        return;
+      }
+    }
     const order = addAdvanceCakeOrder({
+      orderNo,
       branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: new Date().toISOString().split('T')[0],
       deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: orderType === 'cake' ? cake.flavor : first.itemName, shape: orderType === 'cake' ? cake.shape : first.unit,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : (fullyPaid ? 'Existing branch stock advance order [Stock Reserved]' : 'Existing branch stock advance order'),
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
     });
-    if (adv > 0) {
-      const [{ error: paymentError }, { error: advancePaymentError }] = await Promise.all([
-        supabase.from('branch_sale_payments').insert({
-          branch,
-          bill_no: order.orderNo,
-          payment_mode: common.paymentMode,
-          amount: adv,
-          payment_purpose: 'advance_paid',
-          remarks: `${orderType} advance order - ${common.customerName.trim()}`,
-          collected_by: staff,
-          created_at: new Date().toISOString(),
-        }),
-        supabase.from('branch_advance_payments').insert({
-          branch,
-          order_no: order.orderNo,
-          payment_mode: common.paymentMode,
-          amount: adv,
-          payment_stage: 'advance',
-          collected_by: staff,
-          remarks: `${orderType} advance order - ${common.customerName.trim()}`,
-          created_at: new Date().toISOString(),
-        }),
-      ]);
-      if (paymentError || advancePaymentError) {
-        const msg = paymentError?.message || advancePaymentError?.message || 'Unknown Supabase error';
-        setError(/branch_sale_payments|branch_advance_payments|does not exist|schema cache/i.test(msg)
-          ? 'Advance order saved, but Supabase ledger is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql so daily closure can include advance payments.'
-          : `Advance order saved, but payment ledger failed: ${msg}`);
-      }
-    }
     // Print slip — show "PAID IN FULL" stamp when fully paid
     printAdvanceSalesOrder({ branch, orderNo: order.orderNo, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid });
     setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
@@ -553,40 +557,31 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
     if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
     const usedMode = payMode || finalPaymentMode;
-    const { billNo, invoiceNo } = await nextBranchInvoiceAtomic(branch);
     const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
-    if (orderKind === 'store' && !stockAlreadyReserved) {
-      const stockError = await deductStoreLinesAtomically(orderLines);
-      if (stockError) { setError(`Final invoice blocked because stock could not be deducted: ${stockError}`); return; }
-      await fetchBranchData(branch);
+    const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order', {
+      p_branch: branch,
+      p_order_no: o.orderNo,
+      p_items: orderLines,
+      p_order_total: o.orderValue,
+      p_balance_amount: o.balanceAmount,
+      p_payment_mode: usedMode,
+      p_salesperson: o.salesperson,
+      p_biller: currentUser?.displayName || 'Staff',
+      p_deduct_stock: orderKind === 'store' && !stockAlreadyReserved,
+    });
+    if (finalError) {
+      setError(/finalize_branch_advance_order|could not find the function|schema cache/i.test(finalError.message)
+        ? 'Advance finalization RPC is not installed. Run 20260621_finalize_branch_advance_rpc.sql before completing advance orders.'
+        : `Advance order was not finalized: ${finalError.message}`);
+      return;
     }
+    const finalResult = finalData as { billNo?: string; invoiceNo?: number } | null;
+    if (!finalResult?.billNo || !finalResult.invoiceNo) { setError('Final invoice was not returned by Supabase.'); return; }
+    const { billNo, invoiceNo } = finalResult;
+    if (orderKind === 'store' && !stockAlreadyReserved) await fetchBranchData(branch);
     if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
-    if (o.balanceAmount > 0) {
-      await Promise.all([
-        supabase.from('branch_sale_payments').insert({
-          branch,
-          bill_no: billNo,
-          payment_mode: usedMode,
-          amount: o.balanceAmount,
-          payment_purpose: 'advance_balance',
-          remarks: `${o.orderNo} ${o.customerName}`,
-          collected_by: currentUser?.displayName || 'Staff',
-          created_at: new Date().toISOString(),
-        }),
-        supabase.from('branch_advance_payments').insert({
-          branch,
-          order_no: o.orderNo,
-          payment_mode: usedMode,
-          amount: o.balanceAmount,
-          payment_stage: 'balance',
-          collected_by: currentUser?.displayName || 'Staff',
-          remarks: billNo,
-          created_at: new Date().toISOString(),
-        }),
-      ]);
-    }
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
     // balance portion tagged with usedMode. Previously the entire order value was
@@ -823,6 +818,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const closeTotal = denomTotal(closeDenominations);
   const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false);
   const branchClosureRecord = cashierClosures.find((record) => record.branch === branch && today(record.createdAt));
+  const finalizedClosureToday = Boolean(branchClosureRecord) || savedClosures.some((row) => row.closure_date === todayIso() && row.cashier === user);
 
   useEffect(() => {
     setOpenCashier(user);
@@ -881,7 +877,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt));
   const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
-  const totalSales = ledgerToday ? num(ledgerToday.sales_total) : counterTodayBills.reduce((s, b) => s + b.total, 0);
+  const grossBillSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
   const advanceCollectedToday = ledgerToday
     ? num(ledgerToday.advance_collected) + num(ledgerToday.advance_balance_collected)
     : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
@@ -894,7 +890,6 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
   const creditCollectionTotal = ledgerToday ? num(ledgerToday.credit_collected) : creditCollectionCash + creditCollectionDigital;
-  const totalSalesIncAdvance = totalSales + advanceCollectedToday;
   const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
@@ -906,6 +901,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const advanceFull = ledgerToday ? num(ledgerToday.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
+  const totalSales = ledgerToday ? num(ledgerToday.sales_total) : grossBillSales - refunds;
+  const totalSalesIncAdvance = totalSales + advanceCollectedToday;
   const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
   const discounts = ledgerToday ? num(ledgerToday.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
@@ -915,8 +912,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // The non-ledger path already includes creditCollectionCash in cash (line above), so
   // the non-ledger path is correct. The fix here adds creditCollectionCash explicitly
   // when in ledger mode to guard against RPCs that omit it from cash_total.
-  const creditCollectionCashForExpected = ledgerToday ? creditCollectionCash : 0;
-  const expected = Number(opening || 0) + cash + creditCollectionCashForExpected - refunds - expenses;
+  const expected = Number(opening || 0) + cash - (ledgerToday ? 0 : refunds) - expenses;
   const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -948,7 +944,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     };
     const { data, error } = await supabase
       .from('branch_daily_closures')
-      .upsert(closurePayload, { onConflict: 'branch,closure_date,cashier' })
+      .insert(closurePayload)
       .select()
       .single();
     if (error) {
@@ -964,7 +960,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       return [saved, ...current.filter((row) => row.id !== saved.id)].slice(0, 30);
     });
     closeCounter(branch, todayIso(), user);
-    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, message: `${user} closed the counter. Collection ${money(totalCollection)}; difference ${money(diff)}.`, status: 'Unread' });
+    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; difference ${money(diff)}.`, raisedBy: user });
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setClosing('');
     setNotes('');
@@ -972,6 +968,10 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   };
 
   const confirmCounterOpen = () => {
+    if (finalizedClosureToday) {
+      setOpenSavedMessage('This cashier counter is already closed for today and cannot be reopened.');
+      return;
+    }
     if (branchCounterOpenRecord) {
       setOpenSavedMessage('Counter is already opened today. Close the counter before opening again.');
       return;
@@ -1129,8 +1129,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
               <p className="text-xl font-black tabular-nums">{money(openTotal)}</p>
             </div>
-            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
-              {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord) || finalizedClosureToday} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+              {finalizedClosureToday ? 'Counter Closed for Today' : branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
             </button>
           </div>
         </div>
@@ -1140,7 +1140,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-        <Kpi label="Total Sales" value={money(totalSalesIncAdvance)} icon={<IndianRupee/>} tone="green"/>
+        <Kpi label="Total Sales" value={money(totalSales)} icon={<IndianRupee/>} tone="green"/>
         <Kpi label="Total Collection" value={money(totalCollection)} icon={<WalletCards/>} tone="blue"/>
         <Kpi label="Advance Collected" value={money(advanceCollectedToday)} icon={<WalletCards/>} tone="amber"/>
         <Kpi label="Credit Collected" value={money(creditCollectionTotal)} icon={<UserRound/>} tone="blue"/>
@@ -1292,4 +1292,3 @@ export function BranchAdminKpiStrip({ branch }: { branch: Branch }) {
   const b = bills.filter(x=>x.branch===branch&&today(x.createdAt));
   return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-6"><Kpi label="Today's Sales" value={money(b.reduce((s,x)=>s+x.total,0))} icon={<Receipt/>} tone="green"/><Kpi label="Pending Advance" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status!=='Paid In Full').length} icon={<CalendarClock/>} tone="amber"/><Kpi label="Store Confirm" value={advanceCakeOrders.filter(o=>o.branch===branch&&o.status==='Store Confirmed').length} icon={<Store/>} tone="blue"/><Kpi label="Purchase Pay" value={money(purchasePayments.filter(p=>p.branch===branch&&today(p.createdAt)).reduce((s,p)=>s+p.amount,0))} icon={<WalletCards/>}/><Kpi label="Deposits" value={money(bankDeposits.filter(d=>d.branch===branch&&today(d.createdAt)).reduce((s,d)=>s+d.amount,0))} icon={<Landmark/>} tone="blue"/><Kpi label="Returns" value={money(returns.filter(r=>r.branch===branch&&today(r.createdAt)).reduce((s,r)=>s+r.total,0))} icon={<RotateCcw/>} tone="red"/><Kpi label="Disputes" value={notifications.filter(n=>n.branch===branch&&n.type==='Stock Dispute'&&n.status!=='Resolved').length} icon={<AlertTriangle/>} tone="red"/></div>;
 }
-
