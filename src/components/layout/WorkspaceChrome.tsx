@@ -104,7 +104,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Attendance', path: '/attendance-salary', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
         { label: 'Staff', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
         { label: 'Invoices', path: '/admin/invoices', icon: <FileText className="size-4" />, group: 'Reports' },
-        { label: 'Alerts', path: '/admin/alerts', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'QR Menu', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
       ];
     case 'owner':
@@ -220,8 +219,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Stock Audit', path: '/admin-vrsnb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
         { label: 'Admin Notifications', path: '/admin-vrsnb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-vrsnb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'History', path: '/admin-vrsnb/history', icon: <History className="size-4" />, group: 'Reports' },
-        { label: 'Alerts', path: '/admin/alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'admin_snb':
       return [
@@ -237,6 +234,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Purchase Invoices', path: '/admin-snb?tab=invoices', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
         { label: 'Supplier Payments', path: '/admin-snb?tab=payments', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Bank Deposits', path: '/admin-snb?tab=bank', icon: <ShieldCheck className="size-4" />, group: 'Operations' },
+        { label: 'Current Cash', path: '/admin-snb?tab=current-cash', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Salesperson Management', path: '/admin-snb?tab=salespersons', icon: <Users className="size-4" />, group: 'Admin' },
         { label: 'Salesperson Report', path: '/admin-snb?tab=salesperson-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Cashier Report', path: '/admin-snb?tab=cashier-report', icon: <BarChart3 className="size-4" />, group: 'Reports' },
@@ -246,8 +244,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Stock Audit', path: '/admin-snb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
         { label: 'Admin Notifications', path: '/admin-snb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-snb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'History', path: '/admin-snb/history', icon: <History className="size-4" />, group: 'Reports' },
-        { label: 'Alerts', path: '/admin/alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     default:
       return [];
