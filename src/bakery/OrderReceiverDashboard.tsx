@@ -879,7 +879,8 @@ function HosurOrderPanel({
     setSaving(true);
     setError("");
     try {
-      const orderNumber = `HSR-ORD-${new Date().toISOString().slice(2, 10).replace(/-/g, "")}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
+      const orderDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: '2-digit', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/-/g, '');
+      const orderNumber = `HSR-ORD-${orderDate}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
       const { data: order, error: orderError } = await supabase.from("hosur_orders").insert({
         order_number: orderNumber,
         shop_id: selectedShop.id,
@@ -904,7 +905,10 @@ function HosurOrderPanel({
         received_quantity: 0,
       }));
       const { error: itemsError } = await supabase.from("hosur_order_items").insert(rows);
-      if (itemsError) throw itemsError;
+      if (itemsError) {
+        await supabase.from("hosur_orders").delete().eq("id", order.id);
+        throw itemsError;
+      }
 
       setCart({});
       setNotes("");

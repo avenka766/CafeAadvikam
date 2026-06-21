@@ -121,7 +121,7 @@ function exportToExcel(
   XLSX.utils.book_append_sheet(wb, ws2, 'Branch Summary');
 
   const filterLabel = { today: 'today', '7d': '7-days', '15d': '15-days', '30d': '30-days' }[filter];
-  const dateStr = new Date().toISOString().slice(0, 10);
+  const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   XLSX.writeFile(wb, `dispatch-report-${filterLabel}-${dateStr}.xlsx`);
 }
 
