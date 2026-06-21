@@ -473,7 +473,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 : <><CheckCircle2 className="size-4" /> Accept Order</>}
             </button>
           ) : (
-            <button onClick={handleSendToBaker} disabled={sending || sent || anyOut}
+            <button onClick={handleSendToBaker} disabled={sending || sent}
               className={cn(
                 'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
                 sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
