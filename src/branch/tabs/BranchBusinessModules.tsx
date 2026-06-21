@@ -735,7 +735,7 @@ export function QuotationTab({ branch, branchStock, onOpenTab }: ModuleProps) {
 export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { bills, returns, addReturn } = useBranchOpsStore();
-  const { manualUpdateStock, fetchBranchData } = useBranchStore();
+  const { fetchBranchData } = useBranchStore();
   const [billNo, setBillNo] = useState('');
   const [selected, setSelected] = useState<BranchBillRecord | null>(null);
   const [qtys, setQtys] = useState<Record<string, string>>({});
@@ -752,10 +752,8 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
     if (!lines.length) { setReturnError('Enter at least one return quantity.'); setReturning(false); return; }
     try {
       const ret = await addReturn({ branch, originalBillNo: selected.billNo, originalPaymentMode: returnPayMode, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), returnedBy: currentUser?.displayName || 'Staff', reason, returnPayMode });
-      for (const l of lines) {
-        const stockError = await manualUpdateStock(branch, l.itemName, stockQty(branchStock,l.itemName)+l.quantity, currentUser?.displayName || 'Staff');
-        if (stockError) throw new Error(stockError);
-      }
+      // process_branch_return is atomic and already restores branch stock.
+      // Do not update stock a second time in the browser.
       await fetchBranchData(branch);
       printCounterBill({
       id: ret.id,
@@ -922,6 +920,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const normalCash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
   const normalUpi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
   const normalCard = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
+  const refundCash = todayReturns.filter((r) => (r.returnPayMode || r.originalPaymentMode || 'cash') === 'cash').reduce((s, r) => s + r.total, 0);
+  const refundUpi = todayReturns.filter((r) => (r.returnPayMode || r.originalPaymentMode) === 'upi').reduce((s, r) => s + r.total, 0);
+  const refundCard = todayReturns.filter((r) => (r.returnPayMode || r.originalPaymentMode) === 'card').reduce((s, r) => s + r.total, 0);
   const creditSalesTotal = closureLedger ? num(closureLedger.credit_billed) : todayCreditSales.reduce((s, c) => s + c.subtotal, 0);
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionUpi = todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
@@ -932,9 +933,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
-  const cash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash;
-  const upi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi;
-  const card = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard;
+  // Payment totals shown in closure are NET collections after refunds.
+  // The ledger RPC also stores net totals, so no second subtraction is applied in ledger mode.
+  const cash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash - refundCash;
+  const upi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi - refundUpi;
+  const card = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard - refundCard;
   const advancePaid = closureLedger ? num(closureLedger.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
   const advanceFull = closureLedger ? num(closureLedger.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
@@ -950,7 +953,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // The non-ledger path already includes creditCollectionCash in cash (line above), so
   // the non-ledger path is correct. The fix here adds creditCollectionCash explicitly
   // when in ledger mode to guard against RPCs that omit it from cash_total.
-  const expected = Number(opening || 0) + cash - (closureLedger ? 0 : refunds) - expenses;
+  // cash is already net of cash refunds; subtracting refunds here again caused double deduction.
+  const expected = Number(opening || 0) + cash - expenses;
   const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -994,8 +998,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       return;
     }
     if (existingClosure && String(existingClosure.status || '').toLowerCase() === 'finalized') {
-      closeCounter(branch, todayIso(), user);
-      setSavedMessage('Today’s cashier closure is already finalized. It cannot be saved again unless an admin reopens it.');
+      // Never close the currently active counter merely because an older closure exists.
+      setSavedMessage('Today’s cashier closure is already finalized. It cannot be saved again unless an admin reopens it. The current counter remains open.');
       return;
     }
     const { data, error } = await supabase
