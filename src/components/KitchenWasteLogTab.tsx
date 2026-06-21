@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { Trash2, Download, RefreshCw, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -44,7 +45,7 @@ export default function KitchenWasteLogTab() {
     setLoading(true);
     setError('');
     // Use UTC date arithmetic to match Supabase's UTC timestamps (consistent with KitchenDashboard)
-    const todayUTC = new Date().toISOString().slice(0, 10);
+    const todayUTC = businessDate();
     const sinceDate = new Date(todayUTC);
     sinceDate.setUTCDate(sinceDate.getUTCDate() - 6);
     const sinceISO = sinceDate.toISOString().slice(0, 10) + 'T00:00:00';
@@ -81,7 +82,7 @@ export default function KitchenWasteLogTab() {
         XLSX.utils.json_to_sheet(rows.length ? rows : [{ Note: 'No waste data in last 7 days' }]),
         'Kitchen Waste Log'
       );
-      XLSX.writeFile(wb, `KitchenWasteLog_7days_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      XLSX.writeFile(wb, `KitchenWasteLog_7days_${businessDate()}.xlsx`);
     } catch (e) {
       console.error('XLSX download failed', e);
     } finally {
