@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { useAuthStore } from '@/stores/authStore';
 import { useBakeryStore } from '@/bakery/bakeryStore';
 import type { BakeryOrderItem } from '@/bakery/types';
@@ -97,11 +98,7 @@ type SavedClosureRow = {
 };
 
 const num = (value: number | string | null | undefined) => Number(value ?? 0);
-const todayIso = () => {
-  const now = new Date();
-  const tzOffset = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
-};
+const todayIso = () => businessDate();
 
 type FieldProps = { label: string; children: React.ReactNode };
 function Field({ label, children }: FieldProps) {
@@ -555,7 +552,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     }
     const order = addAdvanceCakeOrder({
       orderNo,
-      branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: new Date().toISOString().split('T')[0],
+      branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: businessDate(),
       deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: orderType === 'cake' ? cake.flavor : first.itemName, shape: orderType === 'cake' ? cake.shape : first.unit,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : (fullyPaid ? 'Existing branch stock advance order [Stock Reserved]' : 'Existing branch stock advance order'),
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',

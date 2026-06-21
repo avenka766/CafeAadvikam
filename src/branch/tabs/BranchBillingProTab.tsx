@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore, type StockItem } from '../branchStore';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { BRANCH_LABELS, type Branch } from '../types';
 import { SNB_CATEGORIES, SNB_ITEMS, type SnbItem } from '../snbItems';
 import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '../vrsnbItems';
@@ -214,7 +215,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   useEffect(() => setSelectedIndex(0), [category, query]);
   useEffect(() => setDropdownIndex(0), [query, category]);
 
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = businessDate();
   const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey && record.active !== false);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
