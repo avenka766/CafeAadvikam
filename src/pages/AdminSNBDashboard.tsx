@@ -88,6 +88,7 @@ type TabId =
   | "invoices"
   | "payments"
   | "bank"
+  | "current-cash"
   | "salespersons"
   | "salesperson-report"
   | "cashier-report"
@@ -125,6 +126,7 @@ const TABS: Array<{
     adminOnly: true,
   },
   { id: "bank", label: "Bank Deposits", icon: Landmark, adminOnly: true },
+  { id: "current-cash", label: "Current Cash", icon: IndianRupee, adminOnly: true },
   {
     id: "salespersons",
     label: "Salesperson Management",
@@ -649,11 +651,12 @@ export default function AdminSNBDashboard() {
   // control entirely — it is NOT cash the admin still holds. This total is
   // for record-keeping only and must never be added back into "available"
   // funds at the branch.
-  const depositedToOwner =
-    bankDeposits
-      .filter((d) => d.branch === BRANCH)
-      .reduce((sum, d) => sum + d.amount, 0) + balanceByMode("bank");
-  const bankBalance = depositedToOwner;
+  // Bank balance is the total actually deposited. Do not combine it with
+  // the matching cash-movement outflow, otherwise Bank Transfer deposits
+  // cancel themselves and show an incorrect zero/negative balance.
+  const bankBalance = bankDeposits
+    .filter((d) => d.branch === BRANCH)
+    .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
@@ -662,10 +665,12 @@ export default function AdminSNBDashboard() {
   const creditPaymentsInRange = (dbCreditPayments[BRANCH] || []).filter((p) => inRange(p.createdAt, fromDate, toDate));
   const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
-  const purchasePaid = purchasePayments
-    .filter(
-      (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
-    )
+  const purchasePaymentsInRange = purchasePayments.filter(
+    (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
+  );
+  const purchasePaid = purchasePaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
+  const purchaseCashPaid = purchasePaymentsInRange
+    .filter((p) => p.mode === "cash")
     .reduce((sum, p) => sum + p.amount, 0);
   const depositsInRange = bankDeposits.filter(
     (d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate),
@@ -904,6 +909,7 @@ export default function AdminSNBDashboard() {
     clearedCredit,
     creditPaymentsInRange,
     purchasePaid,
+    purchaseCashPaid,
     expenseAmount,
     advanceCollected,
     advanceBalanceCollected,
@@ -985,6 +991,7 @@ export default function AdminSNBDashboard() {
           bankBalance={bankBalance}
         />
       )}
+      {tab === "current-cash" && <CurrentCashTab {...commonProps} />}
       {tab === "salespersons" && (
         <SalespersonManagementTab userName={userName} />
       )}
@@ -1629,7 +1636,7 @@ function StockTab(props: any) {
 }
 
 function SuppliersTab({ userName }: { userName: string }) {
-  const { suppliers, addSupplier } = useBranchOpsStore();
+  const { suppliers, addSupplier, updateSupplier, removeSupplier } = useBranchOpsStore();
   const [form, setForm] = useState({
     name: "",
     address: "",
@@ -1638,15 +1645,18 @@ function SuppliersTab({ userName }: { userName: string }) {
     itemsProvided: "",
     notes: "",
   });
+  const [editingId, setEditingId] = useState("");
   const rows = suppliers.filter((s) => s.branch === BRANCH);
+  const reset = () => { setEditingId(""); setForm({ name: "", address: "", mobile: "", gstNumber: "", itemsProvided: "", notes: "" }); };
   const save = () => {
     if (!form.name.trim() || !form.mobile.trim()) return;
-    addSupplier({ branch: BRANCH, ...form, createdBy: userName });
-    setForm({ name: "", address: "", mobile: "", gstNumber: "", itemsProvided: "", notes: "" });
+    if (editingId) updateSupplier(editingId, { ...form, createdBy: userName }, userName);
+    else addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    reset();
   };
   return (
     <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
-      <Panel title="Add Supplier" icon={<Truck className="size-4" />}>
+      <Panel title={editingId ? "Edit Supplier" : "Add Supplier"} icon={<Truck className="size-4" />}>
         <div className="space-y-3">
           <Field label="Supplier Name *"><input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
           <div className="grid grid-cols-2 gap-3">
@@ -1656,13 +1666,13 @@ function SuppliersTab({ userName }: { userName: string }) {
           <Field label="Address"><textarea className={inputCls} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></Field>
           <Field label="Items They Provide"><input className={inputCls} value={form.itemsProvided} onChange={(e) => setForm({ ...form, itemsProvided: e.target.value })} /></Field>
           <Field label="Main Details / Notes"><textarea className={inputCls} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}><Plus className="size-4" /> Save Supplier</button>
+          <div className="flex gap-2"><button onClick={save} className={cn(btnCls, "flex-1 bg-slate-950 text-white")}><Plus className="size-4" /> {editingId ? "Update Supplier" : "Save Supplier"}</button>{editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}</div>
         </div>
       </Panel>
       <Panel title="Supplier List" icon={<BookOpenCheck className="size-4" />}>
         <DataTable
-          headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added"]}
-          rows={rows.map((s) => [s.name, s.mobile, s.gstNumber || "-", s.itemsProvided || "-", s.address || "-", s.notes || "-", fmtDateTime(s.createdAt)])}
+          headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
+          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
           empty="No suppliers added."
         />
       </Panel>
@@ -1801,15 +1811,32 @@ function WasteLogsTab({ userName }: { userName: string }) {
     ? transferOutChecklist
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
   const rows = wasteLogs.filter((w) => w.branch === BRANCH);
+  const [validationError, setValidationError] = useState("");
   const save = async () => {
     const qty = Number(form.quantity);
-    if (!form.itemName || !qty || !form.reason.trim() || !form.verifiedBy.trim()) return;
+    setValidationError("");
+    if (!form.itemName || !Number.isFinite(qty) || qty <= 0) {
+      setValidationError("Enter a valid quantity greater than zero.");
+      return;
+    }
+    if (!form.reason.trim() || !form.verifiedBy.trim()) {
+      setValidationError("Reason and Verified By are mandatory.");
+      return;
+    }
+    if (checklistOptions.some((item) => !form.checklist.includes(item))) {
+      setValidationError("Complete every checklist item before saving.");
+      return;
+    }
+    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
+    const currentQty = Number(currentRow?.quantity || 0);
+    if (qty > currentQty) {
+      setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
+      return;
+    }
     addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
     // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
     // this branch's inventory, so deduct it from current stock immediately.
-    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
-    const currentQty = Number(currentRow?.quantity || 0);
-    const newQty = Math.max(0, currentQty - qty);
+    const newQty = currentQty - qty;
     await manualUpdateStock(BRANCH, form.itemName, newQty, userName);
     // Print the waste log along with its checklist in one go.
     printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
@@ -1838,6 +1865,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
                 </label>
               ))}
             </div>
+            {validationError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{validationError}</p>}
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
@@ -1949,6 +1977,34 @@ function CashierManagementTab({ userName }: { userName: string }) {
       </Panel>
       <Panel title="Cashier List" icon={<BookOpenCheck className="size-4" />}>
         <DataTable headers={["Name", "Mobile", "Status", "Notes", "Action"]} rows={rows.map((c) => [c.name, c.mobile || "-", <StatusBadge key="s" tone={c.status === "Active" ? "green" : "red"}>{c.status}</StatusBadge>, c.notes || "-", <button key="a" className={cn(btnCls, "bg-slate-100 text-slate-700")} onClick={() => updateCashier(c.id, { status: c.status === "Active" ? "Inactive" : "Active" }, userName)}>{c.status === "Active" ? "Deactivate" : "Activate"}</button>])} empty="No cashiers added." />
+      </Panel>
+    </div>
+  );
+}
+
+function CurrentCashTab(props: any) {
+  const rows = [
+    { label: "Cash sales", amount: props.cashSales, kind: "in" },
+    { label: "Cash received / adjustments", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "in").reduce((sum: number, m: any) => sum + m.amount, 0), kind: "in" },
+    { label: "Expenses paid by cash", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || "")).reduce((sum: number, m: any) => sum + m.amount, 0), kind: "out" },
+    { label: "Cash purchase / supplier payments", amount: props.purchaseCashPaid, kind: "out" },
+    { label: "Bank deposits", amount: props.depositAmount, kind: "out" },
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Current Cash" value={money(props.cashBalance)} icon={<Banknote className="size-5" />} tone="green" />
+        <Kpi label="Bank Balance" value={money(props.bankBalance)} icon={<Landmark className="size-5" />} tone="blue" />
+        <Kpi label="Expenses" value={money(props.expenseAmount)} icon={<WalletCards className="size-5" />} tone="red" />
+        <Kpi label="Bank Deposits" value={money(props.depositAmount)} icon={<ShieldCheck className="size-5" />} tone="purple" />
+      </div>
+      <Panel title="Cash Position Breakdown" icon={<IndianRupee className="size-4" />}>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={rows}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="label" hide /><YAxis /><Tooltip formatter={(value: number) => money(value)} /><Bar dataKey="amount" radius={[8,8,0,0]} /></BarChart>
+          </ResponsiveContainer>
+          <div className="space-y-2">{rows.map((row) => <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3"><span className="text-sm font-bold text-slate-600">{row.label}</span><span className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{row.kind === "out" ? "−" : "+"}{money(row.amount)}</span></div>)}</div>
+        </div>
       </Panel>
     </div>
   );
@@ -2405,25 +2461,7 @@ function PurchaseInvoicesTab({
       paymentMethod: "credit",
       remarks: form.remarks,
     });
-    for (const line of draftLines) {
-      const existing = branchStock.find(
-        (s) => normal(s.itemName) === normal(line.itemName),
-      );
-      const currentQty = Number(existing?.quantity ?? 0);
-      const err = await manualUpdateStock(
-        BRANCH,
-        existing?.itemName || line.itemName,
-        currentQty + Number(line.quantity),
-        userName,
-      );
-      if (err) {
-        setNotice(err);
-        return;
-      }
-    }
-    markPurchaseSynced(purchase.id, userName, "Synced");
-    await fetchBranchData(BRANCH);
-    setNotice(`${form.invoiceNo} saved and synced to SNB stock.`);
+    setNotice(`${form.invoiceNo} saved. Stock sync is pending until Sync to Stock is clicked.`);
     setForm({
       ...form,
       invoiceNo: "",
@@ -3965,7 +4003,7 @@ function StockAuditTab({
       });
       if (rpcError) {
         const missingRpc =
-          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache/i.test(
+          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache|not found/i.test(
             rpcError.message || "",
           );
         if (!missingRpc) {

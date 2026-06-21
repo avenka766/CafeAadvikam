@@ -7,7 +7,7 @@ import {
   type ElementType,
   type ReactNode,
 } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { supabase } from "@/lib/supabase";
@@ -411,6 +411,7 @@ function PaymentSplitCard({
 export default function AdminVRSNBDashboard() {
   const { currentUser } = useAuthStore();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
     bills,
@@ -646,11 +647,12 @@ export default function AdminVRSNBDashboard() {
   // control entirely — it is NOT cash the admin still holds. This total is
   // for record-keeping only and must never be added back into "available"
   // funds at the branch.
-  const depositedToOwner =
-    bankDeposits
-      .filter((d) => d.branch === BRANCH)
-      .reduce((sum, d) => sum + d.amount, 0) + balanceByMode("bank");
-  const bankBalance = depositedToOwner;
+  // Bank balance is the total actually deposited. Do not combine it with
+  // the matching cash-movement outflow, otherwise Bank Transfer deposits
+  // cancel themselves and show an incorrect zero/negative balance.
+  const bankBalance = bankDeposits
+    .filter((d) => d.branch === BRANCH)
+    .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
@@ -665,10 +667,12 @@ export default function AdminVRSNBDashboard() {
   const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
   salesBreakdown.expenses = expenseAmount;
-  const purchasePaid = purchasePayments
-    .filter(
-      (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
-    )
+  const purchasePaymentsInRange = purchasePayments.filter(
+    (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
+  );
+  const purchasePaid = purchasePaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
+  const purchaseCashPaid = purchasePaymentsInRange
+    .filter((p) => p.mode === "cash")
     .reduce((sum, p) => sum + p.amount, 0);
   const depositsInRange = bankDeposits.filter(
     (d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate),
@@ -950,6 +954,13 @@ export default function AdminVRSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
+      <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-2 text-white shadow-lg">
+        <div className="px-3"><p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p><p className="text-sm font-bold">Showing VRSNB branch data only</p></div>
+        <div className="flex rounded-xl bg-white/10 p-1">
+          <button type="button" onClick={() => navigate('/admin-dashboard')} className="rounded-lg px-4 py-2 text-sm font-black text-white/70 hover:bg-white/10 hover:text-white">Cafe</button>
+          <button type="button" className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-black text-white shadow">VRSNB Branch</button>
+        </div>
+      </div>
       {!["stock", "complaints", "quotations"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
@@ -1040,6 +1051,22 @@ function DateFilters({
   setFromDate: (v: string) => void;
   setToDate: (v: string) => void;
 }) {
+  const today = dateInput();
+  const seven = new Date();
+  seven.setDate(seven.getDate() - 6);
+  const thirty = new Date();
+  thirty.setDate(thirty.getDate() - 29);
+  const isToday = fromDate === today && toDate === today;
+  const isSeven = fromDate === dateInput(seven) && toDate === today;
+  const isThirty = fromDate === dateInput(thirty) && toDate === today;
+  const quickCls = (active: boolean) =>
+    cn(
+      btnCls,
+      "self-end ring-1",
+      active
+        ? "bg-orange-500 text-white shadow-lg shadow-orange-200 ring-orange-500"
+        : "bg-white text-slate-700 ring-slate-200",
+    );
   return (
     <Panel title="Filters" icon={<Filter className="size-4" />}>
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto_auto]">
@@ -1060,7 +1087,7 @@ function DateFilters({
           />
         </Field>
         <button
-          className={cn(btnCls, "self-end bg-slate-950 text-white")}
+          className={quickCls(isToday)}
           onClick={() => {
             const t = dateInput();
             setFromDate(t);
@@ -1070,10 +1097,7 @@ function DateFilters({
           Today
         </button>
         <button
-          className={cn(
-            btnCls,
-            "self-end bg-white text-slate-700 ring-1 ring-slate-200",
-          )}
+          className={quickCls(isSeven)}
           onClick={() => {
             const d = new Date();
             d.setDate(d.getDate() - 6);
@@ -1084,10 +1108,7 @@ function DateFilters({
           7 Days
         </button>
         <button
-          className={cn(
-            btnCls,
-            "self-end bg-white text-slate-700 ring-1 ring-slate-200",
-          )}
+          className={quickCls(isThirty)}
           onClick={() => {
             const d = new Date();
             d.setDate(d.getDate() - 29);
@@ -1770,15 +1791,32 @@ function WasteLogsTab({ userName }: { userName: string }) {
     ? transferOutChecklist
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
   const rows = wasteLogs.filter((w) => w.branch === BRANCH);
+  const [validationError, setValidationError] = useState("");
   const save = async () => {
     const qty = Number(form.quantity);
-    if (!form.itemName || !qty || !form.reason.trim() || !form.verifiedBy.trim()) return;
+    setValidationError("");
+    if (!form.itemName || !Number.isFinite(qty) || qty <= 0) {
+      setValidationError("Enter a valid quantity greater than zero.");
+      return;
+    }
+    if (!form.reason.trim() || !form.verifiedBy.trim()) {
+      setValidationError("Reason and Verified By are mandatory.");
+      return;
+    }
+    if (checklistOptions.some((item) => !form.checklist.includes(item))) {
+      setValidationError("Complete every checklist item before saving.");
+      return;
+    }
+    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
+    const currentQty = Number(currentRow?.quantity || 0);
+    if (qty > currentQty) {
+      setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
+      return;
+    }
     addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
     // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
     // this branch's inventory, so deduct it from current stock immediately.
-    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
-    const currentQty = Number(currentRow?.quantity || 0);
-    const newQty = Math.max(0, currentQty - qty);
+    const newQty = currentQty - qty;
     await manualUpdateStock(BRANCH, form.itemName, newQty, userName);
     // Print the waste log along with its checklist in one go.
     printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
@@ -1807,6 +1845,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
                 </label>
               ))}
             </div>
+            {validationError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{validationError}</p>}
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
@@ -3984,7 +4023,7 @@ function StockAuditTab({
       });
       if (rpcError) {
         const missingRpc =
-          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache/i.test(
+          /confirm_branch_stock_count_report|could not find the function|does not exist|schema cache|not found/i.test(
             rpcError.message || "",
           );
         if (!missingRpc) {
