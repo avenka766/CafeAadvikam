@@ -340,7 +340,8 @@ export interface BranchNotification {
     | "Waste Log"
     | "Quotation"
     | "Stock Count"
-    | "Stock Variance";
+    | "Stock Variance"
+    | "closure";
   title: string;
   details: string;
   createdAt: string;
@@ -529,7 +530,7 @@ interface BranchOpsState {
   ) => void;
   removeSalesperson: (id: string, user: string) => void;
   addAdvanceCakeOrder: (
-    order: Omit<CakeAdvanceOrder, "id" | "orderNo" | "createdAt" | "status">,
+    order: Omit<CakeAdvanceOrder, "id" | "orderNo" | "createdAt" | "status"> & { orderNo?: string },
   ) => CakeAdvanceOrder;
   updateAdvanceStatus: (
     id: string,
@@ -1562,7 +1563,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           };
         }),
       addAdvanceCakeOrder: (order) => {
-        const orderNo = `${order.branch}-ADV-${String(seq(`adv-${order.branch}`, 500)).padStart(3, "0")}`;
+        const orderNo = order.orderNo ?? nextBranchAdvanceOrderNumber(order.branch);
         const orderType = order.orderType || "cake";
         const newOrder: CakeAdvanceOrder = {
           ...order,
@@ -1813,7 +1814,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         // amount. Without this, the ledger still shows the pre-return revenue figures and
         // Expected Cash at closure is overstated by the refund amount.
         try {
-          await supabase.rpc('process_branch_return', {
+          const { error: returnError } = await supabase.rpc('process_branch_return', {
             p_branch: ret.branch,
             p_bill_no: ret.originalBillNo,
             p_return_no: returnNo,
@@ -1823,6 +1824,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             p_reason: ret.reason,
             p_items: ret.items ?? [],
           });
+          if (returnError) throw returnError;
         } catch (rpcErr) {
           console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
           throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');
@@ -2527,6 +2529,10 @@ export function nextBranchInvoice(branch: Branch) {
     invoiceNo,
     billNo: `${branch}-${String(invoiceNo).padStart(4, '0')}`,
   };
+}
+
+export function nextBranchAdvanceOrderNumber(branch: Branch) {
+  return `${branch}-ADV-${String(seq(`adv-${branch}`, 500)).padStart(3, "0")}`;
 }
 
 export async function nextBranchInvoiceAtomic(branch: Branch) {
