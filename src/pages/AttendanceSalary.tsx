@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { useScrollLock } from '@/hooks/useScrollLock';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import EmptyState from '@/components/ui/EmptyState';
@@ -1229,7 +1230,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
 }) {
   const [empId, setEmpId] = useState('');
   const [amount, setAmount] = useState('');
-  const [givenDate, setGivenDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [givenDate, setGivenDate] = useState(() => businessDate());
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');

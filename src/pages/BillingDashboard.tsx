@@ -23,6 +23,7 @@ import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } fro
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { useNotificationStore } from '@/bakery/notificationStore';
 
 // -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
@@ -896,7 +897,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const [customError, setCustomError] = useState('');
 
   // Order meta
-  const todayInput = new Date().toISOString().split('T')[0];
+  const todayInput = businessDate();
   const defaultBillPerson = currentUser?.displayName || currentUser?.username || '';
   const [customerName, setCustomerName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
@@ -2129,7 +2130,7 @@ function NewBillPanel() {
                     <Calendar className="size-3" />Due Date *
                   </label>
                   <input type="date" value={creditDueDate}
-                    min={new Date().toISOString().split('T')[0]}
+                    min={businessDate()}
                     onChange={e => { setCreditDueDate(e.target.value); setCreditError(''); }}
                     className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>

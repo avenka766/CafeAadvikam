@@ -163,7 +163,7 @@ export default function OrderHistory() {
               type="date"
               value={dateSearch}
               onChange={e => setDateSearch(e.target.value)}
-              max={new Date().toISOString().slice(0, 10)}
+              max={businessDate()}
               className="flex-1 px-3 py-2 bg-card border border-border rounded-xl text-sm font-body"
             />
             {dateSearch && (
