@@ -598,8 +598,12 @@ type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
 // -- Advance Order Card --------------------------------------------------------
 function AdvanceOrderCard({ order }: { order: Order }) {
   // STORE-01 FIX: select only actions - stable refs, avoids re-renders from orders/cart changes
-  const { collectBalance, setAdvancePayment } = useOrderStore(
-    useShallow(s => ({ collectBalance: s.collectBalance, setAdvancePayment: s.setAdvancePayment }))
+  const { collectBalance, setAdvancePayment, loadOrders } = useOrderStore(
+    useShallow(s => ({
+      collectBalance: s.collectBalance,
+      setAdvancePayment: s.setAdvancePayment,
+      loadOrders: s.loadOrders,
+    }))
   );
   const { currentUser } = useAuthStore();
   const [showCollect, setShowCollect] = useState(false);
@@ -617,6 +621,9 @@ function AdvanceOrderCard({ order }: { order: Order }) {
     setCollecting(true);
     try {
       await collectBalance(order.id, collectMethod, billedBy);
+      // Refresh from Supabase immediately so a settled advance cannot remain visible
+      // because of a stale polling response or another open biller session.
+      await loadOrders(60);
       printAdvanceClosureBill(order, collectMethod, billedBy);
       setShowCollect(false);
     } catch (err) {
@@ -2290,15 +2297,26 @@ export default function BillingDashboard() {
   // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)
   const advanceOrders = useMemo(() =>
     orders
-      .filter(o => o.status !== 'cancelled' && o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0)
+      .filter(o =>
+        o.status !== 'cancelled' &&
+        o.paymentType === 'advance' &&
+        !o.fullyPaidAt &&
+        Number(o.balanceDue ?? 0) > 0
+      )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [orders]
   );
 
-  const deliveryAlerts = useMemo(() => orders
-    .filter(o => o.status !== 'cancelled' && o.paymentType === 'advance' && Boolean(o.deliveryDate))
+  // Alerts are operational reminders for TODAY only. Historical completed payments
+  // and future delivery commitments must not clutter this tab.
+  const todayDeliveryAlerts = useMemo(() => orders
+    .filter(o =>
+      o.status !== 'cancelled' &&
+      o.paymentType === 'advance' &&
+      Boolean(o.deliveryDate) &&
+      todayIso(new Date(o.deliveryDate!)) === todayIso()
+    )
     .sort((a, b) => new Date(a.deliveryDate!).getTime() - new Date(b.deliveryDate!).getTime()), [orders]);
-  const todayDeliveryAlerts = useMemo(() => deliveryAlerts.filter(o => todayIso(new Date(o.deliveryDate!)) === todayIso()), [deliveryAlerts]);
   const [showDeliveryPopup, setShowDeliveryPopup] = useState(false);
   useEffect(() => {
     if (todayDeliveryAlerts.length === 0 || !currentUser?.username) return;
@@ -2444,7 +2462,7 @@ export default function BillingDashboard() {
           <button onClick={() => switchTab('alerts')}
             className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
             <Bell className="size-3.5" />Alerts
-            {deliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{deliveryAlerts.length}</span>}
+            {todayDeliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{todayDeliveryAlerts.length}</span>}
           </button>
 
           {STATUS_TABS.map(tab => {
@@ -2478,8 +2496,8 @@ export default function BillingDashboard() {
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
       ) : activeTab === 'alerts' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Advance Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Today and upcoming delivery commitments.</p></div>
-          {deliveryAlerts.length === 0 ? <EmptyState icon={<Bell className="size-8" />} title="No delivery alerts" description="Advance orders with delivery dates will appear here." /> : deliveryAlerts.map(o => <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />)}
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Today's Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Only advance orders scheduled for delivery today are shown.</p></div>
+          {todayDeliveryAlerts.length === 0 ? <EmptyState icon={<Bell className="size-8" />} title="No deliveries due today" description="Advance orders scheduled for today will appear here." /> : todayDeliveryAlerts.map(o => <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />)}
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
