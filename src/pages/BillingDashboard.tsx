@@ -105,19 +105,13 @@ function useCafeCounterOpened() {
       const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
       const closed = formalRows.some((row) => String(row.status || '').toLowerCase() === 'finalized');
       const opened =
-        formalRows.some((row) => String(row.status || '').toLowerCase() === 'open') ||
+        formalRows.some((row) => String(row.status || '').toLowerCase() === 'draft') ||
         (!opError && Array.isArray(opRows) && opRows.length > 0);
       setRemoteCounter({ opened, closed });
     };
     void checkCounterOpening();
-    const unsubscribe = useBranchOpsStore.subscribe((state) => {
-      const opened = state.counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
-      const closed = state.cashierClosures.some((record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today);
-      setRemoteCounter({ opened, closed });
-    });
     return () => {
       alive = false;
-      unsubscribe();
     };
   }, [today]);
 
@@ -1478,6 +1472,10 @@ function NewBillPanel() {
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
+
+  useEffect(() => {
+    void loadMenu();
+  }, [loadMenu]);
 
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
   const filteredItems = useMemo(() => {

@@ -189,7 +189,7 @@ export default function DailyClosure() {
   const localCafeCounterOpenRecord = counterOpenings.find((record) => record.branch === 'Cafe' && record.date === selectedDate && record.active !== false);
   const cafeCounterOpenRecord = localCafeCounterOpenRecord ?? remoteCounterOpenRecord;
   const cafeClosureRecord = cashierClosures.find((record) => record.branch === 'Cafe' && sameBusinessDate(record.createdAt, selectedDate));
-  const closureAlreadySaved = Boolean(cafeClosureRecord) || remoteClosureFinalized;
+  const closureAlreadySaved = !cafeCounterOpenRecord && (Boolean(cafeClosureRecord) || remoteClosureFinalized);
   const activeCashierName = cafeCounterOpenRecord?.cashier || openCashier || cashierName;
 
   useEffect(() => {
@@ -220,7 +220,7 @@ export default function DailyClosure() {
       }
       const rows = Array.isArray(data) ? data : [];
       setRemoteClosureFinalized(rows.some((row) => String(row.status || '').toLowerCase() === 'finalized'));
-      const openRow = rows.find((row) => String(row.status || '').toLowerCase() === 'open');
+      const openRow = rows.find((row) => String(row.status || '').toLowerCase() === 'draft');
       setRemoteCounterOpenRecord(
         openRow
           ? {
@@ -249,8 +249,10 @@ export default function DailyClosure() {
   }, [cafeCounterOpenRecord, cashierName]);
 
   const closure = useMemo(() => {
+    const sessionStartedAt = cafeCounterOpenRecord?.openedAt ? new Date(cafeCounterOpenRecord.openedAt).getTime() : 0;
+    const inCurrentSession = (value?: string) => !sessionStartedAt || (Boolean(value) && new Date(value as string).getTime() >= sessionStartedAt);
     const dayOrders = orders
-      .filter(order => sameBusinessDate(order.createdAt, selectedDate))
+      .filter(order => sameBusinessDate(order.createdAt, selectedDate) && inCurrentSession(order.createdAt))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const cancelled = dayOrders.filter(order => order.status === 'cancelled');
@@ -374,11 +376,11 @@ export default function DailyClosure() {
     const itemCount = billable.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + safeNumber(item.quantity), 0), 0);
 
     const advanceOpen = dayOrders.filter(order => order.paymentType === 'advance' && safeNumber(order.balanceDue) > 0);
-    const advanceClosedToday = orders.filter(order => sameBusinessDate(order.fullyPaidAt, selectedDate));
+    const advanceClosedToday = orders.filter(order => sameBusinessDate(order.fullyPaidAt, selectedDate) && inCurrentSession(order.fullyPaidAt));
     const cafeCreditSales = branchCreditSales.Cafe || [];
     const cafeCreditPayments = branchCreditPayments.Cafe || [];
     creditCollected = cafeCreditPayments
-      .filter(payment => sameBusinessDate(payment.createdAt, selectedDate))
+      .filter(payment => sameBusinessDate(payment.createdAt, selectedDate) && inCurrentSession(payment.createdAt))
       .reduce((sum, payment) => {
         const amount = safeNumber(payment.amount);
         addPayment(creditCollectionPayments, payment.paymentMode, amount);
@@ -422,7 +424,7 @@ export default function DailyClosure() {
       paymentModeCount,
       billers,
     };
-  }, [orders, selectedDate, branchCreditSales, branchCreditPayments]);
+  }, [orders, selectedDate, branchCreditSales, branchCreditPayments, cafeCounterOpenRecord?.openedAt]);
 
   const closingCashValue = closingDenomTotal > 0 ? closingDenomTotal : Number(closingCash || 0);
   // FIX (MD Bug #7): cashDifference previously compared physical cash directly against
@@ -473,7 +475,7 @@ export default function DailyClosure() {
           actual_cash: 0,
           difference: 0,
           notes: 'Counter opened',
-          status: 'open',
+          status: 'draft',
         },
       );
     if (error) {
@@ -544,7 +546,7 @@ export default function DailyClosure() {
       .eq('branch', 'Cafe')
       .eq('closure_date', selectedDate)
       .eq('cashier', activeCashierName)
-      .eq('status', 'open')
+      .eq('status', 'draft')
       .select('id');
     if (error || !closureRows || closureRows.length !== 1) {
       setClosureSavedMessage(error ? `Closure was not saved: ${error.message}` : 'Closure was not saved because the open counter record was not found or was already finalized.');
@@ -838,10 +840,10 @@ export default function DailyClosure() {
               </div>
               <button
                 onClick={() => void handleOpenCounter()}
-                disabled={Boolean(cafeCounterOpenRecord) || closureAlreadySaved || openingCounter}
+                disabled={Boolean(cafeCounterOpenRecord) || openingCounter}
                 className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
               >
-                {openingCounter ? 'Saving...' : closureAlreadySaved ? 'Counter Closed for Today' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
+                {openingCounter ? 'Saving...' : cafeCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
               </button>
             </div>
           </div>
