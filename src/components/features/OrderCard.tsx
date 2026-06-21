@@ -116,7 +116,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
   // Biller can collect payment at ANY status (pending/preparing/ready) — no need to wait for kitchen
   const isBiller = currentUser?.role === 'billing';
   const isReadyOrder = order.status === 'ready';
-  const canCollectPayment = showActions && isBiller && order.status !== 'served' && order.status !== 'cancelled' && order.paymentType === 'unpaid';
+  const canCollectPayment = showActions && isBiller && order.status !== 'cancelled' && order.paymentType === 'unpaid';
   const canAdvanceNonBiller = showActions && !isBiller && order.status !== 'served' && order.status !== 'cancelled';
 
   const handleApplyDiscount = () => {
@@ -217,7 +217,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
     const cardAmt = splitMethods.includes('card') ? (parseFloat(splitCard) || 0) : 0;
     const totalPaid = cashAmt + upiAmt + cardAmt;
 
-    if (Math.abs(totalPaid - order.total) > 0.5) {
+    if (Math.round(totalPaid * 100) !== Math.round(order.total * 100)) {
       if (totalPaid < order.total) {
         setSplitError(`Short by ${formatCurrency(order.total - totalPaid)}. Total: ${formatCurrency(order.total)}`);
       } else {
@@ -422,9 +422,6 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
               💰 Collect Payment
             </button>
             <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-3 rounded-xl bg-accent/15 text-accent-foreground text-sm font-body font-semibold active:scale-90 border border-accent/20">%</button>
-            <button onClick={() => setShowReceipt(true)} className="px-3 py-3 rounded-xl bg-muted text-foreground text-sm font-body active:scale-90 border border-border" aria-label="Print receipt">
-              <Printer className="size-4" />
-            </button>
             <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-3 rounded-xl bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-90 border border-destructive/20">✕</button>
           </div>
         )}
