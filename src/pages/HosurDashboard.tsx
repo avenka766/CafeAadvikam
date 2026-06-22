@@ -520,7 +520,7 @@ function mapNotification(row: any): AdminNotification {
 
 async function notifyAdmin(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
   const { error } = await supabase.from('admin_notifications').insert({
-    type: 'hosur_branch',
+    type: 'store_item_change',
     title,
     body,
     ref_id: refId ?? null,
@@ -529,12 +529,12 @@ async function notifyAdmin(title: string, body: string, refId?: string, refLabel
     recipient_role: 'admin',
     is_read: false,
   });
-  if (error) throw new Error(`Admin notification failed: ${error.message}`);
+  if (error) console.error('Hosur admin notification failed:', error.message);
 }
 
 async function notifyBranch(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
   const { error } = await supabase.from('admin_notifications').insert({
-    type: 'hosur_branch',
+    type: 'store_item_change',
     title,
     body,
     ref_id: refId ?? null,
@@ -543,7 +543,7 @@ async function notifyBranch(title: string, body: string, refId?: string, refLabe
     recipient_role: 'branch_hosur',
     is_read: false,
   });
-  if (error) throw new Error(`Branch notification failed: ${error.message}`);
+  if (error) console.error('Hosur branch notification failed:', error.message);
 }
 
 function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
@@ -1796,7 +1796,7 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
                   </div>
                 </div>;
               })}</div>
-              <button className={primaryButton} disabled={busy || items.length === 0} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
+              <button className={primaryButton} disabled={busy || items.length === 0 || order.status !== 'dispatched'} title={order.status !== 'dispatched' ? 'Packing must dispatch this order before branch receipt.' : undefined} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
             </div>;
           })}
         </Card>
