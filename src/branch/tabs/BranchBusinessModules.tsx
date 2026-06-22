@@ -981,24 +981,6 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       notes: notes || null,
       status: 'finalized',
     };
-    const { data: existingClosure, error: existingClosureError } = await supabase
-      .from('branch_daily_closures')
-      .select('*')
-      .eq('branch', branch)
-      .eq('closure_date', todayIso())
-      .maybeSingle();
-    if (existingClosureError) {
-      const missingLedger = existingClosureError.code === '42P01' || existingClosureError.code === 'PGRST205' || /does not exist|schema cache/i.test(existingClosureError.message);
-      setSavedMessage(missingLedger
-        ? 'Supabase closure table is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql first.'
-        : `Failed to check today’s closure in Supabase: ${existingClosureError.message}`);
-      return;
-    }
-    if (existingClosure && String(existingClosure.status || '').toLowerCase() === 'finalized') {
-      // Never close the currently active counter merely because an older closure exists.
-      setSavedMessage('Today’s cashier closure is already finalized. It cannot be saved again unless an admin reopens it. The current counter remains open.');
-      return;
-    }
     const { data, error } = await supabase
       .from('branch_daily_closures')
       .insert(closurePayload)
@@ -1151,7 +1133,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
             </div>
             {countedCash > 0 && Math.abs(diff) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
           </div>
-          <p className="mt-2 text-sm font-bold text-muted-foreground">{branchClosureRecord ? `Closed by ${branchClosureRecord.cashier}. Difference ${money(branchClosureRecord.difference)}` : `Expected ${money(expected)} · Counted ${money(countedCash)} · Difference ${money(diff)}`}</p>
+          <p className="mt-2 text-sm font-bold text-muted-foreground">
+            {!branchCounterOpenRecord && branchClosureRecord
+              ? `Closed by ${branchClosureRecord.cashier}. Difference ${money(branchClosureRecord.difference)}`
+              : `Expected ${money(expected)} · Counted ${money(countedCash)} · Difference ${money(diff)}`}
+          </p>
         </div>
       </div>
 
