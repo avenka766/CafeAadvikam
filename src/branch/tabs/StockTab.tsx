@@ -498,7 +498,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   };
 
   const raiseIncomingDispute = async (inc: IncomingStock) => {
-    const reason = window.prompt('Describe the mismatch/dispute for admin review:', 'Received quantity does not match expected quantity') || 'Received quantity does not match expected quantity';
+    const reason = 'Received quantity does not match the dispatched/expected quantity';
     addNotification({
       branch,
       type: 'Stock Dispute',
