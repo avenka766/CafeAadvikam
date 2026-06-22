@@ -4,7 +4,7 @@ import { printCounterBill } from '../printUtils';
 import {
   AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
-  Trash2, WalletCards, XCircle, Plus, Minus, ClipboardList,
+  Trash2, WalletCards, XCircle, Plus, Minus, ClipboardList, ScanBarcode, Keyboard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -648,11 +648,14 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
           <div className="border-b border-slate-200 bg-white p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div><h1 className="text-3xl font-black tracking-tight text-slate-950">{BRANCH_LABELS[branch]} Fast Billing</h1></div>
-              <div className="flex flex-wrap gap-2"><button onClick={()=>setShowHold(true)} className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"><PauseCircle className="mr-2 inline size-4"/>Recall Hold ({branchHolds.length})</button><button onClick={()=>setShowShortcuts(true)} className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-slate-950"><HelpCircle className="mr-2 inline size-4"/>Shortcuts</button></div>
-            </div>
-            <div className="mt-3 flex w-fit gap-0.5 rounded-xl border border-slate-200 bg-slate-100 p-0.5 shadow-inner">
-              <button type="button" onClick={() => { setBillingInputMode('manual'); setQuery(''); setShowDropdown(false); }} className={cn('h-8 rounded-lg px-3 text-xs font-black transition-all duration-200 ease-out active:scale-95', billingInputMode === 'manual' ? 'translate-x-0 bg-slate-950 text-white shadow-sm' : 'text-slate-500 hover:bg-white/70')}>Manual</button>
-              <button type="button" onClick={() => { setBillingInputMode('barcode'); setQuery(''); setShowDropdown(false); setTimeout(() => searchRef.current?.focus(), 0); }} className={cn('h-8 rounded-lg px-3 text-xs font-black transition-all duration-200 ease-out active:scale-95', billingInputMode === 'barcode' ? 'translate-x-0 bg-orange-500 text-white shadow-sm shadow-orange-200' : 'text-slate-500 hover:bg-white/70')}>Barcode</button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative grid h-9 w-[156px] grid-cols-2 rounded-xl border border-slate-200 bg-slate-100 p-0.5 shadow-inner" aria-label="Billing input mode">
+                  <span className={cn('pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-[9px] shadow-sm transition-all duration-300 ease-out', billingInputMode === 'manual' ? 'translate-x-0 bg-slate-950' : 'translate-x-full bg-orange-500 shadow-orange-200')} />
+                  <button type="button" onClick={() => { setBillingInputMode('manual'); setQuery(''); setShowDropdown(false); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'manual' ? 'text-white' : 'text-slate-500')}><Keyboard className="size-3"/>Manual</button>
+                  <button type="button" onClick={() => { setBillingInputMode('barcode'); setQuery(''); setShowDropdown(false); setTimeout(() => searchRef.current?.focus(), 0); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'barcode' ? 'text-white' : 'text-slate-500')}><ScanBarcode className="size-3"/>Barcode</button>
+                </div>
+                <button onClick={()=>setShowHold(true)} className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"><PauseCircle className="mr-2 inline size-4"/>Recall Hold ({branchHolds.length})</button><button onClick={()=>setShowShortcuts(true)} className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-slate-950"><HelpCircle className="mr-2 inline size-4"/>Shortcuts</button>
+              </div>
             </div>
             <div className="mt-3 flex items-center gap-3 rounded-3xl border-2 border-slate-200 bg-slate-50 px-4 py-2 focus-within:border-amber-400">
               <Search className="size-6 text-slate-400"/>
