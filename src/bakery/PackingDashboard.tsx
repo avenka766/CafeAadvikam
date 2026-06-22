@@ -28,9 +28,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'dispatched' | 'closure';
+type ActiveTab  = 'orders' | 'leftover' | 'dispatched' | 'closure';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -714,15 +714,49 @@ export default function PackingDashboard() {
       });
   }, [branchFilter, dispatchedOrders, search]);
 
+  const leftoverRows = useMemo(() => orders.flatMap(order => {
+    if (!['packed', 'dispatched'].includes(order.status)) return [];
+    if (branchFilter !== 'all' && order.targetBranch !== branchFilter) return [];
+
+    return (order.preparedItems ?? []).flatMap(prepared => {
+      const orderItem = order.items.find(item => item.itemName === prepared.itemName);
+      const dispatches = (order.dispatchLog ?? []).filter(entry => entry.itemName === prepared.itemName);
+      const isPieces = orderItem?.dispatchUnit === 'pcs' && Boolean(orderItem.weightGrams);
+      const dispatchedQuantity = dispatches.reduce((sum, entry) => sum + entry.quantity, 0);
+      const dispatchedKg = isPieces
+        ? (dispatchedQuantity * (orderItem?.weightGrams ?? 0)) / 1000
+        : dispatchedQuantity;
+      const leftoverKg = Math.max(0, Math.round((prepared.quantityPrepared - dispatchedKg) * 1000) / 1000);
+      if (leftoverKg < 0.001) return [];
+
+      return [{
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        branch: order.targetBranch,
+        itemName: prepared.itemName,
+        preparedKg: prepared.quantityPrepared,
+        dispatchedKg,
+        leftoverKg,
+        leftoverGrams: Math.round(leftoverKg * 1000),
+        pieceWeightGrams: isPieces ? orderItem?.weightGrams : undefined,
+        preparedAt: prepared.preparedAt,
+      }];
+    });
+  }).filter(row => {
+    const needle = search.trim().toLowerCase();
+    return !needle || `${row.orderNumber} ${row.itemName} ${row.branch ?? ''}`.toLowerCase().includes(needle);
+  }).sort((a, b) => b.leftoverGrams - a.leftoverGrams), [orders, branchFilter, search]);
+
   const cutoff = useMemo(() => getCutoff(timeFilter), [timeFilter]);
   const periodLabel = TIME_FILTERS.find(t => t.key === timeFilter)?.label ?? 'Today';
 
   const closureOrders = useMemo(() => {
     return packingOrders.filter(order => {
-      if (order.status !== 'dispatched') return false;
       if (branchFilter !== 'all' && order.targetBranch !== branchFilter) return false;
-      const dateValue = orderLastDispatchAt(order);
-      return dateValue ? new Date(dateValue) >= cutoff : false;
+      return (order.dispatchLog ?? []).some(entry =>
+        new Date(entry.dispatchedAt) >= cutoff &&
+        (branchFilter === 'all' || entry.branch === branchFilter)
+      );
     });
   }, [packingOrders, branchFilter, cutoff]);
 
@@ -802,14 +836,16 @@ export default function PackingDashboard() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
                   ? 'Review baker-prepared orders, confirm packed quantity, and dispatch stock to branches.'
+                  : activeTab === 'leftover'
+                  ? 'Every prepared gram that has not yet been dispatched is listed here.'
                   : activeTab === 'dispatched'
                   ? 'Orders dispatched to branches are kept here for follow-up.'
                   : 'Verify packed, pending, and dispatched work before closing the packing day.'}
@@ -880,6 +916,54 @@ export default function PackingDashboard() {
                     <p className="text-sm font-body font-semibold text-foreground">No packing orders found</p>
                     <p className="text-xs font-body text-muted-foreground mt-1">Try clearing filters or wait for baker-prepared orders.</p>
                   </div>
+                </div>
+              )}
+            </section>
+          ) : activeTab === 'leftover' ? (
+            <section className="space-y-4">
+              <div className="rounded-2xl border border-border bg-card p-3 md:p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs font-black uppercase tracking-wide text-muted-foreground">
+                    {leftoverRows.length} item balance{leftoverRows.length !== 1 ? 's' : ''}
+                  </p>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search order, item or branch" className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25" />
+                    <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as BranchFilter)} className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-black text-foreground">
+                      <option value="all">All Branches</option>
+                      {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {leftoverRows.length > 0 ? (
+                <div className="overflow-hidden rounded-2xl border border-border bg-card">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-[760px] w-full text-left text-xs">
+                      <thead className="bg-slate-950 text-white">
+                        <tr>{['Order', 'Branch', 'Item', 'Prepared', 'Dispatched', 'Leftover', 'Prepared At'].map(label => <th key={label} className="px-4 py-3 font-black uppercase tracking-wide">{label}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {leftoverRows.map(row => (
+                          <tr key={`${row.orderId}-${row.itemName}`} className="border-t border-border even:bg-slate-50 hover:bg-amber-50/50">
+                            <td className="px-4 py-3 font-black">#{row.orderNumber}</td>
+                            <td className="px-4 py-3 font-black">{row.branch ?? '-'}</td>
+                            <td className="px-4 py-3 font-black">{row.itemName}</td>
+                            <td className="px-4 py-3 font-black tabular-nums">{row.preparedKg.toFixed(3)} kg</td>
+                            <td className="px-4 py-3 font-black tabular-nums">{row.dispatchedKg.toFixed(3)} kg</td>
+                            <td className="px-4 py-3"><span className="rounded-full bg-red-100 px-2.5 py-1 font-black tabular-nums text-red-700">{row.leftoverGrams} g</span>{row.pieceWeightGrams ? <span className="ml-2 font-bold text-slate-500">({row.pieceWeightGrams} g/pc)</span> : null}</td>
+                            <td className="px-4 py-3 font-bold text-slate-500">{new Date(row.preparedAt).toLocaleString('en-IN')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-emerald-300 bg-emerald-50 p-12 text-center">
+                  <CheckCircle2 className="mx-auto size-9 text-emerald-600" />
+                  <p className="mt-3 text-sm font-black text-emerald-800">No leftover quantity</p>
+                  <p className="mt-1 text-xs font-bold text-emerald-700">All prepared quantities are fully dispatched.</p>
                 </div>
               )}
             </section>
