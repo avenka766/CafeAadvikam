@@ -69,6 +69,10 @@ function fmtMoney(value: number) {
   return `Rs ${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function fmtAuditQty(value: number) {
+  return Number(value).toLocaleString('en-IN', { maximumFractionDigits: 6 });
+}
+
 function AttachmentPreview({ name, dataUrl }: { name?: string; dataUrl?: string }) {
   if (!name && !dataUrl) return null;
   return (
@@ -381,7 +385,6 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
   const handleSendToBaker = async () => {
     if (sent) return; // Bug 2 fix: guard against double-fire before React disables the button
-    if (anyOut) { setSendError('Cannot send to baker: one or more required materials are out of stock.'); return; }
     setSending(true); setSendError(null);
     try {
       // BUG-FIX: sendToBaker FIRST — if it fails, no stock deducted (was reversed before)
@@ -1473,9 +1476,9 @@ function StoreDailyClosureTab() {
                     <p className="text-sm font-body font-bold text-foreground">{row.materialName}</p>
                     <p className="text-[11px] font-body text-muted-foreground">Order #{row.orderNumber} - {row.deductedBy ?? 'Store'}</p>
                   </div>
-                  <p className="text-sm font-body font-bold text-red-600">-{row.quantityDeducted} {row.unit}</p>
+                  <p className="text-sm font-body font-bold text-red-600">-{fmtAuditQty(row.quantityDeducted)} {row.unit}</p>
                 </div>
-                <p className="text-[10px] font-body text-muted-foreground mt-2">Stock: {row.stockBefore} -&gt; {row.stockAfter} {row.unit}</p>
+                <p className="text-[10px] font-body text-muted-foreground mt-2">Stock: {fmtAuditQty(row.stockBefore)} -&gt; {fmtAuditQty(row.stockAfter)} {row.unit}</p>
               </div>
             ))}
           </div>
