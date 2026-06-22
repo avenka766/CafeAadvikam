@@ -28,14 +28,14 @@ import {
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
   Lock, Package, PackageSearch, Printer, Receipt, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
-  WalletCards, X,
+  Trash2, WalletCards, X,
 } from 'lucide-react';
 
 const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -61,6 +61,7 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
   { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
+  { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
   { id: 'invoices', label: 'Invoices', description: 'Supplier invoices and purchase records', icon: Receipt, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
   { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
@@ -205,7 +206,7 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, wasteLogs, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
   const { invoices, load: loadInvoices } = useInvoiceStore();
   const { notifications: adminNotifications, load: loadAdminNotifications } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
@@ -1375,6 +1376,32 @@ function AdminDashboard() {
     </div>
   );
 
+  const WasteTab = (
+    <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
+            <tr>{['Date', 'Branch', 'Type', 'Item', 'Quantity', 'Reason', 'Verified By'].map(label => <th key={label} className="px-3 py-3">{label}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)).map(row => (
+              <tr key={row.id} className="hover:bg-amber-50/50">
+                <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-600">{fmtDateTime(row.createdAt)}</td>
+                <td className="px-3 py-3"><BranchPill branch={row.branch} /></td>
+                <td className="px-3 py-3 font-black text-slate-800">{row.logType}</td>
+                <td className="px-3 py-3 font-black text-slate-950">{row.itemName}</td>
+                <td className="whitespace-nowrap px-3 py-3 font-black tabular-nums">{row.quantity} {row.unit}</td>
+                <td className="px-3 py-3 text-slate-600">{row.reason}</td>
+                <td className="px-3 py-3 font-bold text-slate-700">{row.verifiedBy}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!wasteLogs.some(row => inRange(row.createdAt, fromDate, toDate)) && <p className="p-8 text-center text-sm font-bold text-slate-500">No branch waste recorded for this period.</p>}
+      </div>
+    </Panel>
+  );
+
   // Attendance Tab — embeds the full AttendanceSalary page
   const AttendanceTab = (
     <div className="space-y-5">
@@ -1401,6 +1428,7 @@ function AdminDashboard() {
     advance: AdvanceTab,
     'stock-disputes': StockDisputesTab,
     'stock-variance': StockVarianceTab,
+    waste: WasteTab,
     audit: AuditTab,
     invoices: InvoicesTab,
     alerts: AlertsTab,
