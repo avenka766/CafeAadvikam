@@ -187,6 +187,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const [showDropdown, setShowDropdown] = useState(false);
   const [dropdownIndex, setDropdownIndex] = useState(0);
   const [showCounterClosedAlert, setShowCounterClosedAlert] = useState(false);
+  const [billingInputMode, setBillingInputMode] = useState<'manual' | 'barcode'>('manual');
 
   const branchPeople = useMemo(() => {
     if (isVRSNB) return [];
@@ -649,16 +650,37 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <div><h1 className="text-3xl font-black tracking-tight text-slate-950">{BRANCH_LABELS[branch]} Fast Billing</h1></div>
               <div className="flex flex-wrap gap-2"><button onClick={()=>setShowHold(true)} className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"><PauseCircle className="mr-2 inline size-4"/>Recall Hold ({branchHolds.length})</button><button onClick={()=>setShowShortcuts(true)} className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-slate-950"><HelpCircle className="mr-2 inline size-4"/>Shortcuts</button></div>
             </div>
-            <div className="mt-4 flex items-center gap-3 rounded-3xl border-2 border-slate-200 bg-slate-50 px-4 py-2 focus-within:border-amber-400">
+            <div className="mt-3 flex w-fit gap-0.5 rounded-xl border border-slate-200 bg-slate-100 p-0.5 shadow-inner">
+              <button type="button" onClick={() => { setBillingInputMode('manual'); setQuery(''); setShowDropdown(false); }} className={cn('h-8 rounded-lg px-3 text-xs font-black transition-all duration-200 ease-out active:scale-95', billingInputMode === 'manual' ? 'translate-x-0 bg-slate-950 text-white shadow-sm' : 'text-slate-500 hover:bg-white/70')}>Manual</button>
+              <button type="button" onClick={() => { setBillingInputMode('barcode'); setQuery(''); setShowDropdown(false); setTimeout(() => searchRef.current?.focus(), 0); }} className={cn('h-8 rounded-lg px-3 text-xs font-black transition-all duration-200 ease-out active:scale-95', billingInputMode === 'barcode' ? 'translate-x-0 bg-orange-500 text-white shadow-sm shadow-orange-200' : 'text-slate-500 hover:bg-white/70')}>Barcode</button>
+            </div>
+            <div className="mt-3 flex items-center gap-3 rounded-3xl border-2 border-slate-200 bg-slate-50 px-4 py-2 focus-within:border-amber-400">
               <Search className="size-6 text-slate-400"/>
               <div className="relative flex-1">
                 <input
                   ref={searchRef}
                   value={query}
-                  onChange={(e)=>{ setQuery(e.target.value); setShowDropdown(e.target.value.trim().length > 0); setDropdownIndex(0); }}
-                  onFocus={() => { if (query.trim()) setShowDropdown(true); }}
+                  onChange={(e)=>{ setQuery(e.target.value); setShowDropdown(billingInputMode === 'manual' && e.target.value.trim().length > 0); setDropdownIndex(0); }}
+                  onFocus={() => { if (billingInputMode === 'manual' && query.trim()) setShowDropdown(true); }}
                   onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
                   onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const scannedBarcode = query.trim();
+                      const exactBarcodeItem = items.find((item) => String(item.barcode) === scannedBarcode);
+                      if (exactBarcodeItem) {
+                        e.preventDefault();
+                        addItem(exactBarcodeItem);
+                        setShowDropdown(false);
+                        setQuery('');
+                        return;
+                      }
+                      if (billingInputMode === 'barcode') {
+                        e.preventDefault();
+                        setError(`Barcode ${scannedBarcode || '(empty)'} was not found for ${branch}.`);
+                        setQuery('');
+                        return;
+                      }
+                    }
                     if (!showDropdown) return;
                     if (e.key === 'ArrowDown') { e.preventDefault(); setDropdownIndex((i) => Math.min(i + 1, Math.min(visibleItems.length - 1, 9))); }
                     if (e.key === 'ArrowUp') { e.preventDefault(); setDropdownIndex((i) => Math.max(i - 1, 0)); }
@@ -668,7 +690,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
                     }
                     if (e.key === 'Escape') setShowDropdown(false);
                   }}
-                  placeholder="F2 - search item name or barcode"
+                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F2 - search item name or barcode'}
                   className="h-12 w-full bg-transparent text-xl font-black outline-none placeholder:text-slate-400"
                 />
                 {showDropdown && visibleItems.length > 0 && (
