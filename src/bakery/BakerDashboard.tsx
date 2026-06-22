@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from '@/lib/safeSpreadsheet';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 
 // ─── Report helpers ───────────────────────────────────────────────────────────
 
@@ -74,13 +75,13 @@ function orderStatusLabel(status: BakeryOrder['status']) {
 }
 
 function getRequestedQtyLabel(item: BakeryOrderItem) {
-  if (item.originalPcs != null) return `${item.originalPcs} pcs → ${item.quantity} kg`;
+  if (item.originalPcs != null && item.weightGrams != null) return `${item.originalPcs} pcs → ${item.quantity} kg`;
   return `${item.quantity} ${item.dispatchUnit === 'pcs' ? 'pcs' : 'kg'}`;
 }
 
 function getPreparedQtyLabel(order: BakeryOrder, prepared: PreparedItem) {
   const source = order.items.find(i => i.itemId === prepared.itemId);
-  const unit = source?.originalPcs != null ? 'kg' : (prepared.dispatchUnit ?? source?.dispatchUnit ?? 'kg');
+  const unit = source?.originalPcs != null && source.weightGrams != null ? 'kg' : (prepared.dispatchUnit ?? source?.dispatchUnit ?? 'kg');
   return `${prepared.quantityPrepared} ${unit}`;
 }
 
@@ -663,14 +664,14 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
                   </div>
                   <div className="flex flex-col items-center gap-1 shrink-0">
                     <input
-                      type="number" min={0} step={0.25}
+                      type="number" min={0} step={item.dispatchUnit === 'pcs' && item.weightGrams == null ? 1 : 0.25}
                       value={prepQty[item.itemId] ?? item.quantity}
                       onChange={e => setPrepQty(p => ({ ...p, [item.itemId]: e.target.value }))}
                       disabled={done}
                       className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                     />
                     <span className="text-[9px] font-body font-bold text-muted-foreground">
-                      {(item.dispatchUnit === 'pcs' && item.originalPcs == null) ? 'pcs' : 'kg'} prepared
+                      {item.dispatchUnit === 'pcs' && item.weightGrams == null ? 'pcs' : 'kg'} prepared
                     </span>
                   </div>
                 </div>
@@ -998,7 +999,22 @@ const BAKER_TABS: BakerDashboardTab[] = ['orders', 'completed', 'closure'];
 
 export default function BakerDashboard() {
   const [searchParams] = useSearchParams();
-  const { orders, fetchOrders } = useBakeryStore();
+  const { orders: storedOrders, fetchOrders } = useBakeryStore();
+  const advanceCakeOrders = useBranchOpsStore((state) => state.advanceCakeOrders);
+  const orders = useMemo(() => storedOrders.map((order) => {
+    if (order.items.some((item) => item.attachmentDataUrl || item.attachmentName)) return order;
+    const orderNo = order.notes?.split('|')[0]?.trim();
+    const source = orderNo ? advanceCakeOrders.find((advance) => advance.orderNo === orderNo) : undefined;
+    if (!source?.attachmentDataUrl && !source?.attachmentName) return order;
+    return {
+      ...order,
+      items: order.items.map((item, index) => index === 0 ? {
+        ...item,
+        attachmentName: source.attachmentName,
+        attachmentDataUrl: source.attachmentDataUrl,
+      } : item),
+    };
+  }), [storedOrders, advanceCakeOrders]);
   const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {

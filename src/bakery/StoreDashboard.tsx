@@ -100,7 +100,7 @@ function printItemRecipe(
   if (!printWindow) { window.alert('Popup blocked — please allow popups for this site to print.'); return; }
 
   const qtyLabel = item.dispatchUnit === 'pcs'
-    ? `${item.originalPcs ?? item.quantity} pcs${item.originalPcs != null ? ` → ${item.quantity} kg` : ''}`
+    ? `${item.originalPcs ?? item.quantity} pcs${item.originalPcs != null && item.weightGrams != null ? ` → ${item.quantity} kg` : ''}`
     : `${item.quantity} kg`;
 
   const matsHtml = mats.map(m => `
@@ -215,7 +215,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-body font-semibold text-foreground">{item.itemName}</p>
-          {item.originalPcs != null && (
+          {item.originalPcs != null && item.weightGrams != null && (
             <p className="text-[10px] font-body text-blue-600">
               {item.originalPcs} pcs → {item.quantity} kg
             </p>
@@ -234,7 +234,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
             </span>
           )}
           <p className="text-sm font-body font-bold tabular-nums text-foreground">
-            {item.originalPcs != null
+            {item.originalPcs != null && item.weightGrams != null
               ? `${item.quantity} kg`
               : `${item.quantity}${item.dispatchUnit === 'pcs' ? ' pcs' : ' kg'}`}
           </p>
@@ -1538,7 +1538,16 @@ export default function StoreDashboard() {
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
   const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
   const sentOrders = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
-  const lowStock   = stockItems.filter(i => i.quantity <= i.minThreshold);
+  const uniqueStockItems = useMemo(() => {
+    const byName = new Map<string, typeof stockItems[number]>();
+    stockItems.forEach((item) => {
+      const key = normaliseName(item.name);
+      const existing = byName.get(key);
+      if (!existing || String(item.id).localeCompare(String(existing.id)) > 0) byName.set(key, item);
+    });
+    return Array.from(byName.values());
+  }, [stockItems]);
+  const lowStock   = uniqueStockItems.filter(i => i.quantity <= i.minThreshold);
   const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
 
   const tabs = [
