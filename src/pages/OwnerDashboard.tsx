@@ -12,7 +12,7 @@
 //   • Waste tab: waste cost estimate (maps waste food_item → menu prices)
 //   • Attendance tab: advance-to-salary ratio per employee + attendance rate
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -241,7 +241,7 @@ function EmptyOwnerState({ title, message }: { title: string; message: string })
 function SalesOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, fetchBranchData } = useBranchStore();
-  const { bills } = useBranchOpsStore();
+  const { bills, returns } = useBranchOpsStore();
   const [dateRange, setDateRange] = useState<'today' | 'yesterday' | '7d' | '15d' | '30d'>('7d');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
 
@@ -298,19 +298,29 @@ function SalesOverviewTab() {
       Hosur: { qty: 0, count: 0, revenue: 0 },
     };
     (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
-      (sales[b] || []).filter(s => s.soldAt && new Date(s.soldAt) >= cutoff && new Date(s.soldAt) <= cutoffEnd).forEach(s => {
-        branches[b].qty += s.quantitySold;
+      bills.filter(bill => bill.branch === b && bill.status !== 'Returned' && new Date(bill.createdAt) >= cutoff && new Date(bill.createdAt) <= cutoffEnd).forEach(bill => {
+        branches[b].qty += bill.items.reduce((sum, item) => sum + item.quantity, 0);
         branches[b].count += 1;
-        const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
-        branches[b].revenue += unitPrice * s.quantitySold;
+        branches[b].revenue += bill.total;
+      });
+      returns.filter(ret => ret.branch === b && new Date(ret.createdAt) >= cutoff && new Date(ret.createdAt) <= cutoffEnd).forEach(ret => {
+        branches[b].revenue -= ret.total;
       });
     });
     return branches;
-  }, [sales, cutoff, cutoffEnd]);
+  }, [bills, returns, cutoff, cutoffEnd]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
   const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
   const grandTotal         = cafeRevenue + totalBakeryRevenue;
+  const selectedBakeryRevenue = branchFilter === 'all'
+    ? totalBakeryRevenue
+    : branchFilter === 'Cafe' ? 0 : branchSales[branchFilter].revenue;
+  const selectedBakeryQty = branchFilter === 'all'
+    ? totalBakeryQty
+    : branchFilter === 'Cafe' ? 0 : branchSales[branchFilter].qty;
+  const selectedCafeRevenue = branchFilter === 'all' || branchFilter === 'Cafe' ? cafeRevenue : 0;
+  const selectedGrandTotal = selectedCafeRevenue + selectedBakeryRevenue;
 
   // CHANGE 5c: multi-branch daily revenue data
   const dailyRevenueData = useMemo(() => {
@@ -361,9 +371,17 @@ function SalesOverviewTab() {
   }, [cafeOrders]);
 
   const allPayBreakdown = useMemo(() => {
-    let cash = cafePayBreakdown.cash, upi = cafePayBreakdown.upi, card = cafePayBreakdown.card;
+    const includeCafe = branchFilter === 'all' || branchFilter === 'Cafe';
+    let cash = includeCafe ? cafePayBreakdown.cash : 0;
+    let upi = includeCafe ? cafePayBreakdown.upi : 0;
+    let card = includeCafe ? cafePayBreakdown.card : 0;
     let credit = 0;
-    const branchBills = bills.filter(b => new Date(b.createdAt) >= cutoff && new Date(b.createdAt) <= cutoffEnd);
+    const branchBills = bills.filter(b =>
+      new Date(b.createdAt) >= cutoff &&
+      new Date(b.createdAt) <= cutoffEnd &&
+      branchFilter !== 'Cafe' &&
+      (branchFilter === 'all' || b.branch === branchFilter)
+    );
     branchBills.forEach(b => {
       if (b.paymentMode === 'cash') cash += b.total;
       else if (b.paymentMode === 'upi') upi += b.total;
@@ -376,7 +394,7 @@ function SalesOverviewTab() {
     return [{ name: 'Cash', value: cash }, { name: 'UPI', value: upi },
             { name: 'Card', value: card }, { name: 'Credit', value: credit }]
       .filter(p => p.value > 0);
-  }, [cafePayBreakdown, bills, cutoff, cutoffEnd]);
+  }, [cafePayBreakdown, bills, cutoff, cutoffEnd, branchFilter]);
 
   const topCafeItems = useMemo(() => {
     const map = new Map<string, { qty: number; revenue: number }>();
@@ -404,11 +422,13 @@ function SalesOverviewTab() {
 
   // CHANGE 5e: export
   const exportSales = () => ownerCsvDownload(`Sales_${dateRange}.csv`, [
-    ...cafeOrders.map(o => ({
+    ...(branchFilter === 'all' || branchFilter === 'Cafe' ? cafeOrders : []).map(o => ({
       Branch: 'Cafe', Date: ownerFmtDate(o.createdAt),
       Revenue: o.total, Payment: o.paymentType, Items: o.items.length,
     })),
-    ...(['VRSNB', 'SNB', 'Hosur'] as const).flatMap(b =>
+    ...(['VRSNB', 'SNB', 'Hosur'] as const)
+      .filter(b => branchFilter === 'all' || branchFilter === b)
+      .flatMap(b =>
       (sales[b] || []).filter(s => s.soldAt && new Date(s.soldAt) >= cutoff && new Date(s.soldAt) <= cutoffEnd).map(s => ({
         Branch: b, Date: ownerFmtDate(s.soldAt),
         Revenue: ((s as typeof s & { unitPrice?: number }).unitPrice || 0) * s.quantitySold,
@@ -479,10 +499,10 @@ function SalesOverviewTab() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue"   value={formatCurrency(grandTotal)}    sub="All branches"               color="bg-primary/10 text-primary" />
+        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(selectedGrandTotal)} sub={branchFilter === 'all' ? 'All branches' : branchFilter} color="bg-primary/10 text-primary" />
         {showCafe && <KPI icon={<Store       className="size-4" />} label="Cafe Revenue"    value={formatCurrency(cafeRevenue)}   sub={`${cafeCount} orders`}       color="bg-emerald-50 text-emerald-700" />}
-        {showBranches && <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue"  value={formatCurrency(totalBakeryRevenue)} sub={`${totalBakeryQty} items`} color="bg-amber-50 text-amber-700" />}
-        <KPI icon={<TrendingUp  className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} sub="Cafe only"                    color="bg-blue-50 text-blue-700" />
+        {showBranches && <KPI icon={<ShoppingBag className="size-4" />} label="Bakery Revenue" value={formatCurrency(selectedBakeryRevenue)} sub={`${selectedBakeryQty} items`} color="bg-amber-50 text-amber-700" />}
+        {showCafe && <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} sub="Cafe only" color="bg-blue-50 text-blue-700" />}
       </div>
 
       {/* Branch Performance */}
@@ -590,7 +610,7 @@ function SalesOverviewTab() {
       {/* Combined Payment Breakdown */}
       {allPayBreakdown.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Payment Methods — All Branches</h3>
+          <h3 className="font-display text-base font-bold mb-3">Payment Methods — {branchFilter === 'all' ? 'All Branches' : branchFilter === 'Cafe' ? 'Cafe' : `${branchFilter} Branch`}</h3>
           <div className="space-y-2.5">
             {allPayBreakdown.map((p, i) => {
               const total = allPayBreakdown.reduce((s, x) => s + x.value, 0);
@@ -710,7 +730,7 @@ function AttendanceSalaryTab() {
   const payrollMonth = now.getMonth() + 1;
   const daysInMonth = new Date(payrollYear, payrollMonth, 0).getDate();
 
-  const loadEmployees = () => {
+  const loadEmployees = useCallback(() => {
     setLoading(true); setFetchError(null);
     Promise.all([
       supabase.from('employees').select('*'),
@@ -748,7 +768,7 @@ function AttendanceSalaryTab() {
       }
       setLoading(false);
     });
-  };
+  }, [payrollMonth, payrollYear]);
   useEffect(() => { void loadEmployees(); }, [loadEmployees]);
 
   const branchGroups = useMemo(() => {

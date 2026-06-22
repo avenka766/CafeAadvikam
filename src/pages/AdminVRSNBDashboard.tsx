@@ -473,7 +473,12 @@ export default function AdminVRSNBDashboard() {
     fetchCreditPayments("Cafe");
   }, [fetchBranchData, fetchCreditPayments]);
 
-  const branchStock = useMemo(() => dedupeStockRows(stock[BRANCH] || []), [stock]);
+  const branchStock = useMemo(() => {
+    const catalogueNames = new Set(VRSNB_ITEMS.map((item) => normal(item.name)));
+    return dedupeStockRows(stock[BRANCH] || []).filter((item) =>
+      catalogueNames.has(normal(item.itemName)),
+    );
+  }, [stock]);
   const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
   const branchBills = useMemo(
     () =>
@@ -1139,10 +1144,10 @@ function printOverview(props: any, branchLabel: string) {
     ["Credit Collected", money(props.salesBreakdown.creditCollected)],
     ["Expenses", money(props.expenseAmount)],
     ["—", "—"],
-    ["Cash Sales", money(props.cashSales)],
-    ["UPI Sales", money(props.upiSales)],
-    ["Card Sales", money(props.cardSales)],
-    ["Credit Sales", money(props.creditBillAmount)],
+    ["Cash Collected", money(props.cashSales)],
+    ["UPI Collected", money(props.upiSales)],
+    ["Card Collected", money(props.cardSales)],
+    ["Credit Billed", money(props.creditBillAmount)],
     ["—", "—"],
     ["Cash Available", money(props.cashBalance)],
     ["UPI Available", money(props.upiBalance)],
@@ -1283,28 +1288,28 @@ function OverviewTab(props: any) {
             </ResponsiveContainer>
           </div>
         </Panel>
-        <Panel title="Payment Split" icon={<CreditCard className="size-4" />}>
+        <Panel title="Collections by Payment Mode" icon={<CreditCard className="size-4" />}>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <PaymentSplitCard
-              label="Cash Sales"
+              label="Cash Collected"
               value={props.cashSales}
               icon={<Banknote className="size-4" />}
               tone="green"
             />
             <PaymentSplitCard
-              label="UPI Sales"
+              label="UPI Collected"
               value={props.upiSales}
               icon={<Smartphone className="size-4" />}
               tone="blue"
             />
             <PaymentSplitCard
-              label="Card Sales"
+              label="Card Collected"
               value={props.cardSales}
               icon={<CreditCard className="size-4" />}
               tone="purple"
             />
             <PaymentSplitCard
-              label="Credit Sales"
+              label="Credit Billed"
               value={props.creditBillAmount}
               icon={<WalletCards className="size-4" />}
               tone="amber"
