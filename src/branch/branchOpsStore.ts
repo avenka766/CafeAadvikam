@@ -646,7 +646,7 @@ interface BranchOpsState {
   ) => void;
   submitStockCountReport: (
     report: Omit<BranchStockCountReport, "id" | "reportNo" | "status" | "createdAt" | "updatedAt">,
-  ) => BranchStockCountReport;
+  ) => Promise<BranchStockCountReport>;
   confirmStockCountReport: (
     reportId: string,
     confirmedBy: string,
@@ -2216,7 +2216,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newClosure;
       },
-      submitStockCountReport: (report) => {
+      submitStockCountReport: async (report) => {
         const now = new Date().toISOString();
         const reportNo = `${report.branch}-SC-${String(seq(`stock-count-${report.branch}`)).padStart(4, "0")}`;
         const normalizedLines = report.lines.map((line) => ({
@@ -2262,7 +2262,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: notification.status,
           actor: report.reportedBy,
         });
-        void supabase.from("branch_stock_count_reports").upsert(
+        const { error: saveError } = await supabase.from("branch_stock_count_reports").upsert(
           {
             id: newReport.id,
             branch: newReport.branch,
@@ -2275,6 +2275,13 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           },
           { onConflict: "id" },
         );
+        if (saveError) {
+          set((s) => ({
+            stockCountReports: s.stockCountReports.filter((row) => row.id !== newReport.id),
+            notifications: s.notifications.filter((row) => row.id !== notification.id),
+          }));
+          throw new Error(`Could not save stock count report: ${saveError.message}`);
+        }
         return newReport;
       },
       confirmStockCountReport: (reportId, confirmedBy) => {
