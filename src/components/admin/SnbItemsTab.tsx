@@ -472,7 +472,6 @@ export default function SnbItemsTab() {
                       {status && status.minLevel > 0 && <span>Min: {status.minLevel} {status.unit}</span>}
                       {status?.missingBranches.length ? <span>Missing: {status.missingBranches.join(', ')}</span> : null}
                       {status?.lowBranches.length ? <span>Low: {status.lowBranches.join(', ')}</span> : null}
-                      {status?.outBranches.length ? <span>Out: {status.outBranches.join(', ')}</span> : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
