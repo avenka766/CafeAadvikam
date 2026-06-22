@@ -263,6 +263,7 @@ function SalesOverviewTab() {
     }
     return ownerEndOfToday();
   }, [dateRange]);
+  const salesLedger = useBranchLedger(ownerDateInput(cutoff), ownerDateInput(cutoffEnd), ['VRSNB', 'SNB', 'Hosur']);
 
   const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
@@ -298,17 +299,29 @@ function SalesOverviewTab() {
       Hosur: { qty: 0, count: 0, revenue: 0 },
     };
     (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
+      const ledgerRows = salesLedger.closureRows.filter(row => row.branch === b);
+      if (ledgerRows.length > 0) {
+        branches[b].revenue = ledgerRows.reduce((sum, row) =>
+          sum + salesLedger.toNumber(row.sales_total)
+          + salesLedger.toNumber(row.advance_collected)
+          + salesLedger.toNumber(row.advance_balance_collected), 0);
+      }
       bills.filter(bill => bill.branch === b && bill.status !== 'Returned' && new Date(bill.createdAt) >= cutoff && new Date(bill.createdAt) <= cutoffEnd).forEach(bill => {
         branches[b].qty += bill.items.reduce((sum, item) => sum + item.quantity, 0);
         branches[b].count += 1;
-        branches[b].revenue += bill.total;
+        if (ledgerRows.length === 0) {
+          const recordedPayment = bill.paymentMode === 'split'
+            ? (bill.split?.cash || 0) + (bill.split?.upi || 0) + (bill.split?.card || 0)
+            : bill.tendered || 0;
+          branches[b].revenue += bill.total > 0 ? bill.total : recordedPayment;
+        }
       });
-      returns.filter(ret => ret.branch === b && new Date(ret.createdAt) >= cutoff && new Date(ret.createdAt) <= cutoffEnd).forEach(ret => {
+      if (ledgerRows.length === 0) returns.filter(ret => ret.branch === b && new Date(ret.createdAt) >= cutoff && new Date(ret.createdAt) <= cutoffEnd).forEach(ret => {
         branches[b].revenue -= ret.total;
       });
     });
     return branches;
-  }, [bills, returns, cutoff, cutoffEnd]);
+  }, [bills, returns, cutoff, cutoffEnd, salesLedger.closureRows]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
   const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
@@ -379,6 +392,7 @@ function SalesOverviewTab() {
     const branchBills = bills.filter(b =>
       new Date(b.createdAt) >= cutoff &&
       new Date(b.createdAt) <= cutoffEnd &&
+      b.status !== 'Returned' &&
       branchFilter !== 'Cafe' &&
       (branchFilter === 'all' || b.branch === branchFilter)
     );
@@ -1781,7 +1795,7 @@ function OwnerDailyClosureTab() {
 // ── Owner Alerts Tab ─────────────────────────────────────────────────────────
 function OwnerAlertsTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
-  const { stock, creditSales, fetchBranchData } = useBranchStore();
+  const { creditSales, fetchBranchData } = useBranchStore();
   const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
   const { invoices, load } = useInvoiceStore();
   const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
@@ -1794,19 +1808,6 @@ function OwnerAlertsTab() {
   const alerts: OwnerAlert[] = useMemo(() => {
     const today = ownerDateInput();
     const list: OwnerAlert[] = [];
-    // CHANGE 9a: use only STOCK_BRANCHES (VRSNB, SNB, Hosur) to avoid Cafe double-count
-    const STOCK_BRANCHES: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
-    STOCK_BRANCHES.forEach(branch => {
-      const stockRows = stock[branch] || [];
-      const out = stockRows.filter(item => item.quantity <= 0);
-      // Low stock alerts removed — owner should not receive low stock notifications
-      if (out.length) list.push({
-        title: `${ownerBranchDisplay(branch)} — Out of stock`,
-        value: String(out.length),
-        note: out.slice(0, 3).map(i => i.itemName).join(', ') + (out.length > 3 ? `… +${out.length - 3} more` : ''),
-        tone: 'danger', branch,
-      });
-    });
     OWNER_FULL_BRANCHES.forEach(branch => {
       const dbCredits = (creditSales[branch] || []).filter(c => c.status !== 'settled' && c.dueDate && new Date(c.dueDate) < new Date());
       if (dbCredits.length) list.push({ title: 'Overdue branch credit', value: String(dbCredits.length), note: `${ownerBranchDisplay(branch)} credit due follow-up`, tone: 'danger', branch });
@@ -1825,7 +1826,7 @@ function OwnerAlertsTab() {
     if (cancelled.length) list.push({ title: 'Cafe cancelled orders', value: String(cancelled.length), note: 'Check wastage or service gaps', tone: 'neutral' });
     notifications.filter(n => n.status !== 'Resolved').slice(0, 6).forEach(n => list.push({ title: n.title, value: n.status, note: `${ownerBranchDisplay(n.branch)} · ${n.details}`, tone: n.type === 'Stock Dispute' ? 'danger' : 'neutral', branch: n.branch }));
     return list;
-  }, [orders, stock, creditSales, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
+  }, [orders, creditSales, purchases, cashierClosures, notifications, storeOrders, returns, invoices]);
 
   const visible = alerts.filter(a => (tone === 'all' || a.tone === tone) && !dismissed.has(`${a.title}-${a.branch ?? ''}`));
 
