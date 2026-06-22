@@ -7,7 +7,7 @@
 //   • Placed Orders  — date-range order history with CSV download
 //   • Alerts         — packing discrepancies / remainders for their branch
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Loader2,
@@ -1228,7 +1228,9 @@ function StockCountPanel({
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
   const [counts, setCounts] = useState<Record<string, string>>({});
+  const touchedCounts = useRef<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const rows = useMemo(() => {
     const stockMap = new Map(branchStock.map((item) => [item.itemName, item]));
@@ -1248,7 +1250,7 @@ function StockCountPanel({
     setCounts((prev) => {
       const next = { ...prev };
       rows.forEach((row) => {
-        if (next[row.itemName] === undefined) next[row.itemName] = String(row.systemQty);
+        if (!touchedCounts.current[row.itemName]) next[row.itemName] = String(row.systemQty);
       });
       return next;
     });
@@ -1259,22 +1261,30 @@ function StockCountPanel({
     return Math.abs(row.systemQty - physical) > 0.0001;
   }).length;
 
-  const submit = () => {
-    const report = submitStockCountReport({
-      branch,
-      reportedBy: userName,
-      lines: rows.map((row) => {
-        const physicalQty = Math.max(0, Number(counts[row.itemName] || 0));
-        return {
-          itemName: row.itemName,
-          unit: row.unit,
-          systemQty: row.systemQty,
-          physicalQty,
-          difference: Math.round((row.systemQty - physicalQty) * 1000) / 1000,
-        };
-      }),
-    });
-    setNotice(`${report.reportNo} sent to ${branch} Admin for confirmation.`);
+  const submit = async () => {
+    setSubmitting(true);
+    setNotice("");
+    try {
+      const report = await submitStockCountReport({
+        branch,
+        reportedBy: userName,
+        lines: rows.map((row) => {
+          const physicalQty = Math.max(0, Number(counts[row.itemName] || 0));
+          return {
+            itemName: row.itemName,
+            unit: row.unit,
+            systemQty: row.systemQty,
+            physicalQty,
+            difference: Math.round((row.systemQty - physicalQty) * 1000) / 1000,
+          };
+        }),
+      });
+      setNotice(`${report.reportNo} sent to ${branch} Admin for confirmation.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save the stock count report.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -1295,9 +1305,10 @@ function StockCountPanel({
           <button
             type="button"
             onClick={submit}
-            className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200"
+            disabled={submitting}
+            className="rounded-2xl bg-orange-500 px-5 py-3 text-sm font-body font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Send to {branch} Admin
+            {submitting ? "Sending..." : `Send to ${branch} Admin`}
           </button>
         </div>
         {notice && (
@@ -1349,7 +1360,10 @@ function StockCountPanel({
                       min="0"
                       step={row.unit === "kg" ? "0.001" : "1"}
                       value={counts[row.itemName] ?? ""}
-                      onChange={(e) => setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }))}
+                      onChange={(e) => {
+                        touchedCounts.current[row.itemName] = true;
+                        setCounts((prev) => ({ ...prev, [row.itemName]: e.target.value }));
+                      }}
                       className="h-10 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-amber-200"
                     />
                     <span
