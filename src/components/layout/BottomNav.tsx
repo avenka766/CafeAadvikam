@@ -20,6 +20,7 @@ import {
   FileText,
   Bell,
   WalletCards,
+  Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNotificationStore } from "@/bakery/notificationStore";
@@ -275,19 +276,34 @@ export default function BottomNav() {
         path: "/admin-vrsnb",
       },
       {
+        label: "Sales",
+        icon: <Receipt className="size-5" />,
+        path: "/admin-vrsnb?tab=sales",
+      },
+      {
+        label: "Stock",
+        icon: <Package className="size-5" />,
+        path: "/admin-vrsnb?tab=stock",
+      },
+      {
         label: "Credit",
         icon: <WalletCards className="size-5" />,
         path: "/admin-vrsnb?tab=credit",
       },
       {
+        label: "Closure",
+        icon: <CalendarCheck className="size-5" />,
+        path: "/admin-vrsnb?tab=closure",
+      },
+      {
+        label: "Reports",
+        icon: <BarChart3 className="size-5" />,
+        path: "/admin-vrsnb?tab=reports",
+      },
+      {
         label: "Items",
         icon: <Settings2 className="size-5" />,
         path: "/admin-vrsnb/items",
-      },
-      {
-        label: "History",
-        icon: <History className="size-5" />,
-        path: "/admin-vrsnb/history",
       },
       {
         label: "Audit",
@@ -309,14 +325,59 @@ export default function BottomNav() {
         path: "/admin-snb",
       },
       {
+        label: "Sales",
+        icon: <Receipt className="size-5" />,
+        path: "/admin-snb?tab=sales",
+      },
+      {
+        label: "Stock",
+        icon: <Package className="size-5" />,
+        path: "/admin-snb?tab=stock",
+      },
+      {
+        label: "Suppliers",
+        icon: <Truck className="size-5" />,
+        path: "/admin-snb?tab=suppliers",
+      },
+      {
+        label: "Expenses",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-snb?tab=expenses",
+      },
+      {
+        label: "Invoices",
+        icon: <FileText className="size-5" />,
+        path: "/admin-snb?tab=invoices",
+      },
+      {
+        label: "Payments",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-snb?tab=payments",
+      },
+      {
+        label: "Credit",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-snb?tab=credit",
+      },
+      {
+        label: "Closure",
+        icon: <CalendarCheck className="size-5" />,
+        path: "/admin-snb?tab=cashier-closure",
+      },
+      {
+        label: "Reports",
+        icon: <BarChart3 className="size-5" />,
+        path: "/admin-snb?tab=reports",
+      },
+      {
+        label: "Audit",
+        icon: <ClipboardList className="size-5" />,
+        path: "/admin-snb?tab=audit-stock",
+      },
+      {
         label: "Items",
         icon: <Settings2 className="size-5" />,
         path: "/admin-snb/items",
-      },
-      {
-        label: "History",
-        icon: <History className="size-5" />,
-        path: "/admin-snb/history",
       },
       {
         label: "Alerts",
