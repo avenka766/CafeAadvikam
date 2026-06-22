@@ -1000,6 +1000,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     });
     closeCounter(branch, todayIso(), user);
     addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; difference ${money(diff)}.`, raisedBy: user });
+    setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setClosing('');
     setNotes('');
