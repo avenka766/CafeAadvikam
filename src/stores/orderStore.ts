@@ -55,7 +55,7 @@ interface OrderState {
   submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
-  refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string) => Promise<void>;
+  refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string, password: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
   setAdvancePayment: (orderId: string, advanceAmount: number, advancePaidBy: string, billedBy: string) => Promise<void>;
@@ -376,7 +376,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
 
-  refundAndCancel: async (orderId, cancelReason, refundedBy) => {
+  refundAndCancel: async (orderId, cancelReason, refundedBy, password) => {
     const prev = get().orders;
     const order = prev.find((o) => o.id === orderId);
     if (!order) throw new Error('Order not found. Refresh and try again.');
@@ -397,24 +397,24 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       : Number(order.total || 0);
     const audit = `[REFUND ${now}] mode=${refundMode}; amount=${refundAmount.toFixed(2)}; by=${refundedBy}; reason=${cancelReason}`;
     const notes = [order.notes, audit].filter(Boolean).join('\n');
-    const updates = { status: 'cancelled', cancel_reason: cancelReason, notes, updated_at: now };
+    const { data, error } = await supabase.rpc('refund_and_cancel_order', {
+      p_order_id: orderId,
+      p_expected_updated_at: order.updatedAt,
+      p_username: refundedBy,
+      p_password: password,
+      p_cancel_reason: cancelReason,
+      p_refund_audit: audit,
+    });
+    if (error || data !== true) {
+      set({ orders: prev });
+      throw new Error(error?.message || 'Refund was not saved. Refresh and try again.');
+    }
 
     set((state) => ({
       orders: state.orders.map((o) => o.id === orderId
         ? { ...o, status: 'cancelled', cancelReason, notes, updatedAt: now }
         : o),
     }));
-
-    const { data, error } = await supabase
-      .from('orders')
-      .update(updates)
-      .eq('id', orderId)
-      .eq('updated_at', order.updatedAt)
-      .select('id');
-    if (error || !data || data.length === 0) {
-      set({ orders: prev });
-      throw new Error(!data || data.length === 0 ? 'Order changed on another device. Refresh and try again.' : error.message);
-    }
   },
 
   applyDiscount: async (orderId, discountType, discountValue) => {
