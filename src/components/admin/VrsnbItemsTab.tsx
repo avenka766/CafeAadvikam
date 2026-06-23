@@ -345,46 +345,7 @@ export default function VrsnbItemsTab() {
         </div>
       )}
 
-      {mismatchSummary.length > 0 && (
-        <div className="rounded-xl border border-red-200 overflow-hidden">
-          <button
-            onClick={() => setMismatchExpanded((v) => !v)}
-            className="w-full flex items-center gap-3 px-4 py-3 bg-red-50 hover:bg-red-100 transition text-left"
-          >
-            <div className="size-8 rounded-xl bg-red-100 flex items-center justify-center shrink-0">
-              <AlertCircle className="size-4 text-red-600" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-red-800">Stock mismatch alerts — VRSNB</p>
-              <p className="text-xs text-red-600 mt-0.5">
-                {mismatchSummary.length} item{mismatchSummary.length > 1 ? 's' : ''} sold without sufficient stock (last 30 days)
-              </p>
-            </div>
-            <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full mr-1">
-              {mismatchSummary.length}
-            </span>
-            {mismatchExpanded
-              ? <ChevronUp className="size-4 text-red-400 shrink-0" />
-              : <ChevronDown className="size-4 text-red-400 shrink-0" />}
-          </button>
-          {mismatchExpanded && (
-            <div className="divide-y divide-red-50 bg-white">
-              {mismatchSummary.map((m, i) => (
-                <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                  <AlertTriangle className="size-3.5 text-red-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{m.itemName}</p>
-                    <p className="text-[10px] text-muted-foreground">VRSNB · Last: {m.lastDate}</p>
-                  </div>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full tabular-nums whitespace-nowrap">
-                    −{m.totalShortage} short
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+
 
       <div className="hidden">
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -467,9 +428,6 @@ export default function VrsnbItemsTab() {
         ) : (
           <div className="divide-y">
             {filtered.map((item) => {
-              const hasMismatch = mismatchSummary.some(
-                (m) => m.itemName.toLowerCase() === item.name.toLowerCase(),
-              );
               const status = stockStatus.get(item.name);
               const isMissing = Boolean(status?.missing);
               const isOut = Boolean(status?.out);
@@ -477,15 +435,10 @@ export default function VrsnbItemsTab() {
               const isCustom = 'isCustom' in item;
               return (
                 <div key={item.barcode}
-                  className={cn('flex items-center gap-3 px-4 py-3', (hasMismatch || isOut || isMissing) && 'bg-red-50/40', isLow && 'bg-amber-50/40', isCustom && 'bg-blue-50/30')}>
+                  className={cn('flex items-center gap-3 px-4 py-3', (isOut || isMissing) && 'bg-red-50/40', isLow && 'bg-amber-50/40', isCustom && 'bg-blue-50/30')}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium">{item.name}</p>
-                      {hasMismatch && (
-                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
-                          <AlertTriangle className="size-2.5" /> Stock alert
-                        </span>
-                      )}
                       {isMissing && (
                         <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded-full">
                           Stock Not Available
