@@ -1603,7 +1603,6 @@ function BranchOverviewTab() {
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
         <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(totals.purchases)} sub="Store + branches" tone="purple" />
         <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(totals.pending)} sub="Credit + supplier" tone="amber" />
-        <OwnerMetricCard icon={<AlertTriangle className="size-5" />} label="Owner Alerts" value={totals.alerts} sub="Stock and sync alerts" tone={totals.alerts ? 'red' : 'green'} />
       </section>
 
       {/* CHANGE 4c: Grouped payment bar chart for sales branches */}
@@ -1651,7 +1650,9 @@ function BranchOverviewTab() {
                 <p className="flex justify-between text-xs"><span className="text-muted-foreground">Purchases</span><b className="font-semibold">{formatCurrency(row.purchases)}</b></p>
                 <p className="flex justify-between text-xs"><span className="text-muted-foreground">Expenses</span><b className="font-semibold">{formatCurrency(row.expenses)}</b></p>
               </div>
-              <footer><AlertTriangle className="size-4" />{row.keyAlert}</footer>
+              {row.unit === 'Cafe' && row.keyAlert && (
+                <footer><AlertTriangle className="size-4" />{row.keyAlert}</footer>
+              )}
             </article>
           );
         })}
