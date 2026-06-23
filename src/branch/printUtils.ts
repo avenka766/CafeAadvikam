@@ -6,10 +6,30 @@ import type { BranchBillRecord } from './branchOpsStore';
 
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
 export function printHtml(title: string, body: string) {
-  const w = window.open('', '_blank', 'width=600,height=800');
+  const w = window.open('', '_blank', 'width=920,height=900');
   if (w) {
     w.document.write(
-      `<!doctype html><html><head><title>${title}</title><style>body{font-family:Arial,sans-serif;padding:20px;color:#111}.b{font-weight:800}.c{text-align:center}.row{display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding:6px 0}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left}.right{text-align:right}.stamp{border:2px solid #111;padding:8px;text-align:center;font-weight:900;margin-bottom:12px}</style></head><body>${body}<script>window.onload=()=>window.print()</script></body></html>`,
+      `<!doctype html><html><head><title>${title}</title><style>
+        @page{size:A4;margin:10mm}
+        *{box-sizing:border-box}
+        body{margin:0;background:#f8fafc;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.45}
+        body:before{content:"";position:fixed;inset:0 0 auto 0;height:12px;background:linear-gradient(90deg,#f97316,#059669,#0f172a)}
+        main{max-width:980px;margin:0 auto;background:#fff;min-height:100vh;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.08)}
+        main:before{content:"${title}";display:block;margin:-4px 0 18px;padding:14px 16px;border-radius:24px;background:#0f172a;color:#fff;font-size:20px;font-weight:900;letter-spacing:.02em}
+        h1,h2,h3{margin:0 0 10px;color:#0f172a}h1{font-size:24px}h2{font-size:18px}h3{font-size:14px}
+        .b{font-weight:900}.c{text-align:center}.right{text-align:right}.muted{color:#64748b}
+        .stamp{display:inline-block;border:0;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;text-align:center;font-weight:900;margin-bottom:12px;letter-spacing:.08em;text-transform:uppercase}
+        .dash{border-top:1px dashed #cbd5e1;margin:12px 0}
+        .row{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #e2e8f0;padding:8px 0}
+        .row span:first-child{color:#64748b;font-weight:800}.row b{font-weight:900}
+        table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border:1px solid #e2e8f0;border-radius:16px;background:#fff}
+        th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;text-align:left;vertical-align:top}
+        th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
+        tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}
+        td:last-child,th:last-child{text-align:right}
+        .card,.section{border:1px solid #e2e8f0;border-radius:18px;background:#fff;padding:14px;margin-bottom:12px}
+        @media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}body:before{position:absolute}main{box-shadow:none;max-width:none;padding:18px}button{display:none}.card,.section,table{break-inside:avoid;page-break-inside:avoid}}
+      </style></head><body><main>${body}</main><script>window.onload=()=>window.print()</script></body></html>`,
     );
     w.document.close();
   }
@@ -163,6 +183,7 @@ export function printBranchCashierClosure(input: {
   expected: number; counted: number; difference: number;
   notes?: string;
   bills: Array<{ billNo: string; createdAt: string; customerName?: string; paymentMode: string; total: number; biller: string }>;
+  refundRows: Array<{ returnNo: string; originalBillNo: string; createdAt: string; paymentMode: string; reason: string; cashier: string; amount: number }>;
 }) {
   const printedAt = new Date().toLocaleString('en-IN');
   const billRowsHtml = input.bills.length === 0
@@ -177,6 +198,9 @@ export function printBranchCashierClosure(input: {
           <td>${safeHtml(b.biller)}</td>
         </tr>`).join('');
   const notesHtml = input.notes?.trim() ? `<div class="notes"><b>Closure Notes</b><p>${safeHtml(input.notes)}</p></div>` : '';
+  const refundRowsHtml = input.refundRows.length === 0
+    ? '<tr><td colspan="7" class="muted center">No refunds in this counter session.</td></tr>'
+    : input.refundRows.map((r) => `<tr><td>${safeHtml(r.returnNo)}</td><td>${safeHtml(r.originalBillNo)}</td><td>${safeHtml(new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td><td>${safeHtml(r.paymentMode.toUpperCase())}</td><td>${safeHtml(r.reason)}</td><td>${safeHtml(r.cashier)}</td><td class="right strong">-${safeHtml(inr(r.amount))}</td></tr>`).join('');
 
   const win = window.open('', '_blank', 'width=920,height=900');
   if (!win) return;
@@ -259,6 +283,7 @@ export function printBranchCashierClosure(input: {
       </div>
 
       ${notesHtml}
+      <section class="section"><h2>Refund Register</h2><table><thead><tr><th>Return</th><th>Original Bill</th><th>Time</th><th>Mode</th><th>Reason</th><th>Cashier</th><th class="right">Amount</th></tr></thead><tbody>${refundRowsHtml}</tbody></table></section>
       <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Payment</th><th class="right">Paid</th><th>Cashier</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>
       <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
     </main>
