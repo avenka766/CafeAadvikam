@@ -64,7 +64,11 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
   };
 
-  const total = getCartTotal();
+  const subtotal = getCartTotal();
+  const parcelCharges = orderType === 'takeaway'
+    ? cart.reduce((sum, item) => sum + item.quantity, 0) * 10
+    : 0;
+  const total = subtotal + parcelCharges;
 
   const handleSubmit = async () => {
     if (cart.length === 0) return;
@@ -82,6 +86,7 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
         customerName: customerName || undefined,
         createdBy: currentUser.username,
         orderSource: 'staff',
+        parcelCharges,
       });
       await useOrderStore.getState().loadOrders(1);
       setShowSuccess(true);
@@ -218,6 +223,12 @@ export default function OrderCart({ isOpen, onClose }: OrderCartProps) {
 
             {cart.length > 0 && (
               <footer className="order-cart-footer">
+                {parcelCharges > 0 && (
+                  <div className="order-cart-total">
+                    <span>Parcel charges</span>
+                    <strong>{formatCurrency(parcelCharges)}</strong>
+                  </div>
+                )}
                 <div className="order-cart-total">
                   <span>Total amount</span>
                   <strong>{formatCurrency(total)}</strong>

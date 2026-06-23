@@ -91,7 +91,7 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
       if (order.paymentType === 'unpaid') {
         await updateOrderStatus(order.id, 'cancelled', finalReason);
       } else {
-        await refundAndCancel(order.id, finalReason, billerName || currentUser!.username);
+        await refundAndCancel(order.id, finalReason, currentUser!.username, cancelPassword);
       }
       setShowCancelPrompt(false);
       setCancelReason('');
@@ -416,7 +416,9 @@ export default function OrderCard({ order, showActions = false, counterOpenedTod
                 }
                 setShowPayment(true);
               }}
-              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2"
+              disabled={!counterOpenedToday}
+              title={!counterOpenedToday ? 'Open Cashier Counter before collecting payment' : undefined}
+              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none"
               style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
             >
               💰 Collect Payment
