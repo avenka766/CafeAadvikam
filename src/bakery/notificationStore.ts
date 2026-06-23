@@ -168,66 +168,85 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushPackingDiscrepancy: async (orderId, orderNumber, branch, items) => {
-    // UPSERT strategy: if a notification already exists for this order, merge the
-    // new discrepant items into it (avoids duplicate cards while preserving ALL items).
-    // Previous approach: return-early if any record existed — this caused only the
-    // FIRST dispatched item's discrepancy to be saved; all subsequent items were lost.
-    const { data: existing } = await supabase
-      .from('admin_notifications')
-      .select('id, meta')
-      .eq('type', 'packing_discrepancy')
-      .eq('ref_id', orderId)
-      .limit(1);
+    // Send the same discrepancy to Admin and to the correct branch receiver.
+    // Previously only an `admin` row was created, while the SNB/VRSNB Order
+    // dashboards load notifications using their own roles (`receiver_snb` /
+    // `receiver_vrsnb`). As a result, branch users never received the alert.
+    const normalizedBranch = branch.trim().toUpperCase();
+    const receiverRole = normalizedBranch === 'SNB'
+      ? 'receiver_snb'
+      : normalizedBranch === 'VRSNB'
+        ? 'receiver_vrsnb'
+        : null;
+    const recipientRoles = receiverRole ? ['admin', receiverRole] : ['admin'];
 
-    // Build the merged items list
-    let mergedItems = [...items];
-    if (existing && existing.length > 0) {
-      const existingMeta = existing[0].meta as { items?: typeof items } | null;
-      const existingItems: typeof items = existingMeta?.items ?? [];
-      // Merge: existing items not in new list + all new items (new list is authoritative for its items)
-      const newItemNames = new Set(items.map(i => i.itemName));
-      const carry = existingItems.filter(i => !newItemNames.has(i.itemName));
-      mergedItems = [...carry, ...items];
-    }
-
-    // Build a human-readable line per item — covers both shortfall AND excess
-    const lines = mergedItems
-      .map(i => {
-        const diff = i.requested - i.dispatched;
-        if (diff > 0) {
-          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} short`;
-        } else if (diff < 0) {
-          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
-        }
-        return `${i.itemName}: ${i.dispatched} ${i.unit} ✓`;
-      })
-      .join('; ');
-
-    const hasMissing = mergedItems.some(i => i.dispatched < i.requested);
-    const hasExtra   = mergedItems.some(i => i.dispatched > i.requested);
-    const titleSuffix = hasMissing && hasExtra ? 'Missing & Extra Items' : hasMissing ? 'Missing Items' : 'Extra Items Sent';
-
-    const payload = {
-      type: 'packing_discrepancy',
-      title: `Packing Discrepancy – ${titleSuffix}`,
-      body: `Order ${orderNumber} → ${branch}: ${lines}`,
-      ref_id: orderId,
-      ref_label: `Order ${orderNumber} → ${branch}`,
-      meta: { orderId, orderNumber, branch, items: mergedItems },
-      recipient_role: 'admin',
-    };
-
-    if (existing && existing.length > 0) {
-      // Update the existing row with merged items so the receiver/admin sees ALL discrepancies
-      const { error } = await supabase
+    for (const recipientRole of recipientRoles) {
+      const { data: existing } = await supabase
         .from('admin_notifications')
-        .update({ ...payload, is_read: false }) // reset to unread so it surfaces again
-        .eq('id', existing[0].id);
-      if (error) console.warn('[notificationStore] discrepancy update failed:', error.message);
-    } else {
-      const { error } = await supabase.from('admin_notifications').insert(payload);
-      if (error) console.warn('[notificationStore] discrepancy insert failed:', error.message);
+        .select('id, meta')
+        .eq('type', 'packing_discrepancy')
+        .eq('recipient_role', recipientRole)
+        .eq('ref_id', orderId)
+        .limit(1);
+
+      let mergedItems = [...items];
+      if (existing && existing.length > 0) {
+        const existingMeta = existing[0].meta as { items?: typeof items } | null;
+        const existingItems: typeof items = existingMeta?.items ?? [];
+        const newItemNames = new Set(items.map(i => i.itemName.trim().toLowerCase()));
+        const carry = existingItems.filter(
+          i => !newItemNames.has(i.itemName.trim().toLowerCase()),
+        );
+        mergedItems = [...carry, ...items];
+      }
+
+      const lines = mergedItems
+        .map(i => {
+          const diff = i.requested - i.dispatched;
+          if (diff > 0) {
+            return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} short`;
+          }
+          if (diff < 0) {
+            return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
+          }
+          return `${i.itemName}: ${i.dispatched} ${i.unit} ✓`;
+        })
+        .join('; ');
+
+      const hasMissing = mergedItems.some(i => i.dispatched < i.requested);
+      const hasExtra = mergedItems.some(i => i.dispatched > i.requested);
+      const titleSuffix = hasMissing && hasExtra
+        ? 'Missing & Extra Items'
+        : hasMissing
+          ? 'Missing Items'
+          : 'Extra Items Sent';
+
+      const payload = {
+        type: 'packing_discrepancy',
+        title: `Packing Discrepancy – ${titleSuffix}`,
+        body: `Order ${orderNumber} → ${normalizedBranch}: ${lines}`,
+        ref_id: orderId,
+        ref_label: `Order ${orderNumber} → ${normalizedBranch}`,
+        meta: { orderId, orderNumber, branch: normalizedBranch, items: mergedItems },
+        recipient_role: recipientRole,
+      };
+
+      if (existing && existing.length > 0) {
+        const { error } = await supabase
+          .from('admin_notifications')
+          .update({ ...payload, is_read: false })
+          .eq('id', existing[0].id);
+        if (error) {
+          console.warn(`[notificationStore] discrepancy update failed for ${recipientRole}:`, error.message);
+        }
+      } else {
+        const { error } = await supabase.from('admin_notifications').insert(payload);
+        if (error) {
+          console.warn(`[notificationStore] discrepancy insert failed for ${recipientRole}:`, error.message);
+        }
+      }
     }
+
     await get().load();
   },
 
