@@ -255,12 +255,21 @@ export default function DailyClosure() {
       .filter(order => sameBusinessDate(order.createdAt, selectedDate) && inCurrentSession(order.createdAt))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    const cancelled = dayOrders.filter(order => order.status === 'cancelled');
+    const paidRefundsThisSession = orders.filter(order =>
+      order.status === 'cancelled' &&
+      order.paymentType !== 'unpaid' &&
+      sameBusinessDate(order.updatedAt, selectedDate) &&
+      inCurrentSession(order.updatedAt)
+    );
+    const cancelled = Array.from(new Map([
+      ...dayOrders.filter(order => order.status === 'cancelled'),
+      ...paidRefundsThisSession,
+    ].map(order => [order.id, order])).values());
     // FIX (MD Bug #23): detect any cancelled orders that had payment already collected —
     // these are orders where the cancel-after-payment guard failed (e.g. direct API call,
     // old app version, or a bypass). Surface the collected amount separately so the owner
     // can see cash that is physically in the drawer but not in any revenue line.
-    const cancelledButPaid = cancelled.filter(o => o.paymentType !== 'unpaid');
+    const cancelledButPaid = paidRefundsThisSession;
     const cancelledButPaidAmount = cancelledButPaid.reduce((s, o) => s + (o.paymentType === 'advance' ? safeNumber(o.fullyPaidAt ? (o.fullAmount || o.total) : (o.advanceAmount || o.total)) : safeNumber(o.total)), 0);
     const refundPayments: PaymentTotals = { cash: 0, upi: 0, card: 0 };
     for (const order of cancelledButPaid) {
@@ -596,6 +605,18 @@ export default function DailyClosure() {
     const paymentRowsHtml = paymentRows.map(key => `
       <tr><td>${paymentLabels[key]}</td><td class="right">${safeHtml(formatCurrency(closure.payments[key]))}</td></tr>
     `).join('');
+    const refundRowsHtml = closure.cancelledButPaid.length === 0
+      ? '<tr><td colspan="6" class="muted center">No paid refunds in this counter session.</td></tr>'
+      : closure.cancelledButPaid.map(order => `
+        <tr>
+          <td>#${String(order.orderNumber).padStart(4, '0')}</td>
+          <td>${safeHtml(timeLabel(order.updatedAt))}</td>
+          <td>${safeHtml(order.paymentType.replace('_', ' ').toUpperCase())}</td>
+          <td>${safeHtml(order.cancelReason || 'Not specified')}</td>
+          <td>${safeHtml(order.billedBy || order.createdBy || '-')}</td>
+          <td class="right strong">-${safeHtml(formatCurrency(order.paymentType === 'advance' ? safeNumber(order.fullyPaidAt ? (order.fullAmount || order.total) : (order.advanceAmount || order.total)) : safeNumber(order.total)))}</td>
+        </tr>
+      `).join('');
     const billerRowsHtml = closure.billers.length === 0
       ? '<tr><td colspan="4" class="muted center">No closed bills for this date.</td></tr>'
       : closure.billers.map(biller => `
@@ -693,6 +714,8 @@ export default function DailyClosure() {
             <tr><td class="strong">Difference</td><td class="right strong">${safeHtml(formatCurrency(cashDifference))}</td></tr>
           </tbody></table></section>
         </div>
+
+        <section class="section"><h2>Refund Register</h2><table><thead><tr><th>Bill</th><th>Refund Time</th><th>Mode</th><th>Reason</th><th>Cashier</th><th class="right">Amount</th></tr></thead><tbody>${refundRowsHtml}</tbody></table></section>
 
         <div class="grid">
           <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(formatCurrency(closure.creditSales))}</div></div>
@@ -860,7 +883,7 @@ export default function DailyClosure() {
           <StatCard title="Bills closed" value={String(closure.billable.length)} icon={<Receipt className="size-5" />} helper={`${closure.itemCount} item qty`} tone="slate" />
           <StatCard title="Cancelled" value={String(closure.cancelled.length)} icon={<XCircle className="size-5" />} helper={formatCurrency(closure.cancelled.reduce((s, o) => s + safeNumber(o.total), 0))} tone="red" />
           {closure.cancelledButPaidAmount > 0 && (
-            <StatCard title="⚠ Cancelled + Paid" value={formatCurrency(closure.cancelledButPaidAmount)} icon={<XCircle className="size-5" />} helper={`${closure.cancelledButPaid.length} order${closure.cancelledButPaid.length !== 1 ? "s" : ""} — cash in drawer, not in revenue`} tone="red" />
+            <StatCard title="Refunded" value={formatCurrency(closure.cancelledButPaidAmount)} icon={<XCircle className="size-5" />} helper={`${closure.cancelledButPaid.length} verified refund${closure.cancelledButPaid.length !== 1 ? "s" : ""}; deducted from collection`} tone="red" />
           )}
         </div>
 
@@ -1086,6 +1109,34 @@ export default function DailyClosure() {
             </table>
           </div>
         </div>
+
+        {closure.cancelledButPaid.length > 0 && (
+          <div className="rounded-3xl border border-red-200 bg-card p-4 shadow-soft space-y-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">Refund register</p>
+              <h2 className="font-display text-xl font-black text-foreground">Paid Bills Refunded During This Counter Session</h2>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-border">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-red-50 text-xs uppercase text-red-700">
+                  <tr><th className="p-3 text-left">Bill</th><th className="p-3 text-left">Refund time</th><th className="p-3 text-left">Mode</th><th className="p-3 text-left">Reason</th><th className="p-3 text-left">Cashier</th><th className="p-3 text-right">Amount</th></tr>
+                </thead>
+                <tbody>
+                  {closure.cancelledButPaid.map(order => (
+                    <tr key={order.id} className="border-t border-border">
+                      <td className="p-3 font-black">#{String(order.orderNumber).padStart(4, '0')}</td>
+                      <td className="p-3">{timeLabel(order.updatedAt)}</td>
+                      <td className="p-3 font-bold uppercase">{order.paymentType.replace('_', ' ')}</td>
+                      <td className="p-3">{order.cancelReason || 'Not specified'}</td>
+                      <td className="p-3">{order.billedBy || order.createdBy || '-'}</td>
+                      <td className="p-3 text-right font-black tabular-nums text-red-700">-{formatCurrency(order.paymentType === 'advance' ? safeNumber(order.fullyPaidAt ? (order.fullAmount || order.total) : (order.advanceAmount || order.total)) : safeNumber(order.total))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {(closure.unpaid.length > 0 || closure.cancelled.length > 0) && (
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 space-y-2">
