@@ -164,9 +164,22 @@ function ownerPrintSection(title: string, html: string) {
   win.document.write(`
     <html><head><title>${title}</title>
       <style>
-        body{font-family:Inter,Arial,sans-serif;padding:24px;color:#111827}h1{font-size:20px;margin:0 0 12px}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border:1px solid #d1d5db;padding:8px;font-size:12px;text-align:left}th{background:#f3f4f6}.muted{color:#6b7280;font-size:12px}
+        @page{size:A4 landscape;margin:9mm}
+        *{box-sizing:border-box}
+        body{margin:0;background:#f8fafc;color:#111827;font-family:Inter,Arial,sans-serif;font-size:12px}
+        body:before{content:"";display:block;height:12px;background:linear-gradient(90deg,#f97316,#059669,#111827)}
+        main{background:#fff;min-height:100vh;padding:24px}
+        .hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #111827;padding-bottom:14px}
+        h1{font-size:24px;line-height:1.05;margin:0;font-weight:900}
+        .muted{color:#64748b;font-size:12px;font-weight:700}
+        .stamp{border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}
+        table{width:100%;border-collapse:separate;border-spacing:0;margin-top:14px;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden}
+        th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;font-size:12px;text-align:left;vertical-align:top}
+        th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
+        tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}
+        @media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{padding:16px}table{break-inside:auto}tr{break-inside:avoid}}
       </style>
-    </head><body><h1>${title}</h1><p class="muted">Generated ${new Date().toLocaleString('en-IN')}</p>${html}</body></html>
+    </head><body><main><div class="hero"><div><div class="stamp">Owner Report</div><h1>${title}</h1></div><p class="muted">Generated ${new Date().toLocaleString('en-IN')}</p></div>${html}</main></body></html>
   `);
   win.document.close();
   win.print();
