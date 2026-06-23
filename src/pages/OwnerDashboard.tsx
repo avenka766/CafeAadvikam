@@ -1412,13 +1412,14 @@ function OwnerComplaintsTab() {
 
 function BranchOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
-  const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
+  const { sales, incoming, advanceOrders, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const SALES_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch'];
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
 
   const from = useMemo(() => ownerPresetStart(preset), [preset]);
   const to = useMemo(() => {
@@ -1433,12 +1434,23 @@ function BranchOverviewTab() {
 
   const branchStockAlertCount = (branch: Branch) => {
     if (branch === 'Hosur') return 0;
-    const uniqueStock = new Map<string, (typeof stock)[Branch][number]>();
-    (stock[branch] || []).forEach(item => {
-      const key = `${item.itemName.trim().toLowerCase()}::${item.unit || 'pcs'}`;
-      uniqueStock.set(key, item);
-    });
-    return Array.from(uniqueStock.values()).filter(item => Number(item.quantity || 0) <= Number(item.minThreshold || 0)).length;
+
+    // Owner alerts must represent real stock mismatch events, not every
+    // zero/low-stock catalogue row. Deduplicate repeated mismatch records for
+    // the same branch, item and sale before displaying the count.
+    const uniqueMismatches = new Set(
+      stockMismatches
+        .filter((mismatch) => mismatch.branch === branch)
+        .map((mismatch) => [
+          mismatch.branch,
+          mismatch.itemName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+          mismatch.soldAt,
+          mismatch.soldQty,
+          mismatch.shortage,
+        ].join('|')),
+    );
+
+    return uniqueMismatches.size;
   };
 
   const pendingIncomingCount = (branch: Branch) => {
@@ -1543,7 +1555,7 @@ function BranchOverviewTab() {
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, from, to]);
+  }), [ownerLedger, orders, sales, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, stockMismatches, from, to]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
@@ -1813,6 +1825,7 @@ function OwnerAlertsTab() {
 
   useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
+  useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
   useEffect(() => { load(); }, [load]);
 
   const alerts: OwnerAlert[] = useMemo(() => {
