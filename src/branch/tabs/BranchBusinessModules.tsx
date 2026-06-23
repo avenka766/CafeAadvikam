@@ -1037,6 +1037,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     expected, counted: countedCash, difference: diff,
     notes,
     bills: counterTodayBills.map((b) => ({ billNo: b.billNo, createdAt: b.createdAt, customerName: b.creditCustomerName, paymentMode: b.paymentMode, total: b.total, biller: b.biller })),
+    refundRows: todayReturns.map((r) => ({ returnNo: r.returnNo, originalBillNo: r.originalBillNo, createdAt: r.createdAt, paymentMode: r.returnPayMode || r.originalPaymentMode || 'cash', reason: r.reason, cashier: r.returnedBy, amount: r.total })),
   });
 
   const exportClosure = () => {
@@ -1188,6 +1189,17 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
       </div>
 
+      {todayReturns.length > 0 && (
+        <Section title="Refund Register" icon={<RotateCcw className="size-5"/>}>
+          <div className="overflow-x-auto rounded-2xl border border-red-200">
+            <table className="w-full min-w-[820px] text-sm">
+              <thead className="bg-red-50 text-left text-xs uppercase text-red-700"><tr><th className="p-3">Return</th><th className="p-3">Original Bill</th><th className="p-3">Time</th><th className="p-3">Mode</th><th className="p-3">Reason</th><th className="p-3">Cashier</th><th className="p-3 text-right">Amount</th></tr></thead>
+              <tbody>{todayReturns.map((r) => <tr key={r.id} className="border-t border-border"><td className="p-3 font-black">{r.returnNo}</td><td className="p-3 font-bold">{r.originalBillNo}</td><td className="p-3">{new Date(r.createdAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</td><td className="p-3 font-bold uppercase">{r.returnPayMode || r.originalPaymentMode || 'cash'}</td><td className="p-3">{r.reason}</td><td className="p-3">{r.returnedBy}</td><td className="p-3 text-right font-black text-red-700">-{money(r.total)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_420px]">
         <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -1267,6 +1279,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <span className="text-slate-500">Cash</span><span className="font-black tabular-nums">{money(num(c.cash_total))}</span>
               <span className="text-slate-500">UPI</span><span className="font-black tabular-nums">{money(num(c.upi_total))}</span>
               <span className="text-slate-500">Card</span><span className="font-black tabular-nums">{money(num(c.card_total))}</span>
+              <span className="text-slate-500">Refunds</span><span className="font-black tabular-nums text-red-600">-{money(num(c.refunds))}</span>
               <span className="text-slate-500">Expected Cash</span><span className="font-black tabular-nums">{money(num(c.expected_cash))}</span>
               <span className="text-slate-500">Physical Cash</span><span className="font-black tabular-nums">{money(num(c.actual_cash))}</span>
               <span className="text-slate-500">Difference</span><span className={cn("font-black tabular-nums", Math.abs(num(c.difference)) < 0.01 ? 'text-emerald-600' : 'text-red-600')}>{money(num(c.difference))}</span>
