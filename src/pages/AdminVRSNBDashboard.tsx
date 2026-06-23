@@ -7,7 +7,7 @@ import {
   type ElementType,
   type ReactNode,
 } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
 import { supabase } from "@/lib/supabase";
@@ -411,7 +411,6 @@ function PaymentSplitCard({
 export default function AdminVRSNBDashboard() {
   const { currentUser } = useAuthStore();
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
     bills,
@@ -449,7 +448,9 @@ export default function AdminVRSNBDashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
-  const adminLedger = useBranchLedger(fromDate, toDate, ["VRSNB", "Cafe"]);
+  const [viewBranch, setViewBranch] = useState<Branch>("VRSNB");
+  const viewBranchLabel = viewBranch === "Cafe" ? "Cafe / Biller" : "VRSNB Branch";
+  const adminLedger = useBranchLedger(fromDate, toDate, [viewBranch]);
 
   const userName =
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
@@ -479,25 +480,25 @@ export default function AdminVRSNBDashboard() {
       catalogueNames.has(normal(item.itemName)),
     );
   }, [stock]);
-  const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
+  const branchSalesRows = useMemo(() => sales[viewBranch] || [], [sales, viewBranch]);
   const branchBills = useMemo(
     () =>
       bills.filter(
-        (b) => b.branch === BRANCH && inRange(b.createdAt, fromDate, toDate),
+        (b) => b.branch === viewBranch && inRange(b.createdAt, fromDate, toDate),
       ),
-    [bills, fromDate, toDate],
+    [bills, fromDate, toDate, viewBranch],
   );
   const branchReturns = useMemo(
     () =>
       returns.filter(
-        (r) => r.branch === BRANCH && inRange(r.createdAt, fromDate, toDate),
+        (r) => r.branch === viewBranch && inRange(r.createdAt, fromDate, toDate),
       ),
-    [returns, fromDate, toDate],
+    [returns, fromDate, toDate, viewBranch],
   );
   const billedBillNos = useMemo(
     () =>
-      new Set(bills.filter((b) => b.branch === BRANCH).map((b) => b.billNo)),
-    [bills],
+      new Set(bills.filter((b) => b.branch === viewBranch).map((b) => b.billNo)),
+    [bills, viewBranch],
   );
   const legacySalesRows = useMemo(
     () =>
@@ -571,7 +572,7 @@ export default function AdminVRSNBDashboard() {
     legacySalesRows
       .filter((s) => amountForLegacyPayment(s.paymentMethod, "credit"))
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
-  const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
+  const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === viewBranch);
   const hasLedgerRows = ledgerRows.length > 0;
   const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
@@ -592,7 +593,7 @@ export default function AdminVRSNBDashboard() {
   const advanceCollectionsFallback = cashMovements
     .filter(
       (m) =>
-        m.branch === BRANCH &&
+        m.branch === viewBranch &&
         inRange(m.dateTime, fromDate, toDate) &&
         m.direction === "in" &&
         /advance/i.test(m.purpose || ""),
@@ -634,8 +635,8 @@ export default function AdminVRSNBDashboard() {
   }, [branchStock, lowSearch]);
 
   const movementRows = useMemo(
-    () => cashMovements.filter((m) => m.branch === BRANCH),
-    [cashMovements],
+    () => cashMovements.filter((m) => m.branch === viewBranch),
+    [cashMovements, viewBranch],
   );
   const movementInRange = useMemo(
     () => movementRows.filter((m) => inRange(m.dateTime, fromDate, toDate)),
@@ -656,31 +657,31 @@ export default function AdminVRSNBDashboard() {
   // the matching cash-movement outflow, otherwise Bank Transfer deposits
   // cancel themselves and show an incorrect zero/negative balance.
   const bankBalance = bankDeposits
-    .filter((d) => d.branch === BRANCH)
+    .filter((d) => d.branch === viewBranch)
     .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
   const expenseAmount = expenses
-    .filter((e) => e.branch === BRANCH && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
+    .filter((e) => e.branch === viewBranch && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
     .reduce((sum, e) => sum + e.amount, 0);
 
-  const scopedCredits = [...(dbCreditSales.Cafe || []), ...(dbCreditSales[BRANCH] || [])];
-  const scopedCreditPayments = [...(dbCreditPayments.Cafe || []), ...(dbCreditPayments[BRANCH] || [])];
+  const scopedCredits = dbCreditSales[viewBranch] || [];
+  const scopedCreditPayments = dbCreditPayments[viewBranch] || [];
   const pendingCredit = scopedCredits.filter((c) => c.status !== "settled").reduce((sum, c) => sum + c.creditAmount, 0);
   const creditPaymentsInRange = scopedCreditPayments.filter((p) => inRange(p.createdAt, fromDate, toDate));
   const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
   salesBreakdown.expenses = expenseAmount;
   const purchasePaymentsInRange = purchasePayments.filter(
-    (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
+    (p) => p.branch === viewBranch && inRange(p.createdAt, fromDate, toDate),
   );
   const purchasePaid = purchasePaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   const purchaseCashPaid = purchasePaymentsInRange
     .filter((p) => p.mode === "cash")
     .reduce((sum, p) => sum + p.amount, 0);
   const depositsInRange = bankDeposits.filter(
-    (d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate),
+    (d) => d.branch === viewBranch && inRange(d.createdAt, fromDate, toDate),
   );
   const depositAmount = depositsInRange.reduce((sum, d) => sum + d.amount, 0);
 
@@ -899,6 +900,8 @@ export default function AdminVRSNBDashboard() {
   ).length;
 
   const commonProps = {
+    reportBranch: viewBranch,
+    reportLabel: viewBranchLabel,
     fromDate,
     toDate,
     setFromDate,
@@ -959,11 +962,29 @@ export default function AdminVRSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-2 text-white shadow-lg">
-        <div className="px-3"><p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p><p className="text-sm font-bold">Showing VRSNB branch data only</p></div>
-        <div className="flex rounded-xl bg-white/10 p-1">
-          <button type="button" onClick={() => navigate('/admin-dashboard')} className="rounded-lg px-4 py-2 text-sm font-black text-white/70 hover:bg-white/10 hover:text-white">Cafe</button>
-          <button type="button" className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-black text-white shadow">VRSNB Branch</button>
+      <div className="flex flex-col gap-3 rounded-[2rem] bg-slate-950 p-3 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex rounded-2xl bg-white/10 p-1">
+            {(["Cafe", "VRSNB"] as Branch[]).map((branch) => (
+              <button
+                key={branch}
+                type="button"
+                onClick={() => setViewBranch(branch)}
+                className={cn(
+                  "rounded-xl px-4 py-2 text-sm font-black transition",
+                  viewBranch === branch
+                    ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20"
+                    : "text-white/70 hover:bg-white/10 hover:text-white",
+                )}
+              >
+                {branch === "Cafe" ? "Cafe" : "VRSNB Branch"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-1 text-left sm:text-right">
+          <p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p>
+          <p className="text-sm font-bold">Showing {viewBranchLabel} data</p>
         </div>
       </div>
       {!["stock", "complaints", "quotations"].includes(tab) && (
@@ -1196,7 +1217,7 @@ function OverviewTab(props: any) {
     <div className="space-y-4">
       <div className="flex items-center justify-end">
         <button
-          onClick={() => printOverview(props, "VRSNB")}
+          onClick={() => printOverview(props, props.reportLabel || "VRSNB Branch")}
           className={cn(btnCls, "bg-slate-950 text-white")}
         >
           <Printer className="size-4" />
@@ -3762,6 +3783,20 @@ function ReportsTab(props: any) {
   const branchQuotes = quotations.filter((q) => q.branch === BRANCH);
   const branchClosures = cashierClosures.filter((c) => c.branch === BRANCH);
   const collectionTotal = props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
+  const rupeeRows = [
+    ["Regular bill sales", props.salesBreakdown.billSales, "Bill value before advances and credit recovery"],
+    ["Cash sales collected", props.cashSales, "Cash received from bill payments"],
+    ["UPI sales collected", props.upiSales, "UPI received from bill payments"],
+    ["Card sales collected", props.cardSales, "Card received from bill payments"],
+    ["Advance collected", props.salesBreakdown.advanceCollected, "New advance money collected"],
+    ["Advance balance collected", props.salesBreakdown.advanceBalanceCollected, "Pending advance balance collected"],
+    ["Credit billed", props.salesBreakdown.creditBilled, "Credit value created"],
+    ["Credit collected", props.salesBreakdown.creditCollected, "Old credit recovered"],
+    ["Returns deducted", -props.salesBreakdown.returns, "Refund / return impact"],
+    ["Expenses deducted", -props.salesBreakdown.expenses, "Admin expenses impact"],
+    ["Total collections", collectionTotal, "Cash + UPI + card + credit recovery + advances"],
+    ["Net sales shown", props.salesBreakdown.netSales, "Sales after returns"],
+  ];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -3797,7 +3832,7 @@ function ReportsTab(props: any) {
           <div className="flex gap-2">
             <button
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
-              onClick={() => printOverview(props, "VRSNB")}
+              onClick={() => printOverview(props, props.reportLabel || "VRSNB Branch")}
             >
               <Printer className="size-4" />
               Print Summary
@@ -3837,20 +3872,27 @@ function ReportsTab(props: any) {
       >
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="xl:col-span-2">
-            <h3 className="mb-2 font-black">Rupee Source Breakdown</h3>
+            <div className="mb-3 rounded-[2rem] border border-orange-100 bg-gradient-to-br from-orange-50 via-white to-emerald-50 p-4">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-600">Rupee Story</p>
+                  <h3 className="font-serif text-2xl font-black text-slate-950">Where the money came from</h3>
+                </div>
+                <p className="text-xs font-bold text-slate-500">Every rupee is split by source before totals.</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                {rupeeRows.map(([label, value, note]) => (
+                  <div key={String(label)} className={cn("rounded-2xl border bg-white p-3 shadow-sm", Number(value) < 0 ? "border-red-100" : "border-slate-100")}>
+                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
+                    <p className={cn("mt-1 text-xl font-black tabular-nums", Number(value) < 0 ? "text-red-600" : "text-slate-950")}>{money(Number(value))}</p>
+                    <p className="mt-1 text-[11px] font-bold text-slate-500">{note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
             <DataTable
-              headers={["Source", "Amount"]}
-              rows={[
-                ["Regular bill sales", money(props.salesBreakdown.billSales)],
-                ["Advance collected", money(props.salesBreakdown.advanceCollected)],
-                ["Advance balance collected", money(props.salesBreakdown.advanceBalanceCollected)],
-                ["Credit billed", money(props.salesBreakdown.creditBilled)],
-                ["Credit collected", money(props.salesBreakdown.creditCollected)],
-                ["Returns deducted", money(-props.salesBreakdown.returns)],
-                ["Expenses deducted", money(-props.salesBreakdown.expenses)],
-                ["Total collections", money(collectionTotal)],
-                ["Net sales shown", money(props.salesBreakdown.netSales)],
-              ]}
+              headers={["Source", "Amount", "Meaning"]}
+              rows={rupeeRows.map(([label, value, note]) => [label, money(Number(value)), note])}
             />
           </div>
           <div>

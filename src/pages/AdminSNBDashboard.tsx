@@ -3771,6 +3771,20 @@ function ReportsTab(props: any) {
   const branchQuotes = quotations.filter((q) => q.branch === BRANCH);
   const branchClosures = cashierClosures.filter((c) => c.branch === BRANCH);
   const collectionTotal = props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
+  const rupeeRows = [
+    ["Regular bill sales", props.salesBreakdown.billSales, "Bill value before advances and credit recovery"],
+    ["Cash sales collected", props.cashSales, "Cash received from bill payments"],
+    ["UPI sales collected", props.upiSales, "UPI received from bill payments"],
+    ["Card sales collected", props.cardSales, "Card received from bill payments"],
+    ["Advance collected", props.salesBreakdown.advanceCollected, "New advance money collected"],
+    ["Advance balance collected", props.salesBreakdown.advanceBalanceCollected, "Pending advance balance collected"],
+    ["Credit billed", props.salesBreakdown.creditBilled, "Credit value created"],
+    ["Credit collected", props.salesBreakdown.creditCollected, "Old credit recovered"],
+    ["Returns deducted", -props.salesBreakdown.returns, "Refund / return impact"],
+    ["Expenses deducted", -props.salesBreakdown.expenses, "Admin expenses impact"],
+    ["Total collections", collectionTotal, "Cash + UPI + card + credit recovery + advances"],
+    ["Net sales shown", props.salesBreakdown.netSales, "Sales after returns"],
+  ];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-4">
@@ -3846,20 +3860,27 @@ function ReportsTab(props: any) {
       >
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="xl:col-span-2">
-            <h3 className="mb-2 font-black">Rupee Source Breakdown</h3>
+            <div className="mb-3 rounded-[2rem] border border-orange-100 bg-gradient-to-br from-orange-50 via-white to-emerald-50 p-4">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-600">Rupee Story</p>
+                  <h3 className="font-serif text-2xl font-black text-slate-950">Where the money came from</h3>
+                </div>
+                <p className="text-xs font-bold text-slate-500">Every rupee is split by source before totals.</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                {rupeeRows.map(([label, value, note]) => (
+                  <div key={String(label)} className={cn("rounded-2xl border bg-white p-3 shadow-sm", Number(value) < 0 ? "border-red-100" : "border-slate-100")}>
+                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
+                    <p className={cn("mt-1 text-xl font-black tabular-nums", Number(value) < 0 ? "text-red-600" : "text-slate-950")}>{money(Number(value))}</p>
+                    <p className="mt-1 text-[11px] font-bold text-slate-500">{note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
             <DataTable
-              headers={["Source", "Amount"]}
-              rows={[
-                ["Regular bill sales", money(props.salesBreakdown.billSales)],
-                ["Advance collected", money(props.salesBreakdown.advanceCollected)],
-                ["Advance balance collected", money(props.salesBreakdown.advanceBalanceCollected)],
-                ["Credit billed", money(props.salesBreakdown.creditBilled)],
-                ["Credit collected", money(props.salesBreakdown.creditCollected)],
-                ["Returns deducted", money(-props.salesBreakdown.returns)],
-                ["Expenses deducted", money(-props.salesBreakdown.expenses)],
-                ["Total collections", money(collectionTotal)],
-                ["Net sales shown", money(props.salesBreakdown.netSales)],
-              ]}
+              headers={["Source", "Amount", "Meaning"]}
+              rows={rupeeRows.map(([label, value, note]) => [label, money(Number(value)), note])}
             />
           </div>
           <div>
