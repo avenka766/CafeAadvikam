@@ -127,12 +127,12 @@ function BranchDailyClosureTab({
   const outOfStock = branchStock.filter(s => s.quantity <= 0).length;
 
   const paymentBreakdown = useMemo(() => {
-    const b: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0 };
+    const b: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0, split: 0, other: 0 };
     for (const s of salesToday) {
       const method = (s.paymentMethod ?? 'cash').toLowerCase();
       const revenue = (s.unitPrice ?? 0) * s.quantitySold;
       if (method in b) b[method] += revenue;
-      else b.cash += revenue;
+      else b.other += revenue;
     }
     return b;
   }, [salesToday]);
@@ -162,6 +162,8 @@ function BranchDailyClosureTab({
       { Metric: 'UPI Sales', Value: paymentBreakdown.upi },
       { Metric: 'Card Sales', Value: paymentBreakdown.card },
       { Metric: 'Credit Sales', Value: paymentBreakdown.credit },
+      { Metric: 'Split Payment Sales', Value: paymentBreakdown.split },
+      { Metric: 'Other / Unclassified Sales', Value: paymentBreakdown.other },
     ], 'Closure Summary');
 
     addSheet(closureRows.map(r => ({
@@ -315,6 +317,8 @@ function BranchDailyClosureTab({
                 ['UPI', paymentBreakdown.upi],
                 ['Card', paymentBreakdown.card],
                 ['Credit', paymentBreakdown.credit],
+                ['Split', paymentBreakdown.split],
+                ['Other', paymentBreakdown.other],
               ].map(([label, amount]) => (
                 <div key={label as string} className="rounded-2xl bg-slate-50 p-3">
                   <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">{label as string}</p>
@@ -415,11 +419,11 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
 
   // Payment breakdown
   const payBreakdown = useMemo(() => {
-    const b: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0 };
+    const b: Record<string, number> = { cash: 0, upi: 0, card: 0, credit: 0, split: 0, other: 0 };
     rangeSales.forEach(s => {
       const pm  = (s.paymentMethod ?? '').toLowerCase();
       const rev = (s.unitPrice ?? 0) * s.quantitySold;
-      if (pm in b) b[pm] += rev; else b.cash += rev;
+      if (pm in b) b[pm] += rev; else b.other += rev;
     });
     return b;
   }, [rangeSales]);
@@ -454,11 +458,13 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
       { Metric: 'Branch',               Value: branch },
       { Metric: 'Total Revenue (₹)',    Value: totalRevenue },
       { Metric: 'Total Items Sold',     Value: totalQty },
-      { Metric: 'Transactions',         Value: rangeSales.length },
+      { Metric: 'Transactions',         Value: new Set(rangeSales.map(s => s.billNo || `${s.soldAt}:${s.soldBy}`)).size },
       { Metric: 'Cash Revenue (₹)',     Value: payBreakdown.cash },
       { Metric: 'UPI Revenue (₹)',      Value: payBreakdown.upi },
       { Metric: 'Card Revenue (₹)',     Value: payBreakdown.card },
       { Metric: 'Credit Billed (₹)',    Value: payBreakdown.credit },
+      { Metric: 'Split Payment Revenue', Value: payBreakdown.split },
+      { Metric: 'Other / Unclassified Revenue', Value: payBreakdown.other },
       { Metric: 'Credit Outstanding (₹)', Value: creditOutstanding },
     ], 'Summary');
 
@@ -549,6 +555,8 @@ export function ReportsTab({ branch, branchSales, advanceOrders = [] }: Props) {
               { label: '📱 UPI',    val: payBreakdown.upi },
               { label: '💳 Card',   val: payBreakdown.card },
               { label: '📋 Credit', val: payBreakdown.credit },
+              { label: 'Split', val: payBreakdown.split },
+              { label: 'Other', val: payBreakdown.other },
             ].map(p => p.val > 0 && (
               <div key={p.label} className="bg-white/60 rounded-lg px-2 py-1.5">
                 <p className="text-[10px] text-muted-foreground">{p.label}</p>
