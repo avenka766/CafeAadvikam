@@ -1415,10 +1415,7 @@ function BranchOverviewTab() {
   const { sales, stock, incoming, advanceOrders, creditSales, fetchBranchData } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
-  const [unitView, setUnitView] = useState<'sales' | 'ops'>('sales');
-
   const SALES_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch'];
-  const OPS_UNITS   = ['Bakery Production', 'Store', 'Packing / Dispatch'];
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
@@ -1433,6 +1430,21 @@ function BranchOverviewTab() {
   const fromKey = useMemo(() => ownerDateInput(from), [from]);
   const toKey = useMemo(() => ownerDateInput(to), [to]);
   const ownerLedger = useBranchLedger(fromKey, toKey, ['VRSNB', 'SNB', 'Hosur']);
+
+  const branchStockAlertCount = (branch: Branch) => {
+    if (branch === 'Hosur') return 0;
+    const uniqueStock = new Map<string, (typeof stock)[Branch][number]>();
+    (stock[branch] || []).forEach(item => {
+      const key = `${item.itemName.trim().toLowerCase()}::${item.unit || 'pcs'}`;
+      uniqueStock.set(key, item);
+    });
+    return Array.from(uniqueStock.values()).filter(item => Number(item.quantity || 0) <= Number(item.minThreshold || 0)).length;
+  };
+
+  const pendingIncomingCount = (branch: Branch) => {
+    if (branch === 'Hosur') return 0;
+    return new Set((incoming[branch] || []).filter(item => !item.confirmed).map(item => item.id)).size;
+  };
 
   const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
     if (unit === 'Cafe') {
@@ -1493,15 +1505,16 @@ function BranchOverviewTab() {
       const card = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.card_total), 0);
       const credit = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.credit_billed), 0);
       const savedClosure = ownerLedger.savedClosures.find(c => c.branch === branch);
-      const lowStock = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
-      const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
+      const stockAlertCount = branchStockAlertCount(branch);
       const openCredit = (creditSales[branch] || []).reduce((sum, sale) => sum + moneyNumber(sale.creditAmount), 0);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
         expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: 0, pendingPayments: openCredit,
-        stockAlerts: lowStock + outStock + (incoming[branch] || []).filter(i => !i.confirmed).length,
+        stockAlerts: stockAlertCount + pendingIncomingCount(branch),
         closureStatus: savedClosure ? (Math.abs(ownerLedger.toNumber(savedClosure.difference)) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
-        keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
+        keyAlert: branch === 'Hosur'
+          ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
+          : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
       };
     }
     const dbSales = (sales[branch] || []).filter(s => ownerInRange(s.soldAt, from, to));
@@ -1513,8 +1526,7 @@ function BranchOverviewTab() {
     const ret = branchReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
     const branchPurchases = purchases.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
     const purchasePaid = purchasePayments.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
-    const lowStock = (stock[branch] || []).filter(item => item.quantity > 0 && item.quantity <= item.minThreshold).length;
-    const outStock = (stock[branch] || []).filter(item => item.quantity <= 0).length;
+    const stockAlertCount = branchStockAlertCount(branch);
     const openCredit = (creditSales[branch] || [])
       .filter((credit) => credit.status !== 'settled' && ownerInRange(credit.createdAt, from, to))
       .reduce((sum, credit) => sum + moneyNumber(credit.creditAmount), 0);
@@ -1525,16 +1537,15 @@ function BranchOverviewTab() {
     return {
       unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
       expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchases, pendingPayments: Math.max(0, branchPurchases - purchasePaid),
-      stockAlerts: lowStock + outStock + (incoming[branch] || []).filter(i => !i.confirmed).length,
+      stockAlerts: stockAlertCount + pendingIncomingCount(branch),
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
-      keyAlert: `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${lowStock + outStock} stock alerts`,
+      keyAlert: branch === 'Hosur'
+        ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
+        : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
   }), [ownerLedger, orders, sales, stock, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, from, to]);
 
-  // CHANGE 4a: filter by selected view
-  const visibleRows = branchRows.filter(r =>
-    unitView === 'sales' ? SALES_UNITS.includes(r.unit) : OPS_UNITS.includes(r.unit)
-  );
+  const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
   // CHANGE 4c: payment chart data for sales branches
   const paymentChartData = visibleRows
@@ -1544,7 +1555,7 @@ function BranchOverviewTab() {
       Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit,
     }));
 
-  const totals = branchRows.reduce((acc, row) => ({
+  const totals = visibleRows.reduce((acc, row) => ({
     sales: acc.sales + row.sales,
     netSales: acc.netSales + row.netSales,
     purchases: acc.purchases + row.purchases,
@@ -1575,20 +1586,6 @@ function BranchOverviewTab() {
         <button type="button" onClick={() => ownerCsvDownload('owner-branch-overview.csv', branchRows.map(r => ({ Unit: r.unit, Sales: r.sales, NetSales: r.netSales, Purchases: r.purchases, PendingPayments: r.pendingPayments, Alerts: r.stockAlerts, Closure: r.closureStatus })))}><Download className="size-4" />Export</button>
       </OwnerToolbar>
 
-      {/* CHANGE 4a: Sales Branches vs Internal Operations toggle */}
-      <div className="flex gap-1 p-1 rounded-xl bg-muted w-fit">
-        <button onClick={() => setUnitView('sales')}
-          className={cn('px-4 py-2 rounded-lg text-sm font-semibold transition-all',
-            unitView === 'sales' ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-          Sales Branches
-        </button>
-        <button onClick={() => setUnitView('ops')}
-          className={cn('px-4 py-2 rounded-lg text-sm font-semibold transition-all',
-            unitView === 'ops' ? 'bg-card shadow text-foreground' : 'text-muted-foreground')}>
-          Internal Operations
-        </button>
-      </div>
-
       <section className="owner-metric-grid wide">
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
@@ -1598,7 +1595,7 @@ function BranchOverviewTab() {
       </section>
 
       {/* CHANGE 4c: Grouped payment bar chart for sales branches */}
-      {unitView === 'sales' && paymentChartData.length > 0 && (
+      {paymentChartData.length > 0 && (
         <section className="owner-panel">
           <div className="owner-panel-head"><div><span>Payment Breakdown by Branch</span><h3>Cash · UPI · Card · Credit</h3></div></div>
           <ResponsiveContainer width="100%" height={240}>
@@ -1936,7 +1933,6 @@ function OwnerAlertsTab() {
 function OwnerPurchasesTab() {
   const { invoices, load } = useInvoiceStore();
   const { orders: purchaseOrders, load: loadOrders } = usePurchaseOrderStore();
-  const { purchases, purchasePayments } = useBranchOpsStore();
   const [fromDate, setFromDate] = useState(ownerDateInput(ownerPresetStart('30d')));
   const [toDate, setToDate] = useState(ownerDateInput());
   const [query, setQuery] = useState('');
@@ -2001,9 +1997,8 @@ function OwnerPurchasesTab() {
   const from = new Date(`${fromDate}T00:00:00`);
   const to = new Date(`${toDate}T23:59:59`);
   const filtered = lines.filter(line => ownerInRange(line.purchaseDate, from, to) && (status === 'all' || line.purchaseStatus === status || line.stockSyncStatus === status) && `${line.supplierName} ${line.invoiceNumber} ${line.itemName}`.toLowerCase().includes(query.toLowerCase()));
-  const branchPurchaseRows = purchases.filter(p => ownerInRange(p.createdAt, from, to));
-  const totalPurchase = filtered.reduce((sum, line) => sum + line.total, 0) + branchPurchaseRows.reduce((sum, p) => sum + moneyNumber(p.total), 0);
-  const paid = filtered.reduce((sum, line) => sum + line.paidAmount, 0) + purchasePayments.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+  const totalPurchase = filtered.reduce((sum, line) => sum + line.total, 0);
+  const paid = filtered.reduce((sum, line) => sum + line.paidAmount, 0);
   const pending = Math.max(0, totalPurchase - paid);
   // CHANGE 7: payment status donut data
   const paymentStatusData = [
@@ -2051,7 +2046,7 @@ function OwnerPurchasesTab() {
       </div>
 
       <section className="owner-metric-grid">
-        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Total Purchases" value={formatCurrency(totalPurchase)} sub="Store + branch purchase invoices" tone="purple" />
+        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Total Purchases" value={formatCurrency(totalPurchase)} sub="Store dashboard purchase invoices" tone="purple" />
         <OwnerMetricCard icon={<Banknote className="size-5" />} label="Paid Amount" value={formatCurrency(paid)} sub="Supplier payments captured" tone="green" />
         <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payable" value={formatCurrency(pending)} sub="Needs payment follow-up" tone={pending ? 'amber' : 'green'} />
         <OwnerMetricCard icon={<Package className="size-5" />} label="Stock Sync Pending" value={filtered.filter(line => line.stockSyncStatus !== 'Synced').length} sub="Prevent missing stock" tone="red" />

@@ -158,7 +158,7 @@ const DATE_PRESETS = [
   { label: '1 Month', days: 29 },
 ] as const;
 
-function DatePresets({ setFromDate, setToDate }: { setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
+function DatePresets({ fromDate, toDate, setFromDate, setToDate }: { fromDate: string; toDate: string; setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
   function applyPreset(days: number) {
     const today = todayInput();
     if (days === -1) {
@@ -172,12 +172,23 @@ function DatePresets({ setFromDate, setToDate }: { setFromDate: (d: string) => v
   }
   return (
     <div className="flex flex-wrap gap-1.5">
-      {DATE_PRESETS.map(p => (
-        <button key={p.label} onClick={() => applyPreset(p.days)}
-          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
-          {p.label}
-        </button>
-      ))}
+      {DATE_PRESETS.map(p => {
+        const today = todayInput();
+        const expectedFrom = p.days === -1
+          ? todayInput(new Date(Date.now() - 86400000))
+          : todayInput(new Date(Date.now() - p.days * 86400000));
+        const expectedTo = p.days === -1 ? expectedFrom : today;
+        const active = fromDate === expectedFrom && toDate === expectedTo;
+        return (
+          <button key={p.label} onClick={() => applyPreset(p.days)}
+            aria-pressed={active}
+            className={cn('rounded-full border px-3 py-1 text-xs font-black transition', active
+              ? 'border-slate-950 bg-slate-950 text-white shadow-sm'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+            {p.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -208,7 +219,7 @@ function AdminDashboard() {
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, wasteLogs, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
   const { invoices, load: loadInvoices } = useInvoiceStore();
-  const { notifications: adminNotifications, load: loadAdminNotifications } = useNotificationStore();
+  const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
   const selectTab = (next: AdminTab) => {
     setActiveTab(next);
@@ -514,7 +525,7 @@ function AdminDashboard() {
     <div className="space-y-5">
       {/* TOP BAR: date presets + branch filter + excel */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -641,7 +652,7 @@ function AdminDashboard() {
     <div className="space-y-5">
       {/* TOP BAR: date presets + date range + excel (no branch filter - cafe only) */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -736,7 +747,7 @@ function AdminDashboard() {
     <div className="space-y-5">
       {/* TOP BAR: date presets + branch filter (no Cafe) + excel */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -1064,7 +1075,7 @@ function AdminDashboard() {
   const CreditsTab = (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
         <div className="flex flex-wrap gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -1090,7 +1101,7 @@ function AdminDashboard() {
   const AdvanceTab = (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DatePresets setFromDate={setFromDate} setToDate={setToDate} />
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
         <div className="flex flex-wrap gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
@@ -1295,7 +1306,7 @@ function AdminDashboard() {
         {nonLowStockNotifications.length === 0 ? <EmptyState label="No alerts. Credit sales, invoice and packing alerts will appear here." /> : (
           <div className="space-y-3">
             {nonLowStockNotifications.slice(0, 50).map(n => (
-              <div key={n.id} className={cn('rounded-2xl border p-4', n.isRead ? 'border-slate-100 bg-slate-50' : 'border-amber-200 bg-amber-50')}>
+              <button type="button" key={n.id} onClick={() => { if (!n.isRead) void markRead(n.id); }} className={cn('w-full rounded-2xl border p-4 text-left transition', n.isRead ? 'border-slate-100 bg-slate-50' : 'border-amber-200 bg-amber-50 hover:bg-amber-100')}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-black text-slate-900">{n.title}</p>
@@ -1304,7 +1315,7 @@ function AdminDashboard() {
                   </div>
                   <Badge tone={n.isRead ? 'slate' : 'amber'}>{n.isRead ? 'Read' : 'Unread'}</Badge>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}
