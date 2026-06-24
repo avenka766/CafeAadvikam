@@ -13,7 +13,13 @@ import {
   MapPin,
   Menu as MenuIcon,
   MessageCircle,
+  Minus,
   Phone,
+  Plus,
+  Search,
+  ShoppingCart,
+  Trash2,
+  CreditCard,
   Sparkles,
   UtensilsCrossed,
   Users,
@@ -44,7 +50,7 @@ import filterCoffeeImg from '@/assets/foods/filter-coffee.jpg';
 import paneerImg from '@/assets/foods/paneer-butter-masala.jpg';
 import limeSodaImg from '@/assets/foods/fresh-lime-soda.jpg';
 import ChatBot from '@/components/features/ChatBot';
-import { SNB_CATEGORIES, SNB_ITEMS } from '@/branch/snbItems';
+import { VRSNB_CATEGORIES, VRSNB_ITEMS } from '@/branch/vrsnbItems';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
@@ -106,141 +112,227 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue: 'cafe' | 'bakery' }) {
+type CustomerVenue = 'cafe' | 'bakery';
+
+type CustomerOrderItem = {
+  key: string;
+  name: string;
+  price: number;
+  unit: string;
+  category: string;
+  venue: CustomerVenue;
+  image?: string;
+};
+
+type CustomerCartLine = CustomerOrderItem & { qty: number };
+
+function buildWhatsappText(customer: { name: string; phone: string; address: string; locationPin: string; note: string; deliveryMethod: string; paymentMethod: string }, cart: CustomerCartLine[], total: number) {
+  const lines = cart.map((item, idx) => `${idx + 1}. ${item.name} (${item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'}) x ${item.qty} = ₹${item.price * item.qty}`);
+  return [
+    'New customer order - Cafe Aadvikam / VRSNB Bakery',
+    '',
+    ...lines,
+    '',
+    `Total: ₹${total}`,
+    '',
+    `Customer: ${customer.name || 'Not provided'}`,
+    `Phone: ${customer.phone || 'Not provided'}`,
+    `Method: ${customer.deliveryMethod}`,
+    `Payment: ${customer.paymentMethod}`,
+    `Address: ${customer.address || 'Not provided'}`,
+    `Location pin: ${customer.locationPin || 'Not provided'}`,
+    customer.note ? `Delivery notes: ${customer.note}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue: CustomerVenue }) {
   const { items } = useMenuStore();
+  const [venue, setVenue] = useState<CustomerVenue>(activeVenue);
   const [sel, setSel] = useState('all');
+  const [query, setQuery] = useState('');
+  const [cart, setCart] = useState<CustomerCartLine[]>([]);
+  const [customer, setCustomer] = useState({ name: '', phone: '', address: '', locationPin: '', note: '', deliveryMethod: 'Delivery', paymentMethod: 'Cash on Delivery' });
   const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
-  const activeCats = useMemo(() => MENU_CATEGORIES.filter((c) => enabled.some((i) => i.category === c.id)), [enabled]);
-  const display = useMemo(() => (sel === 'all' ? activeCats : activeCats.filter((c) => c.id === sel)), [sel, activeCats]);
-  const bakeryCats = useMemo(() => SNB_CATEGORIES.filter((c) => SNB_ITEMS.some((i) => i.category === c)), []);
-  const bakeryDisplay = useMemo(() => (sel === 'all' ? bakeryCats : bakeryCats.filter((c) => c === sel)), [sel, bakeryCats]);
-  useEffect(() => { setSel('all'); }, [activeVenue]);
+  const cafeItems = useMemo<CustomerOrderItem[]>(() => enabled.map((item) => {
+    const cat = MENU_CATEGORIES.find((c) => c.id === item.category);
+    return {
+      key: `cafe-${item.id}`,
+      name: item.name,
+      price: item.price,
+      unit: item.timing || 'Plate',
+      category: cat?.name || item.category,
+      venue: 'cafe',
+      image: item.imageUrl,
+    };
+  }), [enabled]);
+  const bakeryItems = useMemo<CustomerOrderItem[]>(() => VRSNB_ITEMS.map((item) => ({
+    key: `bakery-${item.barcode}`,
+    name: item.name,
+    price: item.price,
+    unit: item.uom,
+    category: item.category,
+    venue: 'bakery',
+  })), []);
+  const allItems = useMemo(() => [...cafeItems, ...bakeryItems], [cafeItems, bakeryItems]);
+  const categories = useMemo(() => {
+    const current = venue === 'cafe' ? cafeItems : bakeryItems;
+    return Array.from(new Set(current.map((i) => i.category)));
+  }, [venue, cafeItems, bakeryItems]);
+  const displayItems = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return allItems.filter((item) => {
+      const venueMatch = item.venue === venue;
+      const catMatch = sel === 'all' || item.category === sel;
+      const qMatch = !q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q);
+      return venueMatch && catMatch && qMatch;
+    });
+  }, [allItems, venue, sel, query]);
+  const total = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
+  const totalQty = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart]);
+  const whatsappText = useMemo(() => buildWhatsappText(customer, cart, total), [customer, cart, total]);
+  const whatsappUrl = `https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent(whatsappText)}`;
+  const upiUrl = `upi://pay?pa=${encodeURIComponent('9095445444@upi')}&pn=${encodeURIComponent('Cafe Aadvikam')}&am=${total}&cu=INR&tn=${encodeURIComponent('Cafe Aadvikam customer order')}`;
+
+  useEffect(() => { setVenue(activeVenue); setSel('all'); }, [activeVenue]);
+  useEffect(() => { setSel('all'); setQuery(''); }, [venue]);
   useScrollLock();
 
+  const addItem = (item: CustomerOrderItem) => {
+    setCart((prev) => {
+      const existing = prev.find((line) => line.key === item.key);
+      if (existing) return prev.map((line) => line.key === item.key ? { ...line, qty: line.qty + 1 } : line);
+      return [...prev, { ...item, qty: 1 }];
+    });
+  };
+  const changeQty = (key: string, delta: number) => {
+    setCart((prev) => prev.map((line) => line.key === key ? { ...line, qty: line.qty + delta } : line).filter((line) => line.qty > 0));
+  };
+
   return (
-    <div className="fixed inset-0 z-[95] flex items-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+    <div className="fixed inset-0 z-[95] flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:p-4" onClick={onClose}>
       <div
-        className="relative flex h-[90vh] w-full flex-col rounded-t-3xl bg-background shadow-2xl"
+        className="relative flex h-[96dvh] w-full max-w-7xl flex-col overflow-hidden rounded-t-3xl bg-[#fffaf2] shadow-2xl sm:h-[92vh] sm:rounded-[2rem]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-5 pb-3 pt-5">
-          <div>
-            <h2 className="font-display text-xl font-bold text-foreground">{activeVenue === 'bakery' ? 'SNB Bakery Menu' : 'Full Menu'}</h2>
-            <p className="text-xs font-body text-muted-foreground">{activeVenue === 'bakery' ? `Bakery items · ${SNB_ITEMS.length} items` : `Pure vegetarian · ${enabled.length} items`}</p>
+        <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 bg-white px-4 py-3 sm:px-6">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-[0.24em] text-orange-700">Customer ordering</p>
+            <h2 className="truncate font-display text-xl font-black text-stone-950 sm:text-2xl">Cafe + VRSNB Bakery cart</h2>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close menu"
-            className="flex size-10 items-center justify-center rounded-full bg-muted transition-transform active:scale-90"
-          >
-            <X className="size-5 text-muted-foreground" />
+          <button onClick={onClose} aria-label="Close menu" className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600 active:scale-95">
+            <X className="size-5" />
           </button>
         </div>
-        <div className="shrink-0 border-b border-border">
-          <div className="flex gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none]">
-            <button
-              onClick={() => setSel('all')}
-              className={cn(
-                'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                sel === 'all' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-              )}
-            >
-              All Items
-            </button>
-            {activeVenue === 'bakery'
-              ? bakeryCats.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setSel(c)}
-                    className={cn(
-                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                      sel === c ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-                    )}
-                  >
-                    🥐 {c}
-                  </button>
-                ))
-              : activeCats.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSel(c.id)}
-                    className={cn(
-                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                      sel === c.id ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-                    )}
-                  >
-                    {c.icon} {c.name}
+
+        <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_390px]">
+          <section className="flex min-h-0 flex-col border-r border-orange-900/10">
+            <div className="shrink-0 space-y-3 border-b border-orange-900/10 bg-[#fff7ea] p-3 sm:p-4">
+              <div className="grid grid-cols-2 rounded-2xl bg-stone-950 p-1 text-sm font-black text-white shadow-xl">
+                <button onClick={() => setVenue('cafe')} className={cn('rounded-xl px-3 py-3 transition', venue === 'cafe' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>Cafe food</button>
+                <button onClick={() => setVenue('bakery')} className={cn('rounded-xl px-3 py-3 transition', venue === 'bakery' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>VRSNB bakery</button>
+              </div>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search dosa, coffee, bun, cake..." className="h-11 w-full rounded-2xl border border-orange-900/10 bg-white pl-10 pr-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setSel('all')} className={cn('rounded-full px-3 py-2 text-xs font-black', sel === 'all' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>All</button>
+                {categories.map((cat) => (
+                  <button key={cat} onClick={() => setSel(cat)} className={cn('rounded-full px-3 py-2 text-xs font-black', sel === cat ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>
+                    {cat}
                   </button>
                 ))}
-          </div>
-        </div>
-        <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
-          {activeVenue === 'bakery' ? (
-            bakeryDisplay.map((cat) => {
-              const ci = SNB_ITEMS.filter((i) => i.category === cat);
-              if (!ci.length) return null;
-              return (
-                <div key={cat}>
-                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
-                    <span className="text-xl">🥐</span>
-                    <div>
-                      <h3 className="font-display text-lg font-bold text-foreground">{cat}</h3>
-                      <p className="text-[10px] font-body text-muted-foreground">SNB Bakery</p>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {displayItems.map((item) => (
+                  <article key={item.key} className="flex min-h-[132px] flex-col justify-between rounded-3xl border border-orange-900/10 bg-white p-3 shadow-sm">
+                    <div className="flex gap-3">
+                      {item.image ? <img src={item.image} alt="" className="size-16 rounded-2xl object-cover" /> : <div className="grid size-16 shrink-0 place-items-center rounded-2xl bg-amber-50 text-2xl">{item.venue === 'bakery' ? '🥐' : '🍽️'}</div>}
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-sm font-black leading-tight text-stone-950">{item.name}</p>
+                        <p className="mt-1 text-[11px] font-bold text-stone-500">{item.category} · {item.unit}</p>
+                        <p className="mt-2 text-lg font-black text-orange-700">{formatCurrency(item.price)}</p>
+                      </div>
                     </div>
-                  </div>
-                  {ci.map((item) => (
-                    <div key={item.barcode} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
-                      <div className="flex min-w-0 flex-1 items-center gap-3">
-                        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-lg">🥐</div>
-                        <div className="min-w-0">
-                          <span className="block truncate text-sm font-body text-foreground">{item.name}</span>
-                          <span className="text-[10px] text-muted-foreground">{item.uom}</span>
+                    <button onClick={() => addItem(item)} className="mt-3 inline-flex items-center justify-center gap-2 rounded-2xl bg-stone-950 px-4 py-2.5 text-sm font-black text-white active:scale-95">
+                      <Plus className="size-4" /> Add
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <aside className="flex min-h-[45dvh] flex-col bg-white lg:min-h-0">
+            <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 p-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-700">Combined cart</p>
+                <h3 className="text-xl font-black text-stone-950">{totalQty} items · {formatCurrency(total)}</h3>
+              </div>
+              <ShoppingCart className="size-7 text-orange-700" />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {!cart.length ? (
+                <div className="grid h-full min-h-40 place-items-center rounded-3xl border border-dashed border-orange-900/20 bg-[#fff7ea] p-6 text-center text-sm font-semibold text-stone-500">
+                  Add cafe food and VRSNB bakery items in the same cart.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {cart.map((item) => (
+                    <div key={item.key} className="rounded-2xl border border-orange-900/10 bg-[#fffaf2] p-3">
+                      <div className="flex justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-stone-950">{item.name}</p>
+                          <p className="text-[11px] font-bold text-stone-500">{item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'} · {formatCurrency(item.price)}</p>
                         </div>
+                        <button onClick={() => changeQty(item.key, -item.qty)} className="text-stone-400"><Trash2 className="size-4" /></button>
                       </div>
-                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
-                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
-                        <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-amber-700">SNB</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })
-          ) : (
-            display.map((cat) => {
-              const ci = enabled.filter((i) => i.category === cat.id);
-              if (!ci.length) return null;
-              return (
-                <div key={cat.id}>
-                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
-                    <span className="text-xl">{cat.icon}</span>
-                    <div>
-                      <h3 className="font-display text-lg font-bold text-foreground">{cat.name}</h3>
-                      <p className="text-[10px] font-body text-muted-foreground">{cat.timing}</p>
-                    </div>
-                  </div>
-                  {ci.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
-                      <div className="flex min-w-0 flex-1 items-center gap-3">
-                        {item.imageUrl ? (
-                          <img src={item.imageUrl} alt="" className="size-12 shrink-0 rounded-xl border border-border object-cover" />
-                        ) : (
-                          <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-muted text-lg">{cat.icon}</div>
-                        )}
-                        <span className="text-sm font-body text-foreground">{item.name}</span>
-                      </div>
-                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
-                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
-                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-emerald-700">VEG</span>
+                      <div className="mt-3 flex items-center justify-between">
+                        <div className="flex items-center gap-2 rounded-full bg-white p-1">
+                          <button onClick={() => changeQty(item.key, -1)} className="grid size-8 place-items-center rounded-full bg-stone-100"><Minus className="size-4" /></button>
+                          <span className="w-8 text-center text-sm font-black">{item.qty}</span>
+                          <button onClick={() => changeQty(item.key, 1)} className="grid size-8 place-items-center rounded-full bg-stone-950 text-white"><Plus className="size-4" /></button>
+                        </div>
+                        <p className="font-black text-orange-700">{formatCurrency(item.price * item.qty)}</p>
                       </div>
                     </div>
                   ))}
                 </div>
-              );
-            })
-          )}
-          <div className="h-6" />
+              )}
+            </div>
+            <div className="shrink-0 space-y-3 border-t border-orange-900/10 bg-[#fff7ea] p-4">
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setCustomer({ ...customer, deliveryMethod: 'Delivery' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.deliveryMethod === 'Delivery' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>Delivery</button>
+                <button onClick={() => setCustomer({ ...customer, deliveryMethod: 'Pickup' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.deliveryMethod === 'Pickup' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>Pickup</button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setCustomer({ ...customer, paymentMethod: 'Cash on Delivery' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.paymentMethod === 'Cash on Delivery' ? 'bg-green-600 text-white' : 'bg-white text-stone-700')}>COD</button>
+                <button onClick={() => setCustomer({ ...customer, paymentMethod: 'UPI / QR Paid' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.paymentMethod === 'UPI / QR Paid' ? 'bg-amber-300 text-stone-950' : 'bg-white text-stone-700')}>UPI / QR</button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+                <input value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+              </div>
+              <input value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address / pickup time" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+              <input value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="Location pin / Google Maps link" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+              <input value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Delivery notes" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+              <div className="flex items-center justify-between rounded-2xl bg-white p-3 font-black text-stone-950">
+                <span>Total</span><span>{formatCurrency(total)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <a href={cart.length ? upiUrl : undefined} onClick={(e) => { if (!cart.length) e.preventDefault(); }} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black', cart.length ? 'bg-amber-300 text-stone-950' : 'pointer-events-none bg-stone-200 text-stone-400')}>
+                  <CreditCard className="size-4" /> Pay UPI
+                </a>
+                <a href={cart.length ? whatsappUrl : undefined} target="_blank" rel="noreferrer" onClick={(e) => { if (!cart.length) e.preventDefault(); }} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black', cart.length ? 'bg-green-600 text-white' : 'pointer-events-none bg-stone-200 text-stone-400')}>
+                  <MessageCircle className="size-4" /> Send order
+                </a>
+              </div>
+              <p className="text-center text-[10px] font-bold leading-4 text-stone-500">COD is available. UPI opens the payment app now; QR image can be added after you attach it.</p>
+            </div>
+          </aside>
         </div>
       </div>
     </div>
@@ -338,7 +430,7 @@ function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange
       <div className="mx-1.5 h-px bg-amber-300/15" />
       <button
         onClick={() => onChange('bakery')}
-        aria-label="Switch to SNB Bakery"
+        aria-label="Switch to VRSNB Bakery"
         className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
         style={active === 'bakery' ? { background: 'linear-gradient(135deg,#b8860b,#8B5E04)', boxShadow: '0 4px 16px rgba(180,140,0,0.5)' } : { background: 'rgba(255,255,255,0.05)' }}
       >
@@ -653,18 +745,18 @@ function BakeryHero() {
   return (
     <section id="bakery-hero" ref={ref} className="relative h-[210vh] bg-[#160d05]">
       <div className="sticky top-0 h-screen overflow-hidden">
-        <motion.img src={bakeryCounter} alt="SNB Bakery counter" style={{ scale, y }} className="absolute inset-0 h-full w-full object-cover" />
+        <motion.img src={bakeryCounter} alt="VRSNB Bakery counter" style={{ scale, y }} className="absolute inset-0 h-full w-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-r from-[#160d05] via-[#160d05]/82 to-[#160d05]/25" />
         <motion.div style={{ opacity }} className="relative z-10 flex h-full items-center px-5 py-28 md:px-12 lg:px-20">
           <div className="mx-auto w-full max-w-7xl">
             <div className="flex items-center gap-4">
-              <img src={snbLogo} alt="SNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
+              <img src={snbLogo} alt="VRSNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
               <div>
                 <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Sri Nanjundeshwara Bakery</p>
                 <h1 className="mt-2 font-display text-6xl font-black leading-none md:text-8xl">Fresh from the oven.</h1>
               </div>
             </div>
-            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/78">A warm bakery story of breads, cakes, cookies, sweets, savouries, and celebration treats from SNB Bakery.</p>
+            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/78">A warm bakery story of breads, cakes, cookies, sweets, savouries, and celebration treats from VRSNB Bakery.</p>
             <div className="mt-10 flex flex-col gap-4 sm:flex-row">
               <button onClick={() => scrollToId('#bakery-story')} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950">
                 Start Bakery Story <ChevronDown className="h-4 w-4" />
@@ -689,7 +781,7 @@ function BakeryStoryScene() {
   return (
     <section id="bakery-story" className="bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
       <div className="mx-auto max-w-7xl">
-        <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">SNB bakery journey</p>
+        <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">VRSNB bakery journey</p>
         <h2 className="mt-4 max-w-4xl font-display text-5xl font-black leading-none md:text-7xl">From dough to display, every shelf tells a story.</h2>
         <div className="mt-14 space-y-8">
           {rows.map(([title, copy, image], i) => (
@@ -732,7 +824,7 @@ function BakeryMenuHighlights() {
       <div className="sticky top-0 flex h-screen items-center overflow-hidden">
         <div className="absolute left-5 top-28 z-20 md:left-12">
           <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Bakery menu</p>
-          <h2 className="mt-3 max-w-3xl font-display text-5xl font-black leading-none md:text-7xl">The SNB bakery menu, told visually.</h2>
+          <h2 className="mt-3 max-w-3xl font-display text-5xl font-black leading-none md:text-7xl">The VRSNB bakery menu, told visually.</h2>
         </div>
         <motion.div style={{ x }} className="flex gap-6 pl-[5vw] pt-48">
           {cards.map(([title, copy, image]) => (
@@ -740,7 +832,7 @@ function BakeryMenuHighlights() {
               <img src={image} alt={title} className="absolute inset-0 h-full w-full object-cover transition duration-700 hover:scale-110" />
               <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
               <div className="absolute bottom-0 p-8 md:p-10">
-                <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-black uppercase tracking-[0.25em] text-amber-200 backdrop-blur-xl">SNB Bakery</div>
+                <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-black uppercase tracking-[0.25em] text-amber-200 backdrop-blur-xl">VRSNB Bakery</div>
                 <h3 className="font-display text-4xl font-black md:text-5xl">{title}</h3>
                 <p className="mt-3 text-lg text-white/75 md:text-xl">{copy}</p>
               </div>
@@ -757,14 +849,14 @@ function BakeryFinalCTA({ onMenuOpen }: { onMenuOpen: () => void }) {
     <section className="relative overflow-hidden bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
       <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
         <div>
-          <img src={snbLogo} alt="SNB Bakery" className="mb-8 h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-xl" />
+          <img src={snbLogo} alt="VRSNB Bakery" className="mb-8 h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-xl" />
           <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">Order bakery items</p>
           <h2 className="mt-4 font-display text-5xl font-black leading-none md:text-7xl">Fresh bakery favourites for home, work, and celebrations.</h2>
           <div className="mt-10 flex flex-col gap-4 sm:flex-row">
             <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-stone-950 px-8 py-4 font-black text-white">
               Open Bakery Menu <ArrowRight className="h-4 w-4" />
             </button>
-            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-8 py-4 font-black text-stone-950">
+            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from VRSNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-8 py-4 font-black text-stone-950">
               <MessageCircle className="h-4 w-4" /> WhatsApp Order
             </a>
           </div>
