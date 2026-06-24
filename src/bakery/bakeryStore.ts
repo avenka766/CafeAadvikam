@@ -9,7 +9,8 @@ interface BakeryState {
   // FIX: added `silent` param — background polls pass true so loading stays false,
   // preventing the StoreDashboard list from unmounting and resetting card state.
   fetchOrders: (silent?: boolean) => Promise<void>;
-  submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch) => Promise<void>;
+  submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
+  acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
@@ -26,6 +27,7 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     status: d.status as WorkflowStatus,
     createdBy: d.created_by as string,
     createdAt: d.created_at as string,
+    updatedAt: d.updated_at as string | undefined,
     expectedOutput: d.expected_output as number | undefined,
     materialsCalculatedAt: d.materials_calculated_at as string | undefined,
     preparedItems: (d.prepared_items as PreparedItem[]) || [],
@@ -59,10 +61,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
-  submitOrder: async (items, createdBy, targetBranch) => {
+  submitOrder: async (items, createdBy, targetBranch, notes) => {
     const { data, error } = await supabase
       .from('bakery_orders')
-      .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch })
+      .insert({ items, status: 'pending', created_by: createdBy, target_branch: targetBranch, notes: notes || null })
       .select()
       .single();
     if (error || !data) throw new Error('Failed to submit order. Please try again.');
@@ -84,6 +86,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
+  acceptOrder: async (orderId) => {
+    const order = get().orders.find(o => o.id === orderId);
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update({ status: 'processing' })
+      .eq('id', orderId);
+    if (error) throw error;
+    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'processing' } : o) }));
+    if (order?.notes) {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'store', acceptedBy);
+    }
+  },
+
   updateExpectedOutput: async (orderId, qty) => {
     const { error } = await supabase
       .from('bakery_orders')
@@ -98,12 +118,35 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   },
 
   sendToBaker: async (orderId) => {
+    const order = get().orders.find(o => o.id === orderId);
     const { error } = await supabase
       .from('bakery_orders')
       .update({ status: 'baking' })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
+    if (order?.notes) {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'baking', acceptedBy);
+    }
+    if (order?.targetBranch === 'VRSNB') {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const acceptedBy = user?.displayName || user?.username || 'Store';
+      const acceptedAt = new Date().toLocaleString('en-IN');
+      useBranchOpsStore.getState().addNotification({
+        branch: 'VRSNB',
+        type: 'Store Confirmation',
+        title: 'Store accepted VRSNB advance order',
+        details: `Store accepted bakery order #${order.orderNumber} by ${acceptedBy} at ${acceptedAt}. ${order.notes || ''}`,
+        raisedBy: acceptedBy,
+      });
+    }
   },
 
   submitPrepared: async (orderId, preparedItems) => {
@@ -123,6 +166,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #16 FIX: pushBakerShortage was defined in notificationStore but never called.
     // Compare each prepared qty against the requested qty and notify admin of any shortfall.
     const order = get().orders.find(o => o.id === orderId);
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (order?.notes) {
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const by = user?.displayName || user?.username || 'Baker';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'packing', by);
+    }
     if (order) {
       // FIX B1+B5: compare in the receiver's original unit (pcs or kg).
       // item.quantity is always in kg (even for pcs items after conversion).
@@ -179,15 +230,24 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log, prepared_items, order_number')
+      .select('dispatch_log, prepared_items, order_number, items, notes, target_branch')
       .eq('id', orderId)
       .single();
-    if (fetchErr || !freshOrder) return;
+    if (fetchErr || !freshOrder) {
+      throw new Error(fetchErr?.message || 'Dispatch failed because the bakery order could not be loaded.');
+    }
 
-    const updatedLog: DispatchEntry[] = [
-      ...((freshOrder.dispatch_log as DispatchEntry[]) || []),
-      newEntry,
-    ];
+    const existingLog: DispatchEntry[] = (freshOrder.dispatch_log as DispatchEntry[]) || [];
+    // FIX (MD Bug #18): check if this entry was already appended (idempotency guard for retries).
+    // The root race condition (two different devices dispatching different items of the same order
+    // concurrently) still exists at the DB level — the proper fix is a server-side RPC using
+    // jsonb_array_append in a single atomic UPDATE. This guard at minimum prevents double-appending
+    // on retries within a single session.
+    // Server-side RPC appends the dispatch entry atomically so concurrent packers do not overwrite each other.
+    const alreadyAppended = existingLog.some(e => e.id === newEntry.id);
+    const updatedLog: DispatchEntry[] = alreadyAppended
+      ? existingLog
+      : [...existingLog, newEntry];
 
     // Only mark 'dispatched' when every prepared item is fully covered by the log.
     // FIX B7: for pcs items, compare totalDispatched (pcs) against flooredPcs
@@ -195,13 +255,9 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Without this, 7 pcs dispatched from 1.5 kg never satisfies "7 >= 1.5" → stuck forever.
     const preparedItems = (freshOrder.prepared_items as PreparedItem[]) || [];
 
-    // We need order items for weightGrams/dispatchUnit — fetch lazily; reused below too.
-    const { data: fullOrderData } = await supabase
-      .from('bakery_orders')
-      .select('items, order_number')
-      .eq('id', orderId)
-      .single();
-    const orderItems = (fullOrderData?.items as import('./types').BakeryOrderItem[]) ?? [];
+    // Reuse the single fresh-order query for item metadata and notifications.
+    const fullOrderData = freshOrder;
+    const orderItems = (freshOrder.items as import('./types').BakeryOrderItem[]) ?? [];
     const { kgToPcs } = await import('./itemMatcher');
 
     const allFullyDispatched = preparedItems.length > 0 && preparedItems.every(p => {
@@ -221,11 +277,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     });
     const newStatus: WorkflowStatus = allFullyDispatched ? 'dispatched' : 'packed';
 
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update({ dispatch_log: updatedLog, status: newStatus })
-      .eq('id', orderId);
-    if (error) return;
+    const { error } = await supabase.rpc('append_bakery_dispatch_log', {
+      p_order_id: orderId,
+      p_entry: newEntry,
+      p_status: newStatus,
+    });
+    if (error) {
+      throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
+    }
 
     // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──
     // Strategy: always pass the full list of discrepant items to pushPackingDiscrepancy
@@ -329,6 +388,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       });
       if (incomingErr) {
         console.error('[submitDispatch] branch_incoming write failed:', incomingErr);
+        throw new Error(incomingErr.message || 'Dispatch failed while creating branch incoming stock.');
       }
     }
 
@@ -355,6 +415,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         branch:    entry.branch,
       });
     }
+    if (newStatus === 'dispatched' && fullOrderData?.notes) {
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const by = user?.displayName || user?.username || 'Packing';
+      const orderNo = (fullOrderData.notes as string).split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'dispatched', by);
+    }
   },
 
   deleteDispatchEntry: async (orderId, entryId) => {
@@ -367,9 +433,14 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // Otherwise (or if log is empty) → back to 'packed' so packing can continue.
     const preparedItems = order.preparedItems || [];
     const allStillCovered = updatedLog.length > 0 && preparedItems.length > 0 && preparedItems.every(p => {
+      const orderItem = order.items.find(i => i.itemName === p.itemName);
       const totalDispatched = updatedLog
         .filter(d => d.itemName === p.itemName)
-        .reduce((s, d) => s + d.quantity, 0);
+        .reduce((sum, d) => sum + d.quantity, 0);
+      if (orderItem?.dispatchUnit === 'pcs' && orderItem.weightGrams && orderItem.weightGrams > 0) {
+        const requiredPcs = Math.floor((p.quantityPrepared * 1000) / orderItem.weightGrams);
+        return totalDispatched >= requiredPcs;
+      }
       return totalDispatched >= p.quantityPrepared - 0.001;
     });
     const newStatus: WorkflowStatus = allStillCovered ? 'dispatched' : 'packed';

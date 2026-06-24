@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
 import type { CreditSale } from '@/branch/branchStore';
 import type { Branch } from '@/branch/types';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { cn, formatCurrency, formatTime } from '@/lib/utils';
 import {
   Inbox, Wifi, Plus, Minus, Search, X,
@@ -18,11 +19,14 @@ import {
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
 import MenuItemCard from '@/components/features/MenuItemCard';
-import type { OrderStatus, OrderType, PaymentType, Order } from '@/types';
+import type { OrderStatus, OrderType, PaymentType, PaymentBreakdown, Order } from '@/types';
 import { TABLE_NUMBERS, MENU_CATEGORIES } from '@/constants/config';
 import EmptyState from '@/components/ui/EmptyState';
+import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
+import { useNotificationStore } from '@/bakery/notificationStore';
 
-// ── Branch Credit Panel (Biller view — scope controlled by caller) ───────────
+// -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 const BRANCH_BADGE: Record<Branch, string> = {
@@ -32,7 +36,7 @@ const BRANCH_BADGE: Record<Branch, string> = {
   Hosur: 'bg-teal-100 text-teal-700 border-teal-200',
 };
 
-// ── Notify VRSNB Admin + Admin whenever a new credit sale is recorded ─────────
+// -- Notify VRSNB Admin + Admin whenever a new credit sale is recorded ---------
 async function notifyCreditSale(params: {
   customerName: string;
   amount: number;
@@ -41,27 +45,98 @@ async function notifyCreditSale(params: {
   soldBy: string;
   dueDate?: string;
 }) {
-  // Best-effort fire-and-forget — biller UI must never block on this
+  // Best-effort fire-and-forget - biller UI must never block on this
   try {
-    const { pushCreditSale } = (await import('@/bakery/notificationStore')).useNotificationStore.getState();
+    const { pushCreditSale } = useNotificationStore.getState();
     await pushCreditSale(params);
-  } catch {
-    // Silent — notification failure must never break billing
+  } catch (error) {
+    console.error('Credit-sale notification failed', error);
   }
 }
 
-function BillerCreditTab({ branches }: { branches: Branch[] }) {
-  const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
+const ROLE_BRANCHES: Record<string, Branch[]> = {
+  owner: ALL_BRANCHES,
+  admin: ALL_BRANCHES,
+  billing: ['Cafe'],
+  biller: ['Cafe'],
+  admin_vrsnb: ['VRSNB'],
+  branch_vrsnb: ['VRSNB'],
+  admin_snb: ['SNB'],
+  branch_snb: ['SNB'],
+  branch_hosur: ['Hosur'],
+  hosur_biller: ['Hosur'],
+};
+
+function todayIso(value = new Date()) {
+  const now = value;
+  const tzOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
+}
+
+function useCafeCounterOpened() {
+  const counterOpenings = useBranchOpsStore((s) => s.counterOpenings);
+  const cashierClosures = useBranchOpsStore((s) => s.cashierClosures);
+  const [remoteCounter, setRemoteCounter] = useState({ opened: false, closed: false });
+  const today = todayIso();
+  const localClosed = cashierClosures.some(
+    (record) => record.branch === 'Cafe' && todayIso(new Date(record.createdAt)) === today,
+  );
 
   useEffect(() => {
-    branches.forEach(b => fetchCreditSales(b));
-  }, [branches, fetchCreditSales]);
+    let alive = true;
+    const checkCounterOpening = async () => {
+      if (!useBranchOpsStore.persist.hasHydrated()) {
+        await useBranchOpsStore.persist.rehydrate();
+      }
+      const [{ data: closureRows, error: closureError }, { data: opRows, error: opError }] = await Promise.all([
+        supabase
+          .from('branch_daily_closures')
+          .select('status')
+          .eq('branch', 'Cafe')
+          .eq('closure_date', today),
+        supabase
+          .from('branch_operation_records')
+          .select('record_id')
+          .eq('branch', 'Cafe')
+          .eq('record_type', 'counter_opening')
+          .eq('record_no', today)
+          .limit(1),
+      ]);
+      if (!alive) return;
+      const formalRows = !closureError && Array.isArray(closureRows) ? closureRows : [];
+      const closed = formalRows.some((row) => String(row.status || '').toLowerCase() === 'finalized');
+      const opened =
+        formalRows.some((row) => String(row.status || '').toLowerCase() === 'draft') ||
+        (!opError && Array.isArray(opRows) && opRows.length > 0);
+      setRemoteCounter({ opened, closed });
+    };
+    void checkCounterOpening();
+    return () => {
+      alive = false;
+    };
+  }, [today]);
+
+  const localOpened = counterOpenings.some((record) => record.branch === 'Cafe' && record.date === today);
+  if (localClosed || remoteCounter.closed) return false;
+  return remoteCounter.opened || localOpened;
+}
+
+function BillerCreditTab() {
+  const { currentUser } = useAuthStore();
+  const branches = useMemo<Branch[]>(() => ROLE_BRANCHES[currentUser?.role ?? ''] ?? [], [currentUser?.role]);
+  const { creditSales: allCreditSales, settleCreditSale, fetchCreditSales } = useBranchStore();
+
+  const branchesKey = branches.join('|');
+  useEffect(() => {
+    branches.forEach((branch) => void fetchCreditSales(branch));
+  }, [fetchCreditSales, branchesKey, branches]);
 
   const [filter, setFilter] = useState<'all' | 'pending' | 'partial' | 'settled'>('pending');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [settling, setSettling] = useState<string | null>(null);
   const [settleAmts, setSettleAmts] = useState<Record<string, string>>({});
+  const [settleModes, setSettleModes] = useState<Record<string, 'cash' | 'upi' | 'card'>>({});
   const [error, setError] = useState('');
 
   // Flatten all branch credit sales with branch tag
@@ -69,7 +144,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
     branches.flatMap(b =>
       (allCreditSales?.[b] || []).map(cs => ({ ...cs, branch: b }))
     ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [allCreditSales]
+    [allCreditSales, branches]
   );
 
   const filtered = useMemo(() => {
@@ -80,18 +155,20 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
   }, [allSales, filter, branchFilter]);
 
   const totalDue = useMemo(() =>
-    allSales.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
-    [allSales]
+    filtered.filter(cs => cs.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0),
+    [filtered]
   );
 
-  const pendingCount = allSales.filter(cs => cs.status !== 'settled').length;
+  const pendingCount = filtered.filter(cs => cs.status !== 'settled').length;
 
   const handleSettle = async (cs: CreditSale & { branch: Branch }) => {
     const amt = parseFloat(settleAmts[cs.id] || '0');
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid amount'); return; }
     if (amt > cs.creditAmount) { setError('Amount exceeds balance due'); return; }
     setSettling(cs.id); setError('');
-    const err = await settleCreditSale(cs.branch, cs.id, amt);
+    const mode = settleModes[cs.id];
+    if (!mode) { setError('Select Cash, UPI, or Card'); setSettling(null); return; }
+    const err = await settleCreditSale(cs.branch, cs.id, amt, { mode, collectedBy: currentUser?.username ?? 'Biller', collectedRole: currentUser?.role ?? null });
     setSettling(null);
     if (err) setError(err);
     else setSettleAmts(prev => { const n = { ...prev }; delete n[cs.id]; return n; });
@@ -109,10 +186,10 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
       <div className="bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 rounded-2xl p-4">
         <p className="text-xs font-bold text-orange-700 uppercase tracking-widest mb-1">Total Credit Outstanding</p>
         <p className="font-display text-3xl font-bold text-orange-600 tabular-nums">
-          ₹{totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          Rs {totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          {pendingCount} open account{pendingCount !== 1 ? 's' : ''} · All Branches
+          {pendingCount} open account{pendingCount !== 1 ? 's' : ''}  -  All Branches
         </p>
         {/* Per-branch outstanding summary */}
         <div className="flex gap-2 mt-3 flex-wrap">
@@ -123,7 +200,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
             if (due <= 0) return null;
             return (
               <div key={b} className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-bold', BRANCH_BADGE[b])}>
-                <Building2 className="size-3" />{b}: ₹{due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                <Building2 className="size-3" />{b}: Rs {due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
               </div>
             );
           })}
@@ -136,7 +213,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
         </div>
       )}
 
-      {/* Branch filter — only shown when more than one branch is in scope */}
+      {/* Branch filter - only shown when more than one branch is in scope */}
       {branches.length > 1 && (
       <div className="flex gap-1.5 flex-wrap">
         <button onClick={() => setBranchFilter('all')}
@@ -189,7 +266,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
               <div className="px-4 py-3 flex items-center justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '—'}</span>
+                    <span className="font-body font-bold text-sm text-foreground truncate">{cs.customerName || '-'}</span>
                     <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full border', statusColors[cs.status])}>
                       {cs.status.toUpperCase()}
                     </span>
@@ -199,7 +276,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
                   </div>
                   {cs.customerPhone && <p className="text-xs text-muted-foreground mt-0.5">{cs.customerPhone}</p>}
                   <p className="text-[10px] text-muted-foreground mt-0.5">
-                    Bill #{cs.billNo.split('-').pop()} · {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} · {cs.soldBy}
+                    Bill #{cs.billNo.split('-').pop()}  -  {new Date(cs.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}  -  {cs.soldBy}
                   </p>
                   {cs.dueDate && (
                     <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
@@ -210,7 +287,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
                 <div className="text-right ml-3 shrink-0">
                   <p className="text-[10px] text-muted-foreground">Due</p>
                   <p className="font-display font-bold text-lg text-red-600 tabular-nums">
-                    ₹{cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    Rs {cs.creditAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </p>
                 </div>
               </div>
@@ -218,7 +295,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
               {/* Expand/collapse */}
               <button onClick={() => setExpanded(prev => prev === cs.id ? null : cs.id)}
                 className="w-full flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border text-xs text-muted-foreground">
-                <span>Total: ₹{cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} · Paid: ₹{cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span>Total: Rs {cs.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}  -  Paid: Rs {cs.amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                 {expanded === cs.id ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
 
@@ -227,8 +304,8 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
                   <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">Items</p>
                   {cs.items.map((item, i) => (
                     <div key={i} className="flex justify-between text-xs">
-                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : '×'} {item.itemName}</span>
-                      <span className="font-bold tabular-nums">₹{item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      <span className="text-foreground">{item.quantity}{item.sellUnit === 'kg' ? 'kg' : 'x'} {item.itemName}</span>
+                      <span className="font-bold tabular-nums">Rs {item.lineTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                     </div>
                   ))}
                   {cs.notes && <p className="text-xs text-muted-foreground italic mt-1">"{cs.notes}"</p>}
@@ -239,10 +316,18 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
               {cs.status !== 'settled' && (
                 <div className="px-4 py-3 border-t border-border bg-muted/10 space-y-2">
                   <p className="text-[10px] font-bold text-muted-foreground uppercase">Collect Payment</p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['cash', 'upi', 'card'] as const).map((mode) => (
+                      <button key={mode} type="button" onClick={() => { setSettleModes(prev => ({ ...prev, [cs.id]: mode })); setError(''); }}
+                        className={cn('py-1.5 rounded-lg border text-[11px] font-bold uppercase', settleModes[cs.id] === mode ? 'bg-amber-500 text-white border-amber-500' : 'bg-card border-border text-muted-foreground')}>
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                      <input type="number" placeholder={`Max ₹${cs.creditAmount.toFixed(2)}`}
+                      <input type="number" placeholder={`Max Rs ${cs.creditAmount.toFixed(2)}`}
                         value={settleAmts[cs.id] || ''}
                         onChange={e => { setSettleAmts(prev => ({ ...prev, [cs.id]: e.target.value })); setError(''); }}
                         className="w-full pl-7 pr-2 py-2 rounded-xl bg-card border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40" />
@@ -250,7 +335,7 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
                     <button onClick={() => handleSettle(cs)} disabled={settling === cs.id || !settleAmts[cs.id]}
                       className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition">
                       {settling === cs.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-                      {settling === cs.id ? '…' : 'Collect'}
+                      {settling === cs.id ? '...' : 'Collect'}
                     </button>
                   </div>
                 </div>
@@ -263,27 +348,263 @@ function BillerCreditTab({ branches }: { branches: Branch[] }) {
   );
 }
 
-const STATUS_TABS: { key: OrderStatus | 'all'; label: string; dotColor: string }[] = [
-  { key: 'all',        label: 'All',        dotColor: 'bg-foreground' },
-  { key: 'pending',    label: 'New',        dotColor: 'bg-amber-500' },
-  { key: 'preparing',  label: 'Preparing',  dotColor: 'bg-blue-500' },
-  { key: 'ready',      label: 'Ready',      dotColor: 'bg-emerald-500' },
-  { key: 'served',     label: 'Served',     dotColor: 'bg-gray-400' },
-  { key: 'cancelled',  label: 'Cancelled',  dotColor: 'bg-red-500' },
+const STATUS_TABS: { key: OrderStatus; label: string; dotColor: string }[] = [
+  { key: 'pending', label: 'New', dotColor: 'bg-amber-500' },
+  { key: 'served', label: 'Completed', dotColor: 'bg-emerald-500' },
+  { key: 'cancelled', label: 'Cancelled', dotColor: 'bg-red-500' },
 ];
 
 const QUICK_NOTES = [
   'Less spicy', 'Extra spicy', 'No onion', 'No garlic',
-  'Less oil', 'Extra chutney', 'Pack separately', 'Allergy – check ingredients',
+  'Less oil', 'Extra chutney', 'Pack separately', 'Allergy - check ingredients',
 ];
 
-type SourceFilter = 'all' | 'staff' | 'qr';
 
-// ── Advance Order Card ────────────────────────────────────────────────────────
+const PAYMENT_LABELS_PRINT: Record<string, string> = {
+  cash: 'Cash',
+  upi: 'UPI',
+  card: 'Card',
+  part_payment: 'Split Payment',
+  advance: 'Advance',
+  credit: 'Credit',
+  unpaid: 'Unpaid',
+};
+
+function safeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function printCounterSlip(title: string, bodyHtml: string) {
+  const win = window.open('', '_blank', 'width=420,height=720');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(title)}</title>
+<style>
+@page{margin:4mm;size:80mm auto}*{box-sizing:border-box}body{margin:0;width:76mm;font-family:'Courier New',monospace;color:#000;font-size:12px;line-height:1.22}.c{text-align:center}.r{text-align:right}.b{font-weight:900}.muted{color:#444}.big{font-size:16px}.shop{font-size:17px;font-weight:900}.dash{border-top:1px dashed #000;margin:6px 0}.solid{border-top:2px solid #000;margin:6px 0}.row{display:flex;justify-content:space-between;gap:8px}.mt{margin-top:6px}.paid{font-size:15px;font-weight:900;text-align:center;margin-bottom:3px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px}.meta .wide{grid-column:1/-1}.pick{text-align:center;font-size:16px;font-weight:900}table{width:100%;border-collapse:collapse}td,th{padding:3px 1px;vertical-align:top}th{text-align:left;border-bottom:1px solid #000}tbody tr.item-row td{border-bottom:1px solid #ddd}.num{text-align:right}.grand{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:900;padding:6px 0}.thanks{text-align:center;font-size:14px;margin-top:8px}.small{font-size:10px}
+</style></head><body>${bodyHtml}</body></html>`);
+  win.document.close();
+  setTimeout(() => { win.focus(); win.print(); win.close(); }, 350);
+}
+
+function moneyHtml(value: number): string {
+  return `&#8377;${Number(value || 0).toFixed(2)}`;
+}
+
+function billNo(order: Order, prefix = ''): string {
+  return `${prefix}${String(order.orderNumber).padStart(4, '0')}`;
+}
+
+function receiptDate(value?: string) {
+  const d = value ? new Date(value) : new Date();
+  return Number.isNaN(d.getTime())
+    ? { date: '-', time: '-' }
+    : {
+        date: d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' }).replace(/\//g, '/'),
+        time: d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      };
+}
+
+function cafeHeader(status: string, slipTitle: string): string {
+  return `
+    <div class="paid">${safeHtml(status)}</div>
+    <div class="c">
+      <div class="shop">Cafe Aadvikam</div>
+      <div>#109/1C, Hosur main Road, Berigai,</div>
+      <div>Soolagiri TK, Krishnagiri DT,</div>
+      <div>Tamilnadu 635105</div>
+      <div class="mt">GST No: 33AAZFV1266C1ZZ</div>
+      <div>FSSAI No: 12425011000098</div>
+    </div>
+    <div class="solid"></div>
+    <div class="c b big">${safeHtml(slipTitle)}</div>
+  `;
+}
+
+function taxableAmount(total: number): number {
+  return Math.round((Number(total || 0) / 1.05) * 100) / 100;
+}
+
+function gstParts(total: number) {
+  const taxable = taxableAmount(total);
+  const tax = Math.max(0, Number(total || 0) - taxable);
+  const cgst = Math.round((tax / 2) * 100) / 100;
+  const sgst = Math.round((tax - cgst) * 100) / 100;
+  return { taxable, cgst, sgst };
+}
+
+function orderItemsRows(order: Pick<Order, 'items'>): string {
+  return order.items.map((ci) => {
+    const grossLine = ci.menuItem.price * ci.quantity;
+    const netLine = taxableAmount(grossLine);
+    const netRate = ci.quantity > 0 ? netLine / ci.quantity : 0;
+    return `
+      <tr class="item-row">
+        <td>${safeHtml(ci.menuItem.name)}</td>
+        <td class="num">${ci.quantity}</td>
+        <td class="num">${netRate.toFixed(2)}</td>
+        <td class="num">${netLine.toFixed(2)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function receiptItemTable(order: Order): string {
+  return `
+    <table>
+      <thead><tr><th>Item</th><th class="num">Qty.</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${orderItemsRows(order)}</tbody>
+    </table>
+  `;
+}
+
+function receiptTotals(order: Order, payable: number, extraRows = ''): string {
+  const taxableTotal = order.items.reduce((sum, ci) => sum + taxableAmount(ci.menuItem.price * ci.quantity), 0);
+  const gst = gstParts(order.items.reduce((sum, ci) => sum + ci.menuItem.price * ci.quantity, 0));
+  const totalQty = order.items.reduce((sum, ci) => sum + ci.quantity, 0);
+  const parcelCharges = order.parcelCharges ?? 0;
+  return `
+    <div class="solid"></div>
+    <div class="row"><span>Total Qty: ${totalQty}</span><span>Sub Total</span><span>${taxableTotal.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>CGST@2.5 2.5%</span><span>${gst.cgst.toFixed(2)}</span></div>
+    <div class="row"><span></span><span>SGST@2.5 2.5%</span><span>${gst.sgst.toFixed(2)}</span></div>
+    ${parcelCharges > 0 ? `<div class="row"><span></span><span>Parcel</span><span>${parcelCharges.toFixed(2)}</span></div>` : ''}
+    ${extraRows}
+    <div class="solid"></div>
+    <div class="grand"><span>Grand Total</span><span>${moneyHtml(payable)}</span></div>
+  `;
+}
+
+function dateTimeLabel(value?: string): string {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'original') {
+  const paidBy = PAYMENT_LABELS_PRINT[order.paymentType] || order.paymentType;
+  const breakdownRows = order.paymentBreakdown ? `
+    <div class="row"><span>Cash</span><span class="b">${moneyHtml(order.paymentBreakdown.cash || 0)}</span></div>
+    <div class="row"><span>UPI</span><span class="b">${moneyHtml(order.paymentBreakdown.upi || 0)}</span></div>
+    <div class="row"><span>Card</span><span class="b">${moneyHtml(order.paymentBreakdown.card || 0)}</span></div>
+  ` : '';
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Bill ${order.orderNumber}`, `
+    ${cafeHeader('PAID', copyType === 'duplicate' ? 'DUPLICATE BILL' : 'TAX INVOICE')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Paid via ${safeHtml(paidBy)}</div>
+    ${breakdownRows}
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printAdvanceSalesSlip(order: Order, mobile: string, orderDate: string, billPerson: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const balance = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Sales Order ${order.orderNumber}`, `
+    ${cafeHeader(balance <= 0 ? 'PAID' : 'ADVANCE PAID', 'SALES ORDER SLIP')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(mobile || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(orderDate || dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: SO-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(billPerson || order.billedBy || order.createdBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Tender Amount</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Change Due</span><span>${balance.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[order.advancePaidBy || ''] || order.advancePaidBy || '-')}</div>
+    <div>Advances from Sales Order: ${moneyHtml(advance)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printAdvanceClosureBill(order: Order, balancePaymentType: string, balancePaidBy: string) {
+  const advance = order.advanceAmount ?? 0;
+  const fullAmount = order.fullAmount ?? order.subtotal;
+  const paidNow = order.balanceDue ?? Math.max(0, fullAmount - advance);
+  const dt = receiptDate(new Date().toISOString());
+  printCounterSlip(`Advance Closure ${order.orderNumber}`, `
+    ${cafeHeader('PAID', 'ADVANCE FINAL BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">Pick UP</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: ${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(balancePaidBy)}</div>
+      <div class="wide">Delivery: ${safeHtml(dateTimeLabel(order.deliveryDate))}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, fullAmount, `
+      <div class="row"><span></span><span>Advance Paid</span><span>${advance.toFixed(2)}</span></div>
+      <div class="row"><span></span><span>Paid Now</span><span>${paidNow.toFixed(2)}</span></div>
+    `)}
+    <div>Paid via ${safeHtml(PAYMENT_LABELS_PRINT[balancePaymentType] || balancePaymentType)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+function printCreditBill(order: Order, phone: string, dueDate: string) {
+  const dt = receiptDate(order.createdAt);
+  printCounterSlip(`Credit Bill ${order.orderNumber}`, `
+    ${cafeHeader('CREDIT', 'CREDIT BILL')}
+    <div class="row"><span>Name:</span><span>${safeHtml(order.customerName || '-')}</span></div>
+    <div class="row"><span>Mobile:</span><span>${safeHtml(phone || '-')}</span></div>
+    <div class="row"><span>Due Date:</span><span>${safeHtml(dueDate || '-')}</span></div>
+    <div class="solid"></div>
+    <div class="meta">
+      <div>Date: ${safeHtml(dt.date)}</div><div class="pick">${order.orderType === 'dine_in' ? `TABLE ${order.tableNumber ?? '-'}` : 'Pick UP'}</div>
+      <div>${safeHtml(dt.time)}</div><div>Bill No.: CR-${safeHtml(billNo(order))}</div>
+      <div class="wide">Cashier: ${safeHtml(order.billedBy || order.createdBy)}</div>
+    </div>
+    <div class="dash"></div>
+    ${receiptItemTable(order)}
+    ${receiptTotals(order, order.total)}
+    <div>Payment Details: Credit</div>
+    <div>Credit Due: ${moneyHtml(order.total)}</div>
+    <div class="solid"></div>
+    <div class="thanks">Thank You & Visit Again...!!!</div>
+  `);
+}
+
+type SourceFilter = 'all' | 'staff' | 'qr';
+type DirectPaymentMethod = 'cash' | 'upi' | 'card';
+type BillPaymentMethod = DirectPaymentMethod | 'part_payment';
+type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
+
+// -- Advance Order Card --------------------------------------------------------
 function AdvanceOrderCard({ order }: { order: Order }) {
-  // STORE-01 FIX: select only actions — stable refs, avoids re-renders from orders/cart changes
-  const { collectBalance, setAdvancePayment } = useOrderStore(
-    useShallow(s => ({ collectBalance: s.collectBalance, setAdvancePayment: s.setAdvancePayment }))
+  // STORE-01 FIX: select only actions - stable refs, avoids re-renders from orders/cart changes
+  const { collectBalance, setAdvancePayment, loadOrders } = useOrderStore(
+    useShallow(s => ({
+      collectBalance: s.collectBalance,
+      setAdvancePayment: s.setAdvancePayment,
+      loadOrders: s.loadOrders,
+    }))
   );
   const { currentUser } = useAuthStore();
   const [showCollect, setShowCollect] = useState(false);
@@ -301,6 +622,10 @@ function AdvanceOrderCard({ order }: { order: Order }) {
     setCollecting(true);
     try {
       await collectBalance(order.id, collectMethod, billedBy);
+      // Refresh from Supabase immediately so a settled advance cannot remain visible
+      // because of a stale polling response or another open biller session.
+      await loadOrders(60);
+      printAdvanceClosureBill(order, collectMethod, billedBy);
       setShowCollect(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to collect payment. Please try again.';
@@ -326,7 +651,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
           </span>
           <div className="flex flex-col gap-0.5">
             <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300">
-              ⏳ Advance Paid
+               Advance Paid
             </span>
             <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1">
               <Clock className="size-3" />{formatTime(order.createdAt)}
@@ -336,7 +661,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         <div className="flex flex-col items-end gap-1">
           {order.deliveryDate && (
             <span className="text-[10px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1">
-              🚚 {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+               {new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
             </span>
           )}
           <button onClick={() => setExpanded(!expanded)} className="size-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700">
@@ -345,7 +670,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         </div>
       </div>
 
-      {/* Meta row — customer name */}
+      {/* Meta row - customer name */}
       {order.customerName && (
         <div className="px-4 py-2 flex flex-wrap gap-2 text-xs font-body border-b border-border/50">
           <span className="flex items-center gap-1 text-muted-foreground"><UserIcon className="size-3" />{order.customerName}</span>
@@ -358,12 +683,12 @@ function AdvanceOrderCard({ order }: { order: Order }) {
           <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide mb-2">Items</p>
           {order.items.map(ci => (
             <div key={ci.menuItem.id} className="flex items-center justify-between text-sm">
-              <span className="font-body text-foreground">{ci.quantity}× {ci.menuItem.name}</span>
+              <span className="font-body text-foreground">{ci.quantity}x {ci.menuItem.name}</span>
               <span className="font-body font-bold text-primary tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</span>
             </div>
           ))}
           {order.notes && (
-            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">⚠️ {order.notes}</p>
+            <p className="mt-2 text-xs font-body bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg">Warning: {order.notes}</p>
           )}
         </div>
       )}
@@ -377,7 +702,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
         {order.discount > 0 && (
           <div className="flex items-center justify-between">
             <span className="text-xs font-body text-muted-foreground">Discount</span>
-            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">−{formatCurrency(order.discount)}</span>
+            <span className="text-sm font-body font-bold text-emerald-600 tabular-nums">-{formatCurrency(order.discount)}</span>
           </div>
         )}
         <div className="flex items-center justify-between">
@@ -385,7 +710,7 @@ function AdvanceOrderCard({ order }: { order: Order }) {
             <Wallet className="size-3" />Advance Paid
             {order.advancePaidBy && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold ml-1 uppercase">{order.advancePaidBy}</span>}
           </span>
-          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">−{formatCurrency(advance)}</span>
+          <span className="text-sm font-body font-bold text-amber-600 tabular-nums">-{formatCurrency(advance)}</span>
         </div>
         <div className="flex items-center justify-between pt-1 border-t border-border">
           <span className="text-sm font-body font-bold text-foreground">Balance Due</span>
@@ -446,10 +771,11 @@ function AdvanceOrderCard({ order }: { order: Order }) {
   );
 }
 
-// ── Advance Payment Modal (used inside OrderCard area for ready orders) ────────
+// -- Advance Payment Modal (used inside OrderCard area for ready orders) --------
 export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose: () => void }) {
-  const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
   const { currentUser } = useAuthStore();
+  const setAdvancePayment = useOrderStore(s => s.setAdvancePayment);
+  const counterOpenedToday = useCafeCounterOpened();
   const [advanceAmt, setAdvanceAmt] = useState('');
   const [method, setMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [saving, setSaving] = useState(false);
@@ -458,6 +784,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   const billedBy = currentUser?.displayName || currentUser?.username || '';
 
   const handleSave = async () => {
+    if (!counterOpenedToday) { setError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
     const amt = parseFloat(advanceAmt);
     if (isNaN(amt) || amt <= 0) { setError('Enter a valid advance amount'); return; }
     if (amt >= order.total) { setError('Advance must be less than total. Use full payment instead.'); return; }
@@ -467,7 +794,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
       await setAdvancePayment(order.id, amt, method, billedBy);
       onClose();
     } catch {
-      setError('Failed to save — please try again.');
+      setError('Failed to save - please try again.');
     } finally {
       setSaving(false);
     }
@@ -480,14 +807,14 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-display text-xl font-bold">Collect Advance</h2>
-            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')} · Total {formatCurrency(order.total)}</p>
+            <p className="text-xs font-body text-muted-foreground">Order #{String(order.orderNumber).padStart(3, '0')}  -  Total {formatCurrency(order.total)}</p>
           </div>
           <button onClick={onClose} aria-label="Close" className="size-9 rounded-full bg-muted flex items-center justify-center"><X className="size-5 text-muted-foreground" /></button>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (₹)</label>
+            <label className="text-xs font-body font-bold text-foreground mb-1.5 block">Advance Amount (Rs )</label>
             <div className="relative">
               <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
               <input
@@ -520,6 +847,11 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
           </div>
 
           {error && <p className="text-xs font-body text-destructive flex items-center gap-1"><AlertCircle className="size-3" />{error}</p>}
+          {!counterOpenedToday && (
+            <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
+              Counter is not opened today. Open Cashier Counter, then Counter Open first.
+            </p>
+          )}
 
           <button onClick={handleSave} disabled={saving}
             className="w-full py-3.5 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all disabled:opacity-60"
@@ -533,8 +865,8 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
   );
 }
 
-// ── Advance New Order Panel (menu + cart that submits as advance) ─────────────
-// ── Custom item type (for non-menu items) ─────────────────────────────────────
+// -- Advance New Order Panel (menu + cart that submits as advance) -------------
+// -- Custom item type (for non-menu items) -------------------------------------
 interface CustomLineItem { id: string; name: string; price: number; qty: number; }
 
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
@@ -551,6 +883,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     }))
   );
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
 
   // Menu picker state
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -564,9 +897,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const [customError, setCustomError] = useState('');
 
   // Order meta
+  const todayInput = businessDate();
+  const defaultBillPerson = currentUser?.displayName || currentUser?.username || '';
   const [customerName, setCustomerName] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
+  const [orderDate, setOrderDate]       = useState(todayInput);
   const [notes, setNotes]               = useState('');
   const [deliveryDate, setDeliveryDate] = useState('');
+  const [billPerson, setBillPerson]     = useState(defaultBillPerson);
   const [advanceAmt, setAdvanceAmt]     = useState('');
   const [advanceMethod, setAdvanceMethod] = useState<'cash' | 'upi' | 'card' | null>(null);
   const [isFullPayment, setIsFullPayment] = useState(false);
@@ -594,7 +932,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const cartCount   = getCartCount();
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity || 0;
 
-  // ── Add custom item ──────────────────────────────────────────────────────────
+  // -- Add custom item ----------------------------------------------------------
   const handleAddCustomItem = () => {
     const n = customName.trim();
     const p = parseFloat(customPrice);
@@ -617,11 +955,19 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
   const allEmpty = cartCount === 0 && customItems.length === 0;
 
-  // ── Submit ───────────────────────────────────────────────────────────────────
+  // -- Submit -------------------------------------------------------------------
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
-    if (!deliveryDate) { setAdvanceError('Delivery date is required'); return; }
+    if (!counterOpenedToday) { setAdvanceError('Counter is not opened. Open Cashier Counter, then Counter Open before collecting payment.'); return; }
+    if (!customerName.trim()) { setAdvanceError('Customer name is required'); return; }
+    if (!mobileNumber.trim()) { setAdvanceError('Mobile number is required'); return; }
+    if (!deliveryDate) { setAdvanceError('Delivery date/time is required'); return; }
+    // MISSING FIX: validate delivery date is a valid date and is not in the past
+    const deliveryMs = new Date(deliveryDate).getTime();
+    if (Number.isNaN(deliveryMs)) { setAdvanceError('Delivery date is not a valid date'); return; }
+    if (deliveryMs < Date.now() - 60_000) { setAdvanceError('Delivery date must be a future date/time'); return; }
+    if (!billPerson.trim()) { setAdvanceError('Bill person is required'); return; }
     if (!isFullPayment) {
       const amt = parseFloat(advanceAmt);
       if (isNaN(amt) || amt <= 0) { setAdvanceError('Enter advance amount'); return; }
@@ -631,33 +977,38 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
     setAdvanceError('');
     setSubmitting(true);
 
-    // Inject custom items into the cart as synthetic menu items
-    for (const ci of customItems) {
-      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-    }
-
-    // Small delay to let Zustand batch the addToCart calls
-    await new Promise(r => setTimeout(r, 50));
-
     try {
-      await submitAdvanceOrder({
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
+      const advanceNotes = [
+        `Mobile: ${mobileNumber.trim()}`,
+        `Order date: ${orderDate}`,
+        `Bill person: ${billPerson.trim()}`,
+        notes.trim() ? `Notes: ${notes.trim()}` : '',
+      ].filter(Boolean).join(' | ');
+      const orderId = await submitAdvanceOrder({
         orderType: 'takeaway',
-        notes: notes || undefined,
-        customerName: customerName || undefined,
-        createdBy: currentUser.username,
+        notes: advanceNotes || undefined,
+        customerName: customerName.trim(),
+        createdBy: billPerson.trim() || currentUser.username,
         advanceAmount: isFullPayment ? total : parseFloat(advanceAmt),
         advancePaidBy: advanceMethod,
         deliveryDate,
         isFullPayment,
       });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printAdvanceSalesSlip(savedOrder, mobileNumber.trim(), orderDate, billPerson.trim());
       setShowSuccess(true);
-      setNotes(''); setCustomerName(''); setDeliveryDate('');
+      setNotes(''); setCustomerName(''); setMobileNumber(''); setOrderDate(todayInput); setDeliveryDate(''); setBillPerson(defaultBillPerson);
       setAdvanceAmt(''); setAdvanceMethod(null); setIsFullPayment(false);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setTimeout(() => { setShowSuccess(false); onCreated(); }, 1800);
     } catch (err) {
-      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order — please try again.');
+      clearCart();
+      setAdvanceError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -672,7 +1023,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
         <div>
           <h2 className="font-display text-2xl font-bold text-foreground">Advance Recorded!</h2>
-          <p className="text-muted-foreground font-body mt-1 text-sm">Order saved. Balance pending collection.</p>
+          <p className="text-muted-foreground font-body mt-1 text-sm">Sales order slip generated. Balance pending collection.</p>
         </div>
       </div>
     );
@@ -681,11 +1032,11 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
   const PAYMENT_ICONS = { cash: <Banknote className="size-4" />, upi: <Smartphone className="size-4" />, card: <CreditCard className="size-4" /> };
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
-      {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
+      {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -718,14 +1069,14 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
       )}
 
-      {/* ═══ COL 2: Search + Items ═══════════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      {/* -- COL 2: Search + Items ------------------------ */}
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
+                <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all" />
                 {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
@@ -742,12 +1093,12 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
-                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+                <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
                   ))}
                 </div>
               )}
@@ -777,7 +1128,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
                   Item Name <span className="text-destructive">*</span>
                 </label>
-                <input type="text" placeholder="e.g. Special Cake, Custom Parcel…" value={customName}
+                <input type="text" placeholder="e.g. Special Cake, Custom Parcel..." value={customName}
                   onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
                   className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:bg-card transition-all"
                   onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
@@ -785,7 +1136,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                    Price (₹) <span className="text-destructive">*</span>
+                    Price (Rs ) <span className="text-destructive">*</span>
                   </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -835,7 +1186,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
                         <p className="text-xs font-body text-muted-foreground tabular-nums">
-                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
+                          {formatCurrency(ci.price)} x {ci.qty} = <span className="font-bold text-amber-600">{formatCurrency(ci.price * ci.qty)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -861,8 +1212,8 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         )}
       </div>
 
-      {/* ═══ COL 3: Cart + Advance form ═════════════════════════════════════════ */}
-      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      {/* -- COL 3: Cart + Advance form --------------------- */}
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
@@ -878,7 +1229,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
         </div>
 
         {/* Cart items */}
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
           {allEmpty ? (
             <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2">
               <ShoppingBag className="size-7 opacity-25" />
@@ -923,32 +1274,52 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
           )}
         </div>
 
-        {/* Advance form + pending — fixed bottom */}
-        <div className="border-t border-border shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
+        {/* Advance form + pending - fixed bottom */}
+        <div className="biller-cart-footer border-t border-border shrink-0 overflow-y-auto">
           {!allEmpty && (
             <div className="px-4 py-3 space-y-3 bg-muted/20">
-              <div className="relative">
-                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="text" placeholder="Customer name *" value={customerName} onChange={e => { setCustomerName(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                  <input type="tel" placeholder="Mobile number *" value={mobileNumber} onChange={e => { setMobileNumber(e.target.value); setAdvanceError(''); }}
+                    className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
+                </div>
               </div>
 
-              {/* Delivery Date — MANDATORY */}
-              <div>
-                <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
-                  <Calendar className="size-3" /> Delivery Date *
-                </label>
-                <input
-                  type="date"
-                  value={deliveryDate}
-                  min={new Date().toISOString().split('T')[0]}
-                  onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
-                  className={cn(
-                    'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
-                    !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
-                  )}
-                />
-                {!deliveryDate && <p className="text-[10px] font-body text-red-500 mt-1 flex items-center gap-1"><AlertCircle className="size-3" />Required — when will the order be delivered?</p>}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Order Date
+                  </label>
+                  <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
+                    className="w-full px-3 py-3 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-body font-bold text-blue-700 uppercase tracking-widest mb-1.5 block flex items-center gap-1">
+                    <Calendar className="size-3" /> Delivery Date/Time *
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={deliveryDate}
+                    min={new Date().toISOString().slice(0, 16)}
+                    onChange={e => { setDeliveryDate(e.target.value); setAdvanceError(''); }}
+                    className={cn(
+                      'w-full px-3 py-3 bg-card border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-blue-400/50 transition-all',
+                      !deliveryDate ? 'border-red-300 ring-1 ring-red-200' : 'border-border'
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div className="relative">
+                <UserCheck className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                <input type="text" placeholder="Bill person *" value={billPerson} onChange={e => { setBillPerson(e.target.value); setAdvanceError(''); }}
+                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
 
               <div className="relative">
@@ -992,10 +1363,10 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                   </button>
                 </div>
 
-                {/* Advance Amount — hidden when full payment */}
+                {/* Advance Amount - hidden when full payment */}
                 {!isFullPayment && (
                   <div>
-                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (₹) *</label>
+                    <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Advance Amount (Rs ) *</label>
                     <div className="relative">
                       <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                       <input type="number" value={advanceAmt} onChange={e => { setAdvanceAmt(e.target.value); setAdvanceError(''); }}
@@ -1019,7 +1390,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
                 <div>
                   <label className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-widest mb-1.5 block">Payment Method *</label>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                     {(['cash', 'upi', 'card'] as const).map(m => (
                       <button key={m} onClick={() => { setAdvanceMethod(m); setAdvanceError(''); }}
                         className={cn('flex flex-col items-center gap-1 py-3 rounded-xl border-2 text-[11px] font-body font-bold transition-all active:scale-95',
@@ -1038,7 +1409,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                   className="w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.98] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white"
                   style={{ background: isFullPayment ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#b8860b,#E07A3A)', boxShadow: isFullPayment ? '0 4px 16px rgba(22,163,74,0.35)' : '0 4px 16px rgba(184,134,11,0.35)' }}>
                   {isFullPayment ? <CheckCircle2 className="size-4" /> : <Wallet className="size-4" />}
-                  {submitting ? 'Saving…' : isFullPayment ? '✅ Record Full Payment' : '⏳ Record Advance Order'}
+                  {submitting ? 'Saving...' : isFullPayment ? 'Record Full Payment' : 'Record Advance Order'}
                 </button>
               </div>
             </div>
@@ -1079,6 +1450,7 @@ function NewBillPanel() {
     }))
   );
   const { currentUser } = useAuthStore();
+  const counterOpenedToday = useCafeCounterOpened();
 
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
@@ -1091,10 +1463,12 @@ function NewBillPanel() {
   const [tableError, setTableError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [showBillModal, setShowBillModal] = useState(false);
+  const [billMethod, setBillMethod] = useState<BillPaymentMethod>('cash');
+  const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
 
   // Credit sale state
   const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
-  const [creditCustomerName, setCreditCustomerName] = useState('');
   const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
   const [creditError, setCreditError] = useState('');
@@ -1107,18 +1481,22 @@ function NewBillPanel() {
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
 
+  useEffect(() => {
+    void loadMenu();
+  }, [loadMenu]);
+
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
   const filteredItems = useMemo(() => {
     let filtered = enabledItems;
+    if (search.trim()) return filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
     if (selectedCategory !== 'all') filtered = filtered.filter(i => i.category === selectedCategory);
-    if (search.trim()) filtered = filtered.filter(i => i.name.toLowerCase().includes(search.toLowerCase()));
     return filtered;
   }, [enabledItems, selectedCategory, search]);
 
   const menuTotal     = getCartTotal();
   const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
   const itemsSubtotal = menuTotal + customTotal;
-  // Parcel charges: ₹10 per item quantity for takeaway
+  // Parcel charges: Rs 10 per item quantity for takeaway
   const PARCEL_CHARGE_PER_ITEM = 10;
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
                       + customItems.reduce((s, c) => s + c.qty, 0);
@@ -1127,6 +1505,13 @@ function NewBillPanel() {
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
+  const splitBreakdown: PaymentBreakdown = {
+    cash: Number(splitPayment.cash || 0),
+    upi: Number(splitPayment.upi || 0),
+    card: Number(splitPayment.card || 0),
+  };
+  const splitTotal = splitBreakdown.cash + splitBreakdown.upi + splitBreakdown.card;
+  const splitRemaining = total - splitTotal;
 
   const handleAddCustomItem = () => {
     const n = customName.trim();
@@ -1148,26 +1533,44 @@ function NewBillPanel() {
     else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
   };
 
+  const openBillModal = () => {
+    if (!counterOpenedToday) {
+      setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.');
+      return;
+    }
+    if (orderType === 'dine_in' && !tableNumber) {
+      setTableError(true);
+      setSubmitError('Select table before billing.');
+      return;
+    }
+    setTableError(false);
+    setSubmitError('');
+    setShowBillModal(true);
+  };
+
   const handleSubmit = async () => {
     if (allEmpty) return;
     if (!currentUser) return;
+    if (!counterOpenedToday) { setSubmitError('Counter is not opened. Open Cashier Counter, then Counter Open before billing.'); return; }
     if (orderType === 'dine_in' && !tableNumber) { setTableError(true); return; }
     setTableError(false);
 
-    // ── Credit sale path ──────────────────────────────────────────────────────
+    // -- Credit sale path ------------------------------------------------------
     if (paymentMode === 'credit') {
-      if (!creditCustomerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      const phoneDigits = creditCustomerPhone.replace(/\D/g, '');
+      if (!customerName.trim()) { setCreditError('Customer name is required for credit sale'); return; }
+      if (!creditCustomerPhone.trim()) { setCreditError('Phone number is required for credit sale'); return; }
+      if (phoneDigits.length < 10) { setCreditError('Enter a valid phone number for credit sale'); return; }
+      if (!creditDueDate) { setCreditError('Due date is required for credit sale'); return; }
       setCreditError('');
       setSubmitting(true);
 
-      // Inject custom items as synthetic menu items first
-      for (const ci of customItems) {
-        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-      }
-      await new Promise(r => setTimeout(r, 50));
-
       try {
+        for (const ci of customItems) {
+          const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+          for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+        }
+        await new Promise(r => setTimeout(r, 0));
         const { recordCreditSale } = useBranchStore.getState();
         const branchFromRole: Record<string, Branch> = {
           billing:      'Cafe',
@@ -1175,29 +1578,40 @@ function NewBillPanel() {
           admin_snb:    'SNB',   branch_snb:   'SNB',
           branch_hosur: 'Hosur',
         };
-        const branch: Branch = branchFromRole[currentUser.role] ?? 'Cafe';
-        const billNo = `CREDIT-${branch}-${Date.now()}`;
-        const allCartItems = [...(useOrderStore.getState().cart)];
+        const branch = branchFromRole[currentUser.role];
+        if (!branch) throw new Error(`Billing role ${currentUser.role || 'unknown'} is not mapped to a branch.`);
+        const orderId = await submitOrder({
+          tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+          orderType,
+          notes: notes || undefined,
+          customerName: customerName.trim(),
+          createdBy: currentUser.username,
+          orderSource: 'staff',
+          parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+          paymentType: 'credit',
+          billedBy: currentUser.displayName || currentUser.username,
+          status: 'served',
+        });
+        const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+        const allCartItems = savedOrder?.items ?? [];
+        const billNo = savedOrder ? `CREDIT-${branch}-${savedOrder.orderNumber}` : `CREDIT-${branch}-${Date.now()}`;
         const creditItems = allCartItems.map(c => ({
           itemName: c.menuItem.name,
           quantity: c.quantity,
-          sellUnit: 'pc' as const,
+          sellUnit: 'pcs' as const,
+          price: c.menuItem.price,
           lineTotal: c.menuItem.price * c.quantity,
         }));
-        // Add custom items that aren't yet in cart
-        customItems.forEach(ci => {
-          creditItems.push({ itemName: ci.name, quantity: ci.qty, sellUnit: 'pc' as const, lineTotal: ci.price * ci.qty });
-        });
-
         const err = await recordCreditSale(branch, {
           billNo,
-          customerName: creditCustomerName.trim(),
-          customerPhone: creditCustomerPhone.trim() || undefined,
+          branch,
+          customerName: customerName.trim(),
+          customerPhone: creditCustomerPhone.trim(),
           items: creditItems,
           subtotal: total,
           amountPaid: 0,
           creditAmount: total,
-          dueDate: creditDueDate || undefined,
+          dueDate: creditDueDate,
           soldBy: currentUser.displayName || currentUser.username,
           notes: notes || undefined,
         });
@@ -1206,22 +1620,24 @@ function NewBillPanel() {
 
         // Notify VRSNB Admin + Admin
         await notifyCreditSale({
-          customerName: creditCustomerName.trim(),
+          customerName: customerName.trim(),
           amount: total,
           billNo,
           branch,
           soldBy: currentUser.displayName || currentUser.username,
-          dueDate: creditDueDate || undefined,
+          dueDate: creditDueDate,
         });
 
+        if (savedOrder) printCreditBill(savedOrder, creditCustomerPhone.trim(), creditDueDate);
         clearCart();
         setShowSuccess(true);
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-        setCreditCustomerName(''); setCreditCustomerPhone(''); setCreditDueDate('');
+        setCreditCustomerPhone(''); setCreditDueDate('');
         setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
+        clearCart();
         setSubmitError(err instanceof Error ? err.message : 'Failed to record credit sale.');
       } finally {
         setSubmitting(false);
@@ -1229,19 +1645,34 @@ function NewBillPanel() {
       return;
     }
 
-    // ── Regular order path ────────────────────────────────────────────────────
-    setSubmitting(true);
-
-    // Inject custom items as synthetic menu items
-    for (const ci of customItems) {
-      const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-      for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+    // -- Regular order path ----------------------------------------------------
+    const paymentBreakdown = billMethod === 'part_payment' ? splitBreakdown : undefined;
+    if (paymentBreakdown) {
+      const values = Object.values(paymentBreakdown);
+      if (values.some(value => Number.isNaN(value) || value < 0)) {
+        setSubmitError('Enter valid split payment amounts.');
+        return;
+      }
+      if (splitTotal <= 0) {
+        setSubmitError('Enter at least one split payment amount.');
+        return;
+      }
+      if (Math.abs(splitRemaining) > 0.01) {
+        setSubmitError(`Split payment must match bill total. Remaining: ${formatCurrency(splitRemaining)}`);
+        return;
+      }
     }
-    await new Promise(r => setTimeout(r, 50));
+    setSubmitting(true);
 
     setSubmitError('');
     try {
-      await submitOrder({
+      for (const ci of customItems) {
+        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
+        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
+      }
+      await new Promise(r => setTimeout(r, 0));
+      const billedBy = currentUser.displayName || currentUser.username;
+      const orderId = await submitOrder({
         tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
         orderType,
         notes: notes || undefined,
@@ -1249,13 +1680,22 @@ function NewBillPanel() {
         createdBy: currentUser.username,
         orderSource: 'staff',
         parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
+        paymentType: billMethod,
+        paymentBreakdown,
+        billedBy,
+        status: 'served',
       });
+      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
+      if (savedOrder) printPaidBill(savedOrder, 'original');
+      setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+      setBillMethod('cash');
+      setSplitPayment({ cash: '', upi: '', card: '' });
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to submit order — please try again.';
+      const msg = err instanceof Error ? err.message : 'Failed to submit order - please try again.';
       setSubmitError(msg);
     } finally {
       setSubmitting(false);
@@ -1286,7 +1726,7 @@ function NewBillPanel() {
           <p className="text-muted-foreground font-body mt-1 text-sm">
             {paymentMode === 'credit'
               ? 'VRSNB Admin & Admin have been notified.'
-              : 'Order has been added to the queue.'
+              : 'Bill saved and print command opened.'
             }
           </p>
         </div>
@@ -1295,11 +1735,91 @@ function NewBillPanel() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
+    <>
+    {!counterOpenedToday && (
+      <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
+        Counter is not opened today. Open Cashier Counter, then Counter Open before billing.
+      </div>
+    )}
+    {showBillModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
+        <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="px-5 py-4 border-b border-border bg-emerald-50">
+            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Final billing</p>
+            <h2 className="font-display text-2xl font-black text-foreground">Bill & Print</h2>
+            <p className="text-sm text-muted-foreground">Confirm payment mode. This saves the bill as paid and opens the print slip.</p>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
+              <div className="flex justify-between text-sm"><span>Items</span><span className="font-black">{totalItemQty}</span></div>
+              {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black">{formatCurrency(parcelCharges)}</span></div>}
+              <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  { key: 'cash' as const, label: 'Cash', icon: <Banknote className="size-5" /> },
+                  { key: 'upi' as const, label: 'UPI', icon: <Smartphone className="size-5" /> },
+                  { key: 'card' as const, label: 'Card', icon: <CreditCard className="size-5" /> },
+                  { key: 'part_payment' as const, label: 'Part', icon: <Wallet className="size-5" /> },
+                ]).map(m => (
+                  <button key={m.key} type="button" onClick={() => { setBillMethod(m.key); setSubmitError(''); }}
+                    className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
+                      billMethod === m.key ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
+                    {m.icon}
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {billMethod === 'part_payment' && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-emerald-700">Part Payment</p>
+                  <p className={cn('text-xs font-black tabular-nums', Math.abs(splitRemaining) <= 0.01 ? 'text-emerald-700' : splitRemaining > 0 ? 'text-amber-700' : 'text-red-600')}>
+                    {Math.abs(splitRemaining) <= 0.01 ? 'Matched' : splitRemaining > 0 ? `Remaining ${formatCurrency(splitRemaining)}` : `Extra ${formatCurrency(Math.abs(splitRemaining))}`}
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['cash', 'upi', 'card'] as const).map(method => (
+                    <label key={method} className="block">
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-widest text-muted-foreground">{method.toUpperCase()}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={splitPayment[method]}
+                        onChange={e => { setSplitPayment(prev => ({ ...prev, [method]: e.target.value })); setSubmitError(''); }}
+                        placeholder="0"
+                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm font-black tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between rounded-xl bg-card/80 px-3 py-2 text-xs font-black">
+                  <span>Split total</span>
+                  <span className="tabular-nums">{formatCurrency(splitTotal)} / {formatCurrency(total)}</span>
+                </div>
+              </div>
+            )}
+            {submitError && <p className="text-xs text-destructive font-semibold">{submitError}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowBillModal(false)} disabled={submitting}
+                className="flex-1 py-3 rounded-xl border border-border text-sm font-bold active:scale-95 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={handleSubmit} disabled={submitting}
+                className="flex-[1.4] py-3 rounded-xl bg-emerald-600 text-white text-sm font-black active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2">
+                <Printer className="size-4" />{submitting ? 'Billing...' : 'Bill & Print'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
 
-      {/* ═══ COL 1: Category sidebar ════════════════════════════════════════════ */}
+      {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
+        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
           <div className="px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -1332,14 +1852,14 @@ function NewBillPanel() {
         </div>
       )}
 
-      {/* ═══ COL 2: Search + Item picker ════════════════════════════════════════ */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      {/* -- COL 2: Search + Item picker -------------------- */}
+      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
             <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <input type="text" placeholder={`Search all ${enabledItems.length} items…`} value={search}
+                <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
                   onChange={e => setSearch(e.target.value)}
                   className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
                 {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
@@ -1356,12 +1876,12 @@ function NewBillPanel() {
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
-                <EmptyState icon="🍽️" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+                <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
                   {filteredItems.map(item => (
                     <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact />
+                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
                   ))}
                 </div>
               )}
@@ -1390,7 +1910,7 @@ function NewBillPanel() {
                 <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
                   Item Name <span className="text-destructive">*</span>
                 </label>
-                <input type="text" placeholder="e.g. Special Thali, Custom Parcel…"
+                <input type="text" placeholder="e.g. Special Thali, Custom Parcel..."
                   value={customName} onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
                   className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
                   onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
@@ -1398,7 +1918,7 @@ function NewBillPanel() {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                    Price (₹) <span className="text-destructive">*</span>
+                    Price (Rs ) <span className="text-destructive">*</span>
                   </label>
                   <div className="relative">
                     <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -1452,7 +1972,7 @@ function NewBillPanel() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
                         <p className="text-xs font-body text-muted-foreground tabular-nums">
-                          {formatCurrency(ci.price)} × {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
+                          {formatCurrency(ci.price)} x {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -1479,8 +1999,8 @@ function NewBillPanel() {
         )}
       </div>
 
-      {/* ═══ COL 3: Bill summary ════════════════════════════════════════════════ */}
-      <div className="w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
+      {/* -- COL 3: Bill summary ------------------------ */}
+      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
@@ -1500,44 +2020,51 @@ function NewBillPanel() {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 py-2 space-y-2">
+        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
           {allEmpty ? (
-            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2">
-              <ShoppingBag className="size-7 opacity-25" />
-              <p className="text-sm font-body">Add menu or custom items</p>
+            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
+              <ShoppingBag className="size-8 opacity-25" />
+              <p className="text-sm font-body font-bold">Cart is empty</p>
+              <p className="text-xs font-body text-muted-foreground/70">Tap any item to add it here.</p>
             </div>
           ) : (
             <>
               {cart.map(ci => (
-                <div key={ci.menuItem.id} className="flex items-center gap-2 py-1.5">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-base font-body font-semibold truncate leading-tight">{ci.menuItem.name}</p>
-                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                <div key={ci.menuItem.id} className="biller-cart-line rounded-2xl border border-border bg-background p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} each</p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.quantity}</span>
-                    <button onClick={() => addToCart(ci.menuItem)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.quantity}</span>
+                    <button onClick={() => addToCart(ci.menuItem)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
+                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
                   </div>
                 </div>
               ))}
               {customItems.map(ci => (
-                <div key={ci.id} className="flex items-center gap-2 py-1.5 border-l-2 border-primary/40 pl-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1">
-                      <p className="text-base font-body font-semibold truncate leading-tight">{ci.name}</p>
-                      <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-primary/10 text-primary shrink-0">CUSTOM</span>
+                <div key={ci.id} className="biller-cart-line rounded-2xl border border-amber-200 bg-amber-50/45 p-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
                     </div>
-                    <p className="text-sm text-primary font-bold tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.price)} each</p>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-6 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                    <span className="w-5 text-center text-xs font-bold tabular-nums">{ci.qty}</span>
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-6 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
-                    <button onClick={() => updateCustomQty(ci.id, 0)} className="size-6 rounded-lg bg-destructive/10 text-destructive border border-destructive/15 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
+                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-3.5" /></button>
+                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.qty}</span>
+                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
+                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
+                    <button onClick={() => updateCustomQty(ci.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
                   </div>
                 </div>
               ))}
@@ -1546,23 +2073,23 @@ function NewBillPanel() {
         </div>
 
         {!allEmpty && (
-          <div className="border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
+          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
             <div className="flex gap-2">
               <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
                 className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                🍽️ Dine In
+                Dine In
               </button>
               <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
                 className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
                   orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                📦 Takeaway
+                Takeaway
               </button>
             </div>
 
-            {/* ── Payment Mode: Regular vs Credit ── */}
+            {/* -- Payment Mode: Regular vs Credit -- */}
             <div className="flex gap-2">
               <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
                 className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
@@ -1577,7 +2104,7 @@ function NewBillPanel() {
               </button>
             </div>
 
-            {/* ── Credit sale form (shown only when Credit mode is active) ── */}
+            {/* -- Credit sale form (shown only when Credit mode is active) -- */}
             {paymentMode === 'credit' && (
               <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2.5">
                 <div className="flex items-center gap-1.5 mb-0.5">
@@ -1587,24 +2114,24 @@ function NewBillPanel() {
                 <div className="relative">
                   <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                   <input type="text" placeholder="Customer name *"
-                    value={creditCustomerName}
-                    onChange={e => { setCreditCustomerName(e.target.value); setCreditError(''); }}
+                    value={customerName}
+                    onChange={e => { setCustomerName(e.target.value); setCreditError(''); }}
                     className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div className="relative">
                   <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                  <input type="tel" placeholder="Phone number (optional)"
+                  <input type="tel" placeholder="Phone number *"
                     value={creditCustomerPhone}
-                    onChange={e => setCreditCustomerPhone(e.target.value)}
+                    onChange={e => { setCreditCustomerPhone(e.target.value); setCreditError(''); }}
                     className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div>
                   <label className="text-[10px] font-body font-bold text-red-700 uppercase tracking-widest mb-1 block flex items-center gap-1">
-                    <Calendar className="size-3" />Due Date (optional)
+                    <Calendar className="size-3" />Due Date *
                   </label>
                   <input type="date" value={creditDueDate}
-                    min={new Date().toISOString().split('T')[0]}
-                    onChange={e => setCreditDueDate(e.target.value)}
+                    min={businessDate()}
+                    onChange={e => { setCreditDueDate(e.target.value); setCreditError(''); }}
                     className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
                 </div>
                 <div className="flex items-center gap-2 bg-red-100/60 rounded-xl px-3 py-2">
@@ -1645,13 +2172,13 @@ function NewBillPanel() {
                   </div>
                 )}
               </div>
-            ) : (
+            ) : paymentMode !== 'credit' ? (
               <div className="relative">
                 <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                 <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
                   className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
               </div>
-            )}
+            ) : null}
             <div className="relative">
               <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
               <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
@@ -1678,7 +2205,7 @@ function NewBillPanel() {
               )}
               {parcelCharges > 0 && (
                 <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
-                  <span className="flex items-center gap-1">📦 Parcel ({totalItemQty} × ₹10)</span>
+                  <span className="flex items-center gap-1">Parcel ({totalItemQty} x Rs 10)</span>
                   <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
                 </div>
               )}
@@ -1687,7 +2214,7 @@ function NewBillPanel() {
                 <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
               </div>
               {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
-              <button onClick={handleSubmit} disabled={submitting}
+              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()} disabled={submitting}
                 className={cn(
                   'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
                   paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
@@ -1701,8 +2228,8 @@ function NewBillPanel() {
                     : undefined,
                 }}>
                 {paymentMode === 'credit'
-                  ? <><CreditCard className="size-4" />{submitting ? 'Recording…' : '💳 Record Credit Sale'}</>
-                  : <><Receipt className="size-4" />{submitting ? 'Creating…' : '🧾 Create Bill'}</>
+                  ? <><CreditCard className="size-4" />{submitting ? 'Recording...' : 'Record Credit Sale'}</>
+                  : <><Receipt className="size-4" />{submitting ? 'Creating...' : 'Create Bill'}</>
                 }
               </button>
             </div>
@@ -1710,12 +2237,13 @@ function NewBillPanel() {
         )}
       </div>
     </div>
+    </>
   );
 }
 
-// ── Main BillingDashboard ─────────────────────────────────────────────────────
+// -- Main BillingDashboard -----------------------------------------------------
 export default function BillingDashboard() {
-  // STORE-01 FIX: granular selector with shallow equality — avoids full re-render on cart/loading changes
+  // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
   const { orders, startPolling, stopPolling, polling, clearCart, cart } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
@@ -1727,13 +2255,13 @@ export default function BillingDashboard() {
     }))
   );
   const { currentUser } = useAuthStore();
-  const isBiller = currentUser?.role === 'billing' || currentUser?.role === 'admin' || currentUser?.role === 'admin_vrsnb';
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit'>('pending');
+  const counterOpenedToday = useCafeCounterOpened();
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | null>(null);
 
-  // U-01 FIX: guard against accidental cart wipe — show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'all' | 'new_bill' | 'advance' | 'credit') => {
+  // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -1758,7 +2286,7 @@ export default function BillingDashboard() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
-    startPolling(1); // PERF-01: billing only needs today's orders
+    startPolling(60); // Biller needs older open advance balances until they are fully collected.
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
@@ -1769,9 +2297,35 @@ export default function BillingDashboard() {
 
   // Advance orders: paymentType=advance AND balance still outstanding (not yet fully paid)
   const advanceOrders = useMemo(() =>
-    todayOrders.filter(o => o.paymentType === 'advance' && (o.balanceDue ?? 0) > 0),
-    [todayOrders]
+    orders
+      .filter(o =>
+        o.status !== 'cancelled' &&
+        o.paymentType === 'advance' &&
+        !o.fullyPaidAt &&
+        Number(o.balanceDue ?? 0) > 0
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [orders]
   );
+
+  // Alerts are operational reminders for TODAY only. Historical completed payments
+  // and future delivery commitments must not clutter this tab.
+  const todayDeliveryAlerts = useMemo(() => orders
+    .filter(o =>
+      o.status !== 'cancelled' &&
+      o.paymentType === 'advance' &&
+      Boolean(o.deliveryDate) &&
+      todayIso(new Date(o.deliveryDate!)) === todayIso()
+    )
+    .sort((a, b) => new Date(a.deliveryDate!).getTime() - new Date(b.deliveryDate!).getTime()), [orders]);
+  const [showDeliveryPopup, setShowDeliveryPopup] = useState(false);
+  useEffect(() => {
+    if (todayDeliveryAlerts.length === 0 || !currentUser?.username) return;
+    const key = `biller-delivery-popup:${currentUser.username}:${todayIso()}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, 'shown');
+    setShowDeliveryPopup(true);
+  }, [todayDeliveryAlerts.length, currentUser?.username]);
 
   // Regular orders: exclude OPEN advance orders (pending balance) only.
   // Closed advance orders (balanceDue=0) ARE included so they appear in All/status tabs.
@@ -1786,34 +2340,30 @@ export default function BillingDashboard() {
     [todayOrders]
   );
 
+  const isUnpaidOpenOrder = useCallback((order: Order) =>
+    order.paymentType === 'unpaid' && order.status !== 'cancelled',
+    []
+  );
+
+  const matchesStatusTab = useCallback((order: Order, status: OrderStatus) => {
+    if (status === 'pending') return isUnpaidOpenOrder(order);
+    if (isUnpaidOpenOrder(order)) return false;
+    return order.status === status;
+  }, [isUnpaidOpenOrder]);
+
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'credit') return [];
-    let result = regularOrders;
-    if (activeTab !== 'all') result = result.filter(o => o.status === activeTab);
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts') return [];
+    let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
-  }, [regularOrders, activeTab, sourceFilter]);
-
-  // Determine which branches this user's credit tab should show
-  const creditBranches: Branch[] = useMemo(() => {
-    if (currentUser?.role === 'admin') return ALL_BRANCHES;           // full view
-    if (currentUser?.role === 'admin_vrsnb') return ['Cafe', 'VRSNB'];  // Cafe + VRSNB branch
-    return ['Cafe'];                                                   // billing → Cafe Aadvikam only
-  }, [currentUser?.role]);
-
-  // Credit count badge for the tab button (unsettled credit sales in scope)
-  const { creditSales: allCreditSales } = useBranchStore();
-  const creditCount = useMemo(() =>
-    creditBranches.flatMap(b => allCreditSales?.[b] || []).filter(cs => cs.status !== 'settled').length,
-    [allCreditSales, creditBranches]
-  );
+  }, [regularOrders, activeTab, sourceFilter, matchesStatusTab]);
 
   // Counts use regularOrders so advance (pending balance) never pollutes them
   const qrCount = regularOrders.filter(o => o.orderSource === 'qr').length;
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: 'var(--header-h, 3.5rem)', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
+    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: '.35rem', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (
@@ -1824,7 +2374,7 @@ export default function BillingDashboard() {
             </div>
             <h2 className="font-display text-lg font-bold text-foreground mb-1">Clear cart?</h2>
             <p className="text-sm font-body text-muted-foreground mb-5">
-              Switching tabs will clear your current cart ({cart.length} item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
+              Switching tabs will clear all current bill items, including any custom lines ({cart.length} saved cart item{cart.length !== 1 ? 's' : ''}). This cannot be undone.
             </p>
             <div className="flex gap-3">
               <button
@@ -1844,8 +2394,21 @@ export default function BillingDashboard() {
         </div>
       )}
 
-      {/* ── Status bar ── */}
-      <div className="px-4 pt-3 pb-2 flex items-center justify-between border-b border-border">
+      {showDeliveryPopup && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 px-5">
+          <div className="w-full max-w-md rounded-3xl border border-amber-200 bg-background p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex gap-3"><div className="size-11 rounded-2xl bg-amber-100 flex items-center justify-center"><Bell className="size-5 text-amber-700" /></div><div><h2 className="font-display text-lg font-black">Delivery due today</h2><p className="text-sm text-muted-foreground">{todayDeliveryAlerts.length} advance order{todayDeliveryAlerts.length === 1 ? '' : 's'} require delivery today.</p></div></div>
+              <button onClick={() => setShowDeliveryPopup(false)} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
+            </div>
+            <div className="mt-4 max-h-64 overflow-y-auto space-y-2">{todayDeliveryAlerts.map(o => <div key={o.id} className="rounded-2xl border border-border p-3"><div className="flex justify-between gap-3"><span className="font-bold">#{String(o.orderNumber).padStart(4,'0')} · {o.customerName || 'Customer'}</span><span className="text-xs font-bold text-amber-700">{new Date(o.deliveryDate!).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div><p className="text-xs text-muted-foreground mt-1">Balance: {formatCurrency(o.balanceDue ?? 0)}</p></div>)}</div>
+            <button onClick={() => { setShowDeliveryPopup(false); setActiveTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
+          </div>
+        </div>
+      )}
+
+      {/* -- Status bar -- */}
+      <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
         <div className="flex items-center gap-2">
           <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
           <span className="text-xs font-body font-medium text-muted-foreground">
@@ -1854,9 +2417,9 @@ export default function BillingDashboard() {
         </div>
         <div className="flex items-center gap-1.5">
           {([
-            { key: 'all' as SourceFilter, label: `All · ${regularOrders.length}`, icon: null },
-            { key: 'staff' as SourceFilter, label: `Staff · ${staffCount}`, icon: <UserCheck className="size-3" /> },
-            { key: 'qr' as SourceFilter, label: `QR · ${qrCount}`, icon: <QrCode className="size-3" /> },
+            { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },
+            { key: 'staff' as SourceFilter, label: `Staff: ${staffCount}`, icon: <UserCheck className="size-3" /> },
+            { key: 'qr' as SourceFilter, label: `QR: ${qrCount}`, icon: <QrCode className="size-3" /> },
           ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
             <button key={s.key} onClick={() => setSourceFilter(s.key)}
               className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
@@ -1867,9 +2430,9 @@ export default function BillingDashboard() {
         </div>
       </div>
 
-      {/* ── Tab rail ── */}
+      {/* -- Tab rail -- */}
       <div className="border-b border-border bg-background shrink-0">
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
+        <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
 
           <button onClick={() => switchTab('new_bill')}
             className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
@@ -1894,30 +2457,20 @@ export default function BillingDashboard() {
             )}
           </button>
 
-          {/* Credit tab — visible to biller, admin, vrsnb_admin only */}
-          {isBiller && (
-            <button onClick={() => switchTab('credit')}
-              className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-                activeTab === 'credit'
-                  ? 'bg-red-600 text-white shadow-md'
-                  : 'bg-red-50 border border-red-200 text-red-700')}>
-              <CreditCard className="size-3.5" />Credit
-              {creditCount > 0 && (
-                <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                  activeTab === 'credit' ? 'bg-white/30 text-white' : 'bg-red-200 text-red-800')}>
-                  {creditCount}
-                </span>
-              )}
-            </button>
-          )}
+
+
+
+          <button onClick={() => switchTab('alerts')}
+            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
+            <Bell className="size-3.5" />Alerts
+            {todayDeliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{todayDeliveryAlerts.length}</span>}
+          </button>
 
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const count = tab.key === 'all'
-              ? (sourceFilter === 'all' ? regularOrders.length : regularOrders.filter(o => o.orderSource === sourceFilter).length)
-              : (sourceFilter === 'all'
-                  ? regularOrders.filter(o => o.status === tab.key).length
-                  : regularOrders.filter(o => o.status === tab.key && o.orderSource === sourceFilter).length);
+            const count = sourceFilter === 'all'
+              ? regularOrders.filter(o => matchesStatusTab(o, tab.key)).length
+              : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
             return (
               <button key={tab.key} onClick={() => switchTab(tab.key)}
                 className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
@@ -1937,13 +2490,16 @@ export default function BillingDashboard() {
         </div>
       </div>
 
-      {/* ── Content ── */}
+      {/* -- Content -- */}
       {activeTab === 'new_bill' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
-      ) : activeTab === 'credit' ? (
-        <div className="flex-1 overflow-y-auto"><BillerCreditTab branches={creditBranches} /></div>
+      ) : activeTab === 'alerts' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Today's Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Only advance orders scheduled for delivery today are shown.</p></div>
+          {todayDeliveryAlerts.length === 0 ? <EmptyState icon={<Bell className="size-8" />} title="No deliveries due today" description="Advance orders scheduled for today will appear here." /> : todayDeliveryAlerts.map(o => <OrderCard key={o.id} order={o} showActions counterOpenedToday={counterOpenedToday} />)}
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {filtered.length === 0 ? (
@@ -1955,8 +2511,8 @@ export default function BillingDashboard() {
                 <p className="font-body font-semibold text-foreground">No orders here</p>
                 <p className="text-sm font-body text-muted-foreground mt-1">
                   {sourceFilter !== 'all'
-                    ? `No ${activeTab === 'all' ? '' : activeTab + ' '}orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
-                    : activeTab === 'pending' ? 'Waiting for new orders…' : `No ${activeTab === 'all' ? '' : activeTab} orders right now`}
+                    ? `No ${activeTab} orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
+                    : activeTab === 'pending' ? 'Waiting for new orders...' : `No ${activeTab} orders right now`}
                 </p>
                 {/* U-11 FIX: offer one-tap clear when a source filter is hiding results */}
                 {sourceFilter !== 'all' && (
@@ -1964,13 +2520,13 @@ export default function BillingDashboard() {
                     onClick={() => setSourceFilter('all')}
                     className="mt-3 text-sm font-body font-semibold text-primary underline underline-offset-2 active:opacity-70"
                   >
-                    Clear filter — show all sources
+                    Clear filter - show all sources
                   </button>
                 )}
               </div>
             </div>
           ) : (
-            filtered.map(order => <OrderCard key={order.id} order={order} showActions />)
+            filtered.map(order => <OrderCard key={order.id} order={order} showActions counterOpenedToday={counterOpenedToday} />)
           )}
         </div>
       )}

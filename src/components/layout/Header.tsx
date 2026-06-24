@@ -1,6 +1,6 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut } from 'lucide-react';
+import { LogOut, Wifi, ShieldCheck } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
 import { useVenueStore } from '@/stores/venueStore';
 import cafeLogo from '@/assets/cafe-logo.png';
@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
-  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', receiver_hosur: 'Hosur Receiver', store: 'Store',
+  kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', store: 'Store',
   baker: 'Baker', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
   branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
   // N-04: previously missing role labels
@@ -22,6 +22,7 @@ const ROLE_COLORS: Record<string, string> = {
   // N-04: previously missing role colors
   admin_vrsnb: 'bg-purple-500/20 text-purple-700 border-purple-400/30',
   admin_snb: 'bg-indigo-500/20 text-indigo-700 border-indigo-400/30',
+  branch_hosur: 'bg-emerald-500/20 text-emerald-700 border-emerald-400/30',
   owner: 'bg-rose-500/20 text-rose-700 border-rose-400/30',
 };
 
@@ -45,8 +46,8 @@ export default function Header() {
   /* ── Public header ── */
   if (isPublic) {
     return (
-      <header className="fixed top-0 left-0 right-0 z-40 glass border-b border-white/30">
-        <div className="flex items-center justify-between px-4 h-14">
+      <header className="app-header fixed top-0 left-0 right-0 z-[70] glass border-b border-white/30">
+        <div className="flex items-center justify-between px-4 sm:px-6 h-14">
           <button onClick={() => navigate('/')} className="flex items-center gap-2.5 active:opacity-80 transition-opacity">
             <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/40 shadow-sm" />
             <div className="leading-tight">
@@ -68,20 +69,31 @@ export default function Header() {
   const roleColor = ROLE_COLORS[currentUser?.role || ''] || 'bg-primary/15 text-primary border-primary/20';
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-40 espresso-gradient text-white border-b border-white/8"
-      style={{ boxShadow: '0 2px 20px rgba(0,0,0,0.25)' }}>
-      <div className="flex items-center justify-between px-4 h-14">
+    <header className="app-header fixed top-0 left-0 right-0 lg:left-[288px] z-[70] text-white border-b border-white/10"
+      style={{
+        background: 'linear-gradient(135deg, rgba(28,16,8,0.96), rgba(14,57,46,0.96))',
+        backdropFilter: 'blur(22px)',
+        WebkitBackdropFilter: 'blur(22px)',
+        boxShadow: '0 12px 40px rgba(30,18,6,0.18)',
+      }}>
+      <div className="flex items-center justify-between px-4 sm:px-6 h-14">
         {/* Left — logo + name */}
         <div className="flex items-center gap-2.5">
           <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/20" />
           <div className="leading-none">
             <p className="font-display text-base font-semibold text-white/95">{headerName}</p>
-            <p className="text-[10px] font-body text-white/45 uppercase tracking-widest">{isVrsnbRoute ? 'VRSNB Admin Portal' : 'Staff Portal'}</p>
+            <p className="text-[10px] font-body text-white/50 uppercase tracking-[0.22em]">{isBakeryRoute ? 'Bakery operations' : 'Cafe operations'}</p>
           </div>
         </div>
 
-        {/* Right — user + logout */}
+        {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70">
+            <Wifi className="size-3.5 text-emerald-300" /> Online
+          </div>
+          <div className="hidden md:flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70">
+            <ShieldCheck className="size-3.5 text-amber-300" /> Role secured
+          </div>
           {currentUser && (
             <div className="flex flex-col items-end">
               <span className="text-xs font-body font-semibold text-white/90 leading-none">

@@ -3,9 +3,9 @@
 //
 // Flow:
 //   Admin edits price/name in SnbItemsTab or VrsnbItemsTab
-//     → saveOverride() upserts row into `branch_item_prices` (Supabase)
-//     → fires a `price_change` admin_notification
-//     → updates local Zustand state immediately (optimistic)
+//     -> saveOverride() upserts row into `branch_item_prices` (Supabase)
+//     -> fires a `price_change` admin_notification
+//     -> updates local Zustand state immediately (optimistic)
 //
 //   BillTab reads getPrice() / getName() to use the effective price at sale time.
 //   SnbItemsTab / VrsnbItemsTab call fetchOverrides() on mount to hydrate.
@@ -24,7 +24,6 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/stores/authStore';
 
 export type PriceBranch = 'SNB' | 'VRSNB';
 
@@ -38,7 +37,7 @@ export interface ItemPriceOverride {
 }
 
 interface ItemPriceState {
-  /** branch → barcode → override */
+  /** branch -> barcode -> override */
   overrides: Record<PriceBranch, Record<number, ItemPriceOverride>>;
   loaded:    Record<PriceBranch, boolean>;
   loading:   boolean;
@@ -61,9 +60,9 @@ interface ItemPriceState {
     oldName:   string,
   ) => Promise<string | null>;
 
-  /** Effective price — override when set, else the static fallback */
+  /** Effective price - override when set, else the static fallback */
   getPrice: (branch: PriceBranch, barcode: number, fallback: number) => number;
-  /** Effective name — override when set, else the static fallback */
+  /** Effective name - override when set, else the static fallback */
   getName:  (branch: PriceBranch, barcode: number, fallback: string) => string;
 }
 
@@ -83,9 +82,8 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
   loaded:    { SNB: false, VRSNB: false },
   loading:   false,
 
-  // ── Fetch ─────────────────────────────────────────────────────────────────
   fetchOverrides: async (branch) => {
-    if (get().loaded[branch]) return;          // already hydrated this session
+    if (get().loaded[branch]) return;
     set({ loading: true });
     try {
       const { data, error } = await supabase
@@ -110,9 +108,8 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
     }
   },
 
-  // ── Save (upsert + notify) ─────────────────────────────────────────────────
   saveOverride: async (branch, barcode, name, price, updatedBy, oldPrice, oldName) => {
-    // 1. Persist to DB — do NOT include updated_at; let the DB default handle it
+    // 1. Persist to DB. Do NOT include updated_at; let the DB default handle it.
     const { error } = await supabase
       .from('branch_item_prices')
       .upsert(
@@ -136,31 +133,30 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
     const nameChanged  = name    !== oldName;
     if (priceChanged || nameChanged) {
       const changes: string[] = [];
-      if (nameChanged)  changes.push(`name: "${oldName}" → "${name}"`);
-      if (priceChanged) changes.push(`price: ₹${oldPrice} → ₹${price}`);
+      if (nameChanged)  changes.push(`name: "${oldName}" -> "${name}"`);
+      if (priceChanged) changes.push(`price: Rs.${oldPrice} -> Rs.${price}`);
 
-      // Determine recipient based on who changed what:
-      // VRSNB Admin or SNB Admin → notify 'admin' (super admin must be informed)
-      // Super Admin changing any branch items → notify 'admin' (self-audit log;
-      //   branch admins don't need to know when the super admin edits their own items)
-      const changerRole = useAuthStore.getState().user?.role ?? 'admin';
-      let recipientRole: string;
-      if (changerRole === 'admin_vrsnb' || changerRole === 'admin_snb') {
-        recipientRole = 'admin';
-      } else {
-        // changerRole === 'admin' (super admin) — always notify 'admin' so the
-        // change appears in the super admin's own notification feed as an audit entry
-        recipientRole = 'admin';
-      }
+      const recipientRole = branch === 'SNB' ? 'admin_snb' : 'admin_vrsnb';
+      const notifications = [
+        {
+          type:           'price_change',
+          title:          `${branch} Price Updated - ${name}`,
+          body:           `${changes.join(' | ')} | Changed by ${updatedBy}`,
+          ref_label:      `${branch} | Barcode #${barcode}`,
+          meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+          recipient_role: recipientRole,
+        },
+        {
+          type:           'price_change',
+          title:          `${branch} Price Updated - ${name}`,
+          body:           `${changes.join(' | ')} | Changed by ${updatedBy}`,
+          ref_label:      `${branch} | Barcode #${barcode}`,
+          meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
+          recipient_role: 'admin',
+        },
+      ];
 
-      const { error: notifError } = await supabase.from('admin_notifications').insert({
-        type:           'price_change',
-        title:          `${branch} Price Updated — ${name}`,
-        body:           `${changes.join(' · ')} · Changed by ${updatedBy}`,
-        ref_label:      `${branch} · Barcode #${barcode}`,
-        meta:           { branch, barcode, name, oldName, price, oldPrice, updatedBy },
-        recipient_role: recipientRole,
-      });
+      const { error: notifError } = await supabase.from('admin_notifications').insert(notifications);
       if (notifError) {
         console.error('[itemPriceStore] notification insert failed:', notifError.message);
         return `Price saved, but notification failed: ${notifError.message}`;
@@ -170,7 +166,6 @@ export const useItemPriceStore = create<ItemPriceState>((set, get) => ({
     return null;
   },
 
-  // ── Getters ───────────────────────────────────────────────────────────────
   getPrice: (branch, barcode, fallback) =>
     get().overrides[branch][barcode]?.price ?? fallback,
 

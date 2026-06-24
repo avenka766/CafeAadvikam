@@ -8,6 +8,7 @@ import { Clock, MapPin, User, ChevronDown, ChevronUp, Printer, QrCode, UserCheck
 import type { Order, PaymentType, PaymentBreakdown } from '@/types';
 import Receipt from './Receipt';
 import { AdvancePaymentPanel } from '@/pages/BillingDashboard';
+import { useToast } from '@/hooks/use-toast';
 
 const CANCEL_REASONS = [
   'Customer changed mind',
@@ -22,6 +23,7 @@ const CANCEL_REASONS = [
 interface OrderCardProps {
   order: Order;
   showActions?: boolean;
+  counterOpenedToday?: boolean;
 }
 
 const PAYMENT_LABELS: Record<PaymentType, string> = {
@@ -31,13 +33,15 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
   part_payment: '🔀 Split Payment',
   unpaid: 'Unpaid',
   advance: '⏳ Advance',
+  credit: 'Credit',
 };
 
 type SplitMethod = 'cash' | 'upi' | 'card';
 
-export default function OrderCard({ order, showActions = false }: OrderCardProps) {
-  const { updateOrderStatus, applyDiscount, setPaymentType } = useOrderStore();
+export default function OrderCard({ order, showActions = false, counterOpenedToday = true }: OrderCardProps) {
+  const { updateOrderStatus, refundAndCancel, applyDiscount, setPaymentType } = useOrderStore();
   const { currentUser } = useAuthStore();
+  const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [showDiscount, setShowDiscount] = useState(false);
@@ -84,7 +88,11 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         setCancelPasswordError('Incorrect password. Try again.');
         return;
       }
-      await updateOrderStatus(order.id, 'cancelled', finalReason);
+      if (order.paymentType === 'unpaid') {
+        await updateOrderStatus(order.id, 'cancelled', finalReason);
+      } else {
+        await refundAndCancel(order.id, finalReason, currentUser!.username, cancelPassword);
+      }
       setShowCancelPrompt(false);
       setCancelReason('');
       setCancelCustomReason('');
@@ -108,7 +116,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   // Biller can collect payment at ANY status (pending/preparing/ready) — no need to wait for kitchen
   const isBiller = currentUser?.role === 'billing';
   const isReadyOrder = order.status === 'ready';
-  const canCollectPayment = showActions && isBiller && order.status !== 'served' && order.status !== 'cancelled' && order.paymentType === 'unpaid';
+  const canCollectPayment = showActions && isBiller && order.status !== 'cancelled' && order.paymentType === 'unpaid';
   const canAdvanceNonBiller = showActions && !isBiller && order.status !== 'served' && order.status !== 'cancelled';
 
   const handleApplyDiscount = () => {
@@ -124,13 +132,22 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
       return;
     }
     setDiscountError('');
-    applyDiscount(order.id, discType, val).catch(() => {});
+    applyDiscount(order.id, discType, val).catch((err) => {
+      // HYGIENE FIX: surface the error instead of silently swallowing it — the UI already
+      // shows the discount applied (optimistic update) but the DB update failed.
+      console.error('[OrderCard] applyDiscount failed:', err);
+      toast({ title: 'Discount failed', description: 'Could not save discount — please refresh and try again.', variant: 'destructive' });
+    });
     setShowDiscount(false);
     setDiscValue('');
   };
 
   const handleSinglePayment = async (pt: PaymentType) => {
     setPaymentError('');
+    if (!counterOpenedToday) {
+      setPaymentError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+      return;
+    }
     try {
       await setPaymentType(order.id, pt, billerName);
       // Only move to 'served' if the kitchen has already finished (status === 'ready').
@@ -191,12 +208,16 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
   };
 
   const handleSplitPayment = async () => {
+    if (!counterOpenedToday) {
+      setSplitError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+      return;
+    }
     const cashAmt = splitMethods.includes('cash') ? (parseFloat(splitCash) || 0) : 0;
     const upiAmt = splitMethods.includes('upi') ? (parseFloat(splitUpi) || 0) : 0;
     const cardAmt = splitMethods.includes('card') ? (parseFloat(splitCard) || 0) : 0;
     const totalPaid = cashAmt + upiAmt + cardAmt;
 
-    if (Math.abs(totalPaid - order.total) > 0.5) {
+    if (Math.round(totalPaid * 100) !== Math.round(order.total * 100)) {
       if (totalPaid < order.total) {
         setSplitError(`Short by ${formatCurrency(order.total - totalPaid)}. Total: ${formatCurrency(order.total)}`);
       } else {
@@ -387,16 +408,22 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
         {canCollectPayment && (
           <div className="px-4 py-3 border-t border-border flex gap-2">
             <button
-              onClick={() => setShowPayment(true)}
-              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2"
+              onClick={() => {
+                if (!counterOpenedToday) {
+                  setShowPayment(true);
+                  setPaymentError('Counter is not opened. Open Cafe Daily Closure, then Counter Open before collecting payment.');
+                  return;
+                }
+                setShowPayment(true);
+              }}
+              disabled={!counterOpenedToday}
+              title={!counterOpenedToday ? 'Open Cashier Counter before collecting payment' : undefined}
+              className="flex-1 py-3 rounded-xl text-white text-sm font-body font-bold active:scale-[0.97] transition-all shadow-teal flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none"
               style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}
             >
               💰 Collect Payment
             </button>
             <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-3 rounded-xl bg-accent/15 text-accent-foreground text-sm font-body font-semibold active:scale-90 border border-accent/20">%</button>
-            <button onClick={() => setShowReceipt(true)} className="px-3 py-3 rounded-xl bg-muted text-foreground text-sm font-body active:scale-90 border border-border" aria-label="Print receipt">
-              <Printer className="size-4" />
-            </button>
             <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-3 rounded-xl bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-90 border border-destructive/20">✕</button>
           </div>
         )}
@@ -428,13 +455,26 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
                 Collect Payment
               </button>
             )}
-            {order.status !== 'ready' && (
+            {order.status !== 'ready' && order.paymentType === 'unpaid' && (
               <button onClick={() => setShowDiscount(!showDiscount)} className="px-3 py-2.5 rounded-lg bg-accent/20 text-accent-foreground text-sm font-body font-semibold active:scale-95">💰</button>
             )}
             <button onClick={() => setShowReceipt(true)} className="px-3 py-2.5 rounded-lg bg-muted text-foreground text-sm font-body active:scale-95" aria-label="Print receipt">
               <Printer className="size-4" />
             </button>
-            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">✕</button>
+            <button onClick={() => setShowCancelPrompt(true)} className="px-3 py-2.5 rounded-lg bg-destructive/10 text-destructive text-sm font-body font-semibold active:scale-95">
+              {order.paymentType === 'unpaid' ? '✕' : 'Refund & Cancel'}
+            </button>
+          </div>
+        )}
+
+        {showActions && isBiller && order.status !== 'cancelled' && order.paymentType !== 'unpaid' && (
+          <div className="px-4 py-3 border-t border-border flex gap-2">
+            <button onClick={() => setShowReceipt(true)} className="flex-1 py-2.5 rounded-xl bg-muted text-foreground text-sm font-body font-semibold border border-border flex items-center justify-center gap-2">
+              <Printer className="size-4" /> Print Duplicate
+            </button>
+            <button onClick={() => setShowCancelPrompt(true)} className="flex-1 py-2.5 rounded-xl bg-destructive/10 text-destructive text-sm font-body font-bold border border-destructive/20">
+              Refund & Cancel
+            </button>
           </div>
         )}
 
@@ -452,7 +492,7 @@ export default function OrderCard({ order, showActions = false }: OrderCardProps
           <div className="px-3.5 py-3 border-t border-destructive/30 bg-destructive/5 space-y-3">
               <div className="flex items-center gap-2">
                 <AlertCircle className="size-4 text-destructive shrink-0" />
-                <p className="text-xs font-body font-bold text-destructive">Cancel Order #{String(order.orderNumber).padStart(3, '0')}</p>
+                <p className="text-xs font-body font-bold text-destructive">{order.paymentType === 'unpaid' ? 'Cancel Order' : 'Refund & Cancel'} #{String(order.orderNumber).padStart(3, '0')}</p>
               </div>
 
               {/* Pre-populated reason chips */}

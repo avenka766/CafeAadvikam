@@ -23,12 +23,14 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BRANCH_COLORS: Record<Branch, string> = {
+  Cafe:  '#4B9F6E',
   VRSNB: '#5BA3C9',
   SNB:   '#C5973E',
   Hosur: '#2D7D6F',
 };
 
 const BRANCH_PILL: Record<Branch, string> = {
+  Cafe:  'bg-green-100 text-green-700',
   VRSNB: 'bg-blue-100 text-blue-700',
   SNB:   'bg-amber-100 text-amber-700',
   Hosur: 'bg-emerald-100 text-emerald-700',
@@ -384,7 +386,7 @@ export default function BakeryReportsMerged({ branch }: Props) {
 
   // ── Excel Export ──────────────────────────────────────────────────────────
   const handleDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
     const branchLabel = branch === 'all'
       ? (filterBranch === 'all' ? 'All-Branches' : filterBranch)

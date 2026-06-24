@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMenuStore } from '@/stores/menuStore';
 import { useOrderStore } from '@/stores/orderStore';
@@ -33,6 +33,10 @@ export default function QROrderPage() {
   const [orderType, setOrderType] = useState<OrderType>(tableNum ? 'dine_in' : 'takeaway');
   const [tableNumber, setTableNumber] = useState<number | null>(tableNum);
   const [showTableSelect, setShowTableSelect] = useState(false);
+  // MISSING FIX: rate-limit QR submissions to prevent flooding.
+  // lastSubmitTime is stored in a ref so it persists across renders without causing re-renders.
+  const lastSubmitTime = useRef<number>(0);
+  const QR_SUBMIT_COOLDOWN_MS = 10_000; // 10 seconds between submissions from the same client
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
 
@@ -63,6 +67,12 @@ export default function QROrderPage() {
 
   const handleSubmitOrder = async () => {
     if (cart.length === 0) return;
+    // MISSING FIX: enforce client-side cooldown to prevent rapid re-submission
+    const now = Date.now();
+    if (now - lastSubmitTime.current < QR_SUBMIT_COOLDOWN_MS) {
+      alert(`Please wait a few seconds before placing another order.`);
+      return;
+    }
     if (cart.length > MAX_ITEMS_PER_ORDER) {
       alert(`Maximum ${MAX_ITEMS_PER_ORDER} different items per order.`);
       return;
@@ -75,6 +85,7 @@ export default function QROrderPage() {
     const safeNotes = notes.replace(/<[^>]*>/g, '').trim().slice(0, 300);
 
     setSubmitting(true);
+    lastSubmitTime.current = Date.now();
     try {
       const tn = orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined;
       const returnedId = await submitOrder({

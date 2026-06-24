@@ -270,13 +270,15 @@ export default function AdminInvoicesTab() {
   const [search, setSearch]               = useState('');
   const [filterStatus, setFilterStatus]   = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('pending_review');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
   // Poll every 30s so admin sees new invoices without refresh
   useEffect(() => {
-    const id = setInterval(() => load(), 30_000);
-    return () => clearInterval(id);
-  }, []);
+    const refresh = () => { if (!document.hidden) void load(); };
+    const id = setInterval(refresh, 30_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
+  }, [load]);
 
   const pending  = invoices.filter(i => i.status === 'pending_review').length;
   const approved = invoices.filter(i => i.status === 'approved').length;

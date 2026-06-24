@@ -48,16 +48,16 @@ function ActivityCard({ entry }: { entry: ActivityEntry }) {
 }
 
 export default function StaffActivityLog() {
-  const { entries, loaded, loading, load } = useActivityLogStore();
+  const { entries, loaded, loading, error, load } = useActivityLogStore();
   const [search,      setSearch]      = useState('');
   const [filterRole,  setFilterRole]  = useState('all');
   const [filterBranch, setFilterBranch] = useState('all');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   useEffect(() => {
     const id = setInterval(() => load(), 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [load]);
 
   const roles    = useMemo(() => ['all', ...Array.from(new Set(entries.map(e => e.role)))],    [entries]);
   const branches = useMemo(() => ['all', ...Array.from(new Set(entries.map(e => e.branch ?? '').filter(Boolean)))], [entries]);
@@ -121,7 +121,8 @@ export default function StaffActivityLog() {
       </div>
 
       {/* Filter pills */}
-      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+      <p className="text-[10px] text-muted-foreground sm:hidden">Swipe horizontally to see all filters →</p>
+      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide" tabIndex={0} aria-label="Activity filters; scroll horizontally for more">
         {/* Role filter */}
         <div className="flex gap-1 shrink-0">
           {roles.map(r => (
@@ -154,7 +155,9 @@ export default function StaffActivityLog() {
       </div>
 
       {/* Log list */}
-      {loading && !loaded ? (
+      {error ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">Failed to load activity log: {error}<button className="ml-2 underline" onClick={() => void load()}>Retry</button></div>
+      ) : loading && !loaded ? (
         <div className="flex justify-center py-12">
           <Loader2 className="size-5 animate-spin text-muted-foreground" />
         </div>

@@ -1,5 +1,5 @@
 // src/bakery/invoiceStore.ts
-// Store invoice management – tracks supplier deliveries, syncs stock, notifies admin.
+// Store invoice management - tracks supplier deliveries, syncs stock, notifies admin.
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
@@ -19,7 +19,7 @@ export interface StoreInvoice {
   invoiceNumber: string;
   supplierId: string;
   supplierName: string;
-  deliveryDate: string;           // ISO date string
+  deliveryDate: string;
   lineItems: InvoiceLineItem[];
   grandTotal: number;
   status: InvoiceStatus;
@@ -35,7 +35,7 @@ interface InvoiceState {
   loaded: boolean;
   loading: boolean;
   load: () => Promise<void>;
-  createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'syncedToStock' | 'createdAt'>) => Promise<{ id: string; invoiceNumber: string } | null>;
+  createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>) => Promise<{ id: string; invoiceNumber: string } | null>;
   updateStatus: (id: string, status: InvoiceStatus, reviewNote?: string) => Promise<string | null>;
   deleteInvoice: (id: string) => Promise<void>;
   pendingCount: () => number;
@@ -80,9 +80,6 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   createInvoice: async (data) => {
-    // C-07 FIX: use crypto.randomUUID() for collision-free invoice numbers.
-    // Math.random() only produced ~9,000 unique combos per day — duplicates were
-    // likely during busy shifts, breaking accounting & legal records.
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
     const invoiceNumber = `INV-${dateStr}-${rand}`;
@@ -123,8 +120,23 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   deleteInvoice: async (id) => {
-    await supabase.from('store_invoices').delete().eq('id', id);
-    set(s => ({ invoices: s.invoices.filter(x => x.id !== id) }));
+    const reviewedAt = new Date().toISOString();
+    const { error } = await supabase
+      .from('store_invoices')
+      .update({
+        status: 'rejected',
+        reviewed_at: reviewedAt,
+        review_note: 'Cancelled from invoice screen. Record kept for audit.',
+      })
+      .eq('id', id);
+    if (error) return;
+    set(s => ({
+      invoices: s.invoices.map(x =>
+        x.id === id
+          ? { ...x, status: 'rejected', reviewedAt, reviewNote: 'Cancelled from invoice screen. Record kept for audit.' }
+          : x,
+      ),
+    }));
   },
 
   pendingCount: () => get().invoices.filter(i => i.status === 'pending_review').length,

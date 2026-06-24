@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { useScrollLock } from '@/hooks/useScrollLock';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import EmptyState from '@/components/ui/EmptyState';
@@ -14,7 +15,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell, ResponsiveContainer, RadialBarChart, RadialBar,
 } from 'recharts';
-import * as XLSX from 'xlsx';
+import * as XLSX from '@/lib/safeSpreadsheet';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Branch = 'VRSNB' | 'Cafe Aadvikam' | 'SNB' | 'Hosur';
@@ -62,14 +63,18 @@ interface DeductionDecision {
 }
 type DeductionDecisions = Record<string, DeductionDecision>;
 
-// ESI: 0.75% employee deduction (applicable if gross <= 21000)
-// PF: 12% of gross
+// ESI: 0.75% employee deduction (applicable if gross <= 21000); amount based on earned salary
+// PF: 12% of earned salary (capped at ₹1,800)
 const ESI_RATE = 0.0075;
 const PF_RATE  = 0.12;
 const ESI_WAGE_LIMIT = 21000;
 
-function calcESI(gross: number) { return gross <= ESI_WAGE_LIMIT ? Math.round(gross * ESI_RATE) : 0; }
-function calcPF(gross: number)  { return Math.min(1800, Math.round(gross * PF_RATE)); }
+// gross is used only for the eligibility threshold; earned is the actual base for calculation
+function calcESI(earned: number, gross?: number) {
+  const eligibilityBase = gross ?? earned;
+  return eligibilityBase <= ESI_WAGE_LIMIT ? Math.round(earned * ESI_RATE) : 0;
+}
+function calcPF(earned: number)  { return Math.min(1800, Math.round(earned * PF_RATE)); }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCHES: Branch[] = ['VRSNB', 'Cafe Aadvikam', 'SNB', 'Hosur'];
@@ -246,15 +251,10 @@ async function deactivateEmployee(id: string): Promise<void> {
 }
 
 async function deleteOldAttendance(currentYear: number, currentMonth: number): Promise<void> {
-  try {
-    let cutoffMonth = currentMonth - 2;
-    let cutoffYear = currentYear;
-    if (cutoffMonth <= 0) { cutoffMonth += 12; cutoffYear--; }
-    await supabase.from('attendance').delete().lt('year', cutoffYear);
-    await supabase.from('attendance').delete().eq('year', cutoffYear).lt('month', cutoffMonth);
-    await supabase.from('deduction_decisions').delete().lt('year', cutoffYear);
-    await supabase.from('deduction_decisions').delete().eq('year', cutoffYear).lt('month', cutoffMonth);
-  } catch (e) { console.warn('Old data cleanup failed:', e); }
+  void currentYear;
+  void currentMonth;
+  // Payroll/attendance records are business records. Keep them in Supabase;
+  // retention/archival should be a deliberate admin operation, not automatic deletion.
 }
 
 // ─── Salary Calc ──────────────────────────────────────────────────────────────
@@ -266,7 +266,9 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
     if (a.present) presentDays++;
     if (a.half)    halfDays++;
     if (a.woff)    woffDays++;
-    if (a.present || a.half) {
+    // BUG-M5 FIX: canteen deduction only applies on actual working days (present or half),
+    // never on week-off days — even if meals were accidentally ticked on a woff day.
+    if ((a.present || a.half) && !a.woff) {
       const m = [a.bf, a.lunch, a.dinner].filter(Boolean).length;
       canteenTotal += m === 3 ? 30 : m * 10;
     }
@@ -277,8 +279,14 @@ function calcSalary(emp: Employee, att: MonthAttendance, daysInMonth: number, de
   const advanceDed  = decision.deductAdvance ? emp.salaryAdvance : 0;
   const uniformDed  = decision.deductUniform ? emp.uniformDeduction : 0;
   const otherDed    = decision.deductOther   ? emp.otherDeduction : 0;
-  const esiDed      = decision.deductESI     ? calcESI(emp.grossSalary) : 0;
-  const pfDed       = decision.deductPF      ? calcPF(emp.grossSalary)  : 0;
+  // LOGIC FIX: ESI and PF must be calculated on the *earned* (pro-rated) salary, not on gross.
+  // An employee who worked half the month should only have deductions for that half.
+  // Note: ESI *eligibility* check (gross <= ESI_WAGE_LIMIT) still uses gross, which is correct —
+  // the wage ceiling is based on the contracted gross, not the pro-rated amount.
+  // BUG-C3 FIX: pass emp.grossSalary as second arg so the eligibility threshold is checked
+  // against the contracted gross, not the prorated earned amount.
+  const esiDed      = decision.deductESI     ? calcESI(earned, emp.grossSalary) : 0;
+  const pfDed       = decision.deductPF      ? calcPF(earned)  : 0;
   const totalDed = advanceDed + canteenTotal + uniformDed + otherDed + esiDed + pfDed;
   return { presentDays, halfDays, woffDays, worked, canteenTotal, earned, totalDed, advanceDed, uniformDed, otherDed, esiDed, pfDed, net: Math.max(0, earned - totalDed) };
 }
@@ -898,8 +906,9 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
   const { presentDays, halfDays, woffDays, worked, canteenTotal, earned, advanceDed, uniformDed, otherDed, esiDed, pfDed, net } = calcSalary(emp, att, daysInMonth, decision);
-  const esiAmount = calcESI(emp.grossSalary);
-  const pfAmount  = calcPF(emp.grossSalary);
+  // Preview amounts shown in toggle labels: use earned as base, gross for ESI eligibility check
+  const esiAmount = calcESI(earned, emp.grossSalary);
+  const pfAmount  = calcPF(earned);
   const hasAdvance = emp.salaryAdvance > 0;
   const hasOther = emp.otherDeduction > 0;
   const hasUniform = emp.uniformDeduction > 0;
@@ -940,8 +949,8 @@ function SalaryCard({ emp, att, decision, onDecisionChange, daysInMonth, onAdvan
           {hasAdvance && <DeductToggle label="Salary Advance" amount={emp.salaryAdvance} checked={decision.deductAdvance} onChange={v => onDecisionChange(emp.id, { ...decision, deductAdvance: v })} />}
           {hasUniform && <DeductToggle label="Uniform Deduction" amount={emp.uniformDeduction} checked={decision.deductUniform} onChange={v => onDecisionChange(emp.id, { ...decision, deductUniform: v })} />}
           {hasOther && <DeductToggle label="Other Deduction" amount={emp.otherDeduction} checked={decision.deductOther} onChange={v => onDecisionChange(emp.id, { ...decision, deductOther: v })} />}
-          <DeductToggle label={`ESI (0.75%${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
-          <DeductToggle label={`PF (12% of gross${emp.grossSalary * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
+          <DeductToggle label={`ESI (0.75% of earned${emp.grossSalary > ESI_WAGE_LIMIT ? ' — not applicable, gross > ₹21k' : ''})`} amount={esiAmount} checked={decision.deductESI} onChange={v => onDecisionChange(emp.id, { ...decision, deductESI: v })} />
+          <DeductToggle label={`PF (12% of earned${earned * PF_RATE > 1800 ? ', capped at ₹1,800' : ''})`} amount={pfAmount} checked={decision.deductPF} onChange={v => onDecisionChange(emp.id, { ...decision, deductPF: v })} />
           {hasAdvance && !decision.deductAdvance && (
             <p className="text-[10px] font-body text-amber-600 pb-1 flex items-center gap-1"><AlertCircle className="size-3" /> Advance {'₹'}{emp.salaryAdvance.toLocaleString('en-IN')} carried forward to next month</p>
           )}
@@ -1221,7 +1230,7 @@ function AdvanceTab({ employees, advanceRecords, tableReady, onAdd, onClear }: {
 }) {
   const [empId, setEmpId] = useState('');
   const [amount, setAmount] = useState('');
-  const [givenDate, setGivenDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [givenDate, setGivenDate] = useState(() => businessDate());
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -1691,7 +1700,7 @@ export default function AttendanceSalary() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-[100dvh] bg-transparent pt-0 pb-6">
       {/* Header */}
       <div className="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div>

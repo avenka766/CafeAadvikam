@@ -32,7 +32,7 @@ interface BakeryItemsState {
   toggleItem: (id: string) => Promise<void>;
   updateItem: (id: string, updates: { name?: string; icon?: string; category?: string }) => Promise<string | null>;
   updatePrice: (id: string, price: number | null) => Promise<string | null>;
-  deleteItem: (id: string) => Promise<void>;
+  deleteItem: (id: string) => Promise<string | null>;
 }
 
 function rowToItem(d: Record<string, unknown>): BakeryItem {
@@ -90,24 +90,26 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
+    if (!id) return 'Use an item name with letters or numbers';
 
     // Check for duplicate
-    const { data: existing } = await supabase
+    const { data: existing, error: lookupError } = await supabase
       .from('bakery_items')
       .select('id')
       .eq('id', id)
-      .single();
+      .maybeSingle();
+    if (lookupError) return lookupError.message;
     if (existing) return 'An item with a similar name already exists';
 
     const maxOrder = get().items.reduce((max, i) => Math.max(max, i.sortOrder), 0);
 
     const { data, error } = await supabase
       .from('bakery_items')
-      .insert({ id, name: trimmedName, icon, category, enabled: true, sort_order: maxOrder + 1 })
+      .insert({ id, name: trimmedName, icon, category, enabled: true, sort_order: maxOrder + 1, price: null })
       .select()
       .single();
 
-    if (error || !data) return 'Failed to add item. Please try again.';
+    if (error || !data) return error?.message ?? 'Failed to add item. Please try again.';
 
     const newItem = rowToItem(data as Record<string, unknown>);
     set(s => ({ items: [...s.items, newItem] }));
@@ -195,8 +197,9 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
       throw new Error('Cannot delete: this item has recipes attached. Remove the recipes first.');
     }
 
-    const { error } = await supabase.from('bakery_items').delete().eq('id', id);
-    if (error) throw error;
-    set(s => ({ items: s.items.filter(i => i.id !== id) }));
+    const { error } = await supabase.from('bakery_items').update({ enabled: false }).eq('id', id);
+    if (error) return error.message;
+    set(s => ({ items: s.items.map(i => i.id === id ? { ...i, enabled: false } : i) }));
+    return null;
   },
 }));

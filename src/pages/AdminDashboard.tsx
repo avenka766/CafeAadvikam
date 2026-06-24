@@ -1,1402 +1,1476 @@
-import { useMemo, useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
-import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
+import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency } from '@/lib/utils';
-import {
-  TrendingUp, ShoppingBag, IndianRupee, Clock,
-  Package, XCircle, RefreshCw, Wifi, Download,
-  LayoutDashboard, Store, Filter, FileText, Bell,
-  ClipboardList, Calendar, Trash2,
-} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Branch } from '@/branch/types';
-import { BRANCHES } from '@/branch/types';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
-} from 'recharts';
-import BakeryReportsMerged from '@/bakery/BakeryReportsMerged';
-import StaffActivityLog from '@/bakery/StaffActivityLog';
-import DayEndReport from '@/bakery/DayEndReport';
+import { BRANCHES, BRANCH_LABELS, BRANCH_COLORS } from '@/branch/types';
+import SnbItemsTab from '@/components/admin/SnbItemsTab';
+import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
-import KitchenWasteLogTab from '@/components/KitchenWasteLogTab';
+import AttendanceSalary from '@/pages/AttendanceSalary';
+import { useBranchLedger } from '@/hooks/useBranchLedger';
+import { useInvoiceStore } from '@/bakery/invoiceStore';
+import { useNotificationStore } from '@/bakery/notificationStore';
+import { supabase } from '@/lib/supabase';
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts';
+import {
+  Activity, AlertTriangle, Banknote, BarChart3, Bell, CalendarClock,
+  CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download,
+  FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
+  Lock, Package, PackageSearch, Printer, Receipt, RefreshCw, Search,
+  ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
+  Trash2, WalletCards, X,
+} from 'lucide-react';
 
-const CHART_COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
+const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
+const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-function downloadCSV(rows: string[][], filename: string) {
-  const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+// CHANGE 3: Removed 'stock-alerts' from AdminTab union
+type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+
+type SalesTxn = {
+  id: string; branch: Branch; itemName: string; qty: number; revenue: number;
+  payment: string; soldAt: string; soldBy: string; billNo: string | null;
+};
+
+type ClosureRow = {
+  branch: Branch; openingBalance: number; totalSales: number; cashSales: number;
+  upiSales: number; cardSales: number; creditSales: number; returns: number;
+  netSales: number; expenses: number; purchasePayments: number; bankDeposits: number;
+  closingBalance: number; differenceAmount: number; remarks: string;
+  status: 'Closed' | 'Pending' | 'Review'; closedBy: string; closedAt: string;
+};
+
+// CHANGE 3: Removed 'stock-alerts' nav item
+const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
+  { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
+  { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
+  { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
+  { id: 'items', label: 'Items', description: 'SNB and VRSNB item controls', icon: PackageSearch, adminOnly: true },
+  { id: 'daily-closure', label: 'Daily Closure', description: 'Cafe and branch closing verification', icon: CalendarClock, adminOnly: true },
+  { id: 'credits', label: 'Credit Pending', description: 'Customer credit and due collection', icon: WalletCards, adminOnly: true },
+  { id: 'advance', label: 'Advance Orders', description: 'Advance bookings and balances', icon: ClipboardList, adminOnly: true },
+  { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
+  { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
+  { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
+  { id: 'invoices', label: 'Invoices', description: 'Supplier invoices and purchase records', icon: Receipt, adminOnly: true },
+  { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
+  { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
+  { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
+  { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
+];
+
+function todayInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function lastWeekInput() { const d = new Date(); d.setDate(d.getDate() - 6); return todayInput(d); }
+function startOfDay(value: string) { const d = value ? new Date(`${value}T00:00:00`) : new Date(0); d.setHours(0,0,0,0); return d; }
+function endOfDay(value: string) { const d = value ? new Date(`${value}T23:59:59`) : new Date('2999-12-31T23:59:59'); d.setHours(23,59,59,999); return d; }
+function inRange(iso: string, fromDate: string, toDate: string) { const t = new Date(iso).getTime(); return t >= startOfDay(fromDate).getTime() && t <= endOfDay(toDate).getTime(); }
+function localDateKey(iso: string) { return todayInput(new Date(iso)); }
+function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+function fmtDateTime(iso: string) { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function csvDownload(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
+  const safeRows = rows.length ? rows : [{ Note: 'No records for selected filters' }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [headers.join(','), ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+}
+function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  const m = (payment || '').toLowerCase();
+  if (key === 'cash') return m === 'cash' || m.includes('cash');
+  if (key === 'upi') return m === 'upi' || m.includes('upi');
+  if (key === 'card') return m === 'card' || m.includes('card');
+  return m === 'credit' || m.includes('credit');
+}
+function paymentAmount(revenue: number, payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
+  return paymentIncludes(payment, key) ? revenue : 0;
 }
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
-function KPI({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
+function Panel({ title, subtitle, action, children, className }: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-20 h-20 rounded-full opacity-5 -translate-y-6 translate-x-6"
-        style={{ background: 'hsl(var(--primary))' }} />
-      <div className={cn('size-9 rounded-xl flex items-center justify-center mb-3 shadow-sm', color)}>{icon}</div>
-      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
-      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
-    </div>
-  );
-}
-
-function StatusBadge({ label, count, color }: { label: string; count: number; color: string }) {
-  return (
-    <div className={cn('rounded-xl p-3 text-center', color)}>
-      <p className="font-display text-2xl font-bold tabular-nums">{count}</p>
-      <p className="text-[10px] font-body font-bold uppercase tracking-wide mt-0.5">{label}</p>
-    </div>
-  );
-}
-
-function PaymentRow({ label, amount, total }: { label: string; amount: number; total: number }) {
-  const pct = total > 0 ? Math.round((amount / total) * 100) : 0;
-  return (
-    <div className="flex items-center gap-3">
-      <span className="text-sm font-body w-20 shrink-0">{label}</span>
-      <div className="flex-1 bg-muted rounded-full h-2">
-        <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-sm font-body font-bold tabular-nums shrink-0 w-20 text-right">{formatCurrency(amount)}</span>
-    </div>
-  );
-}
-
-function Row({ label, value, bold, highlight }: { label: string; value: string; bold?: boolean; highlight?: boolean }) {
-  return (
-    <div className={cn('flex justify-between py-0.5', highlight && 'pl-3')}>
-      <span className={cn('text-sm font-body', bold ? 'font-bold text-foreground' : 'text-muted-foreground')}>{label}</span>
-      <span className={cn('text-sm font-body tabular-nums', bold ? 'font-bold text-foreground' : highlight ? 'font-semibold text-primary' : 'text-foreground')}>{value}</span>
-    </div>
-  );
-}
-
-// ─── CAFE DASHBOARD TAB (today only) ─────────────────────────────────────────
-function CafeDashboardTab() {
-  // STORE-01 FIX: granular selector — only re-renders when orders or polling changes
-  const { orders, polling } = useOrderStore(
-    useShallow(s => ({ orders: s.orders, polling: s.polling }))
-  );
-
-  const todayStr = useMemo(() => new Date().toDateString(), []);
-  const todayOrders = useMemo(() => orders.filter(o => new Date(o.createdAt).toDateString() === todayStr), [orders, todayStr]);
-
-  const served = todayOrders.filter(o => o.status === 'served');
-  const pending = todayOrders.filter(o => o.status === 'pending');
-  const preparing = todayOrders.filter(o => o.status === 'preparing');
-  const ready = todayOrders.filter(o => o.status === 'ready');
-  const cancelled = todayOrders.filter(o => o.status === 'cancelled');
-
-  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
-  const totalOrders = todayOrders.length;
-  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    served.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
-      else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
-    }));
-    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 5);
-  }, [served]);
-
-  const paymentTotals = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') cash += o.total;
-      else if (o.paymentType === 'upi') upi += o.total;
-      else if (o.paymentType === 'card') card += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
-      }
-    });
-    return { cash, upi, card };
-  }, [served]);
-
-  const peakHour = useMemo(() => {
-    const hours: Record<number, number> = {};
-    served.forEach(o => { const h = new Date(o.createdAt).getHours(); hours[h] = (hours[h] || 0) + 1; });
-    let max = 0, maxH = 0;
-    Object.entries(hours).forEach(([h, c]) => { if (Number(c) > max) { max = Number(c); maxH = Number(h); } });
-    if (max === 0) return 'N/A';
-    return `${maxH > 12 ? maxH - 12 : maxH}${maxH >= 12 ? 'PM' : 'AM'}`;
-  }, [served]);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Wifi className={cn('size-3', polling ? 'text-emerald-500' : 'text-muted-foreground')} />
-        <span className="text-xs text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Total Orders" value={String(totalOrders)} color="bg-accent/20 text-accent-foreground" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<Clock className="size-4" />} label="Peak Hour" value={peakHour} color="bg-amber-50 text-amber-700" />
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3 flex items-center gap-2">
-          <RefreshCw className="size-4 text-primary" />Live Order Status
-        </h3>
-        <div className="grid grid-cols-4 gap-2">
-          <StatusBadge label="Pending" count={pending.length} color="bg-amber-100 text-amber-800" />
-          <StatusBadge label="Preparing" count={preparing.length} color="bg-blue-100 text-blue-800" />
-          <StatusBadge label="Ready" count={ready.length} color="bg-emerald-100 text-emerald-800" />
-          <StatusBadge label="Cancelled" count={cancelled.length} color="bg-red-100 text-red-800" />
+    <section className={cn('rounded-3xl border border-slate-200 bg-white shadow-sm shadow-slate-200/60 overflow-hidden', className)}>
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-bold text-slate-950">{title}</h3>
+          {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
         </div>
+        {action}
       </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
 
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">Payment Breakdown</h3>
-        <div className="space-y-2">
-          <PaymentRow label="💵 Cash" amount={paymentTotals.cash} total={totalRevenue} />
-          <PaymentRow label="📱 UPI" amount={paymentTotals.upi} total={totalRevenue} />
-          <PaymentRow label="💳 Card" amount={paymentTotals.card} total={totalRevenue} />
+function KpiCard({ label, value, sub, icon, tone = 'slate' }: { label: string; value: ReactNode; sub?: ReactNode; icon: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = { slate: 'bg-slate-50 text-slate-700 ring-slate-200', green: 'bg-emerald-50 text-emerald-700 ring-emerald-200', amber: 'bg-amber-50 text-amber-700 ring-amber-200', red: 'bg-red-50 text-red-700 ring-red-200', blue: 'bg-blue-50 text-blue-700 ring-blue-200', purple: 'bg-purple-50 text-purple-700 ring-purple-200' };
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/60">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</p>
+          <div className="mt-2 font-display text-2xl font-black leading-none text-slate-950 tabular-nums">{value}</div>
+          {sub && <p className="mt-2 text-xs text-slate-500">{sub}</p>}
         </div>
+        <div className={cn('grid size-11 shrink-0 place-items-center rounded-2xl ring-1', tones[tone])}>{icon}</div>
       </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">Top Selling Items</h3>
-        {topItems.length === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No sales today yet</p>
-        ) : (
-          <div className="space-y-2">
-            {topItems.map((item, i) => (
-              <div key={item.name} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                  i === 0 ? 'gold-gradient text-white' : i < 3 ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-                )}>{i + 1}</span>
-                <div className="flex-1 min-w-0"><p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p></div>
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-body font-bold tabular-nums">{item.qty} sold</p>
-                  <p className="text-[10px] font-body text-muted-foreground tabular-nums">{formatCurrency(item.revenue)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-lg font-bold text-foreground mb-3">GST Summary</h3>
-        {totalRevenue === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No data</p>
-        ) : (() => {
-          const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
-          const gst = Math.round((totalRevenue - taxable) * 100) / 100;
-          const cgst = Math.round((gst / 2) * 100) / 100;
-          const sgst = Math.round((gst / 2) * 100) / 100;
-          return (
-            <div className="space-y-1.5">
-              <Row label="Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
-              <Row label="Taxable Amount" value={formatCurrency(taxable)} />
-              <Row label="GST @ 5%" value={formatCurrency(gst)} />
-              <div className="border-t border-border pt-1.5 mt-1.5">
-                <Row label="CGST @ 2.5%" value={formatCurrency(cgst)} highlight />
-                <Row label="SGST @ 2.5%" value={formatCurrency(sgst)} highlight />
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-
-      {cancelled.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-lg font-bold text-foreground mb-2 flex items-center gap-2">
-            <XCircle className="size-4 text-destructive" />Cancelled Orders
-          </h3>
-          <div className="flex justify-between text-sm font-body mb-2">
-            <span className="text-muted-foreground">Count</span>
-            <span className="font-bold text-destructive">{cancelled.length}</span>
-          </div>
-          <div className="flex justify-between text-sm font-body">
-            <span className="text-muted-foreground">Lost Revenue</span>
-            <span className="font-bold text-destructive">{formatCurrency(cancelled.reduce((s, o) => s + o.total, 0))}</span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-// ─── CAFE VIEW (Dashboard / Sales / Reports sub-tabs) ────────────────────────
-function CafeView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'waste'>('dashboard');
+function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'purple' }) {
+  const tones = { slate: 'bg-slate-100 text-slate-700', green: 'bg-emerald-100 text-emerald-700', amber: 'bg-amber-100 text-amber-700', red: 'bg-red-100 text-red-700', blue: 'bg-blue-100 text-blue-700', purple: 'bg-purple-100 text-purple-700' };
+  return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide', tones[tone])}>{children}</span>;
+}
 
-  const tabs = [
-    { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',   icon: FileText },
-    { id: 'waste'     as const, label: 'Waste Log', icon: Trash2 },
-  ];
+function BranchPill({ branch }: { branch: Branch }) {
+  return <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase', BRANCH_COLORS[branch]?.badge)}>{BRANCH_LABELS[branch] ?? branch}</span>;
+}
 
+function EmptyState({ label }: { label: string }) {
   return (
-    <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'shrink-0 whitespace-nowrap flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition',
-              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-            )}
-          >
-            <t.icon className="size-3" />
-            {t.label}
+    <div className="grid place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center">
+      <p className="text-sm font-semibold text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function ChartWrap({ children, minHeight = 260 }: { children: ReactNode; minHeight?: number }) {
+  return <div style={{ minHeight }} className="h-[280px] w-full">{children}</div>;
+}
+
+// CHANGE 4: Date preset component
+const DATE_PRESETS = [
+  { label: 'Today', days: 0 },
+  { label: 'Yesterday', days: -1 },
+  { label: '7 Days', days: 6 },
+  { label: '15 Days', days: 14 },
+  { label: '1 Month', days: 29 },
+] as const;
+
+function DatePresets({ fromDate, toDate, setFromDate, setToDate }: { fromDate: string; toDate: string; setFromDate: (d: string) => void; setToDate: (d: string) => void }) {
+  function applyPreset(days: number) {
+    const today = todayInput();
+    if (days === -1) {
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const y = todayInput(d);
+      setFromDate(y); setToDate(y);
+    } else {
+      const d = new Date(); d.setDate(d.getDate() - days);
+      setFromDate(todayInput(d)); setToDate(today);
+    }
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {DATE_PRESETS.map(p => {
+        const today = todayInput();
+        const expectedFrom = p.days === -1
+          ? todayInput(new Date(Date.now() - 86400000))
+          : todayInput(new Date(Date.now() - p.days * 86400000));
+        const expectedTo = p.days === -1 ? expectedFrom : today;
+        const active = fromDate === expectedFrom && toDate === expectedTo;
+        return (
+          <button key={p.label} onClick={() => applyPreset(p.days)}
+            aria-pressed={active}
+            className={cn('rounded-full border px-3 py-1 text-xs font-black transition', active
+              ? 'border-slate-950 bg-slate-950 text-white shadow-sm'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+            {p.label}
           </button>
-        ))}
-      </div>
-      {tab === 'dashboard' && <CafeDashboardTab />}
-      {tab === 'reports'   && <CafeReportsTab />}
-      {tab === 'waste'     && <KitchenWasteLogTab />}
+        );
+      })}
     </div>
   );
 }
 
-// ─── BAKERY DASHBOARD TAB (today only) ───────────────────────────────────────
-function BakeryDashboardTab() {
-  const { stock, sales, fetchBranchData } = useBranchStore();
+const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
+function AdminDashboard() {
+  const { currentUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
+  const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
+  const requestedTab = searchParams.get('tab') as AdminTab | null;
+  const allowedNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
+  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
+  const [fromDate, setFromDate] = useState(lastWeekInput());
+  const [toDate, setToDate] = useState(todayInput());
+  const [closureDate, setClosureDate] = useState(todayInput());
+  const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [itemsSection, setItemsSection] = useState<'snb' | 'vrsnb'>('snb');
+  // Audit tab filters
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditBranchFilter, setAuditBranchFilter] = useState<Branch | 'all'>('all');
 
-  const today = new Date().toDateString();
-
-  const branchStats = useMemo(() => {
-    return BRANCHES.map(branch => {
-      const todaySales = (sales[branch] || []).filter(s => new Date(s.soldAt).toDateString() === today);
-      const totalQty = todaySales.reduce((a, s) => a + s.quantitySold, 0);
-      const totalRevenue = todaySales.reduce((a, s) => {
-        const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
-        return a + unitPrice * s.quantitySold;
-      }, 0);
-      const stockCount = (stock[branch] || []).length;
-      const lowStock = (stock[branch] || []).filter(s => s.quantity <= s.minThreshold).length;
-      return { branch, totalQty, totalRevenue, stockCount, lowStock, salesCount: todaySales.length };
-    });
-  }, [sales, stock, today]);
-
-  const totalRevenue = branchStats.reduce((a, b) => a + b.totalRevenue, 0);
-  const totalQty = branchStats.reduce((a, b) => a + b.totalQty, 0);
-
-  const allTodaySales = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number }>();
-    BRANCHES.forEach(branch => {
-      (sales[branch] || [])
-        .filter(s => new Date(s.soldAt).toDateString() === today)
-        .forEach(s => {
-          const unitPrice = (s as typeof s & { unitPrice?: number }).unitPrice ?? 0;
-          const ex = map.get(s.itemName);
-          if (ex) { ex.qty += s.quantitySold; ex.revenue += unitPrice * s.quantitySold; }
-          else map.set(s.itemName, { qty: s.quantitySold, revenue: unitPrice * s.quantitySold });
-        });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8);
-  }, [sales, today]);
-
-  const BRANCH_PILL: Record<Branch, string> = {
-    VRSNB: 'bg-blue-50 border-blue-200 text-blue-700',
-    SNB: 'bg-amber-50 border-amber-200 text-amber-700',
-    Hosur: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+  const { orders, polling, startPolling, stopPolling } = useOrderStore(
+    useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
+  );
+  const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, wasteLogs, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
+  const { invoices, load: loadInvoices } = useInvoiceStore();
+  const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
+  const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
+  const selectTab = (next: AdminTab) => {
+    setActiveTab(next);
+    setSearchParams(next === 'overview' ? {} : { tab: next });
   };
 
-  const barData = branchStats.map(b => ({ branch: b.branch, revenue: b.totalRevenue, qty: b.totalQty }));
-  const maxRev = Math.max(...branchStats.map(b => b.totalRevenue), 1);
-
-  return (
-    <div className="space-y-4">
-      {/* KPI Row */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-card border border-border rounded-xl p-4 col-span-2">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Today's Total Revenue</p>
-          <p className="font-display text-3xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{totalQty} items sold across {BRANCHES.length} branches</p>
-        </div>
-        {branchStats.map(b => (
-          <div key={b.branch} className={cn('border rounded-xl p-3', BRANCH_PILL[b.branch as Branch])}>
-            <p className="text-[10px] font-bold uppercase tracking-wide mb-1">{b.branch}</p>
-            <p className="font-display text-xl font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</p>
-            <p className="text-[10px] mt-0.5 opacity-80">{b.totalQty} items · {b.salesCount} txns</p>
-            {b.lowStock > 0 && <p className="text-[9px] mt-0.5 font-medium text-red-600">⚠ {b.lowStock} low stock</p>}
-          </div>
-        ))}
-      </div>
-
-      {/* Branch Revenue Bar Chart */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-1">Branch Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-3">Today's revenue by branch</p>
-        <div className="space-y-3">
-          {branchStats.map((b, i) => (
-            <div key={b.branch}>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm font-medium">{b.branch}</span>
-                <div className="text-right">
-                  <span className="text-sm font-bold tabular-nums">{formatCurrency(b.totalRevenue)}</span>
-                  <span className="text-[10px] text-muted-foreground ml-2">{b.totalQty} items</span>
-                </div>
-              </div>
-              <div className="h-2.5 bg-muted rounded-full">
-                <div className="h-full rounded-full transition-all" style={{
-                  width: `${Math.round((b.totalRevenue / maxRev) * 100)}%`,
-                  background: CHART_COLORS[i],
-                }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Top Items */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold mb-1">Top Items by Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-3">Today · all branches</p>
-        {allTodaySales.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">No sales today</p>
-        ) : (
-          <div className="space-y-2">
-            {allTodaySales.map(([item, v], i) => (
-              <div key={item} className="flex items-center gap-3">
-                <span className={cn('size-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                  i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground'
-                )}>{i + 1}</span>
-                <p className="flex-1 text-sm font-medium truncate">{item}</p>
-                <div className="text-right">
-                  <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(v.revenue)}</p>
-                  <p className="text-[10px] text-muted-foreground">{v.qty} sold</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-// ─── BAKERY SALES TAB ────────────────────────────────────────────────────────
-function BakerySalesTab() {
-  const { sales, fetchBranchData } = useBranchStore();
-  const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
-  const [filterItem, setFilterItem] = useState('');
-  const [filterDate, setFilterDate] = useState('');
-
+  useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
   useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
+    if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab, activeTab]);
 
-  const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
-    BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({
-        ...s, branch,
-        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-      }));
+  const rangeLabel = fromDate === toDate
+    ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : `${new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(`${toDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+
+  const cafeOrdersInRange = useMemo(() => orders.filter(o => inRange(o.createdAt, fromDate, toDate)), [orders, fromDate, toDate]);
+  const cafeServedOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'served'), [cafeOrdersInRange]);
+  const cafeCancelledOrders = useMemo(() => cafeOrdersInRange.filter(o => o.status === 'cancelled'), [cafeOrdersInRange]);
+  const cafeSalesTotal = useMemo(() => cafeServedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0), [cafeServedOrders]);
+
+  const cafePaymentSplit = useMemo(() => {
+    const split = { cash: 0, upi: 0, card: 0, credit: 0 };
+    cafeServedOrders.forEach(o => {
+      if (o.paymentType === 'cash') split.cash += Number(o.total || 0);
+      else if (o.paymentType === 'upi') split.upi += Number(o.total || 0);
+      else if (o.paymentType === 'card') split.card += Number(o.total || 0);
+      else if (o.paymentType === 'unpaid') split.credit += Number(o.total || 0);
+      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
+        split.cash += Number(o.paymentBreakdown.cash || 0);
+        split.upi += Number(o.paymentBreakdown.upi || 0);
+        split.card += Number(o.paymentBreakdown.card || 0);
+      }
+    });
+    return split;
+  }, [cafeServedOrders]);
+
+  const branchTransactions = useMemo<SalesTxn[]>(() => {
+    const result: SalesTxn[] = [];
+    BRANCHES.filter(b => b !== 'Cafe').forEach(branch => {
+      (sales[branch] || []).filter(s => inRange(s.soldAt, fromDate, toDate)).forEach(s => {
+        result.push({ id: s.id, branch, itemName: s.itemName, qty: Number(s.quantitySold || 0), revenue: Number(s.unitPrice || 0) * Number(s.quantitySold || 0), payment: s.paymentMethod || '-', soldAt: s.soldAt, soldBy: s.soldBy, billNo: s.billNo });
+      });
     });
     return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-  }, [sales]);
+  }, [sales, fromDate, toDate]);
 
-  const allItems = useMemo(() => [...new Set(allSales.map(s => s.itemName))].sort(), [allSales]);
+  const opsBillsInRange = useMemo(() => bills.filter(b => inRange(b.createdAt, fromDate, toDate)), [bills, fromDate, toDate]);
+  const branchRevenueFromSales = useMemo(() => branchTransactions.reduce((sum, t) => sum + t.revenue, 0), [branchTransactions]);
+  const opsBillRevenue = useMemo(() => opsBillsInRange.reduce((sum, b) => sum + Number(b.total || 0), 0), [opsBillsInRange]);
+  const billedNumbers = new Set(opsBillsInRange.map((bill) => bill.billNo));
+  const legacyOnlyRevenue = branchTransactions
+    .filter((transaction) => !transaction.billNo || !billedNumbers.has(transaction.billNo))
+    .reduce((sum, transaction) => sum + transaction.revenue, 0);
+  const branchSalesTotal = opsBillRevenue + legacyOnlyRevenue;
+  const businessTotalSales = cafeSalesTotal + branchSalesTotal;
 
-  const filtered = useMemo(() => {
-    return allSales.filter(s => {
-      if (filterBranch !== 'all' && s.branch !== filterBranch) return false;
-      if (filterItem && s.itemName !== filterItem) return false;
-      if (filterDate && new Date(s.soldAt).toDateString() !== new Date(filterDate).toDateString()) return false;
-      return true;
+  const branchSalesByBranch = useMemo(() => {
+    return BRANCHES.map(branch => {
+      if (branch === 'Cafe') return { branch, label: 'Cafe', sales: cafeSalesTotal, orders: cafeServedOrders.length, returns: 0 };
+      const txns = branchTransactions.filter(t => t.branch === branch);
+      const ops = opsBillsInRange.filter(b => b.branch === branch);
+      const revenue = Math.max(txns.reduce((sum, t) => sum + t.revenue, 0), ops.reduce((sum, b) => sum + Number(b.total || 0), 0));
+      return { branch, label: branch, sales: revenue, orders: Math.max(txns.length, ops.length), returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
     });
-  }, [allSales, filterBranch, filterItem, filterDate]);
+  }, [cafeSalesTotal, cafeServedOrders.length, branchTransactions, opsBillsInRange, returns, fromDate, toDate]);
 
-  const totalRevenue = filtered.reduce((a, s) => a + s.unitPrice * s.quantitySold, 0);
-  const totalQty = filtered.reduce((a, s) => a + s.quantitySold, 0);
+  // CHANGE 5: filtered branch sales for overview
+  const filteredBranchSalesByBranch = useMemo(() => branchFilter === 'all' ? branchSalesByBranch : branchSalesByBranch.filter(b => b.branch === branchFilter), [branchSalesByBranch, branchFilter]);
 
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-    const rows = filtered.map((s, i) => ({
-      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
-      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
-      'Revenue': s.unitPrice * s.quantitySold,
-      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By': s.soldBy,
-      'Payment': (s as typeof s & { paymentMethod?: string | null }).paymentMethod || '-',
+  const dailySalesTrend = useMemo(() => {
+    const days: Record<string, { date: string; Cafe: number; SNB: number; VRSNB: number; Hosur: number; Total: number }> = {};
+    for (let d = new Date(`${fromDate}T00:00:00`); d <= endOfDay(toDate); d.setDate(d.getDate() + 1)) {
+      const key = todayInput(d);
+      days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
+    }
+    cafeServedOrders.forEach(o => { const key = localDateKey(o.createdAt); if (!days[key]) return; days[key].Cafe += Number(o.total || 0); days[key].Total += Number(o.total || 0); });
+    branchTransactions.forEach(t => { const key = localDateKey(t.soldAt); if (!days[key] || t.branch === 'Cafe') return; days[key][t.branch] += t.revenue; days[key].Total += t.revenue; });
+    return Object.values(days);
+  }, [fromDate, toDate, cafeServedOrders, branchTransactions]);
+
+  const filteredDailySalesTrend = useMemo(() => {
+    if (branchFilter === 'all') return dailySalesTrend;
+    return dailySalesTrend.map(d => ({ ...d, Total: d[branchFilter as keyof typeof d] as number }));
+  }, [dailySalesTrend, branchFilter]);
+
+  const paymentSplit = useMemo(() => {
+    const totals = { cash: cafePaymentSplit.cash, upi: cafePaymentSplit.upi, card: cafePaymentSplit.card, credit: cafePaymentSplit.credit };
+    opsBillsInRange.forEach(b => {
+      if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+      else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+      else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+      else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+      else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+    });
+    branchTransactions.forEach(t => {
+      if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+      else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+      else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+      else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+    });
+    return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
+  }, [cafePaymentSplit, opsBillsInRange, branchTransactions]);
+
+  const topSellingItems = useMemo(() => {
+    const map = new Map<string, { item: string; qty: number; revenue: number }>();
+    const filteredCafeOrders = branchFilter === 'all' || branchFilter === 'Cafe' ? cafeServedOrders : [];
+    const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+    filteredCafeOrders.forEach(o => o.items.forEach(ci => {
+      const key = ci.menuItem.name;
+      const existing = map.get(key) || { item: key, qty: 0, revenue: 0 };
+      existing.qty += Number(ci.quantity || 0); existing.revenue += Number(ci.menuItem.price || 0) * Number(ci.quantity || 0);
+      map.set(key, existing);
     }));
-    const ws = rows.length > 0 ? XLSX.utils.json_to_sheet(rows) : XLSX.utils.json_to_sheet([{ Note: 'No sales match selected filters' }]);
-    if (rows.length > 0) autoWidth(ws, rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Bakery Sales');
-    XLSX.writeFile(wb, `BakerySales_${new Date().toISOString().split('T')[0]}.xlsx`);
+    filteredTxns.forEach(t => {
+      const existing = map.get(t.itemName) || { item: t.itemName, qty: 0, revenue: 0 };
+      existing.qty += t.qty; existing.revenue += t.revenue; map.set(t.itemName, existing);
+    });
+    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 10).map(item => ({ ...item, short: item.item.length > 16 ? `${item.item.slice(0, 16)}…` : item.item }));
+  }, [cafeServedOrders, branchTransactions, branchFilter]);
+
+  // CHANGE 3: stockAlerts kept for OverviewTab KpiCard only (no StockAlertsTab)
+  const stockAlerts = useMemo(() => {
+    let count = 0;
+    BRANCHES.filter(b => b !== 'Cafe').forEach(branch => {
+      (stock[branch] || []).forEach(s => { if (Number(s.quantity || 0) <= 0) count++; });
+    });
+    return count;
+  }, [stock]);
+
+  const creditPendingTotal = useMemo(() => BRANCHES.reduce((sum, branch) => sum + (creditSales[branch] || []).filter(c => c.status !== 'settled').reduce((s, c) => s + Number(c.creditAmount || 0), 0), 0), [creditSales]);
+  const purchaseTotal = useMemo(() => purchases.filter(p => inRange(p.createdAt, fromDate, toDate)).reduce((sum, p) => sum + Number(p.total || 0), 0), [purchases, fromDate, toDate]);
+  const expenseTotal = useMemo(() => cashMovements.filter(m => inRange(m.dateTime, fromDate, toDate) && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0), [cashMovements, fromDate, toDate]);
+
+  const balanceSummary = useMemo(() => {
+    const totals = { cash: 0, upi: 0, card: 0, bank: 0 };
+    cashMovements.forEach(m => {
+      if (!['cash', 'upi', 'card', 'bank'].includes(m.paymentMode)) return;
+      const key = m.paymentMode as keyof typeof totals;
+      totals[key] += m.direction === 'in' ? Number(m.amount || 0) : -Number(m.amount || 0);
+    });
+    bankDeposits.forEach(d => {
+      const amount = Number(d.amount || 0); totals.bank += amount;
+      if (d.paymentMode === 'Cash Deposit') totals.cash -= amount;
+      if (d.paymentMode === 'UPI Transfer') totals.upi -= amount;
+      if (d.paymentMode === 'Card Settlement') totals.card -= amount;
+    });
+    return totals;
+  }, [cashMovements, bankDeposits]);
+
+  const closureRows = useMemo<ClosureRow[]>(() => {
+    return BRANCHES.map(branch => {
+      const ledger = adminLedger.closureByBranchDate.get(`${branch}:${closureDate}`);
+      const savedLedgerClosure = adminLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
+      if (branch !== 'Cafe' && ledger) {
+        const openingBalance = Number(savedLedgerClosure?.opening_cash || 0);
+        const totalSales = adminLedger.toNumber(ledger.sales_total) + adminLedger.toNumber(ledger.advance_collected) + adminLedger.toNumber(ledger.advance_balance_collected);
+        const cashSales = adminLedger.toNumber(ledger.cash_total);
+        const upiSales = adminLedger.toNumber(ledger.upi_total);
+        const cardSales = adminLedger.toNumber(ledger.card_total);
+        const creditSalesDay = adminLedger.toNumber(ledger.credit_billed);
+        const returnsDay = adminLedger.toNumber(savedLedgerClosure?.refunds || 0);
+        const expensesDay = adminLedger.toNumber(savedLedgerClosure?.expenses || 0);
+        const closingBalance = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.actual_cash) : openingBalance + cashSales - returnsDay - expensesDay;
+        const differenceAmount = savedLedgerClosure ? adminLedger.toNumber(savedLedgerClosure.difference) : 0;
+        const status: ClosureRow['status'] = savedLedgerClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
+        return {
+          branch,
+          openingBalance,
+          totalSales,
+          cashSales,
+          upiSales,
+          cardSales,
+          creditSales: creditSalesDay,
+          returns: returnsDay,
+          netSales: Math.max(0, totalSales - returnsDay),
+          expenses: expensesDay,
+          purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
+          bankDeposits: 0,
+          closingBalance,
+          differenceAmount,
+          remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
+          status,
+          closedBy: savedLedgerClosure?.cashier || '-',
+          closedAt: savedLedgerClosure ? fmtDateTime(savedLedgerClosure.created_at) : '-',
+        };
+      }
+      const closureRecords = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) === closureDate);
+      const latestClosure = closureRecords[0] || null;
+      const txns = branch === 'Cafe' ? [] : branchTransactions.filter(t => t.branch === branch && localDateKey(t.soldAt) === closureDate);
+      const opsBills = opsBillsInRange.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
+      const cafeDayOrders = branch === 'Cafe' ? orders.filter(o => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
+      const totalSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0) : Math.max(txns.reduce((sum, t) => sum + t.revenue, 0), opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0));
+      const cashSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.cash || 0) : o.paymentType === 'cash' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'cash'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0));
+      const upiSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.upi || 0) : o.paymentType === 'upi' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'upi'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0));
+      const cardSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.card || 0) : o.paymentType === 'card' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'card'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0));
+      const creditSalesDay = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'unpaid' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'credit'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'credit' ? Number(b.total || 0) : 0), 0));
+      const returnsDay = returns.filter(r => r.branch === branch && localDateKey(r.createdAt) === closureDate).reduce((sum, r) => sum + Number(r.total || 0), 0);
+      const expensesDay = cashMovements.filter(m => m.branch === branch && localDateKey(m.dateTime) === closureDate && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0);
+      const paymentsDay = purchasePayments.filter(p => p.branch === branch && localDateKey(p.createdAt) === closureDate).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const depositsDay = bankDeposits.filter(d => d.branch === branch && localDateKey(d.createdAt) === closureDate).reduce((sum, d) => sum + Number(d.amount || 0), 0);
+      const previousClosure = cashierClosures.filter(c => c.branch === branch && localDateKey(c.createdAt) < closureDate).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+      const openingBalance = Number(previousClosure?.closingCash || 0);
+      const closingBalance = latestClosure ? Number(latestClosure.closingCash || 0) : openingBalance + cashSales - returnsDay - expensesDay - paymentsDay - depositsDay;
+      const differenceAmount = latestClosure ? Number(latestClosure.difference || 0) : 0;
+      // CHANGE 9b: improved status badge logic
+      const status: ClosureRow['status'] = latestClosure ? (Math.abs(differenceAmount) >= 10 ? 'Review' : 'Closed') : 'Pending';
+      return { branch, openingBalance, totalSales, cashSales, upiSales, cardSales, creditSales: creditSalesDay, returns: returnsDay, netSales: totalSales - returnsDay, expenses: expensesDay, purchasePayments: paymentsDay, bankDeposits: depositsDay, closingBalance, differenceAmount, remarks: latestClosure?.notes || (latestClosure ? 'Closed and verified' : 'Pending branch closure'), status, closedBy: latestClosure?.cashier || '-', closedAt: latestClosure ? fmtDateTime(latestClosure.createdAt) : '-' };
+    });
+  }, [adminLedger, cashierClosures, branchTransactions, opsBillsInRange, orders, returns, cashMovements, purchasePayments, bankDeposits, closureDate]);
+
+  const closureStatusChart = useMemo(() => [
+    { status: 'Closed', count: closureRows.filter(r => r.status === 'Closed').length },
+    { status: 'Review', count: closureRows.filter(r => r.status === 'Review').length },
+    { status: 'Pending', count: closureRows.filter(r => r.status === 'Pending').length },
+  ], [closureRows]);
+  const filteredClosureRows = useMemo(() => closureRows.filter(row => branchFilter === 'all' || row.branch === branchFilter), [closureRows, branchFilter]);
+
+  // CHANGE 9d: Closure totals summary
+  const closureTotals = useMemo(() => ({
+    sales: filteredClosureRows.reduce((s, r) => s + r.totalSales, 0),
+    cash: filteredClosureRows.reduce((s, r) => s + r.cashSales, 0),
+    upi: filteredClosureRows.reduce((s, r) => s + r.upiSales, 0),
+    card: filteredClosureRows.reduce((s, r) => s + r.cardSales, 0),
+    credit: filteredClosureRows.reduce((s, r) => s + r.creditSales, 0),
+    diff: filteredClosureRows.reduce((s, r) => s + Math.abs(r.differenceAmount), 0),
+  }), [filteredClosureRows]);
+
+  const exportDailyClosure = () => {
+    csvDownload(`Admin_DailyClosure_${closureDate}.csv`, filteredClosureRows.map(r => ({
+      Branch: BRANCH_LABELS[r.branch], 'Opening Balance': r.openingBalance, 'Total Sales': r.totalSales,
+      'Cash Sales': r.cashSales, 'UPI Sales': r.upiSales, 'Card Sales': r.cardSales, 'Credit Sales': r.creditSales,
+      Returns: r.returns, 'Net Sales': r.netSales, Expenses: r.expenses, 'Purchase Payments': r.purchasePayments,
+      'Bank Deposits': r.bankDeposits, 'Closing Balance': r.closingBalance, Difference: r.differenceAmount,
+      Remarks: r.remarks, Status: r.status, 'Closed By': r.closedBy, 'Closed At': r.closedAt,
+    })));
   };
 
-  const BRANCH_PILL: Record<Branch, string> = {
-    VRSNB: 'bg-blue-100 text-blue-700',
-    SNB: 'bg-amber-100 text-amber-700',
-    Hosur: 'bg-emerald-100 text-emerald-700',
+  const printDailyClosure = () => {
+    const rows = filteredClosureRows.map(r => `<tr><td>${BRANCH_LABELS[r.branch]}</td><td>${r.status}</td><td>₹${r.openingBalance.toFixed(2)}</td><td>₹${r.totalSales.toFixed(2)}</td><td>₹${r.cashSales.toFixed(2)}</td><td>₹${r.upiSales.toFixed(2)}</td><td>₹${r.cardSales.toFixed(2)}</td><td>₹${r.creditSales.toFixed(2)}</td><td>₹${r.returns.toFixed(2)}</td><td>₹${r.purchasePayments.toFixed(2)}</td><td>₹${r.bankDeposits.toFixed(2)}</td><td>₹${r.closingBalance.toFixed(2)}</td><td>₹${r.differenceAmount.toFixed(2)}</td><td>${r.closedBy}</td><td>${r.remarks}</td></tr>`).join('');
+    const html = `<!doctype html><html><head><title>Daily Closure ${closureDate}</title><style>@page{size:A4 landscape;margin:9mm}*{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#111827;font-family:Arial,sans-serif;font-size:12px}body:before{content:"";display:block;height:12px;background:linear-gradient(90deg,#f97316,#059669,#111827)}main{background:#fff;min-height:100vh;padding:24px}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px;border-bottom:2px solid #111827;padding-bottom:14px}.stamp{display:inline-block;border-radius:999px;background:#fff7ed;color:#c2410c;padding:7px 12px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.12em}h1{font-size:24px;line-height:1.05;margin:7px 0 0;font-weight:900}.muted{color:#64748b;font-size:12px;font-weight:700}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden}th,td{border-bottom:1px solid #e2e8f0;padding:9px 10px;font-size:12px;text-align:left;vertical-align:top}th{background:#f1f5f9;color:#475569;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:900}tr:nth-child(even) td{background:#f8fafc}tr:last-child td{border-bottom:0}@media print{body{background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{padding:16px}tr{break-inside:avoid}button{display:none}}</style></head><body><main><div class="hero"><div><div class="stamp">Admin Report</div><h1>Daily Closure Verification</h1></div><p class="muted">Date: ${closureDate}<br/>Generated ${new Date().toLocaleString('en-IN')}</p></div><table><thead><tr><th>Branch</th><th>Status</th><th>Opening</th><th>Total Sales</th><th>Cash</th><th>UPI</th><th>Card</th><th>Credit</th><th>Returns</th><th>Purchase Pay.</th><th>Bank Deposit</th><th>Closing</th><th>Difference</th><th>Closed By</th><th>Remarks</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>window.print()</script></main></body></html>`;
+    const win = window.open('', '_blank', 'width=1200,height=800');
+    if (win) { win.document.write(html); win.document.close(); }
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Summary KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Revenue</p>
-          <p className="font-display text-xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-3">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Items Sold</p>
-          <p className="font-display text-xl font-bold tabular-nums">{totalQty}</p>
-        </div>
-      </div>
+  // CHANGE 12: Filtered audit logs
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    return auditLogs
+      .filter(l => auditBranchFilter === 'all' || l.branch === auditBranchFilter)
+      .filter(l => inRange(l.createdAt, fromDate, toDate))
+      .filter(l => !q || `${l.action} ${l.user} ${l.branch}`.toLowerCase().includes(q));
+  }, [auditLogs, auditBranchFilter, fromDate, toDate, auditSearch]);
 
-      {/* Filters */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <h3 className="font-semibold text-sm">Filters</h3>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted">
-            <Download className="size-3" />Excel
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background col-span-2">
-            <option value="all">All Branches</option>
-            {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-          </select>
-          <select value={filterItem} onChange={e => setFilterItem(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background">
-            <option value="">All Items</option>
-            {allItems.map(i => <option key={i} value={i}>{i}</option>)}
-          </select>
-          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm bg-background" />
-        </div>
-        <p className="text-xs text-muted-foreground">{filtered.length} records · {totalQty} items · {formatCurrency(totalRevenue)}</p>
-      </div>
-
-      {/* Sales List */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {filtered.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No sales match your filters.</p>
-        ) : (
-          <div className="divide-y">
-            {filtered.slice(0, 50).map(s => {
-              const lineRevenue = s.unitPrice * s.quantitySold;
-              return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{s.itemName}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_PILL[s.branch])}>{s.branch}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right ml-2 shrink-0">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRevenue)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+  const rangeControls = (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+        To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+      </label>
+      <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+        <option value="all">All branches</option>
+        {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+      </select>
     </div>
   );
-}
 
-
-// ─── CAFE REPORTS TAB (custom range) ─────────────────────────────────────────
-function CafeReportsTab() {
-  // STORE-01 FIX: select only what this component needs
-  const orders = useOrderStore(s => s.orders);
-
-  const todayISO = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
-
-  const rangeOrders = useMemo(() => {
-    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
-    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
-    return orders.filter(o => {
-      const t = new Date(o.createdAt).getTime();
-      return t >= from.getTime() && t <= to.getTime();
-    });
-  }, [orders, dateFrom, dateTo]);
-
-  const served = rangeOrders.filter(o => o.status === 'served');
-  const cancelled = rangeOrders.filter(o => o.status === 'cancelled');
-  const totalRevenue = served.reduce((s, o) => s + o.total, 0);
-  const avgOrderValue = served.length > 0 ? Math.round(totalRevenue / served.length) : 0;
-  const totalDiscount = served.reduce((s, o) => s + o.discount, 0);
-  const dineInCount   = served.filter(o => o.orderType === 'dine_in').length;
-  const takeawayCount = served.filter(o => o.orderType === 'takeaway').length;
-
-  const staffOrders  = useMemo(() => served.filter(o => o.orderSource === 'staff'), [served]);
-  const qrOrders     = useMemo(() => served.filter(o => o.orderSource === 'qr'),    [served]);
-  const staffRevenue = staffOrders.reduce((s, o) => s + o.total, 0);
-  const qrRevenue    = qrOrders.reduce((s, o) => s + o.total, 0);
-
-  const paymentTotals = useMemo(() => {
-    let cash = 0, upi = 0, card = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') cash += o.total;
-      else if (o.paymentType === 'upi') upi += o.total;
-      else if (o.paymentType === 'card') card += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        cash += o.paymentBreakdown.cash; upi += o.paymentBreakdown.upi; card += o.paymentBreakdown.card;
-      }
-    });
-    return { cash, upi, card };
-  }, [served]);
-
-  const topItems = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    served.forEach(o => o.items.forEach(ci => {
-      const ex = map.get(ci.menuItem.id);
-      if (ex) { ex.qty += ci.quantity; ex.revenue += ci.menuItem.price * ci.quantity; }
-      else { map.set(ci.menuItem.id, { name: ci.menuItem.name, qty: ci.quantity, revenue: ci.menuItem.price * ci.quantity }); }
-    }));
-    return [...map.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
-  }, [served]);
-
-  const topItemsByRevenue = useMemo(() =>
-    [...topItems].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
-      .map(i => ({ name: i.name.length > 14 ? i.name.slice(0, 14) + '…' : i.name, revenue: i.revenue, qty: i.qty })),
-    [topItems]);
-
-  const dailyRevenue = useMemo(() => {
-    const days = Math.max(1, Math.round((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86400000) + 1);
-    if (days > 31) return [];
-    const result = [];
-    for (let i = 0; i < days; i++) {
-      const d = new Date(dateFrom);
-      d.setDate(d.getDate() + i);
-      const dateStr = d.toDateString();
-      const rev = served.filter(o => new Date(o.createdAt).toDateString() === dateStr).reduce((s, o) => s + o.total, 0);
-      result.push({ date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), revenue: rev });
+  // CHANGE 14: Removed top KPI grid from OverviewTab. CHANGE 4/5: Added date presets + branch filter + Excel download
+  const overviewPaymentSplit = useMemo(() => {
+    const isAll = branchFilter === 'all';
+    const isCafe = branchFilter === 'Cafe';
+    const totals = { cash: 0, upi: 0, card: 0, credit: 0 };
+    if (isAll || isCafe) {
+      totals.cash += cafePaymentSplit.cash; totals.upi += cafePaymentSplit.upi;
+      totals.card += cafePaymentSplit.card; totals.credit += cafePaymentSplit.credit;
     }
-    return result;
-  }, [served, dateFrom, dateTo]);
+    if (isAll || !isCafe) {
+      const filteredBills = branchFilter === 'all' ? opsBillsInRange : opsBillsInRange.filter(b => b.branch === branchFilter);
+      filteredBills.forEach(b => {
+        if (b.paymentMode === 'cash') totals.cash += Number(b.total || 0);
+        else if (b.paymentMode === 'upi') totals.upi += Number(b.total || 0);
+        else if (b.paymentMode === 'card') totals.card += Number(b.total || 0);
+        else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
+        else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
+      });
+      const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+      filteredTxns.forEach(t => {
+        if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
+        else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
+        else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
+        else if (paymentIncludes(t.payment, 'credit')) totals.credit += t.revenue;
+      });
+    }
+    return [{ name: 'Cash', value: totals.cash }, { name: 'UPI', value: totals.upi }, { name: 'Card', value: totals.card }, { name: 'Credit', value: totals.credit }].filter(item => item.value > 0);
+  }, [branchFilter, cafePaymentSplit, opsBillsInRange, branchTransactions]);
 
-  const orderTypeData = [
-    { name: 'Dine In', value: dineInCount },
-    { name: 'Takeaway', value: takeawayCount },
-  ].filter(d => d.value > 0);
-
-  // FIX: rangeLabel must be at component scope — used in both render JSX (lines ~818, ~869)
-  // AND inside handleDownload. Previously it was only inside handleDownload (wrong scope).
-  const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
-
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-
-    const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-    // rangeLabel is now defined at component scope above — accessible here too
-
-    const PAYMENT_LABELS_LOCAL: Record<string, string> = {
-      cash: 'Cash', upi: 'UPI', card: 'Card', part_payment: 'Split Payment', unpaid: 'Unpaid',
-    };
-
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-
-    const addSheet = (wb: ReturnType<typeof XLSX.utils.book_new>, data: Record<string, unknown>[], name: string, fallback: string) => {
-      const rows = data.length > 0 ? data : [{ Note: fallback }];
-      const ws = XLSX.utils.json_to_sheet(rows);
-      if (data.length > 0) autoWidth(ws, data);
-      XLSX.utils.book_append_sheet(wb, ws, name);
-    };
-
-    // ── Sheet 1: Sales Report ────────────────────────────────────────────────
-    const salesRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
-      const cashAmt = o.paymentType === 'cash'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.cash || 0) : 0;
-      const upiAmt  = o.paymentType === 'upi'   ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.upi  || 0) : 0;
-      const cardAmt = o.paymentType === 'card'  ? o.total : o.paymentType === 'part_payment' ? (o.paymentBreakdown?.card || 0) : 0;
-      return {
-        'S.No':              i + 1,
-        'Order ID':          `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Source':            o.orderSource === 'qr' ? 'QR' : 'Staff',
-        'Date':              new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Time':              new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        'Order Type':        o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':          o.tableNumber || '-',
-        'Customer':          o.customerName || '-',
-        'Items Ordered':     o.items.map(ci => ci.menuItem.name).join(', '),
-        'Total Qty':         o.items.reduce((s, ci) => s + ci.quantity, 0),
-        'Item-wise Breakup': o.items.map(ci => `${ci.menuItem.name} x${ci.quantity} = ₹${ci.menuItem.price * ci.quantity}`).join(' | '),
-        'Subtotal (₹)':      o.subtotal,
-        'Discount (₹)':      o.discount,
-        'Total Amount (₹)':  o.total,
-        'Taxable Amt (₹)':   gstBase,
-        'GST 5% (₹)':        gst5,
-        'CGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'SGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'Payment Type':      PAYMENT_LABELS_LOCAL[o.paymentType || 'unpaid'],
-        'Cash (₹)':          cashAmt || '-',
-        'UPI (₹)':           upiAmt  || '-',
-        'Card (₹)':          cardAmt || '-',
-        'Biller':            o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 2: Cancelled Orders ────────────────────────────────────────────
-    const cancelRows = cancelled.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      const gst5    = Math.round((o.total - gstBase) * 100) / 100;
-      return {
-        'S.No':              i + 1,
-        'Order ID':          `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Source':            o.orderSource === 'qr' ? 'QR' : 'Staff',
-        'Date':              new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Time':              new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-        'Order Type':        o.orderType === 'dine_in' ? 'Dine In' : 'Takeaway',
-        'Table No':          o.tableNumber || '-',
-        'Customer':          o.customerName || '-',
-        'Items':             o.items.map(ci => `${ci.menuItem.name} x${ci.quantity}`).join(', '),
-        'Total Amount (₹)':  o.total,
-        'Taxable Amt (₹)':   gstBase,
-        'GST 5% (₹)':        gst5,
-        'CGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'SGST 2.5% (₹)':     Math.round((gst5 / 2) * 100) / 100,
-        'Cancel Reason':     o.cancelReason || '-',
-        'Biller':            o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 3: CGST 2.5% (per-order breakdown) ────────────────────────────
-    const cgstRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return {
-        'S.No':             i + 1,
-        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Total Amount (₹)': o.total,
-        'Taxable Amt (₹)':  gstBase,
-        'CGST 2.5% (₹)':    Math.round(((o.total - gstBase) / 2) * 100) / 100,
-        'Biller':           o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 4: SGST 2.5% (per-order breakdown) ────────────────────────────
-    const sgstRows = served.map((o, i) => {
-      const gstBase = Math.round((o.total / 1.05) * 100) / 100;
-      return {
-        'S.No':             i + 1,
-        'Order ID':         `#${String(o.orderNumber).padStart(3, '0')}`,
-        'Date':             new Date(o.createdAt).toLocaleDateString('en-IN'),
-        'Total Amount (₹)': o.total,
-        'Taxable Amt (₹)':  gstBase,
-        'SGST 2.5% (₹)':    Math.round(((o.total - gstBase) / 2) * 100) / 100,
-        'Biller':           o.billedBy || '-',
-      };
-    });
-
-    // ── Sheet 5: GST Summary ─────────────────────────────────────────────────
-    const taxableTotal = Math.round((totalRevenue / 1.05) * 100) / 100;
-    const gstCollected = Math.round((totalRevenue - taxableTotal) * 100) / 100;
-    const cgstTotal    = Math.round((gstCollected / 2) * 100) / 100;
-
-    const gstRows = [
-      { 'Metric': 'Period',                       'Value': rangeLabel },
-      { 'Metric': 'Total Orders (Served)',         'Value': served.length },
-      { 'Metric': '',                             'Value': '' },
-      { 'Metric': 'Total Revenue (incl. GST) (₹)', 'Value': totalRevenue },
-      { 'Metric': 'Taxable Amount (₹)',            'Value': taxableTotal },
-      { 'Metric': 'Total GST @ 5% (₹)',            'Value': gstCollected },
-      { 'Metric': 'CGST @ 2.5% (₹)',               'Value': cgstTotal },
-      { 'Metric': 'SGST @ 2.5% (₹)',               'Value': cgstTotal },
-    ];
-
-    // ── Sheet 6: Payment Breakdown ───────────────────────────────────────────
-    let totalCash = 0, totalUpi = 0, totalCard = 0;
-    served.forEach(o => {
-      if (o.paymentType === 'cash') totalCash += o.total;
-      else if (o.paymentType === 'upi') totalUpi += o.total;
-      else if (o.paymentType === 'card') totalCard += o.total;
-      else if (o.paymentType === 'part_payment' && o.paymentBreakdown) {
-        totalCash += o.paymentBreakdown.cash; totalUpi += o.paymentBreakdown.upi; totalCard += o.paymentBreakdown.card;
-      }
-    });
-    const payRows = [
-      { 'Payment Method': 'Cash',  'Orders': served.filter(o => o.paymentType === 'cash'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.cash || 0) > 0)).length, 'Amount (₹)': totalCash },
-      { 'Payment Method': 'UPI',   'Orders': served.filter(o => o.paymentType === 'upi'   || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.upi  || 0) > 0)).length, 'Amount (₹)': totalUpi  },
-      { 'Payment Method': 'Card',  'Orders': served.filter(o => o.paymentType === 'card'  || (o.paymentType === 'part_payment' && (o.paymentBreakdown?.card || 0) > 0)).length, 'Amount (₹)': totalCard },
-      { 'Payment Method': 'TOTAL', 'Orders': served.length, 'Amount (₹)': totalRevenue },
-    ];
-
-    // ── Sheet 7: Top Items ───────────────────────────────────────────────────
-    const itemRows = topItems.map((item, i) => ({
-      'Rank':        i + 1,
-      'Item Name':   item.name,
-      'Qty Sold':    item.qty,
-      'Revenue (₹)': item.revenue,
-    }));
-
-    // ── Sheet 8: Daily Closing ───────────────────────────────────────────────
-    const closingRows = [
-      { 'Metric': 'Period',                  'Value': rangeLabel },
-      { 'Metric': 'Total Orders (Served)',   'Value': served.length },
-      { 'Metric': 'Cancelled Orders',        'Value': cancelled.length },
-      { 'Metric': 'Total Revenue (₹)',       'Value': totalRevenue },
-      { 'Metric': 'Taxable Amount (₹)',      'Value': taxableTotal },
-      { 'Metric': 'GST Collected 5% (₹)',    'Value': gstCollected },
-      { 'Metric': 'CGST 2.5% (₹)',           'Value': cgstTotal },
-      { 'Metric': 'SGST 2.5% (₹)',           'Value': cgstTotal },
-      { 'Metric': 'Total Discounts (₹)',     'Value': totalDiscount },
-      { 'Metric': 'Avg Order Value (₹)',     'Value': avgOrderValue },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'SOURCE BREAKDOWN',        'Value': '' },
-      { 'Metric': 'Staff Orders',            'Value': staffOrders.length },
-      { 'Metric': 'Staff Revenue (₹)',       'Value': staffRevenue },
-      { 'Metric': 'QR Orders',              'Value': qrOrders.length },
-      { 'Metric': 'QR Revenue (₹)',         'Value': qrRevenue },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'PAYMENT BREAKDOWN',       'Value': '' },
-      { 'Metric': 'Cash (₹)',               'Value': totalCash },
-      { 'Metric': 'UPI (₹)',                'Value': totalUpi  },
-      { 'Metric': 'Card (₹)',               'Value': totalCard },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'ORDER TYPE',              'Value': '' },
-      { 'Metric': 'Dine In',                'Value': dineInCount },
-      { 'Metric': 'Takeaway',               'Value': takeawayCount },
-      { 'Metric': '',                        'Value': '' },
-      { 'Metric': 'CANCELLATIONS',           'Value': '' },
-      { 'Metric': 'Cancelled Orders',        'Value': cancelled.length },
-      { 'Metric': 'Lost Revenue (₹)',        'Value': cancelled.reduce((s, o) => s + o.total, 0) },
-    ];
-
-    const wb = XLSX.utils.book_new();
-    addSheet(wb, salesRows,   'Sales Report',      'No served orders');
-    addSheet(wb, cancelRows,  'Cancelled Orders',  'No cancellations');
-    addSheet(wb, cgstRows,    'CGST 2.5%',         'No data');
-    addSheet(wb, sgstRows,    'SGST 2.5%',         'No data');
-    addSheet(wb, gstRows,     'GST Summary',       'No data');
-    addSheet(wb, payRows,     'Payment Breakdown', 'No data');
-    addSheet(wb, itemRows,    'Top Items',         'No items sold');
-    addSheet(wb, closingRows, 'Daily Closing',     'No data');
-    XLSX.writeFile(wb, `CafeAadvikam_Report_${dateLabel}.xlsx`);
-  };
-
-  return (
-    <div className="space-y-4">
-      {/* Date range */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">Date Range</span>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
-            <Download className="size-3" />Excel
+  const OverviewTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + branch filter + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_Overview_${fromDate}_${toDate}.csv`, filteredBranchSalesByBranch.map(r => ({ Branch: r.label, Sales: r.sales, Transactions: r.orders, Returns: r.returns, 'Date From': fromDate, 'Date To': toDate })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Showing: <span className="font-semibold text-foreground">{rangeLabel}</span>
-          {' · '}{served.length} orders · {formatCurrency(totalRevenue)}
-        </p>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <KPI icon={<IndianRupee className="size-4" />} label="Total Revenue" value={formatCurrency(totalRevenue)} color="bg-primary/10 text-primary" />
-        <KPI icon={<ShoppingBag className="size-4" />} label="Orders Served" value={String(served.length)} color="bg-accent/20 text-accent-foreground" />
-        <KPI icon={<TrendingUp className="size-4" />} label="Avg Order Value" value={formatCurrency(avgOrderValue)} color="bg-blue-50 text-blue-700" />
-        <KPI icon={<XCircle className="size-4" />} label="Cancelled" value={String(cancelled.length)} color="bg-red-50 text-red-700" />
-      </div>
-
-      {/* Payment breakdown */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">Payment Breakdown</h3>
-        <div className="space-y-2">
-          <PaymentRow label="💵 Cash" amount={paymentTotals.cash} total={totalRevenue} />
-          <PaymentRow label="📱 UPI" amount={paymentTotals.upi} total={totalRevenue} />
-          <PaymentRow label="💳 Card" amount={paymentTotals.card} total={totalRevenue} />
-        </div>
-      </div>
-
-      {/* GST */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-3">GST Summary</h3>
-        {totalRevenue === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No data for this range</p>
-        ) : (() => {
-          const taxable = Math.round((totalRevenue / 1.05) * 100) / 100;
-          const gst = Math.round((totalRevenue - taxable) * 100) / 100;
-          const cgst = Math.round((gst / 2) * 100) / 100;
-          const sgst = Math.round((gst / 2) * 100) / 100;
-          return (
-            <div className="space-y-1.5">
-              <Row label="Revenue (incl. GST)" value={formatCurrency(totalRevenue)} bold />
-              <Row label="Taxable Amount" value={formatCurrency(taxable)} />
-              <Row label="GST @ 5%" value={formatCurrency(gst)} />
-              <div className="border-t border-border pt-1.5 mt-1.5">
-                <Row label="CGST @ 2.5%" value={formatCurrency(cgst)} highlight />
-                <Row label="SGST @ 2.5%" value={formatCurrency(sgst)} highlight />
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-
-      {/* Daily Revenue Chart */}
-      {dailyRevenue.length > 1 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-1">Daily Revenue Trend</h3>
-          <p className="text-[10px] text-muted-foreground mb-4">{rangeLabel}</p>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={dailyRevenue}>
-              <defs>
-                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-              <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#revGrad)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* Order Type Split */}
-      {orderTypeData.length > 0 && (
-        <div className="bg-card border border-border rounded-xl p-4">
-          <h3 className="font-display text-base font-bold mb-3">Order Type Split</h3>
-          <div className="flex items-center gap-4">
-            <div className="flex-1">
-              <ResponsiveContainer width="100%" height={120}>
-                <PieChart>
-                  <Pie data={orderTypeData} dataKey="value" cx="50%" cy="50%" innerRadius={30} outerRadius={50}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={9}>
-                    <Cell fill={CHART_COLORS[0]} />
-                    <Cell fill={CHART_COLORS[2]} />
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="space-y-2">
-              {orderTypeData.map((d, i) => (
-                <div key={d.name} className="flex items-center gap-2">
-                  <div className="size-3 rounded-full" style={{ background: CHART_COLORS[i === 0 ? 0 : 2] }} />
-                  <div>
-                    <p className="text-xs font-semibold">{d.name}</p>
-                    <p className="text-xs text-muted-foreground">{d.value} orders</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Top items */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <h3 className="font-display text-base font-bold text-foreground mb-1">Top Items by Revenue</h3>
-        <p className="text-[10px] text-muted-foreground mb-4">Revenue · sales quantity shown alongside</p>
-        {topItemsByRevenue.length === 0 ? (
-          <p className="text-sm font-body text-muted-foreground text-center py-4">No sales in this range</p>
-        ) : (
-          <>
-            <ResponsiveContainer width="100%" height={Math.max(topItemsByRevenue.length * 30, 150)}>
-              <BarChart data={topItemsByRevenue} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-                <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
-                <Tooltip formatter={(v: number) => [formatCurrency(v), 'Revenue']} />
-                <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+      <div className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
+        <Panel title="Branch-wise Sales Comparison" subtitle="Cafe, SNB, VRSNB and Hosur revenue for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={filteredBranchSalesByBranch}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]}>
+                  {filteredBranchSalesByBranch.map((_, index) => <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
-            <div className="space-y-1.5 mt-3">
-              {topItems.slice(0, 5).map((item, i) => (
-                <div key={item.name} className="flex items-center gap-3">
-                  <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
-                    i === 0 ? 'gold-gradient text-white' : 'bg-muted text-muted-foreground')}>{i + 1}</span>
-                  <p className="flex-1 text-xs font-medium truncate">{item.name}</p>
-                  <div className="text-right shrink-0">
-                    <p className="text-xs font-bold text-primary tabular-nums">{formatCurrency(item.revenue)}</p>
-                    <p className="text-[10px] text-muted-foreground">{item.qty} sold</p>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Payment Mode Split" subtitle={`Cash, UPI, card and credit mix${branchFilter !== 'all' ? ` — ${BRANCH_LABELS[branchFilter]}` : ' — All branches'}`}>
+          {overviewPaymentSplit.length === 0 ? <EmptyState label="No payment data in selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={overviewPaymentSplit} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {overviewPaymentSplit.map((_, index) => <Cell key={index} fill={PAYMENT_COLORS[index % PAYMENT_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            {overviewPaymentSplit.map((row, index) => (
+              <div key={row.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: PAYMENT_COLORS[index % PAYMENT_COLORS.length] }} /><p className="text-xs font-black text-slate-700">{row.name}</p></div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(row.value)}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Daily Sales Trend" subtitle="Trend helps identify slow days and peak days">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={filteredDailySalesTrend}>
+                <defs><linearGradient id="totalSalesFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={72} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Area type="monotone" dataKey="Total" stroke="#2563eb" fill="url(#totalSalesFill)" strokeWidth={3} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Top-selling Items" subtitle="Highest revenue items across cafe and branches">
+          {topSellingItems.length === 0 ? <EmptyState label="No sold items for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topSellingItems.slice(0, 8)} layout="vertical" margin={{ left: 12, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} />
+                  <YAxis type="category" dataKey="short" width={110} tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                  <Bar dataKey="revenue" fill="#059669" radius={[0, 10, 10, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Panel title="Purchases & Expenses" subtitle="Cost visibility for selected range">
+          <div className="space-y-3">
+            <KpiCard label="Purchases" value={formatCurrency(purchaseTotal)} icon={<ShoppingBag className="size-5" />} tone="blue" />
+            <KpiCard label="Expenses" value={formatCurrency(expenseTotal)} icon={<TrendingDown className="size-5" />} tone="red" />
+          </div>
+        </Panel>
+        <Panel title="Available Balance" subtitle="Ledger-based current balance split">
+          <div className="grid grid-cols-2 gap-3">
+            <KpiCard label="Cash" value={formatCurrency(balanceSummary.cash)} icon={<Banknote className="size-5" />} tone="green" />
+            <KpiCard label="UPI" value={formatCurrency(balanceSummary.upi)} icon={<Smartphone className="size-5" />} tone="blue" />
+            <KpiCard label="Card" value={formatCurrency(balanceSummary.card)} icon={<CreditCard className="size-5" />} tone="purple" />
+            <KpiCard label="Bank" value={formatCurrency(balanceSummary.bank)} icon={<Landmark className="size-5" />} tone="slate" />
+          </div>
+        </Panel>
+        <Panel title="Daily Closure Status" subtitle={`Status for ${closureDate}`}>
+          <div className="space-y-3">
+            {closureStatusChart.map((row, index) => (
+              <div key={row.status} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: CHART_COLORS[index] }} /><p className="text-sm font-bold text-slate-700">{row.status}</p></div>
+                <p className="text-xl font-black text-slate-950">{row.count}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+
+  // CHANGE 14: Removed top KPI grid from CafeTab. CHANGE 4/6: Added date presets + Excel download, no branch filter (cafe only)
+  const CafeTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + date range + excel (no branch filter - cafe only) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_Cafe_${fromDate}_${toDate}.csv`, cafeOrdersInRange.map(o => ({ OrderNo: o.orderNumber, Customer: o.customerName || '-', Items: o.items.reduce((s, i) => s + i.quantity, 0), Payment: o.paymentType || '-', Total: o.total || 0, Status: o.status, Time: fmtDateTime(o.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+
+      {/* KPI Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Sales" value={formatCurrency(cafeSalesTotal)} icon={<IndianRupee className="size-5" />} tone="green" sub={`${cafeServedOrders.length} orders`} />
+        <KpiCard label="Cancelled" value={cafeCancelledOrders.length} icon={<TrendingDown className="size-5" />} tone="red" sub="Cancelled orders" />
+        <KpiCard label="Cash Collected" value={formatCurrency(cafePaymentSplit.cash)} icon={<Banknote className="size-5" />} tone="blue" />
+        <KpiCard label="UPI Collected" value={formatCurrency(cafePaymentSplit.upi)} icon={<Smartphone className="size-5" />} tone="purple" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Cafe Sales Trend" subtitle="Cafe-only revenue trend">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={dailySalesTrend}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Line dataKey="Cafe" stroke="#16a34a" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Cafe Payment Split" subtitle="Cash, UPI, Card and Credit breakdown">
+          {Object.values(cafePaymentSplit).every(v => v === 0) ? <EmptyState label="No payment data for selected range." /> : (
+            <ChartWrap>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={[{ name: 'Cash', value: cafePaymentSplit.cash }, { name: 'UPI', value: cafePaymentSplit.upi }, { name: 'Card', value: cafePaymentSplit.card }, { name: 'Credit', value: cafePaymentSplit.credit }].filter(d => d.value > 0)} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={4}>
+                    {PAYMENT_COLORS.map((color, i) => <Cell key={i} fill={color} />)}
+                  </Pie>
+                  <Tooltip formatter={value => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartWrap>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[{ name: 'Cash', value: cafePaymentSplit.cash, color: PAYMENT_COLORS[0] }, { name: 'UPI', value: cafePaymentSplit.upi, color: PAYMENT_COLORS[1] }, { name: 'Card', value: cafePaymentSplit.card, color: PAYMENT_COLORS[2] }, { name: 'Credit', value: cafePaymentSplit.credit, color: PAYMENT_COLORS[3] }].filter(d => d.value > 0).map(d => (
+              <div key={d.name} className="rounded-2xl bg-slate-50 p-3">
+                <div className="flex items-center gap-2"><span className="size-2 rounded-full" style={{ background: d.color }} /><p className="text-xs font-black text-slate-700">{d.name}</p></div>
+                <p className="mt-1 text-sm font-black text-slate-950">{formatCurrency(d.value)}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="Recent Cafe Orders" subtitle="Served and cancelled orders in selected range">
+        {cafeOrdersInRange.length === 0 ? <EmptyState label="No cafe orders in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Order</th><th className="p-3">Customer</th><th className="p-3">Items</th><th className="p-3">Payment</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {cafeOrdersInRange.slice(0, 60).map(o => (
+                  <tr key={o.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-bold">#{String(o.orderNumber).padStart(3, '0')}</td>
+                    <td className="p-3">{o.customerName || '-'}</td>
+                    <td className="p-3 text-slate-500">{o.items.reduce((s, i) => s + i.quantity, 0)} item(s)</td>
+                    <td className="p-3 uppercase">{o.paymentType || '-'}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(o.total || 0)}</td>
+                    <td className="p-3"><Badge tone={o.status === 'served' ? 'green' : o.status === 'cancelled' ? 'red' : 'amber'}>{o.status}</Badge></td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(o.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 7: Branch filter + date presets + Excel. CHANGE 14: Removed KPI grid. Cafe excluded from branch filter
+  const BRANCH_ONLY_OPTIONS: Branch[] = ['VRSNB', 'SNB', 'Hosur'];
+  const filteredBranchTxns = branchFilter === 'all' || branchFilter === 'Cafe' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+  const branchOnlyFilter = (branchFilter === 'Cafe' ? 'all' : branchFilter) as Branch | 'all';
+  const BranchesTab = (
+    <div className="space-y-5">
+      {/* TOP BAR: date presets + branch filter (no Cafe) + excel */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchOnlyFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCH_ONLY_OPTIONS.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <button onClick={() => csvDownload(`Admin_BranchSales_${fromDate}_${toDate}.csv`, filteredBranchTxns.map(t => ({ Branch: t.branch, Item: t.itemName, Qty: t.qty, Payment: t.payment, Revenue: t.revenue, 'Sold By': t.soldBy, Time: fmtDateTime(t.soldAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+
+      {/* Branch KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {branchSalesByBranch.filter(b => b.branch !== 'Cafe').map((b, i) => (
+          <KpiCard key={b.branch} label={b.label} value={formatCurrency(b.sales)} icon={<Store className="size-5" />} tone={(['green', 'blue', 'purple'] as const)[i % 3]} sub={`${b.orders} transactions`} />
+        ))}
+        <KpiCard label="Total Branch Revenue" value={formatCurrency(branchSalesByBranch.filter(b => b.branch !== 'Cafe').reduce((sum, b) => sum + b.sales, 0))} icon={<TrendingUp className="size-5" />} tone="amber" />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel title="Branch Sales Comparison" subtitle="Revenue by branch for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={branchOnlyFilter === 'all' ? branchSalesByBranch.filter(b => b.branch !== 'Cafe') : branchSalesByBranch.filter(b => b.branch === branchOnlyFilter)}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                <Bar dataKey="sales" radius={[10, 10, 0, 0]} fill="#2563eb" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+
+        <Panel title="Daily Branch Sales Trend" subtitle="Day-by-day revenue for selected range">
+          <ChartWrap>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={dailySalesTrend}>
+                <defs>
+                  <linearGradient id="snbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="vrsnbFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#7c3aed" stopOpacity={0.25} /><stop offset="95%" stopColor="#7c3aed" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="hosurFill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#d97706" stopOpacity={0.25} /><stop offset="95%" stopColor="#d97706" stopOpacity={0} /></linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${Number(v) / 1000}k`} width={72} />
+                <Tooltip formatter={value => formatCurrency(Number(value))} />
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'SNB') && <Area type="monotone" dataKey="SNB" stroke="#2563eb" fill="url(#snbFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'VRSNB') && <Area type="monotone" dataKey="VRSNB" stroke="#7c3aed" fill="url(#vrsnbFill)" strokeWidth={2} />}
+                {(branchOnlyFilter === 'all' || branchOnlyFilter === 'Hosur') && <Area type="monotone" dataKey="Hosur" stroke="#d97706" fill="url(#hosurFill)" strokeWidth={2} />}
+              </AreaChart>
+            </ResponsiveContainer>
+          </ChartWrap>
+        </Panel>
+      </div>
+
+      <Panel title="Branch Sales Transactions" subtitle="SNB, VRSNB and Hosur sales details">
+        {filteredBranchTxns.length === 0 ? <EmptyState label="No branch sales in this range." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Branch</th><th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3">Payment</th><th className="p-3 text-right">Revenue</th><th className="p-3">Sold By</th><th className="p-3">Time</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredBranchTxns.slice(0, 100).map(t => (
+                  <tr key={t.id} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={t.branch} /></td>
+                    <td className="p-3 font-semibold">{t.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{t.qty}</td>
+                    <td className="p-3 uppercase text-slate-500">{t.payment}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(t.revenue)}</td>
+                    <td className="p-3 text-slate-500">{t.soldBy}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(t.soldAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  const ItemsTab = (
+    <div className="space-y-5">
+      <Panel title="Item Controls" subtitle="Items without stock are marked unavailable and cannot be billed from the branch billing flow.">
+        <div className="mb-4 grid gap-2 sm:grid-cols-2">
+          <button onClick={() => setItemsSection('snb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'snb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">SNB Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'snb' ? 'text-white/70' : 'text-slate-500')}>Shared SNB and Hosur bakery price list with stock badges</p>
+          </button>
+          <button onClick={() => setItemsSection('vrsnb')} className={cn('rounded-2xl border p-4 text-left transition', itemsSection === 'vrsnb' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+            <p className="font-black">VRSNB Items</p>
+            <p className={cn('mt-1 text-xs', itemsSection === 'vrsnb' ? 'text-white/70' : 'text-slate-500')}>VRSNB item list with stock validation visibility</p>
+          </button>
+        </div>
+        {itemsSection === 'snb' ? <SnbItemsTab /> : <VrsnbItemsTab />}
+      </Panel>
+    </div>
+  );
+
+  const [disputeQtyById, setDisputeQtyById] = useState<Record<string, string>>({});
+  const [savingDisputeId, setSavingDisputeId] = useState('');
+  const [disputeMessage, setDisputeMessage] = useState('');
+  const stockDisputes = useMemo(() => ADMIN_BRANCHES.flatMap(branch =>
+    (incoming[branch] || [])
+      .filter(item => item.disputed && !item.confirmed)
+      .map(item => ({ ...item, branch })),
+  ).sort((a, b) => new Date(b.disputedAt || b.receivedAt).getTime() - new Date(a.disputedAt || a.receivedAt).getTime()), [incoming]);
+
+  useEffect(() => {
+    setDisputeQtyById(prev => {
+      const next = { ...prev };
+      let changed = false;
+      stockDisputes.forEach(item => {
+        if (next[item.id] === undefined) {
+          next[item.id] = String(item.quantity);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [stockDisputes]);
+
+  const resolveStockDispute = async (branch: Branch, incomingId: string) => {
+    const item = stockDisputes.find(row => row.branch === branch && row.id === incomingId);
+    if (!item) return;
+    const correctedQty = Number(disputeQtyById[incomingId] ?? item.quantity);
+    if (!Number.isFinite(correctedQty) || correctedQty < 0) {
+      setDisputeMessage('Enter a valid corrected quantity before confirming.');
+      return;
+    }
+    setSavingDisputeId(incomingId);
+    setDisputeMessage('');
+    const { error } = await supabase
+      .from('branch_incoming')
+      .update({
+        quantity: Math.round(correctedQty * 1000) / 1000,
+        disputed: false,
+        dispute_reason: `${item.disputeReason || 'Dispute'} | Resolved by ${adminName}`,
+      })
+      .eq('id', incomingId)
+      .eq('branch', branch);
+    if (error) {
+      setDisputeMessage(`Could not update disputed stock: ${error.message}`);
+      setSavingDisputeId('');
+      return;
+    }
+    await fetchBranchData(branch);
+    const confirmError = await confirmIncoming(branch, incomingId);
+    if (confirmError) {
+      setDisputeMessage(confirmError);
+      setSavingDisputeId('');
+      return;
+    }
+    notifications
+      .filter(n => n.branch === branch && n.type === 'Stock Dispute' && n.status !== 'Resolved' && n.details.includes(item.itemName))
+      .forEach(n => updateNotificationStatus(n.id, 'Resolved', adminName));
+    await fetchBranchData(branch);
+    setDisputeMessage(`${BRANCH_LABELS[branch]} ${item.itemName} confirmed with corrected quantity ${correctedQty} ${item.unit}. Stock synced.`);
+    setSavingDisputeId('');
+  };
+
+  const StockDisputesTab = (
+    <div className="space-y-5">
+      <Panel
+        title="Incoming Stock Disputes"
+        subtitle="Admin approval is required before disputed incoming stock can sync to branch stock."
+        action={<Badge tone={stockDisputes.length > 0 ? 'amber' : 'green'}>{stockDisputes.length} pending</Badge>}
+      >
+        {disputeMessage && (
+          <p className="mb-3 rounded-2xl bg-blue-50 px-3 py-2 text-sm font-black text-blue-700">{disputeMessage}</p>
+        )}
+        {stockDisputes.length === 0 ? <EmptyState label="No incoming stock disputes pending." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Branch</th>
+                  <th className="p-3">Item</th>
+                  <th className="p-3 text-right">Dispatched</th>
+                  <th className="p-3">Correct Qty</th>
+                  <th className="p-3">Reason</th>
+                  <th className="p-3">Raised By</th>
+                  <th className="p-3">Date</th>
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {stockDisputes.map(item => (
+                  <tr key={`${item.branch}-${item.id}`} className="hover:bg-slate-50">
+                    <td className="p-3"><BranchPill branch={item.branch} /></td>
+                    <td className="p-3 font-black">{item.itemName}</td>
+                    <td className="p-3 text-right font-black tabular-nums">{item.quantity} {item.unit}</td>
+                    <td className="p-3">
+                      <input
+                        type="number"
+                        min="0"
+                        step={item.unit === 'kg' ? '0.001' : '1'}
+                        value={disputeQtyById[item.id] ?? String(item.quantity)}
+                        onChange={event => setDisputeQtyById(prev => ({ ...prev, [item.id]: event.target.value }))}
+                        className="h-10 w-28 rounded-2xl border border-slate-200 px-3 text-sm font-black tabular-nums"
+                      />
+                    </td>
+                    <td className="p-3 text-slate-600">{item.disputeReason || '-'}</td>
+                    <td className="p-3 text-slate-600">{item.disputedBy || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTime(item.disputedAt || item.receivedAt)}</td>
+                    <td className="p-3 text-right">
+                      <button
+                        type="button"
+                        disabled={savingDisputeId === item.id}
+                        onClick={() => void resolveStockDispute(item.branch, item.id)}
+                        className="rounded-2xl bg-orange-500 px-4 py-2 text-xs font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"
+                      >
+                        {savingDisputeId === item.id ? 'Saving...' : 'Confirm & Sync'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 9: Improved DailyClosureTab with presets, better layout, summary totals. CHANGE 14: Removed KPI grid
+  const DailyClosureTab = (
+    <div className="space-y-5">
+      {/* CHANGE 9c: closure date presets (Today/Yesterday only) */}
+      <div className="flex gap-1.5">
+        {[{ label: 'Today', days: 0 }, { label: 'Yesterday', days: 1 }].map(p => (
+          <button key={p.label} onClick={() => { const d = new Date(); d.setDate(d.getDate() - p.days); setClosureDate(todayInput(d)); }}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition">
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <Panel title="Daily Closure Verification" subtitle="Cafe, SNB Branch, VRSNB Branch and Hosur Branch"
+        action={<div className="flex flex-wrap gap-2"><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            Date<input type="date" value={closureDate} onChange={e => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <div className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500"><Filter className="size-4" />Verify sales, collections, expenses, deposits and closing differences before approving.</div>
+        </div>
+
+        {/* CHANGE 9a: Better visual layout per branch card */}
+        <div className="grid gap-4">
+          {filteredClosureRows.map(row => (
+            <div key={row.branch} className="rounded-3xl border border-slate-200 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={cn('grid size-12 place-items-center rounded-2xl', BRANCH_COLORS[row.branch].bg)}><Store className={cn('size-5', BRANCH_COLORS[row.branch].text)} /></div>
+                  <div><h4 className="font-display text-lg font-black text-slate-950">{BRANCH_LABELS[row.branch]}</h4><p className="text-xs text-slate-500">Closed by {row.closedBy} · {row.closedAt}</p></div>
+                </div>
+                <Badge tone={row.status === 'Closed' ? 'green' : row.status === 'Review' ? 'red' : 'amber'}>{row.status}</Badge>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="mb-2 text-[10px] font-black uppercase text-slate-500">Cash Flow</p>
+                  <div className="space-y-1.5">
+                    {[['Opening', row.openingBalance, 'text-slate-700'], ['Cash Sales', row.cashSales, 'text-emerald-700'], ['Returns', -row.returns, row.returns > 0 ? 'text-red-600' : 'text-slate-500'], ['Expenses', -row.expenses, row.expenses > 0 ? 'text-red-600' : 'text-slate-500'], ['Purchase Payments', -row.purchasePayments, row.purchasePayments > 0 ? 'text-red-600' : 'text-slate-500'], ['Bank Deposits', -row.bankDeposits, row.bankDeposits > 0 ? 'text-red-600' : 'text-slate-500'], ['Closing Balance', row.closingBalance, 'text-slate-900 font-black'], ['Difference', row.differenceAmount, Math.abs(row.differenceAmount) >= 10 ? 'text-red-600 font-black' : 'text-emerald-600']].map(([label, value, cls]) => (
+                      <div key={String(label)} className="flex justify-between text-xs"><span className="text-slate-500">{label}</span><span className={cn('tabular-nums', String(cls))}>{formatCurrency(Number(value))}</span></div>
+                    ))}
                   </div>
+                </div>
+                <div>
+                  <p className="mb-2 text-[10px] font-black uppercase text-slate-500">Digital & Credit</p>
+                  <div className="space-y-1.5">
+                    {[['Total Sales', row.totalSales, 'text-slate-900 font-black'], ['UPI Sales', row.upiSales, 'text-blue-700'], ['Card Sales', row.cardSales, 'text-purple-700'], ['Credit Sales', row.creditSales, 'text-amber-700'], ['Net Sales', row.netSales, 'text-emerald-700 font-black']].map(([label, value, cls]) => (
+                      <div key={String(label)} className="flex justify-between text-xs"><span className="text-slate-500">{label}</span><span className={cn('tabular-nums', String(cls))}>{formatCurrency(Number(value))}</span></div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {row.remarks && <p className="mt-3 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-600"><b>Remarks:</b> {row.remarks}</p>}
+            </div>
+          ))}
+        </div>
+
+        {/* CHANGE 9d: Summary totals row */}
+        {filteredClosureRows.length > 1 && (
+          <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+            <p className="mb-3 text-[10px] font-black uppercase text-slate-500">Totals — All Branches</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {[['Total Sales', closureTotals.sales], ['Cash', closureTotals.cash], ['UPI', closureTotals.upi], ['Card', closureTotals.card], ['Credit', closureTotals.credit], ['Difference', closureTotals.diff]].map(([label, value]) => (
+                <div key={String(label)} className="rounded-2xl bg-white border border-slate-200 p-3">
+                  <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+                  <p className="mt-1 text-sm font-black text-slate-950 tabular-nums">{formatCurrency(Number(value))}</p>
                 </div>
               ))}
             </div>
-          </>
+          </div>
         )}
-      </div>
+      </Panel>
+    </div>
+  );
 
-      {/* Order transactions */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
-          <h3 className="font-display text-base font-bold text-foreground">Order Transactions</h3>
-          <span className="text-xs text-muted-foreground">{rangeOrders.length} total</span>
+  // CreditsTab KPI data
+  const { creditSales: allCreditSalesMap, advanceOrders: allAdvanceOrdersMap } = useBranchStore(useShallow(s => ({ creditSales: s.creditSales, advanceOrders: s.advanceOrders })));
+  const allCredits = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allCreditSalesMap[branch] || []).map(c => ({ ...c, branch }))), [allCreditSalesMap]);
+  const pendingCredits = useMemo(() => allCredits.filter(c => c.status === 'pending'), [allCredits]);
+  const partialCredits = useMemo(() => allCredits.filter(c => c.status === 'partial'), [allCredits]);
+  const settledCredits = useMemo(() => allCredits.filter(c => c.status === 'settled'), [allCredits]);
+  const totalPending = useMemo(() => pendingCredits.reduce((s, c) => s + Number(c.creditAmount || 0), 0), [pendingCredits]);
+
+  // AdvanceTab KPI data
+  const allAdvances = useMemo(() => ADMIN_BRANCHES.flatMap(branch => (allAdvanceOrdersMap[branch] || []).map(a => ({ ...a, branch }))), [allAdvanceOrdersMap]);
+  const pendingAdvances = useMemo(() => allAdvances.filter(a => a.status === 'pending'), [allAdvances]);
+  const deliveredAdvances = useMemo(() => allAdvances.filter(a => a.status === 'completed'), [allAdvances]);
+  const totalAdvanceValue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.subtotal || 0), 0), [allAdvances]);
+  const advanceBalanceDue = useMemo(() => allAdvances.reduce((s, a) => s + Number(a.balanceDue || 0), 0), [allAdvances]);
+
+  const CreditsTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
         </div>
-        {rangeOrders.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No orders in this range.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Credits" value={allCredits.length} icon={<WalletCards className="size-5" />} tone="slate" />
+        <KpiCard label="Pending" value={pendingCredits.length} icon={<AlertTriangle className="size-5" />} tone={pendingCredits.length > 0 ? 'red' : 'slate'} sub={formatCurrency(totalPending)} />
+        <KpiCard label="Partial" value={partialCredits.length} icon={<CreditCard className="size-5" />} tone="amber" />
+        <KpiCard label="Settled" value={settledCredits.length} icon={<TrendingUp className="size-5" />} tone="green" />
+      </div>
+      <Panel title="Credit Management" subtitle="All branches — pending, partial and settled credit sales">
+        <AdminCreditTab branches={ADMIN_BRANCHES} />
+      </Panel>
+    </div>
+  );
+
+  // AdvanceTab — improved with top bar + KPI summary
+  const AdvanceTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <DatePresets fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+            From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibond text-slate-600">
+            To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+          </label>
+          <button onClick={() => csvDownload(`Admin_AdvanceOrders_${fromDate}_${toDate}.csv`, allAdvances.map(a => ({ Branch: a.branch, Customer: a.customerName || '-', 'Delivery Date': a.deliveryDate || '-', Subtotal: a.subtotal || 0, 'Advance Paid': a.advanceAmount || 0, 'Balance Due': a.balanceDue || 0, Status: a.status })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard label="Total Orders" value={allAdvances.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Active Orders" value={pendingAdvances.length} icon={<AlertTriangle className="size-5" />} tone={pendingAdvances.length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Delivered" value={deliveredAdvances.length} icon={<TrendingUp className="size-5" />} tone="green" />
+        <KpiCard label="Balance Due" value={formatCurrency(advanceBalanceDue)} icon={<IndianRupee className="size-5" />} tone={advanceBalanceDue > 0 ? 'red' : 'slate'} sub={`of ${formatCurrency(totalAdvanceValue)} total`} />
+      </div>
+      <Panel title="Advance Order Management" subtitle="Advance bookings and balance verification across all branches">
+        <AdminAdvanceTab branches={ADMIN_BRANCHES} />
+      </Panel>
+    </div>
+  );
+
+  const [varianceBranchFilter, setVarianceBranchFilter] = useState<Branch | 'all'>('all');
+  const [varianceSearch, setVarianceSearch] = useState('');
+  const filteredVarianceRecords = useMemo(() => {
+    return stockVarianceRecords
+      .filter(r => varianceBranchFilter === 'all' || r.branch === varianceBranchFilter)
+      .filter(r => !varianceSearch || r.itemName.toLowerCase().includes(varianceSearch.toLowerCase()) || r.reportNo?.toLowerCase().includes(varianceSearch.toLowerCase()));
+  }, [stockVarianceRecords, varianceBranchFilter, varianceSearch]);
+  const excessVariance = filteredVarianceRecords.filter(r => r.difference > 0);
+  const shortVariance = filteredVarianceRecords.filter(r => r.difference < 0);
+
+  const StockVarianceTab = (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap gap-2">
+          <select value={varianceBranchFilter} onChange={e => setVarianceBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-900 outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(b => <option key={b} value={b}>{BRANCH_LABELS[b]}</option>)}
+          </select>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={varianceSearch} onChange={e => setVarianceSearch(e.target.value)} placeholder="Search item or report" className="rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none" />
+          </div>
+        </div>
+        <button onClick={() => csvDownload('Admin_StockVariance.csv', filteredVarianceRecords.map(r => ({ Date: fmtDateTime(r.createdAt), Branch: r.branch, Report: r.reportNo, Item: r.itemName, Unit: r.unit || '', 'System Qty': r.systemQty, 'Physical Qty': r.physicalQty, Difference: r.difference, 'Reported By': r.reportedBy, 'Confirmed By': r.confirmedBy })))}
+          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+          <FileSpreadsheet className="size-3.5" /> Excel
+        </button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Variances" value={filteredVarianceRecords.length} icon={<AlertTriangle className="size-5" />} tone="slate" />
+        <KpiCard label="Excess (Physical > System)" value={excessVariance.length} icon={<TrendingUp className="size-5" />} tone="blue" />
+        <KpiCard label="Short (Physical < System)" value={shortVariance.length} icon={<TrendingDown className="size-5" />} tone={shortVariance.length > 0 ? 'red' : 'slate'} />
+      </div>
+      <Panel title="Stock Variance Records" subtitle="Physical stock-count differences confirmed by branch admin">
+        {filteredVarianceRecords.length === 0 ? (
+          <EmptyState label={stockVarianceRecords.length === 0 ? "No stock variance records yet. Differences appear after SNB Admin confirms a stock-count report." : "No records match current filters."} />
         ) : (
-          <div className="divide-y max-h-96 overflow-y-auto">
-            {rangeOrders.slice(0, 100).map(o => (
-              <div key={o.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">#{o.orderNumber}</span>
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold',
-                      o.status === 'served' ? 'bg-emerald-100 text-emerald-700' :
-                      o.status === 'cancelled' ? 'bg-red-100 text-red-700' :
-                      o.status === 'pending' ? 'bg-amber-100 text-amber-700' :
-                      'bg-blue-100 text-blue-700'
-                    )}>{o.status}</span>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <th className="p-3">Date</th><th className="p-3">Branch</th><th className="p-3">Report</th><th className="p-3">Item</th>
+                  <th className="p-3 text-right">System</th><th className="p-3 text-right">Physical</th><th className="p-3 text-right">Difference</th>
+                  <th className="p-3">Reported By</th><th className="p-3">Confirmed By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {filteredVarianceRecords.slice(0, 300).map(row => (
+                  <tr key={row.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(row.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={row.branch} /></td>
+                    <td className="p-3 font-bold">{row.reportNo}</td>
+                    <td className="p-3 font-semibold">{row.itemName}</td>
+                    <td className="p-3 text-right tabular-nums">{row.systemQty} {row.unit}</td>
+                    <td className="p-3 text-right tabular-nums">{row.physicalQty} {row.unit}</td>
+                    <td className="p-3 text-right"><Badge tone={row.difference > 0 ? 'red' : row.difference < 0 ? 'blue' : 'slate'}>{row.difference > 0 ? `+${row.difference}` : row.difference}</Badge></td>
+                    <td className="p-3 text-slate-500">{row.reportedBy}</td>
+                    <td className="p-3 text-slate-500">{row.confirmedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // CHANGE 12: Simplified AuditTab — shows only main details
+  const AuditTab = (
+    <div className="space-y-5">
+      <Panel title="Admin Audit Logs" subtitle="Sensitive edits, stock changes, duplicate prints and closure actions"
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">
+              <RefreshCw className="size-3.5" />Refresh
+            </button>
+            <button onClick={() => csvDownload('Admin_AuditLogs.csv', filteredAuditLogs.map(l => ({ Time: fmtDateTime(l.createdAt), Branch: l.branch, User: l.user, Action: l.action })))}
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+              <FileSpreadsheet className="size-3.5" />Excel
+            </button>
+          </div>
+        }>
+        <div className="mb-4 grid gap-2 lg:grid-cols-[1fr_180px_200px]">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input value={auditSearch} onChange={e => setAuditSearch(e.target.value)} placeholder="Search action, user or branch" className="w-full rounded-2xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-slate-300" />
+          </div>
+          <select value={auditBranchFilter} onChange={e => setAuditBranchFilter(e.target.value as Branch | 'all')} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none">
+            <option value="all">All branches</option>
+            {BRANCHES.map(branch => <option key={branch} value={branch}>{BRANCH_LABELS[branch]}</option>)}
+          </select>
+          <div className="flex gap-2">
+            <label className="flex flex-1 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+              From<input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+            </label>
+            <label className="flex flex-1 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+              To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
+            </label>
+          </div>
+        </div>
+        {filteredAuditLogs.length === 0 ? (
+          <EmptyState label={auditLogs.length === 0 ? "Audit logs are written when stock edits, duplicate prints, and closure actions occur in branch dashboards." : "No audit logs match the current filters."} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Time</th><th className="p-3">Branch</th><th className="p-3">User</th><th className="p-3">Action</th></tr></thead>
+              <tbody className="divide-y">
+                {filteredAuditLogs.slice(0, 150).map(log => (
+                  <tr key={log.id} className="hover:bg-slate-50">
+                    <td className="p-3 text-slate-500">{fmtDateTime(log.createdAt)}</td>
+                    <td className="p-3"><BranchPill branch={log.branch} /></td>
+                    <td className="p-3 font-semibold">{log.user}</td>
+                    <td className="p-3">{log.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Invoices Tab
+  const InvoicesTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Invoices" value={invoices.length} icon={<Receipt className="size-5" />} tone="slate" />
+        <KpiCard label="Pending Review" value={invoices.filter(inv => inv.status === 'pending_review').length} icon={<AlertTriangle className="size-5" />} tone={invoices.filter(inv => inv.status === 'pending_review').length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Total Value" value={formatCurrency(invoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0))} icon={<IndianRupee className="size-5" />} tone="blue" />
+      </div>
+      <Panel title="Supplier Invoices" subtitle="Store purchase invoices and review status"
+        action={
+          <button onClick={() => csvDownload('Admin_Invoices.csv', invoices.map(inv => ({ Invoice: inv.invoiceNumber || '-', Supplier: inv.supplierName || '-', Delivery: fmtDate(inv.deliveryDate || inv.createdAt), Total: inv.grandTotal || 0, Status: inv.status || '-', Notes: inv.notes || '-' })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        }>
+        {invoices.length === 0 ? <EmptyState label="No invoices found. Store purchase invoices appear here after being created in the bakery store." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-sm">
+              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Invoice #</th><th className="p-3">Supplier</th><th className="p-3">Delivery Date</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Notes</th></tr></thead>
+              <tbody className="divide-y">
+                {invoices.slice(0, 100).map(inv => (
+                  <tr key={inv.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-bold">{inv.invoiceNumber || '-'}</td>
+                    <td className="p-3">{inv.supplierName || '-'}</td>
+                    <td className="p-3 text-slate-500">{fmtDate(inv.deliveryDate || inv.createdAt)}</td>
+                    <td className="p-3 text-right font-black">{formatCurrency(Number(inv.grandTotal || 0))}</td>
+                    <td className="p-3"><Badge tone={inv.status === 'approved' ? 'green' : inv.status === 'pending_review' ? 'amber' : 'red'}>{inv.status?.replace(/_/g, ' ') || 'pending'}</Badge></td>
+                    <td className="p-3 text-slate-500 max-w-[200px] truncate">{inv.notes || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Alerts Tab — no low stock
+  const nonLowStockNotifications = useMemo(() =>
+    adminNotifications.filter(n => n.type !== 'low_stock'),
+    [adminNotifications]
+  );
+  const AlertsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Alerts" value={nonLowStockNotifications.length} icon={<Bell className="size-5" />} tone="slate" />
+        <KpiCard label="Unread" value={nonLowStockNotifications.filter(n => !n.isRead).length} icon={<AlertTriangle className="size-5" />} tone={nonLowStockNotifications.filter(n => !n.isRead).length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="Credit Alerts" value={nonLowStockNotifications.filter(n => n.type === 'credit_sale').length} icon={<WalletCards className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Business Alerts" subtitle="Credit, packing, invoice and operational alerts — low stock excluded">
+        {nonLowStockNotifications.length === 0 ? <EmptyState label="No alerts. Credit sales, invoice and packing alerts will appear here." /> : (
+          <div className="space-y-3">
+            {nonLowStockNotifications.slice(0, 50).map(n => (
+              <button type="button" key={n.id} onClick={() => { if (!n.isRead) void markRead(n.id); }} className={cn('w-full rounded-2xl border p-4 text-left transition', n.isRead ? 'border-slate-100 bg-slate-50' : 'border-amber-200 bg-amber-50 hover:bg-amber-100')}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-slate-900">{n.title}</p>
+                    <p className="mt-1 text-xs text-slate-600">{n.body}</p>
+                    <p className="mt-2 text-[10px] text-slate-400">{fmtDateTime(n.createdAt)}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {new Date(o.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    {o.paymentType !== 'unpaid' && ` · ${o.paymentType}`}
-                  </p>
+                  <Badge tone={n.isRead ? 'slate' : 'amber'}>{n.isRead ? 'Read' : 'Unread'}</Badge>
                 </div>
-                <span className="text-sm font-bold tabular-nums">{formatCurrency(o.total)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+
+  // Complaints Tab — from VRSNB and SNB admins
+  const adminComplaints = useMemo(() =>
+    (complaints || []).filter(c => ['VRSNB', 'SNB'].includes(c.branch))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [complaints]
+  );
+  const [complaintStatusUpdate, setComplaintStatusUpdate] = useState<Record<string, string>>({});
+  const ComplaintsTab = (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Total Complaints" value={adminComplaints.length} icon={<ClipboardList className="size-5" />} tone="slate" />
+        <KpiCard label="Open" value={adminComplaints.filter(c => c.status === 'Open').length} icon={<AlertTriangle className="size-5" />} tone={adminComplaints.filter(c => c.status === 'Open').length > 0 ? 'red' : 'slate'} />
+        <KpiCard label="In Review" value={adminComplaints.filter(c => c.status === 'In Review').length} icon={<ShieldCheck className="size-5" />} tone="amber" />
+      </div>
+      <Panel title="Branch Admin Complaints" subtitle="Complaints raised by VRSNB and SNB admins"
+        action={
+          <button onClick={() => csvDownload('Admin_Complaints.csv', adminComplaints.map(c => ({ Branch: c.branch, Area: c.complaintArea, Title: c.title, Details: c.details, 'Raised By': c.raisedBy, Status: c.status, Date: fmtDate(c.createdAt) })))}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        }>
+        {adminComplaints.length === 0 ? <EmptyState label="No complaints from VRSNB or SNB admins yet." /> : (
+          <div className="space-y-4">
+            {adminComplaints.slice(0, 50).map(c => (
+              <div key={c.id} className={cn('rounded-3xl border p-4', c.status === 'Open' ? 'border-red-200 bg-red-50' : c.status === 'In Review' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white')}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <BranchPill branch={c.branch} />
+                    <div>
+                      <p className="text-sm font-black text-slate-900">{c.title}</p>
+                      <p className="text-xs text-slate-500">{c.complaintArea} · Raised by {c.raisedBy} · {fmtDate(c.createdAt)}</p>
+                    </div>
+                  </div>
+                  <Badge tone={c.status === 'Open' ? 'red' : c.status === 'In Review' ? 'amber' : 'green'}>{c.status}</Badge>
+                </div>
+                <p className="mt-3 text-sm text-slate-700">{c.details}</p>
+                <div className="mt-3 flex items-center gap-2">
+                  <select
+                    value={complaintStatusUpdate[c.id] || c.status}
+                    onChange={e => setComplaintStatusUpdate(prev => ({ ...prev, [c.id]: e.target.value }))}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold outline-none">
+                    <option value="Open">Open</option>
+                    <option value="In Review">In Review</option>
+                    <option value="Resolved">Resolved</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      const newStatus = complaintStatusUpdate[c.id] || c.status;
+                      if (newStatus !== c.status) {
+                        updateComplaintStatus(c.id, newStatus as 'Open' | 'In Review' | 'Resolved', adminName);
+                      }
+                    }}
+                    className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-black text-white">
+                    Update
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
-}
 
-// ─── BAKERY REPORTS TAB (custom range + summary + transactions) ───────────────
-function BakeryReportsTab() {
-  const { sales, fetchBranchData } = useBranchStore();
-  const [reportType, setReportType] = useState<'item' | 'branch'>('item');
-  const [filterBranch, setFilterBranch] = useState<Branch | 'all'>('all');
+  const WasteTab = (
+    <Panel title="Branch Waste & Loss" subtitle="Confirmed dump, damage and transfer-out entries from all branches">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
+            <tr>{['Date', 'Branch', 'Type', 'Item', 'Quantity', 'Reason', 'Verified By'].map(label => <th key={label} className="px-3 py-3">{label}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {wasteLogs.filter(row => inRange(row.createdAt, fromDate, toDate)).map(row => (
+              <tr key={row.id} className="hover:bg-amber-50/50">
+                <td className="whitespace-nowrap px-3 py-3 font-bold text-slate-600">{fmtDateTime(row.createdAt)}</td>
+                <td className="px-3 py-3"><BranchPill branch={row.branch} /></td>
+                <td className="px-3 py-3 font-black text-slate-800">{row.logType}</td>
+                <td className="px-3 py-3 font-black text-slate-950">{row.itemName}</td>
+                <td className="whitespace-nowrap px-3 py-3 font-black tabular-nums">{row.quantity} {row.unit}</td>
+                <td className="px-3 py-3 text-slate-600">{row.reason}</td>
+                <td className="px-3 py-3 font-bold text-slate-700">{row.verifiedBy}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!wasteLogs.some(row => inRange(row.createdAt, fromDate, toDate)) && <p className="p-8 text-center text-sm font-bold text-slate-500">No branch waste recorded for this period.</p>}
+      </div>
+    </Panel>
+  );
 
-  const todayISO = new Date().toISOString().split('T')[0];
-  const [dateFrom, setDateFrom] = useState(todayISO);
-  const [dateTo, setDateTo] = useState(todayISO);
+  // Attendance Tab — embeds the full AttendanceSalary page
+  const AttendanceTab = (
+    <div className="space-y-5">
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="grid size-10 place-items-center rounded-xl bg-blue-50"><CalendarClock className="size-5 text-blue-600" /></div>
+          <div>
+            <p className="font-black text-slate-900">Staff Attendance & Payroll</p>
+            <p className="text-xs text-slate-500">Manage attendance, calculate salaries and track advances for all staff</p>
+          </div>
+        </div>
+      </div>
+      <AttendanceSalary />
+    </div>
+  );
 
-  useEffect(() => {
-    BRANCHES.forEach(b => fetchBranchData(b));
-  }, [fetchBranchData]);
-
-  const allSales = useMemo(() => {
-    const result: Array<{ id: string; branch: Branch; itemName: string; quantitySold: number; soldAt: string; soldBy: string; unitPrice: number }> = [];
-    BRANCHES.forEach(branch => {
-      (sales[branch] || []).forEach(s => result.push({
-        ...s, branch,
-        unitPrice: (s as typeof s & { unitPrice?: number }).unitPrice ?? 0,
-      }));
-    });
-    return result.sort((a, b) => new Date(b.soldAt).getTime() - new Date(a.soldAt).getTime());
-  }, [sales]);
-
-  const rangeSales = useMemo(() => {
-    const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
-    const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
-    return allSales.filter(s => {
-      const t = new Date(s.soldAt).getTime();
-      if (t < from.getTime() || t > to.getTime()) return false;
-      if (filterBranch !== 'all' && s.branch !== filterBranch) return false;
-      return true;
-    });
-  }, [allSales, dateFrom, dateTo, filterBranch]);
-
-  const itemReport = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number }>();
-    rangeSales.forEach(s => {
-      const ex = map.get(s.itemName);
-      const rev = s.unitPrice * s.quantitySold;
-      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
-      else map.set(s.itemName, { qty: s.quantitySold, revenue: rev });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
-  }, [rangeSales]);
-
-  const branchReport = useMemo(() => {
-    const map = new Map<Branch, { qty: number; revenue: number }>();
-    rangeSales.forEach(s => {
-      const ex = map.get(s.branch);
-      const rev = s.unitPrice * s.quantitySold;
-      if (ex) { ex.qty += s.quantitySold; ex.revenue += rev; }
-      else map.set(s.branch, { qty: s.quantitySold, revenue: rev });
-    });
-    return [...map.entries()].sort((a, b) => b[1].revenue - a[1].revenue);
-  }, [rangeSales]);
-
-  const totalRevenue = itemReport.reduce((a, [, v]) => a + v.revenue, 0);
-  const totalQty = itemReport.reduce((a, [, v]) => a + v.qty, 0);
-
-  const rangeLabel = dateFrom === dateTo
-    ? new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : `${new Date(dateFrom).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} – ${new Date(dateTo).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`;
-
-  const BRANCH_COLORS: Record<Branch, string> = {
-    VRSNB: 'bg-blue-100 text-blue-700',
-    SNB: 'bg-amber-100 text-amber-700',
-    Hosur: 'bg-emerald-100 text-emerald-700',
+  const activeContent: Record<AdminTab, ReactNode> = {
+    overview: OverviewTab,
+    cafe: CafeTab,
+    branches: BranchesTab,
+    items: ItemsTab,
+    'daily-closure': DailyClosureTab,
+    credits: CreditsTab,
+    advance: AdvanceTab,
+    'stock-disputes': StockDisputesTab,
+    'stock-variance': StockVarianceTab,
+    waste: WasteTab,
+    audit: AuditTab,
+    invoices: InvoicesTab,
+    alerts: AlertsTab,
+    complaints: ComplaintsTab,
+    attendance: AttendanceTab,
   };
 
-  const handleDownload = async () => {
-    const XLSX = await import('xlsx');
-    const dateLabel = dateFrom === dateTo ? dateFrom : `${dateFrom}_to_${dateTo}`;
-    const autoWidth = (ws: ReturnType<typeof XLSX.utils.json_to_sheet>, data: Record<string, unknown>[]) => {
-      if (!data.length) return;
-      const keys = Object.keys(data[0]);
-      ws['!cols'] = keys.map(k => ({ wch: Math.max(k.length, ...data.map(r => String(r[k] ?? '').length)) + 2 }));
-    };
-    const addSheet = (wb: ReturnType<typeof XLSX.utils.book_new>, data: Record<string, unknown>[], name: string, fallback: string) => {
-      const rows = data.length > 0 ? data : [{ Note: fallback }];
-      const ws = XLSX.utils.json_to_sheet(rows);
-      if (data.length > 0) autoWidth(ws, data);
-      XLSX.utils.book_append_sheet(wb, ws, name);
-    };
-    const summaryRows = [
-      { 'Metric': 'Period', 'Value': `${dateFrom} to ${dateTo}` },
-      { 'Metric': 'Branch Filter', 'Value': filterBranch },
-      { 'Metric': 'Transactions', 'Value': rangeSales.length },
-      { 'Metric': 'Total Revenue', 'Value': formatCurrency(totalRevenue) },
-      { 'Metric': 'Total Qty Sold', 'Value': totalQty },
-    ];
-    const itemRows = itemReport.map(([item, v], i) => ({ 'Rank': i + 1, 'Item': item, 'Revenue': v.revenue, 'Qty Sold': v.qty }));
-    const branchRows = branchReport.map(([branch, v]) => ({
-      'Branch': branch, 'Revenue': v.revenue, 'Qty Sold': v.qty,
-      'Revenue Share %': totalRevenue > 0 ? `${Math.round((v.revenue / totalRevenue) * 100)}%` : '0%',
-    }));
-    const txRows = rangeSales.map((s, i) => ({
-      'S.No': i + 1, 'Branch': s.branch, 'Item': s.itemName,
-      'Qty Sold': s.quantitySold, 'Unit Price': s.unitPrice,
-      'Revenue': s.unitPrice * s.quantitySold,
-      'Sold At': new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      'Sold By': s.soldBy,
-    }));
-    const wb = XLSX.utils.book_new();
-    addSheet(wb, summaryRows, 'Summary', 'No data');
-    addSheet(wb, itemRows, 'Item-wise', 'No sales for this range');
-    addSheet(wb, branchRows, 'Branch-wise', 'No sales for this range');
-    addSheet(wb, txRows, 'Transactions', 'No transactions');
-    XLSX.writeFile(wb, `BakeryReport_${dateLabel}.xlsx`);
-  };
+  const activeMeta = NAV_ITEMS.find(item => item.id === activeTab) || NAV_ITEMS[0];
 
   return (
-    <div className="space-y-4">
-      {/* Revenue KPIs */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 col-span-2">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Revenue</p>
-          <p className="font-display text-2xl font-bold text-primary tabular-nums">{formatCurrency(totalRevenue)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{totalQty} items · {rangeSales.length} transactions · {rangeLabel}</p>
+    <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 md:px-5 xl:px-8">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
+          </div>
+          <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
+          <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>
         </div>
+        <button onClick={() => { BRANCHES.forEach(b => void fetchBranchData(b)); void fetchStockMismatches(); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"><RefreshCw className="size-3.5" />Refresh</button>
       </div>
 
-      {/* Filters */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Filter className="size-4 text-muted-foreground" />
-            <span className="text-sm font-semibold">Filters</span>
-          </div>
-          <button onClick={handleDownload} className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition">
-            <Download className="size-3" />Excel
-          </button>
+      {!isAdmin && (
+        <div className="mb-5 flex items-center gap-3 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <Lock className="size-5 shrink-0" /> Admin-only actions are locked for this role. View-only monitoring remains available.
         </div>
-        <select value={filterBranch} onChange={e => setFilterBranch(e.target.value as Branch | 'all')}
-          className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background">
-          <option value="all">All Branches</option>
-          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-        </select>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">From</label>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted-foreground font-semibold uppercase mb-1 block">To</label>
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full border rounded-lg px-2 py-1.5 text-sm bg-background" />
-          </div>
-        </div>
-      </div>
+      )}
 
-      {/* Item / Branch Report */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center gap-2">
-          {(['item', 'branch'] as const).map(r => (
-            <button key={r} onClick={() => setReportType(r)}
-              className={cn('text-xs px-3 py-1 rounded-lg capitalize font-medium transition',
-                reportType === r ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
-              {r}-wise
-            </button>
-          ))}
-        </div>
-        <div className="px-4 py-3">
-          {reportType === 'item' ? (
-            itemReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-muted-foreground border-b">
-                    <th className="text-left py-1.5">Item</th>
-                    <th className="text-right py-1.5 text-primary font-semibold">Revenue</th>
-                    <th className="text-right py-1.5">Qty</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {itemReport.map(([item, v]) => (
-                    <tr key={item}>
-                      <td className="py-2 text-sm">{item}</td>
-                      <td className="py-2 text-right font-bold text-primary tabular-nums">{formatCurrency(v.revenue)}</td>
-                      <td className="py-2 text-right text-muted-foreground tabular-nums text-xs">{v.qty}</td>
-                    </tr>
-                  ))}
-                  <tr className="font-bold border-t-2">
-                    <td className="py-2">Total</td>
-                    <td className="py-2 text-right text-primary">{formatCurrency(totalRevenue)}</td>
-                    <td className="py-2 text-right text-muted-foreground text-xs">{totalQty}</td>
-                  </tr>
-                </tbody>
-              </table>
-            )
-          ) : (
-            branchReport.length === 0 ? (
-              <p className="text-center text-sm text-muted-foreground py-6">No sales for this range.</p>
-            ) : (
-              <div className="space-y-3 py-2">
-                {branchReport.map(([branch, v]) => {
-                  const pct = totalRevenue > 0 ? Math.round((v.revenue / totalRevenue) * 100) : 0;
-                  return (
-                    <div key={branch} className="space-y-1.5">
-                      <div className="flex justify-between">
-                        <span className={cn('px-2 py-0.5 rounded text-xs font-semibold', BRANCH_COLORS[branch as Branch])}>{branch}</span>
-                        <div className="text-right">
-                          <span className="text-sm font-bold text-primary">{formatCurrency(v.revenue)}</span>
-                          <span className="text-[10px] text-muted-foreground ml-2">{v.qty} items ({pct}%)</span>
-                        </div>
-                      </div>
-                      <div className="h-2 bg-muted rounded-full">
-                        <div className="h-full rounded-full cafe-gradient" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-                <div className="flex justify-between text-sm font-bold border-t pt-2 mt-1">
-                  <span>Total</span>
-                  <span className="text-primary">{formatCurrency(totalRevenue)}</span>
-                </div>
-              </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* Transactions */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
-          <h3 className="font-display text-base font-bold text-foreground">Sale Transactions</h3>
-          <span className="text-xs text-muted-foreground">{rangeSales.length} records</span>
-        </div>
-        {rangeSales.length === 0 ? (
-          <p className="text-center text-sm text-muted-foreground py-8">No transactions in this range.</p>
-        ) : (
-          <div className="divide-y max-h-96 overflow-y-auto">
-            {rangeSales.slice(0, 100).map(s => {
-              const lineRev = s.unitPrice * s.quantitySold;
-              return (
-                <div key={s.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
-                    <p className="text-sm font-medium">{s.itemName}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', BRANCH_COLORS[s.branch])}>{s.branch}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {new Date(s.soldAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">· {s.soldBy}</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-bold tabular-nums text-primary">{formatCurrency(lineRev)}</p>
-                    <p className="text-[10px] text-muted-foreground">×{s.quantitySold} sold</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
+      {activeContent[activeTab]}
+    </main>
   );
 }
 
-
-// ─── BAKERY VIEW (Dashboard / Sales sub-tabs) ────────────────────────────────
-function BakeryView() {
-  const [tab, setTab] = useState<'dashboard' | 'reports' | 'activity' | 'dayend'>('dashboard');
-
-  useEffect(() => {
-    return () => {};
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const tabs = [
-    { id: 'dashboard' as const, label: 'Overview',  icon: LayoutDashboard },
-    { id: 'reports'   as const, label: 'Reports',   icon: FileText         },
-    { id: 'activity'  as const, label: 'Activity',  icon: ClipboardList    },
-    { id: 'dayend'    as const, label: 'Day-End',   icon: Calendar         },
-  ];
-
-  const unread = 0;
-  const pendingInvoices = 0;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              'shrink-0 whitespace-nowrap flex items-center justify-center gap-1 py-1.5 px-3 rounded-lg text-[11px] font-medium transition',
-              tab === t.id ? 'bg-background shadow text-foreground' : 'text-muted-foreground'
-            )}
-          >
-            <t.icon className="size-3" />
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {tab === 'dashboard' && <BakeryDashboardTab />}
-      {tab === 'reports'   && <BakeryReportsMerged branch="all" />}
-      {tab === 'activity'  && <StaffActivityLog />}
-      {tab === 'dayend'    && <DayEndReport />}
-    </div>
-  );
-}
-
-// ─── MAIN ADMIN DASHBOARD ────────────────────────────────────────────────────
-export default function AdminDashboard() {
-  const [mode, setMode] = useState<'cafe' | 'bakery' | 'credit' | 'advance'>('cafe');
-  // BUG-03 FIX: single polling registration at root — previously registered twice
-  // (CafeDashboardTab + CafeReportsTab both called startPolling, driving ref count to 2).
-  // STORE-01 FIX: granular selector — stable action refs, no re-renders from unrelated state
-  const { startPolling, stopPolling } = useOrderStore(
-    useShallow(s => ({ startPolling: s.startPolling, stopPolling: s.stopPolling }))
-  );
-  useEffect(() => {
-    startPolling(60); // 60-day window for admin reports
-    return () => stopPolling();
-  }, [startPolling, stopPolling]);
-
-  return (
-    <div className="min-h-[100dvh] bg-background pt-14 pb-24">
-      {/* ── Page header ── */}
-      <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">Admin Portal</p>
-            <h1 className="font-display text-3xl font-bold text-foreground leading-none">Dashboard</h1>
-          </div>
-          <p className="text-xs font-body text-muted-foreground pb-0.5">
-            {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
-        </div>
-      </div>
-
-      {/* Cafe / Bakery / Credit / Advance toggle */}
-      <div className="mx-4 my-4 grid grid-cols-2 gap-1.5 p-1 rounded-2xl" style={{ background: 'hsl(var(--muted))' }}>
-        <button
-          onClick={() => setMode('cafe')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'cafe' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          ☕ Cafe
-        </button>
-        <button
-          onClick={() => setMode('bakery')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'bakery' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          🥐 Bakery
-        </button>
-        <button
-          onClick={() => setMode('credit')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'credit' ? 'bg-card shadow-soft text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          💳 Credit
-        </button>
-        <button
-          onClick={() => setMode('advance')}
-          className={cn(
-            'py-2.5 rounded-xl text-sm font-body font-semibold transition-all duration-200',
-            mode === 'advance' ? 'bg-amber-500 text-white shadow-soft' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          🏷️ Advance
-        </button>
-      </div>
-
-      <div className="px-4 space-y-4">
-        {mode === 'cafe'   && <CafeView />}
-        {mode === 'bakery' && <BakeryView />}
-        {mode === 'credit' && (
-          <AdminCreditTab
-            branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']}
-          />
-        )}
-        {mode === 'advance' && (
-          <AdminAdvanceTab branches={['Cafe', 'VRSNB', 'SNB', 'Hosur']} />
-        )}
-      </div>
-
-      <div className="px-4 mt-6">
-        <div className="flex items-center gap-2 px-4 py-3 rounded-xl" style={{ background: 'hsl(var(--muted)/0.5)' }}>
-          <Package className="size-4 text-muted-foreground shrink-0" />
-          <p className="text-xs font-body text-muted-foreground">Data retained for last 60 days. Older records are automatically purged.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
+export default AdminDashboard;

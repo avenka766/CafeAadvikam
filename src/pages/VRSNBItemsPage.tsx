@@ -8,7 +8,7 @@ import MenuManagement from '@/pages/MenuManagement';
 export default function VRSNBItemsPage() {
   const [mode, setMode] = useState<'cafe' | 'bakery'>('cafe');
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       <div className="px-4 pt-5 pb-4" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
         <p className="text-xs font-body font-semibold text-primary uppercase tracking-widest mb-1">VRSNB Admin</p>
         <h1 className="font-display text-3xl font-bold text-foreground leading-none">Items</h1>

@@ -1,9 +1,10 @@
 // src/bakery/DayEndReport.tsx
 // Day-end summary — orders vs dispatched per branch per item for any selected date.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, Calendar, Download, ArrowDown, ArrowUp, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate';
 import { cn } from '@/lib/utils';
 import EmptyState from '@/components/ui/EmptyState';
 
@@ -49,18 +50,18 @@ function StatusChip({ requested, dispatched }: { requested: number; dispatched: 
 }
 
 export default function DayEndReport() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = businessDate();
   const [date,    setDate]    = useState(today);
   const [orders,  setOrders]  = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const fetchForDate = async (d: string) => {
+  // FIX: extracted from useEffect so the "Load" button can also call it without ReferenceError
+  const fetchForDate = useCallback(async () => {
     setLoading(true);
-    // M-11 FIX: use try/finally so loading is always reset to false even on
-    // network exceptions (previously an uncaught throw left an infinite spinner).
     try {
-      const from = `${d}T00:00:00`;
-      const to   = `${d}T23:59:59`;
+      // FIX: IST offset ensures Supabase (UTC storage) returns the correct IST day boundary
+      const from = `${date}T00:00:00+05:30`;
+      const to   = `${date}T23:59:59+05:30`;
       const { data, error } = await supabase
         .from('bakery_orders')
         .select('order_number, target_branch, status, items, dispatch_log, created_at')
@@ -80,9 +81,11 @@ export default function DayEndReport() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [date]);
 
-  useEffect(() => { fetchForDate(date); }, [date]);
+  useEffect(() => {
+    fetchForDate();
+  }, [fetchForDate]);
 
   const branchSummaries: BranchSummary[] = useMemo(() => {
     const branches = [...new Set(orders.map(o => o.targetBranch))].sort();
@@ -148,7 +151,7 @@ export default function DayEndReport() {
           onChange={e => setDate(e.target.value)}
           className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
         />
-        <button onClick={() => fetchForDate(date)}
+        <button onClick={() => fetchForDate()}
           className="h-10 px-4 rounded-xl bg-primary text-primary-foreground text-sm font-body font-bold active:scale-95">
           Load
         </button>

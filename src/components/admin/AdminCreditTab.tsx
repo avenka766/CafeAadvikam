@@ -279,7 +279,8 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   // Fetch on mount for each relevant branch
   useEffect(() => {
     branches.forEach(b => fetchCreditSales(b));
-  }, [branches, fetchCreditSales]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchCreditSales]);
 
   // Collect all credit sales for the given branches
   const allSales = useMemo(() => {
@@ -311,7 +312,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   // KPI aggregates
   const totalGiven = allSales.reduce((a, s) => a + s.subtotal, 0);
   const totalCollected = allSales.reduce((a, s) => a + s.amountPaid, 0);
-  const totalOutstanding = allSales.reduce((a, s) => a + s.creditAmount, 0);
+  const totalOutstanding = allSales.filter((sale) => sale.status !== 'settled').reduce((a, s) => a + s.creditAmount, 0);
   const overdueCount = allSales.filter(
     s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date(),
   ).length;
@@ -344,7 +345,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   const showBranchFilter = branches.length > 1;
 
   const handleExcelDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const rows = filtered.map(s => ({
       'Branch':           s.branch,
       'Bill No':          s.billNo ?? '',

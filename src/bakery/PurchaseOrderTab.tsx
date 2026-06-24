@@ -1,18 +1,22 @@
 // src/bakery/PurchaseOrderTab.tsx
-// Store dashboard tab — raise and manage purchase orders for raw materials.
+// Store dashboard tab - raise and manage purchase orders for raw materials.
 
 import { useState, useEffect } from 'react';
-import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Loader2, ShoppingCart, CheckCircle2, Send, Truck, Trash2, ChevronDown, ChevronUp, Ban, Search, X } from 'lucide-react';
 import { usePurchaseOrderStore, type POItem, type POStatus } from './purchaseOrderStore';
 import { useStoreStockStore } from './storeStockStore';
 import { useSupplierStore } from './supplierStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import { SNB_ITEMS } from '@/branch/snbItems';
+
+type ReceiverBranchScope = 'SNB';
 
 const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.ElementType }> = {
   draft:    { label: 'Draft',    color: 'bg-muted text-muted-foreground border-border',          icon: ShoppingCart },
   sent:     { label: 'Sent',     color: 'bg-blue-50 text-blue-700 border-blue-200',              icon: Send         },
   received: { label: 'Received', color: 'bg-emerald-50 text-emerald-700 border-emerald-200',     icon: CheckCircle2 },
+  cancelled:{ label: 'Cancelled',color: 'bg-red-50 text-red-700 border-red-200',                 icon: Ban          },
 };
 
 function POCard({ po, onStatusChange, onDelete }: {
@@ -38,7 +42,7 @@ function POCard({ po, onStatusChange, onDelete }: {
             </span>
           </div>
           <p className="text-xs font-body text-muted-foreground truncate">
-            {po.supplierName} · {po.items.length} item(s)
+            {po.supplierName} - {po.items.length} item(s)
           </p>
         </div>
         <div className="shrink-0 text-right">
@@ -51,7 +55,6 @@ function POCard({ po, onStatusChange, onDelete }: {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
-          {/* Items */}
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
               <span className="col-span-6">Material</span>
@@ -71,14 +74,13 @@ function POCard({ po, onStatusChange, onDelete }: {
             <p className="text-xs font-body text-muted-foreground bg-muted/40 px-3 py-2 rounded-xl">{po.notes}</p>
           )}
 
-          {/* Timeline */}
           <div className="flex items-center gap-2 text-[10px] font-body text-muted-foreground">
             <span>Created {new Date(po.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
-            {po.sentAt && <><span>·</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
-            {po.receivedAt && <><span>·</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.sentAt && <><span>-</span><span>Sent {new Date(po.sentAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.receivedAt && <><span>-</span><span>Received {new Date(po.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
+            {po.cancelledAt && <><span>-</span><span>Cancelled {new Date(po.cancelledAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span></>}
           </div>
 
-          {/* Actions */}
           <div className="flex gap-2">
             {po.status === 'draft' && (
               <button
@@ -96,9 +98,10 @@ function POCard({ po, onStatusChange, onDelete }: {
                 <Truck className="size-3.5" /> Mark as Received
               </button>
             )}
-            {po.status !== 'received' && (
+            {po.status !== 'received' && po.status !== 'cancelled' && (
               <button
                 onClick={() => onDelete(po.id)}
+                title="Cancel purchase order"
                 className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center active:scale-95"
               >
                 <Trash2 className="size-3.5" />
@@ -111,27 +114,53 @@ function POCard({ po, onStatusChange, onDelete }: {
   );
 }
 
-// ── Create PO Form ─────────────────────────────────────────────────────────────
-
-function CreatePOForm({ onClose }: { onClose: () => void }) {
-  const { items: stockItems } = useStoreStockStore();
-  const { suppliers }         = useSupplierStore();
+function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: ReceiverBranchScope }) {
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
+  const { suppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
   const { currentUser }       = useAuthStore();
   const { createPO }          = usePurchaseOrderStore();
 
+  useEffect(() => {
+    if (!suppliersLoaded) void loadSuppliers();
+    if (!branchScope && !stockLoaded) void loadStock();
+  }, [branchScope, loadStock, loadSuppliers, stockLoaded, suppliersLoaded]);
+
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '');
   const [notes,      setNotes]      = useState('');
-  const [lines,      setLines]      = useState<POItem[]>([{ materialName: stockItems[0]?.name ?? '', quantity: 1, unit: stockItems[0]?.unit ?? 'kg' }]);
+  const [itemSearch, setItemSearch] = useState('');
+  const materialOptions = branchScope === 'SNB'
+    ? SNB_ITEMS.map((item) => ({ id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category }))
+    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material' }));
+  const filteredMaterialOptions = materialOptions.filter((item) =>
+    !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),
+  );
+  const firstMaterial = materialOptions[0];
+  const [lines,      setLines]      = useState<POItem[]>([{ materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState<string | null>(null);
 
-  const addLine    = () => setLines(p => [...p, { materialName: stockItems[0]?.name ?? '', quantity: 1, unit: stockItems[0]?.unit ?? 'kg' }]);
+  const addLine    = () => setLines(p => [...p, { materialName: firstMaterial?.name ?? '', quantity: 1, unit: firstMaterial?.unit ?? 'kg' }]);
   const removeLine = (i: number) => setLines(p => p.filter((_, j) => j !== i));
   const setItem    = (i: number, name: string) => {
-    const stock = stockItems.find(s => s.name === name);
-    setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: stock?.unit ?? l.unit } : l));
+    const selected = materialOptions.find(s => s.name === name);
+    setLines(p => p.map((l, j) => j === i ? { ...l, materialName: name, unit: selected?.unit ?? l.unit } : l));
   };
   const setQty = (i: number, qty: number) => setLines(p => p.map((l, j) => j === i ? { ...l, quantity: qty } : l));
+
+  useEffect(() => {
+    if (!supplierId && suppliers.length > 0) setSupplierId(suppliers[0].id);
+  }, [supplierId, suppliers]);
+
+  const chooseSearchResult = (name: string) => {
+    const emptyIndex = lines.findIndex((line) => !line.materialName);
+    if (emptyIndex >= 0) setItem(emptyIndex, name);
+    else if (lines.length === 1 && lines[0].materialName === firstMaterial?.name) setItem(0, name);
+    else {
+      const selected = materialOptions.find((item) => item.name === name);
+      setLines((prev) => [...prev, { materialName: name, quantity: 1, unit: selected?.unit ?? 'pcs' }]);
+    }
+    setItemSearch('');
+  };
 
   const supplier = suppliers.find(s => s.id === supplierId);
 
@@ -142,7 +171,8 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
     setSaving(true);
     const err = await createPO({
       supplierId,
-      supplierName: supplier.name,
+      supplierName: supplier.businessName,
+      branch: branchScope,
       items: lines,
       status: 'draft',
       notes,
@@ -160,32 +190,74 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <h3 className="font-display font-bold text-lg text-foreground">New Purchase Order</h3>
 
-        {/* Supplier */}
         <div className="space-y-1">
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Supplier</p>
           <select value={supplierId} onChange={e => setSupplierId(e.target.value)}
             className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-            {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {suppliers.map(s => <option key={s.id} value={s.id}>{s.businessName}</option>)}
           </select>
         </div>
 
-        {/* Items */}
         <div className="space-y-2">
-          <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Materials</p>
-          {lines.map((line, i) => (
-            <div key={i} className="flex gap-2 items-center">
-              <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
-                className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-                {stockItems.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-              </select>
-              <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
-                className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
-              <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
-              <button onClick={() => removeLine(i)} disabled={lines.length === 1}
-                className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
-                <Trash2 className="size-3.5" />
-              </button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">SNB items</p>
+              <p className="text-[11px] font-body font-semibold text-muted-foreground">Add multiple items in one purchase order.</p>
             </div>
+            <div className="relative sm:w-72">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={itemSearch}
+                onChange={(e) => setItemSearch(e.target.value)}
+                placeholder="Search item or category"
+                className="h-10 w-full rounded-xl border border-border bg-background pl-9 pr-9 text-sm font-body font-bold focus:outline-none"
+              />
+              {itemSearch && (
+                <button type="button" onClick={() => setItemSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <X className="size-4 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          </div>
+          {itemSearch.trim() && (
+            <div className="max-h-52 overflow-y-auto rounded-2xl border border-border bg-card p-2 shadow-sm">
+              {filteredMaterialOptions.length === 0 ? (
+                <p className="px-3 py-5 text-center text-xs font-semibold text-muted-foreground">No matching SNB item.</p>
+              ) : filteredMaterialOptions.slice(0, 40).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => chooseSearchResult(item.name)}
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-muted"
+                >
+                  <span className="text-sm font-bold text-foreground">{item.name}</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground">{item.category} · {item.unit}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {lines.map((line, i) => (
+            (() => {
+              const selected = materialOptions.find((item) => item.name === line.materialName);
+              const options = selected && !filteredMaterialOptions.some((item) => item.name === selected.name)
+                ? [selected, ...filteredMaterialOptions]
+                : filteredMaterialOptions;
+              return (
+                <div key={i} className="flex gap-2 items-center">
+                  <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
+                    className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
+                    {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
+                  </select>
+                  <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
+                    className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
+                  <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
+                  <button onClick={() => removeLine(i)} disabled={lines.length === 1}
+                    className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              );
+            })()
           ))}
           <button onClick={addLine}
             className="w-full h-9 rounded-xl border-2 border-dashed border-border text-sm font-body font-semibold text-muted-foreground flex items-center justify-center gap-1.5">
@@ -193,7 +265,6 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Notes */}
         <div className="space-y-1">
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Notes (optional)</p>
           <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2}
@@ -211,28 +282,30 @@ function CreatePOForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────────
-
-export default function PurchaseOrderTab() {
+export default function PurchaseOrderTab({ branchScope }: { branchScope?: ReceiverBranchScope } = {}) {
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
-  const filtered = orders.filter(o => filterStatus === 'all' || o.status === filterStatus);
-  const draftCount    = orders.filter(o => o.status === 'draft').length;
-  const sentCount     = orders.filter(o => o.status === 'sent').length;
-  const receivedCount = orders.filter(o => o.status === 'received').length;
+  const scopedOrders = branchScope
+    ? orders.filter(o => o.branch === branchScope)
+    : orders.filter(o => !o.branch);
+  const filtered = scopedOrders.filter(o => filterStatus === 'all' || o.status === filterStatus);
+  const draftCount    = scopedOrders.filter(o => o.status === 'draft').length;
+  const sentCount     = scopedOrders.filter(o => o.status === 'sent').length;
+  const receivedCount = scopedOrders.filter(o => o.status === 'received').length;
+  const cancelledCount = scopedOrders.filter(o => o.status === 'cancelled').length;
 
   return (
     <div className="space-y-4">
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {[
           { label: 'Draft',    value: draftCount,    color: draftCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground', bg: '' },
           { label: 'Sent',     value: sentCount,     color: sentCount > 0 ? 'text-blue-600' : 'text-muted-foreground',          bg: sentCount > 0 ? 'bg-blue-50 border-blue-200' : '' },
           { label: 'Received', value: receivedCount, color: 'text-emerald-600', bg: receivedCount > 0 ? 'bg-emerald-50 border-emerald-200' : '' },
+          { label: 'Cancelled', value: cancelledCount, color: 'text-red-600', bg: cancelledCount > 0 ? 'bg-red-50 border-red-200' : '' },
         ].map(s => (
           <div key={s.label} className={cn('bg-card border border-border rounded-xl p-2.5 text-center', s.bg)}>
             <p className={cn('font-display text-xl font-bold', s.color)}>{s.value}</p>
@@ -241,10 +314,9 @@ export default function PurchaseOrderTab() {
         ))}
       </div>
 
-      {/* Filter + Create */}
       <div className="flex items-center gap-2">
         <div className="flex gap-1.5 flex-1 overflow-x-auto pb-0.5">
-          {(['all', 'draft', 'sent', 'received'] as const).map(s => (
+          {(['all', 'draft', 'sent', 'received', 'cancelled'] as const).map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
               className={cn('shrink-0 text-[11px] font-body font-semibold px-3 py-1.5 rounded-full border transition-all',
                 filterStatus === s ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground')}>
@@ -258,7 +330,6 @@ export default function PurchaseOrderTab() {
         </button>
       </div>
 
-      {/* List */}
       {loading && !loaded ? (
         <div className="flex justify-center py-12"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
       ) : filtered.length === 0 ? (
@@ -277,7 +348,7 @@ export default function PurchaseOrderTab() {
         </div>
       )}
 
-      {showCreate && <CreatePOForm onClose={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreatePOForm branchScope={branchScope} onClose={() => { setShowCreate(false); load(); }} />}
     </div>
   );
 }

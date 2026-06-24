@@ -46,7 +46,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
 
   useEffect(() => {
     branches.forEach(b => fetchBranchData(b));
-  }, []);
+  }, [branches, fetchBranchData]);
 
   // Merge all advance orders across branches
   const allOrders = useMemo((): Array<BranchAdvanceOrder & { branch: Branch }> => {
@@ -92,7 +92,7 @@ export default function AdminAdvanceTab({ branches }: Props) {
   }), [allOrders, branches]);
 
   const handleDownload = async () => {
-    const XLSX = await import('xlsx');
+    const XLSX = await import('@/lib/safeSpreadsheet');
     const rows = filtered.map((o, i) => ({
       'S.No':           i + 1,
       'Branch':         o.branch,

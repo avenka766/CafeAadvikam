@@ -93,7 +93,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
       set((state) => ({
         items: state.items.map((i) => (i.id === id ? prevItem : i)),
       }));
-      throw new Error('Failed to save — please check your connection and try again.');
+      throw new Error('Failed to save - please check your connection and try again.');
     }
 
     // Fire admin notification for price or name changes
@@ -102,18 +102,18 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     if (priceChanged || nameChanged) {
       const effectiveName = updates.name ?? prevItem.name;
       const changes: string[] = [];
-      if (nameChanged)  changes.push(`name: "${prevItem.name}" → "${updates.name}"`);
-      if (priceChanged) changes.push(`price: ₹${prevItem.price} → ₹${updates.price}`);
-      // VRSNB Admin or SNB Admin changing cafe items → notify 'admin' (super admin must see it)
-      // Super Admin changing cafe items → notify 'admin' (self-audit, appears in own feed)
-      const changerRole = useAuthStore.getState().user?.role ?? 'admin';
+      if (nameChanged)  changes.push(`name: "${prevItem.name}" -> "${updates.name}"`);
+      if (priceChanged) changes.push(`price: Rs.${prevItem.price} -> Rs.${updates.price}`);
+      // VRSNB Admin or SNB Admin changing cafe items -> notify 'admin' (super admin must see it)
+      // Super Admin changing cafe items -> notify 'admin' (self-audit, appears in own feed)
+      const changerRole = useAuthStore.getState().currentUser?.role ?? 'admin';
       const recipientRole = (changerRole === 'admin_vrsnb' || changerRole === 'admin_snb') ? 'admin' : 'admin';
 
       const { error: notifError } = await supabase.from('admin_notifications').insert({
         type:           'price_change',
-        title:          `Cafe Menu Updated — ${effectiveName}`,
-        body:           `${changes.join(' · ')} · Cafe menu`,
-        ref_label:      `Cafe · Item ID ${id}`,
+        title:          `Cafe Menu Updated - ${effectiveName}`,
+        body:           `${changes.join(' | ')} | Cafe menu`,
+        ref_label:      `Cafe | Item ID ${id}`,
         meta:           {
           branch:   'CAFE',
           itemId:   id,

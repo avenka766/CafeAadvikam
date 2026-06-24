@@ -78,7 +78,7 @@ export const VRSNB_ITEMS: VrsnbItem[] = [
   { barcode: 2009, name: 'Gavani rice muruk (200g)',         price: 120,  uom: 'Nos', category: 'MURUK' },
   { barcode: 2010, name: 'Kaisuthal muruk (200g)',           price: 120,  uom: 'Nos', category: 'MURUK' },
   { barcode: 2011, name: 'Kambu muruk (200g)',               price: 120,  uom: 'Nos', category: 'MURUK' },
-  { barcode: 2012, name: 'Masala groundnut (200g)',          price: 80,   uom: 'Nos', category: 'MURUK' },
+  { barcode: 2012, name: 'Masala groundnut (200g)',          price: 80,   uom: 'Nos', category: 'MIXTURE' },
   { barcode: 2013, name: 'Mullu muruk (200g)',               price: 80,   uom: 'Nos', category: 'MURUK' },
   { barcode: 2014, name: 'Onion rings (200g)',               price: 80,   uom: 'Nos', category: 'MURUK' },
   { barcode: 2015, name: 'Ragi muruk (200g)',                price: 80,   uom: 'Nos', category: 'MURUK' },
@@ -171,7 +171,7 @@ export const VRSNB_ITEMS: VrsnbItem[] = [
 
   // ── COOKIES ───────────────────────────────────────────────────────────────
   { barcode: 2090, name: 'Badam sticks',                     price: 130,  uom: 'Nos', category: 'COOKIES' },
-  { barcode: 2091, name: 'Bourvita biscuit',                 price: 130,  uom: 'Nos', category: 'COOKIES' },
+  { barcode: 2091, name: 'Bournvita biscuit',                 price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2092, name: 'Butter biscuit',                   price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2093, name: 'Coconut biscuit',                  price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2094, name: 'Coconut crunch',                   price: 130,  uom: 'Nos', category: 'COOKIES' },

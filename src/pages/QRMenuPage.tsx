@@ -117,7 +117,7 @@ export default function QRMenuPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-24">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       <div className="px-4 pt-6 pb-4">
         <div className="flex items-center gap-3 mb-1">
           <div className="size-9 rounded-xl bg-primary/10 flex items-center justify-center">

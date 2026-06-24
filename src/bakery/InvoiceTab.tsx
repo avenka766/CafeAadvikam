@@ -2,7 +2,8 @@
 // Store Invoice Tab – create supplier delivery invoices, sync stock, send to admin.
 
 import { useState, useEffect, useMemo } from 'react';
-import { supabase } from '@/lib/supabase'; // BUG #14 FIX: needed for synced_to_stock update after invoice created
+import { supabase } from '@/lib/supabase';
+import { businessDate } from '@/lib/businessDate'; // BUG #14 FIX: needed for synced_to_stock update after invoice created
 import {
   FileText, Plus, Trash2, Printer, Send, ChevronDown,
   ChevronUp, CheckCircle2, Clock, X, Check, Loader2,
@@ -212,10 +213,10 @@ function CreateInvoiceModal({
   const { items: stockItems, addItem, updateItem } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
-  useEffect(() => { if (!suppLoaded) loadSuppliers(); }, [suppLoaded]);
+  useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
 
   const [supplierId, setSupplierId]   = useState('');
-  const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().slice(0, 10));
+  const [deliveryDate, setDeliveryDate] = useState(businessDate());
   const [notes, setNotes]             = useState('');
   const [lines, setLines]             = useState<InvoiceLineItem[]>([
     { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 },
@@ -236,7 +237,13 @@ function CreateInvoiceModal({
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
 
-  const UNITS: StockUnit[] = ['kg', 'g', 'L', 'ltr', 'pcs', 'nos', 'bunch'];
+  const UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
+    { value: 'kg', label: 'KG' },
+    { value: 'ltr', label: 'Ltr' },
+    { value: 'pcs', label: 'Pcs' },
+    { value: 'nos', label: 'Nos' },
+    { value: 'bunch', label: 'Bunch' },
+  ];
 
   const updateLine = (idx: number, key: keyof InvoiceLineItem, val: string | number) => {
     setLines(prev => {
@@ -441,7 +448,7 @@ function CreateInvoiceModal({
                       onChange={e => updateLine(idx, 'unit', e.target.value)}
                       className="w-full h-9 px-2 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
                     >
-                      {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                      {UNIT_OPTIONS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                     </select>
                   </div>
                   <div>
@@ -500,7 +507,7 @@ function CreateInvoiceModal({
             type="date"
             value={deliveryDate}
             min={(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}
-            max={new Date().toISOString().slice(0, 10)}
+            max={businessDate()}
             onChange={e => setDeliveryDate(e.target.value)}
             className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
@@ -551,7 +558,7 @@ function SuccessToast({ invoiceNumber, onClose }: { invoiceNumber: string; onClo
   useEffect(() => {
     const t = setTimeout(onClose, 5000);
     return () => clearTimeout(t);
-  }, []);
+  }, [onClose]);
   return (
     <div className="fixed bottom-32 left-4 right-4 z-50 bg-emerald-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
       <CheckCircle2 className="size-5 shrink-0" />
@@ -572,7 +579,7 @@ export default function InvoiceTab() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
   const [toast, setToast]           = useState<string | null>(null);
 
-  useEffect(() => { if (!loaded) load(); }, [loaded]);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();

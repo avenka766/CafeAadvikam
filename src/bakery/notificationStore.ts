@@ -15,7 +15,9 @@ export type NotificationType =
   | 'packing_remainder'
   | 'low_stock'
   | 'credit_sale'
-  | 'price_change';
+  | 'price_change'
+  | 'store_item_change'
+  | 'recipe_change';
 
 export interface AdminNotification {
   id: string;
@@ -47,6 +49,8 @@ interface NotificationState {
   pushLowStock: (items: { name: string; quantity: number; minThreshold: number; unit: string }[]) => Promise<void>;
   pushCreditSale: (params: { customerName: string; amount: number; billNo: string; branch: string; soldBy: string; dueDate?: string }) => Promise<void>;
   pushPackingRemainder: (orderId: string, orderNumber: string, branch: string, items: { itemName: string; remainderKg: number; dispatchedPcs: number; preparedKg: number }[]) => Promise<void>;
+  pushStoreItemChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; category?: string; changedBy?: string }) => Promise<void>;
+  pushRecipeChange: (params: { action: 'created' | 'updated'; itemId: string; itemName: string; ingredientCount: number; changedBy?: string }) => Promise<void>;
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -79,7 +83,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
-      const role = useAuthStore.getState().user?.role ?? 'admin';
+      const role = useAuthStore.getState().currentUser?.role ?? 'admin';
       const { data, error } = await supabase
         .from('admin_notifications')
         .select('*')
@@ -108,7 +112,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markAllRead: async () => {
-    const role = useAuthStore.getState().user?.role ?? 'admin';
+    const role = useAuthStore.getState().currentUser?.role ?? 'admin';
     await supabase
       .from('admin_notifications')
       .update({ is_read: true })
@@ -120,8 +124,16 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   deleteNotification: async (id) => {
-    await supabase.from('admin_notifications').delete().eq('id', id);
-    set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
+    const current = get().notifications.find(n => n.id === id);
+    const meta = {
+      ...(current?.meta ?? {}),
+      archivedAt: new Date().toISOString(),
+    };
+    const { error } = await supabase
+      .from('admin_notifications')
+      .update({ is_read: true, meta })
+      .eq('id', id);
+    if (!error) set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
   },
 
   // ── Push helpers ─────────────────────────────────────────────────────────
@@ -156,66 +168,85 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   pushPackingDiscrepancy: async (orderId, orderNumber, branch, items) => {
-    // UPSERT strategy: if a notification already exists for this order, merge the
-    // new discrepant items into it (avoids duplicate cards while preserving ALL items).
-    // Previous approach: return-early if any record existed — this caused only the
-    // FIRST dispatched item's discrepancy to be saved; all subsequent items were lost.
-    const { data: existing } = await supabase
-      .from('admin_notifications')
-      .select('id, meta')
-      .eq('type', 'packing_discrepancy')
-      .eq('ref_id', orderId)
-      .limit(1);
+    // Send the same discrepancy to Admin and to the correct branch receiver.
+    // Previously only an `admin` row was created, while the SNB/VRSNB Order
+    // dashboards load notifications using their own roles (`receiver_snb` /
+    // `receiver_vrsnb`). As a result, branch users never received the alert.
+    const normalizedBranch = branch.trim().toUpperCase();
+    const receiverRole = normalizedBranch === 'SNB'
+      ? 'receiver_snb'
+      : normalizedBranch === 'VRSNB'
+        ? 'receiver_vrsnb'
+        : null;
+    const recipientRoles = receiverRole ? ['admin', receiverRole] : ['admin'];
 
-    // Build the merged items list
-    let mergedItems = [...items];
-    if (existing && existing.length > 0) {
-      const existingMeta = existing[0].meta as { items?: typeof items } | null;
-      const existingItems: typeof items = existingMeta?.items ?? [];
-      // Merge: existing items not in new list + all new items (new list is authoritative for its items)
-      const newItemNames = new Set(items.map(i => i.itemName));
-      const carry = existingItems.filter(i => !newItemNames.has(i.itemName));
-      mergedItems = [...carry, ...items];
-    }
-
-    // Build a human-readable line per item — covers both shortfall AND excess
-    const lines = mergedItems
-      .map(i => {
-        const diff = i.requested - i.dispatched;
-        if (diff > 0) {
-          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} short`;
-        } else if (diff < 0) {
-          return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
-        }
-        return `${i.itemName}: ${i.dispatched} ${i.unit} ✓`;
-      })
-      .join('; ');
-
-    const hasMissing = mergedItems.some(i => i.dispatched < i.requested);
-    const hasExtra   = mergedItems.some(i => i.dispatched > i.requested);
-    const titleSuffix = hasMissing && hasExtra ? 'Missing & Extra Items' : hasMissing ? 'Missing Items' : 'Extra Items Sent';
-
-    const payload = {
-      type: 'packing_discrepancy',
-      title: `Packing Discrepancy – ${titleSuffix}`,
-      body: `Order ${orderNumber} → ${branch}: ${lines}`,
-      ref_id: orderId,
-      ref_label: `Order ${orderNumber} → ${branch}`,
-      meta: { orderId, orderNumber, branch, items: mergedItems },
-      recipient_role: 'admin',
-    };
-
-    if (existing && existing.length > 0) {
-      // Update the existing row with merged items so the receiver/admin sees ALL discrepancies
-      const { error } = await supabase
+    for (const recipientRole of recipientRoles) {
+      const { data: existing } = await supabase
         .from('admin_notifications')
-        .update({ ...payload, is_read: false }) // reset to unread so it surfaces again
-        .eq('id', existing[0].id);
-      if (error) console.warn('[notificationStore] discrepancy update failed:', error.message);
-    } else {
-      const { error } = await supabase.from('admin_notifications').insert(payload);
-      if (error) console.warn('[notificationStore] discrepancy insert failed:', error.message);
+        .select('id, meta')
+        .eq('type', 'packing_discrepancy')
+        .eq('recipient_role', recipientRole)
+        .eq('ref_id', orderId)
+        .limit(1);
+
+      let mergedItems = [...items];
+      if (existing && existing.length > 0) {
+        const existingMeta = existing[0].meta as { items?: typeof items } | null;
+        const existingItems: typeof items = existingMeta?.items ?? [];
+        const newItemNames = new Set(items.map(i => i.itemName.trim().toLowerCase()));
+        const carry = existingItems.filter(
+          i => !newItemNames.has(i.itemName.trim().toLowerCase()),
+        );
+        mergedItems = [...carry, ...items];
+      }
+
+      const lines = mergedItems
+        .map(i => {
+          const diff = i.requested - i.dispatched;
+          if (diff > 0) {
+            return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${diff} ${i.unit} short`;
+          }
+          if (diff < 0) {
+            return `${i.itemName}: requested ${i.requested} ${i.unit}, dispatched ${i.dispatched} ${i.unit} — ${Math.abs(diff)} ${i.unit} extra`;
+          }
+          return `${i.itemName}: ${i.dispatched} ${i.unit} ✓`;
+        })
+        .join('; ');
+
+      const hasMissing = mergedItems.some(i => i.dispatched < i.requested);
+      const hasExtra = mergedItems.some(i => i.dispatched > i.requested);
+      const titleSuffix = hasMissing && hasExtra
+        ? 'Missing & Extra Items'
+        : hasMissing
+          ? 'Missing Items'
+          : 'Extra Items Sent';
+
+      const payload = {
+        type: 'packing_discrepancy',
+        title: `Packing Discrepancy – ${titleSuffix}`,
+        body: `Order ${orderNumber} → ${normalizedBranch}: ${lines}`,
+        ref_id: orderId,
+        ref_label: `Order ${orderNumber} → ${normalizedBranch}`,
+        meta: { orderId, orderNumber, branch: normalizedBranch, items: mergedItems },
+        recipient_role: recipientRole,
+      };
+
+      if (existing && existing.length > 0) {
+        const { error } = await supabase
+          .from('admin_notifications')
+          .update({ ...payload, is_read: false })
+          .eq('id', existing[0].id);
+        if (error) {
+          console.warn(`[notificationStore] discrepancy update failed for ${recipientRole}:`, error.message);
+        }
+      } else {
+        const { error } = await supabase.from('admin_notifications').insert(payload);
+        if (error) {
+          console.warn(`[notificationStore] discrepancy insert failed for ${recipientRole}:`, error.message);
+        }
+      }
     }
+
     await get().load();
   },
 
@@ -263,6 +294,37 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     if (!error) await get().load();
   },
 
+
+
+  pushStoreItemChange: async ({ action, itemId, itemName, category, changedBy }) => {
+    const verb = action === 'created' ? 'added' : 'updated';
+    const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'store_item_change',
+      title:     `Store Item ${action === 'created' ? 'Added' : 'Updated'}`,
+      body:      `${actor} ${verb} ${itemName}${category ? ` in ${category}` : ''}.`,
+      ref_id:    itemId,
+      ref_label: itemName,
+      meta:      { action, itemId, itemName, category: category ?? null, changedBy: actor },
+      recipient_role: 'admin',
+    });
+    if (!error) await get().load();
+  },
+
+  pushRecipeChange: async ({ action, itemId, itemName, ingredientCount, changedBy }) => {
+    const verb = action === 'created' ? 'created' : 'updated';
+    const actor = changedBy || useAuthStore.getState().currentUser?.displayName || useAuthStore.getState().currentUser?.username || 'Store user';
+    const { error } = await supabase.from('admin_notifications').insert({
+      type:      'recipe_change',
+      title:     `Recipe ${action === 'created' ? 'Added' : 'Updated'}`,
+      body:      `${actor} ${verb} recipe for ${itemName} with ${ingredientCount} ingredient${ingredientCount === 1 ? '' : 's'}.`,
+      ref_id:    itemId,
+      ref_label: itemName,
+      meta:      { action, itemId, itemName, ingredientCount, changedBy: actor },
+      recipient_role: 'admin',
+    });
+    if (!error) await get().load();
+  },
 
   pushPackingRemainder: async (orderId, orderNumber, branch, items) => {
     // Dedup — don't fire a remainder alert for the same order twice

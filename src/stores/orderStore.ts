@@ -2,6 +2,36 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, PaymentBreakdown, OrderSource } from '@/types';
 import { generateId } from '@/lib/utils';
+import { useMenuStore } from '@/stores/menuStore';
+
+// HYGIENE FIX: 3-second polling is very aggressive — with multiple devices/tabs open it creates a
+// large number of DB reads. Increased to 30 seconds. The preferred long-term solution is to
+// migrate to Supabase Realtime subscriptions, but this constant makes it easy to tune.
+const POLL_INTERVAL_MS = 5_000;
+
+const moneyValue = (value: number) => Math.round(Number(value) * 100) / 100;
+
+export function validatePaymentBreakdown(breakdown: PaymentBreakdown | undefined, expected: number) {
+  if (!breakdown) throw new Error('Split payment details are required.');
+  const values = [breakdown.cash, breakdown.upi, breakdown.card].map(Number);
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error('Split payment amounts must be valid non-negative values.');
+  }
+  const collected = moneyValue(values.reduce((sum, value) => sum + value, 0));
+  if (collected !== moneyValue(expected)) {
+    throw new Error(`Split payment must equal the payable amount (${moneyValue(expected).toFixed(2)}).`);
+  }
+}
+
+function validateCart(cart: CartItem[]) {
+  if (cart.length === 0) throw new Error('Add at least one item before submitting the order.');
+  if (cart.some((item) => !Number.isFinite(item.quantity) || item.quantity <= 0)) {
+    throw new Error('Every item quantity must be greater than zero.');
+  }
+  if (cart.some((item) => !Number.isFinite(item.menuItem.price) || item.menuItem.price < 0)) {
+    throw new Error('An item has an invalid price. Refresh the menu and try again.');
+  }
+}
 
 interface OrderState {
   orders: Order[];
@@ -9,9 +39,9 @@ interface OrderState {
   loading: boolean;
   polling: boolean;
   pollTimer: ReturnType<typeof setInterval> | null;
-  _pollBackoffTimer: ReturnType<typeof setTimeout> | null; // H-04 FIX: separate from pollTimer so clearInterval/clearTimeout hit the right handle
+  _pollBackoffTimer: ReturnType<typeof setTimeout> | null;
   _pollRefCount: number;
-  _pollFailCount: number; // consecutive load failures — used for backoff
+  _pollFailCount: number;
 
   addToCart: (item: MenuItem) => void;
   removeFromCart: (itemId: string) => void;
@@ -22,9 +52,10 @@ interface OrderState {
   getCartCount: () => number;
 
   loadOrders: (days?: number) => Promise<void>;
-  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; }) => Promise<string>;
+  submitOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; orderSource?: OrderSource; parcelCharges?: number; paymentType?: PaymentType; paymentBreakdown?: PaymentBreakdown; billedBy?: string; status?: OrderStatus; }) => Promise<string>;
   submitAdvanceOrder: (params: { tableNumber?: number; orderType: OrderType; notes?: string; customerName?: string; createdBy: string; advanceAmount: number; advancePaidBy: string; deliveryDate: string; isFullPayment?: boolean; }) => Promise<string>;
   updateOrderStatus: (orderId: string, status: OrderStatus, cancelReason?: string) => Promise<void>;
+  refundAndCancel: (orderId: string, cancelReason: string, refundedBy: string, password: string) => Promise<void>;
   applyDiscount: (orderId: string, discountType: 'percentage' | 'flat', discountValue: number) => Promise<void>;
   setPaymentType: (orderId: string, paymentType: PaymentType, billedBy: string, breakdown?: PaymentBreakdown) => Promise<void>;
   setAdvancePayment: (orderId: string, advanceAmount: number, advancePaidBy: string, billedBy: string) => Promise<void>;
@@ -76,11 +107,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   loading: false,
   polling: false,
   pollTimer: null,
-  _pollBackoffTimer: null, // H-04 FIX: separate timer for backoff setTimeout
+  _pollBackoffTimer: null,
   _pollRefCount: 0,
   _pollFailCount: 0,
 
-  // === Cart (local) ===
   addToCart: (item: MenuItem) =>
     set((state) => {
       const existing = state.cart.find((c) => c.menuItem.id === item.id);
@@ -103,8 +133,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   getCartTotal: () => get().cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0),
   getCartCount: () => get().cart.reduce((sum, c) => sum + c.quantity, 0),
 
-  // === Orders (DB-synced) ===
-  // PERF-01: accepts days parameter — kitchen/billing use 1, reports use 60
   loadOrders: async (days = 60) => {
     set({ loading: true });
     const cutoff = new Date();
@@ -118,18 +146,13 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      if (data) set({ orders: data.map(dbRowToOrder), _pollFailCount: 0 }); // reset backoff on success
+      if (data) set({ orders: data.map(dbRowToOrder), _pollFailCount: 0 });
     } catch (e) {
-      // POLL-FIX: exponential backoff on repeated failures — reschedule the interval
-      // at 3s * 2^failCount (capped at 60s) so a DB outage doesn't hammer the server.
       const failCount = (get()._pollFailCount || 0) + 1;
       set({ _pollFailCount: failCount });
-      const backoffMs = Math.min(3000 * Math.pow(2, failCount - 1), 60_000);
+      const backoffMs = Math.min(POLL_INTERVAL_MS * Math.pow(2, failCount - 1), 60_000);
       console.error(`[loadOrders] fetch failed (attempt ${failCount}, next retry in ${backoffMs}ms):`, e);
 
-      // H-04 FIX: clear the backoff timeout too before rescheduling, using its own slot.
-      // Previously the timeout ID was casted and stored in pollTimer (an interval slot),
-      // so clearInterval(pollTimer) silently no-op'd on the timeout ID — interval leaked.
       const { pollTimer, _pollBackoffTimer } = get();
       if (_pollBackoffTimer) {
         clearTimeout(_pollBackoffTimer);
@@ -140,7 +163,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
           set({ _pollBackoffTimer: null });
-          const newTimer = setInterval(() => { get().loadOrders(days); }, 3000);
+          const newTimer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
@@ -152,16 +175,33 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
   submitOrder: async (params) => {
-    const { cart } = get();
+    await useMenuStore.getState().loadMenu(true);
+    const latestMenu = useMenuStore.getState().items;
+    const cart = get().cart.map((cartItem) => {
+      const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
+      return latest ? { ...cartItem, menuItem: latest } : cartItem;
+    });
+    validateCart(cart);
+    // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
+    // A sophisticated user could mutate in-memory prices before adding to cart and submit
+    // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
+    // RPC-side re-validation of item prices at insert time — this is a backend schema change.
+    // Frontend mitigation: staff billing review before payment collection is the current guard.
+    // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
-    const parcelCharges = params.parcelCharges ?? 0;
+    const parcelCharges = Number(params.parcelCharges ?? 0);
+    if (!Number.isFinite(parcelCharges) || parcelCharges < 0) {
+      throw new Error('Parcel charges must be a valid non-negative amount.');
+    }
     const total = subtotal + parcelCharges;
     const orderId = generateId();
     const now = new Date().toISOString();
     const orderSource = params.orderSource || 'staff';
+    const paymentType = params.paymentType || 'unpaid';
+    const orderStatus = params.status || 'pending';
+    if (paymentType === 'part_payment') validatePaymentBreakdown(params.paymentBreakdown, total);
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
-    // BUG-01: never fall back to timestamp — fail loudly so staff know to retry
     if (numError || !numData) {
       throw new Error('Failed to get order number. Please try again.');
     }
@@ -170,31 +210,27 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
       items: [...cart], subtotal, discount: 0, discountType: 'flat', discountValue: 0, total,
-      status: 'pending', createdBy: params.createdBy, createdAt: now, updatedAt: now,
-      notes: params.notes, customerName: params.customerName, paymentType: 'unpaid', orderSource,
+      status: orderStatus, createdBy: params.createdBy, createdAt: now, updatedAt: now,
+      notes: params.notes, customerName: params.customerName, paymentType, orderSource,
+      ...(params.billedBy ? { billedBy: params.billedBy } : {}),
+      ...(params.paymentBreakdown ? { paymentBreakdown: params.paymentBreakdown } : {}),
       ...(parcelCharges > 0 ? { parcelCharges } : {}),
     };
 
-    // Optimistic update — snapshot cart *before* clearing so we can restore it on failure.
-    // Items added *after* this point (while the DB write is in flight) are captured via
-    // get().cart inside the error handler so they are never silently discarded.
     const cartSnapshot = [...cart];
     set((state) => ({ orders: [order, ...state.orders], cart: [] }));
 
     const payload = {
       id: orderId, order_number: orderNumber, table_number: params.tableNumber || null,
       order_type: params.orderType, items: cartSnapshot, subtotal, discount: 0, discount_type: 'flat',
-      discount_value: 0, total, status: 'pending', created_by: params.createdBy,
+      discount_value: 0, total, status: orderStatus, created_by: params.createdBy,
       notes: params.notes || null, customer_name: params.customerName || null,
-      payment_type: 'unpaid', order_source: orderSource, created_at: now, updated_at: now,
-      // parcel_charges column not in DB — charges are baked into `total` above
+      payment_type: paymentType, payment_breakdown: params.paymentBreakdown || null, billed_by: params.billedBy || null, order_source: orderSource, created_at: now, updated_at: now,
+      parcel_charges: parcelCharges,
     };
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      // ARCH-04: rollback optimistic update.
-      // Merge cartSnapshot with any items added while the request was in flight so
-      // nothing the staff member added during the async write is silently lost.
       const inflightCart = get().cart;
       const mergedCart = [...cartSnapshot];
       for (const inflightItem of inflightCart) {
@@ -214,22 +250,44 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
   submitAdvanceOrder: async (params) => {
-    const { cart } = get();
+    await useMenuStore.getState().loadMenu(true);
+    const latestMenu = useMenuStore.getState().items;
+    const cart = get().cart.map((cartItem) => {
+      const latest = latestMenu.find((item) => item.id === cartItem.menuItem.id);
+      return latest ? { ...cartItem, menuItem: latest } : cartItem;
+    });
+    validateCart(cart);
+    // NOTE (MD Bug #17): subtotal is computed client-side from menuStore prices (5-min cache).
+    // A sophisticated user could mutate in-memory prices before adding to cart and submit
+    // an artificially low subtotal. Defense-in-depth fix requires a Supabase DB trigger or
+    // RPC-side re-validation of item prices at insert time — this is a backend schema change.
+    // Frontend mitigation: staff billing review before payment collection is the current guard.
+    // Supabase migration validates inserted item prices/subtotal against menu_items.
     const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0);
     const orderId = generateId();
     const now = new Date().toISOString();
     const isFullPayment = params.isFullPayment ?? false;
+    const requestedAdvance = Number(params.advanceAmount);
+    if (!isFullPayment && (!Number.isFinite(requestedAdvance) || requestedAdvance <= 0 || requestedAdvance > subtotal)) {
+      throw new Error('Advance amount must be greater than zero and cannot exceed the order total.');
+    }
     const balanceDue = isFullPayment ? 0 : Math.max(0, subtotal - params.advanceAmount);
-    // If full payment: total = subtotal (everything paid now).
-    // If advance: total = advanceAmount (only paid portion recorded in today's sales).
     const total = isFullPayment ? subtotal : params.advanceAmount;
+
+    // Runtime guard: deliveryDate must be a valid future date/time before saving.
+    if (!params.deliveryDate || Number.isNaN(new Date(params.deliveryDate).getTime())) {
+      throw new Error('Delivery date is required and must be a valid date/time.');
+    }
+    if (new Date(params.deliveryDate).getTime() <= Date.now()) {
+      throw new Error('Delivery date must be in the future.');
+    }
 
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
     const orderNumber = numData as number;
 
     const cartSnapshot = [...cart];
-    set((state) => ({ orders: [], cart: [] })); // clear cart optimistically before building order
+    set({ cart: [] });
 
     const order: Order = {
       id: orderId, orderNumber, tableNumber: params.tableNumber, orderType: params.orderType,
@@ -271,7 +329,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
 
     const { error } = await supabase.from('orders').insert(payload);
     if (error) {
-      // Rollback optimistic update, restore cart
       set((state) => ({ orders: state.orders.filter((o) => o.id !== orderId), cart: cartSnapshot }));
       console.error('[submitAdvanceOrder] Supabase insert failed:', error);
       throw new Error(`Failed to submit advance order: ${error.message}`);
@@ -280,14 +337,22 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   },
 
   updateOrderStatus: async (orderId, status, cancelReason) => {
-    // ARCH-04: capture previous state for rollback
     const prev = get().orders;
     const now = new Date().toISOString();
-
-    // If the kitchen is marking an order 'ready' but payment was already collected
-    // (biller paid before cooking finished), skip 'ready' and go straight to 'served'
-    // so the kitchen card auto-dismisses cleanly.
     const order = get().orders.find(o => o.id === orderId);
+
+    // FIX (MD Bug #23): block cancellation if any payment has already been collected.
+    // Cancelling a paid/advance order drops it from Daily Closure revenue entirely,
+    // leaving physically-collected cash untracked — a direct skimming vector reachable
+    // by order_taker, admin, and kitchen roles via the Order History screen.
+    // A paid order must go through the refund/return flow first, never a bare cancel.
+    if (status === 'cancelled' && order && order.paymentType !== 'unpaid') {
+      throw new Error(
+        'Cannot cancel: payment has already been collected for this order. ' +
+        'Process a refund first, then cancel.'
+      );
+    }
+
     const effectiveStatus: OrderStatus =
       status === 'ready' && order && order.paymentType !== 'unpaid'
         ? 'served'
@@ -302,18 +367,60 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update(updates).eq('id', orderId);
-    if (error) {
-      set({ orders: prev }); // rollback
-      throw new Error('Failed to update order status');
+    // FIX (MD Bug #9): optimistic lock on updated_at prevents silent last-write-wins
+    const { data: statusLock, error } = await supabase.from('orders').update(updates).eq('id', orderId).eq('updated_at', order?.updatedAt ?? now).select('id');
+    if (error || !statusLock || statusLock.length === 0) {
+      set({ orders: prev });
+      throw new Error(!statusLock || statusLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to update order status');
     }
+  },
+
+
+  refundAndCancel: async (orderId, cancelReason, refundedBy, password) => {
+    const prev = get().orders;
+    const order = prev.find((o) => o.id === orderId);
+    if (!order) throw new Error('Order not found. Refresh and try again.');
+    if (order.status === 'cancelled') throw new Error('Order is already cancelled.');
+    if (order.paymentType === 'unpaid') {
+      await get().updateOrderStatus(orderId, 'cancelled', cancelReason);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const refundMode = order.paymentType === 'part_payment'
+      ? 'split'
+      : order.paymentType === 'advance'
+        ? (order.advancePaidBy || 'unknown')
+        : order.paymentType;
+    const refundAmount = order.paymentType === 'advance'
+      ? Number(order.fullyPaidAt ? (order.fullAmount || order.total) : (order.advanceAmount || order.total))
+      : Number(order.total || 0);
+    const audit = `[REFUND ${now}] mode=${refundMode}; amount=${refundAmount.toFixed(2)}; by=${refundedBy}; reason=${cancelReason}`;
+    const notes = [order.notes, audit].filter(Boolean).join('\n');
+    const { data, error } = await supabase.rpc('refund_and_cancel_order', {
+      p_order_id: orderId,
+      p_expected_updated_at: order.updatedAt,
+      p_username: refundedBy,
+      p_password: password,
+      p_cancel_reason: cancelReason,
+      p_refund_audit: audit,
+    });
+    if (error || data !== true) {
+      set({ orders: prev });
+      throw new Error(error?.message || 'Refund was not saved. Refresh and try again.');
+    }
+
+    set((state) => ({
+      orders: state.orders.map((o) => o.id === orderId
+        ? { ...o, status: 'cancelled', cancelReason, notes, updatedAt: now }
+        : o),
+    }));
   },
 
   applyDiscount: async (orderId, discountType, discountValue) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
 
-    // ARCH-05: validate discount bounds
     if (discountValue < 0) return;
     if (discountType === 'percentage' && discountValue > 100) return;
     if (discountType === 'flat' && discountValue > order.subtotal) return;
@@ -322,7 +429,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const discount = discountType === 'percentage'
       ? Math.round(order.subtotal * (discountValue / 100))
       : discountValue;
-    // H-03 FIX: preserve parcelCharges in total — previously dropped, causing underpayment on takeaway orders
     const parcelCharges = order.parcelCharges ?? 0;
     const total = Math.max(0, order.subtotal - discount) + parcelCharges;
     const now = new Date().toISOString();
@@ -333,21 +439,25 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update({
+    // FIX (MD Bug #9): apply optimistic-lock check via updated_at so concurrent edits
+    // (e.g. one staff applies discount while another updates status) are detected.
+    const { data: discountLock, error } = await supabase.from('orders').update({
       discount_type: discountType, discount_value: discountValue, discount, total, updated_at: now,
-    }).eq('id', orderId);
-    if (error) { set({ orders: prev }); throw new Error('Failed to apply discount'); }
+    }).eq('id', orderId).eq('updated_at', order.updatedAt).select('id');
+    if (error || !discountLock || discountLock.length === 0) {
+      set({ orders: prev });
+      throw new Error(!discountLock || discountLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to apply discount');
+    }
   },
 
   setPaymentType: async (orderId, paymentType, billedBy, breakdown) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
+    if (paymentType === 'part_payment') validatePaymentBreakdown(breakdown, order.total);
     const prev = get().orders;
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
       payment_type: paymentType, billed_by: billedBy, updated_at: now,
-      // PROD-03: optimistic concurrency lock — only update if not already modified
-      // (Supabase doesn't natively support WHERE updated_at = X in JS client without RPC)
     };
     if (breakdown) updates.payment_breakdown = breakdown;
 
@@ -357,8 +467,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    // PROD-03 / H-02 FIX: .select('id') so data is populated; check data.length instead
-    // of count (which is null without { count: 'exact' }) to detect concurrent edits.
     const { data: lockData, error } = await supabase.from('orders')
       .update(updates)
       .eq('id', orderId)
@@ -378,7 +486,14 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     if (!order) return;
     const prev = get().orders;
     const now = new Date().toISOString();
-    const balanceDue = Math.max(0, order.total - advanceAmount);
+    // CRITICAL FIX: use fullAmount ?? subtotal as the base so that re-calling this on an
+    // already-advance order (where order.total was set to the previous advance amount) still
+    // computes the balance correctly against the original full bill value.
+    const billBase = order.fullAmount ?? order.subtotal;
+    if (!Number.isFinite(advanceAmount) || advanceAmount <= 0 || advanceAmount > billBase) {
+      throw new Error('Advance amount must be greater than zero and cannot exceed the bill total.');
+    }
+    const balanceDue = Math.max(0, billBase - advanceAmount);
     const updates: Record<string, unknown> = {
       payment_type: 'advance', advance_amount: advanceAmount, advance_paid_by: advancePaidBy,
       balance_due: balanceDue, billed_by: billedBy, updated_at: now,
@@ -390,19 +505,30 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ),
     }));
 
-    const { error } = await supabase.from('orders').update(updates).eq('id', orderId);
-    if (error) { set({ orders: prev }); throw new Error('Failed to set advance payment'); }
+    // FIX (MD Bug #9): optimistic lock on updated_at
+    const { data: advanceLock, error } = await supabase.from('orders').update(updates).eq('id', orderId).eq('updated_at', order.updatedAt).select('id');
+    if (error || !advanceLock || advanceLock.length === 0) {
+      set({ orders: prev });
+      throw new Error(!advanceLock || advanceLock.length === 0 ? 'Order was modified by someone else. Please refresh.' : 'Failed to set advance payment');
+    }
   },
 
   collectBalance: async (orderId, balancePaymentType, billedBy, breakdown) => {
     const order = get().orders.find((o) => o.id === orderId);
     if (!order) return;
+    // LOGIC FIX: prevent double-collection if balance was already collected (double-tap, race, etc.)
+    if (!order.balanceDue || order.balanceDue <= 0 || order.fullyPaidAt) {
+      console.warn('[collectBalance] order already settled or no balance due; aborting', orderId);
+      return;
+    }
     const prev = get().orders;
     const now = new Date().toISOString();
     const balanceAmount = order.balanceDue ?? 0;
+    if (!['cash', 'upi', 'card', 'part_payment'].includes(balancePaymentType)) {
+      throw new Error('Select cash, UPI, card, or split payment for the balance collection.');
+    }
+    if (balancePaymentType === 'part_payment') validatePaymentBreakdown(breakdown, balanceAmount);
 
-    // ADVANCE-02: Insert a NEW order row for the balance amount so it appears
-    // in today's (collection day) sales — separate from the advance-day sales.
     const balanceOrderId = generateId();
     const { data: numData, error: numError } = await supabase.rpc('get_next_order_number');
     if (numError || !numData) throw new Error('Failed to get order number. Please try again.');
@@ -413,17 +539,18 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       orderNumber: balanceOrderNumber,
       tableNumber: order.tableNumber,
       orderType: order.orderType,
-      items: order.items,          // same items for reference
+      items: order.items,
       subtotal: balanceAmount,
       discount: 0, discountType: 'flat', discountValue: 0,
-      total: balanceAmount,        // balance amount recorded in today's sales
+      total: balanceAmount,
       status: 'served',
       createdBy: billedBy,
       createdAt: now, updatedAt: now,
       notes: order.notes,
       customerName: order.customerName,
       paymentType: balancePaymentType,
-      orderSource: 'staff',
+      orderSource: 'balance',
+      parcelCharges: order.parcelCharges ?? 0,
       ...(breakdown ? { paymentBreakdown: breakdown } : {}),
     };
 
@@ -441,12 +568,12 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       notes: order.notes || null,
       customer_name: order.customerName || null,
       payment_type: balancePaymentType,
-      order_source: 'staff',
+      order_source: 'balance',
       created_at: now, updated_at: now,
+      parcel_charges: order.parcelCharges ?? 0,
       ...(breakdown ? { payment_breakdown: breakdown } : {}),
     };
 
-    // Close the original advance order: balance_due = 0, fully_paid_at = now
     const closeUpdates: Record<string, unknown> = {
       balance_due: 0,
       fully_paid_at: now,
@@ -456,7 +583,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       updated_at: now,
     };
 
-    // Optimistic update — add balance order and close original
     set((state) => ({
       orders: [
         balanceOrder,
@@ -468,7 +594,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       ],
     }));
 
-    // Insert balance order row first
     const { error: insertError } = await supabase.from('orders').insert(balancePayload);
     if (insertError) {
       set({ orders: prev });
@@ -476,31 +601,25 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       throw new Error(`Failed to record balance payment: ${insertError.message}`);
     }
 
-    // Close original advance order
     const { error: updateError } = await supabase
       .from('orders')
       .update(closeUpdates)
       .eq('id', orderId);
 
     if (updateError) {
-      // Compensate: delete the balance order we just inserted so DB stays consistent
       await supabase.from('orders').delete().eq('id', balanceOrderId);
       set({ orders: prev });
-      console.error('[collectBalance] close advance order failed — compensated:', updateError);
+      console.error('[collectBalance] close advance order failed, compensated:', updateError);
       throw new Error(`Failed to close advance order: ${updateError.message}`);
     }
   },
 
-  // PERF-01: reference-counted polling — accepts days param forwarded to loadOrders
   startPolling: (days = 60) => {
     const state = get();
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
-    // Bug 3 fix — create the interval and store it atomically *before* any async work.
-    // Previously both concurrent callers could read pollTimer===null, each create an
-    // interval, and the second set() would overwrite the first, leaking timer1 forever.
-    const timer = setInterval(() => { get().loadOrders(days); }, 3000);
+    const timer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
     get().loadOrders(days);
   },
@@ -510,7 +629,6 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = Math.max(0, (state._pollRefCount || 0) - 1);
     set({ _pollRefCount: newCount });
     if (newCount === 0) {
-      // H-04 FIX: clear both the interval AND any pending backoff timeout
       if (state._pollBackoffTimer) {
         clearTimeout(state._pollBackoffTimer);
         set({ _pollBackoffTimer: null });

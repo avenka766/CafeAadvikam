@@ -21,14 +21,14 @@ export default function MenuPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background pt-14 flex items-center justify-center">
+      <div className="dashboard-screen min-h-screen bg-transparent pt-0 flex items-center justify-center">
         <p className="font-body text-muted-foreground">Loading menu...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background pt-14 pb-8">
+    <div className="dashboard-screen min-h-screen bg-transparent pt-0 pb-6">
       <div className="px-4 pt-4 pb-2">
         <h1 className="font-display text-3xl font-bold text-foreground">Our Menu</h1>
         <p className="text-sm font-body text-muted-foreground mt-0.5">Pure vegetarian delights</p>

@@ -1,5 +1,6 @@
 // src/components/admin/OwnerCreditTab.tsx
-// Owner-level Credit Overview – all 3 branches, rich visualization format
+// CHANGE 6: branch filter, date range filter, status filter, overdue highlights,
+//           payment progress bar, Total Overdue KPI, CSV export
 
 import { useEffect, useMemo, useState } from 'react';
 import { useBranchStore } from '@/branch/branchStore';
@@ -9,17 +10,18 @@ import { BRANCHES } from '@/branch/types';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   AreaChart, Area, RadialBarChart, RadialBar,
 } from 'recharts';
 import {
   IndianRupee, TrendingUp, TrendingDown, AlertTriangle,
-  CheckCircle2, Clock, Users, BarChart3, Download,
+  CheckCircle2, Clock, Users, BarChart3, Download, Filter,
 } from 'lucide-react';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const BRANCH_COLORS: Record<Branch, string> = {
+  Cafe:  '#4B9F6E',
   VRSNB: '#5BA3C9',
   SNB:   '#C5973E',
   Hosur: '#2D7D6F',
@@ -30,6 +32,28 @@ const STATUS_BG: Record<CreditSale['status'], string> = {
   partial: 'bg-blue-100 text-blue-700 border-blue-200',
   settled: 'bg-emerald-100 text-emerald-700 border-emerald-200',
 };
+
+function ownerFmtDate(iso: string | null | undefined) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function ownerCsvDownload(filename: string, rows: Array<Record<string, string | number>>) {
+  const safeRows = rows.length ? rows : [{ Note: 'No records available for selected filters' }];
+  const headers = Object.keys(safeRows[0]);
+  const csv = [
+    headers.join(','),
+    ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(',')),
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function SummaryCard({
@@ -44,62 +68,38 @@ function SummaryCard({
 }) {
   return (
     <div className="bg-card border border-border rounded-2xl p-4 shadow-soft relative overflow-hidden">
-      <div
-        className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-5 -translate-y-8 translate-x-8"
-        style={{ background: 'hsl(var(--primary))' }}
-      />
+      <div className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-5 -translate-y-8 translate-x-8"
+        style={{ background: 'hsl(var(--primary))' }} />
       <div className="flex items-start justify-between mb-2">
         <div className={cn('size-9 rounded-xl flex items-center justify-center shrink-0', color)}>
           {icon}
         </div>
-        {trend === 'up' && <TrendingUp className="size-4 text-emerald-500" />}
-        {trend === 'down' && <TrendingDown className="size-4 text-red-500" />}
+        {trend === 'up'   && <TrendingUp   className="size-4 text-emerald-500" />}
+        {trend === 'down' && <TrendingDown  className="size-4 text-red-500" />}
       </div>
-      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">
-        {value}
-      </p>
-      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">
-        {label}
-      </p>
+      <p className="font-display text-2xl font-bold text-foreground tabular-nums leading-none">{value}</p>
+      <p className="text-[11px] font-body font-semibold text-muted-foreground uppercase tracking-wider mt-1.5">{label}</p>
       {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
     </div>
   );
 }
 
-// Custom label for radial bar
-function RadialLabel({ cx, cy, value }: { cx?: number; cy?: number; value?: number }) {
-  if (!cx || !cy || value === undefined) return null;
-  return (
-    <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central" className="text-sm font-bold fill-foreground">
-      {`${value}%`}
-    </text>
-  );
-}
-
-// ── Branch Summary Card ───────────────────────────────────────────────────────
-function BranchCreditCard({
-  branch,
-  sales,
-}: {
-  branch: Branch;
-  sales: CreditSale[];
-}) {
-  const totalGiven = sales.reduce((a, s) => a + s.subtotal, 0);
+// ── Branch Summary Card ────────────────────────────────────────────────────────
+function BranchCreditCard({ branch, sales }: { branch: Branch; sales: CreditSale[] }) {
+  const totalGiven       = sales.reduce((a, s) => a + s.subtotal, 0);
   const totalOutstanding = sales.reduce((a, s) => a + s.creditAmount, 0);
-  const totalCollected = sales.reduce((a, s) => a + s.amountPaid, 0);
+  const totalCollected   = sales.reduce((a, s) => a + s.amountPaid, 0);
   const overdue = sales.filter(
-    s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date(),
+    s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date()
   ).length;
-  const collectionRate =
-    totalGiven > 0 ? Math.round((totalCollected / totalGiven) * 100) : 0;
+  const collectionRate = totalGiven > 0 ? Math.round((totalCollected / totalGiven) * 100) : 0;
 
   const BRANCH_PILL: Record<Branch, string> = {
+    Cafe:  'bg-green-50 border-green-200 text-green-700',
     VRSNB: 'bg-blue-50 border-blue-200 text-blue-700',
     SNB:   'bg-amber-50 border-amber-200 text-amber-700',
     Hosur: 'bg-emerald-50 border-emerald-200 text-emerald-700',
   };
-
-  const radialData = [{ value: collectionRate, fill: BRANCH_COLORS[branch] }];
 
   return (
     <div className={cn('border rounded-2xl p-4', BRANCH_PILL[branch])}>
@@ -111,71 +111,29 @@ function BranchCreditCard({
           </span>
         )}
       </div>
-
       <div className="flex items-center gap-3">
-        {/* Radial collection rate */}
         <div className="shrink-0">
           <ResponsiveContainer width={70} height={70}>
-            <RadialBarChart
-              cx="50%"
-              cy="50%"
-              innerRadius="55%"
-              outerRadius="80%"
-              data={radialData}
-              startAngle={90}
-              endAngle={-270}
-            >
+            <RadialBarChart cx="50%" cy="50%" innerRadius="55%" outerRadius="80%"
+              data={[{ value: collectionRate, fill: BRANCH_COLORS[branch] }]} startAngle={90} endAngle={-270}>
               <RadialBar background dataKey="value" />
-              <text
-                x="50%"
-                y="50%"
-                textAnchor="middle"
-                dominantBaseline="central"
-                style={{ fontSize: 12, fontWeight: 700, fill: BRANCH_COLORS[branch] }}
-              >
+              <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central"
+                style={{ fontSize: 12, fontWeight: 700, fill: BRANCH_COLORS[branch] }}>
                 {collectionRate}%
               </text>
             </RadialBarChart>
           </ResponsiveContainer>
           <p className="text-[9px] text-center opacity-70 -mt-1">Collected</p>
         </div>
-
-        {/* Figures */}
         <div className="flex-1 space-y-1.5">
-          <div className="flex justify-between text-xs">
-            <span className="opacity-70">Total Given</span>
-            <span className="font-bold tabular-nums">{formatCurrency(totalGiven)}</span>
-          </div>
-          <div className="flex justify-between text-xs">
-            <span className="opacity-70">Collected</span>
-            <span className="font-bold tabular-nums text-emerald-700">
-              {formatCurrency(totalCollected)}
-            </span>
-          </div>
-          <div className="flex justify-between text-xs">
-            <span className="opacity-70">Outstanding</span>
-            <span className="font-bold tabular-nums text-red-600">
-              {formatCurrency(totalOutstanding)}
-            </span>
-          </div>
-          <div className="flex justify-between text-xs">
-            <span className="opacity-70">Customers</span>
-            <span className="font-bold tabular-nums">
-              {new Set(sales.map(s => s.customerName)).size}
-            </span>
-          </div>
+          <div className="flex justify-between text-xs"><span className="opacity-70">Total Given</span><span className="font-bold tabular-nums">{formatCurrency(totalGiven)}</span></div>
+          <div className="flex justify-between text-xs"><span className="opacity-70">Collected</span><span className="font-bold tabular-nums text-emerald-700">{formatCurrency(totalCollected)}</span></div>
+          <div className="flex justify-between text-xs"><span className="opacity-70">Outstanding</span><span className="font-bold tabular-nums text-red-600">{formatCurrency(totalOutstanding)}</span></div>
+          <div className="flex justify-between text-xs"><span className="opacity-70">Customers</span><span className="font-bold tabular-nums">{new Set(sales.map(s => s.customerName)).size}</span></div>
         </div>
       </div>
-
-      {/* Mini progress bar */}
       <div className="mt-3 h-1.5 bg-white/50 rounded-full">
-        <div
-          className="h-full rounded-full transition-all"
-          style={{
-            width: `${collectionRate}%`,
-            background: BRANCH_COLORS[branch],
-          }}
-        />
+        <div className="h-full rounded-full transition-all" style={{ width: `${collectionRate}%`, background: BRANCH_COLORS[branch] }} />
       </div>
     </div>
   );
@@ -184,8 +142,11 @@ function BranchCreditCard({
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function OwnerCreditTab() {
   const { creditSales, fetchCreditSales } = useBranchStore();
+
+  // CHANGE 6: branch, date, and status filters
   const [statusFilter, setStatusFilter] = useState<'all' | CreditSale['status']>('all');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
+  const [dateRange, setDateRange] = useState<'all' | '7d' | '15d' | '30d'>('all');
 
   useEffect(() => {
     BRANCHES.forEach(b => fetchCreditSales(b));
@@ -198,160 +159,180 @@ export default function OwnerCreditTab() {
       (creditSales[branch] || []).forEach(s => result.push({ ...s, branch }));
     });
     return result.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
   }, [creditSales]);
 
-  // Grand totals
+  // Grand totals (unfiltered)
   const totalGiven       = allSales.reduce((a, s) => a + s.subtotal, 0);
   const totalCollected   = allSales.reduce((a, s) => a + s.amountPaid, 0);
   const totalOutstanding = allSales.reduce((a, s) => a + s.creditAmount, 0);
   const overdueCount     = allSales.filter(
-    s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date(),
+    s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date()
   ).length;
-  const collectionRate   = totalGiven > 0 ? Math.round((totalCollected / totalGiven) * 100) : 0;
+  const totalOverdue = allSales
+    .filter(s => s.status !== 'settled' && s.dueDate && new Date(s.dueDate) < new Date())
+    .reduce((a, s) => a + s.creditAmount, 0);
+  const collectionRate = totalGiven > 0 ? Math.round((totalCollected / totalGiven) * 100) : 0;
 
-  // ── Chart data ──────────────────────────────────────────────────────────────
+  // CHANGE 6: date cutoff
+  const dateCutoff = useMemo(() => {
+    if (dateRange === 'all') return null;
+    const d = new Date();
+    if (dateRange === '7d')  d.setDate(d.getDate() - 7);
+    if (dateRange === '15d') d.setDate(d.getDate() - 15);
+    if (dateRange === '30d') d.setDate(d.getDate() - 30);
+    return d;
+  }, [dateRange]);
 
-  // Stacked branch bar – outstanding vs collected
+  // CHANGE 6: filtered list applying all three filters
+  const filtered = useMemo(() => {
+    return allSales.filter(s => {
+      if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+      if (branchFilter !== 'all' && s.branch !== branchFilter) return false;
+      if (dateCutoff && new Date(s.createdAt) < dateCutoff) return false;
+      return true;
+    });
+  }, [allSales, statusFilter, branchFilter, dateCutoff]);
+
+  // Chart data — branch-filtered if a single branch is selected
+  const chartSales = branchFilter === 'all' ? allSales : allSales.filter(s => s.branch === branchFilter);
+
   const branchBarData = useMemo(() =>
-    BRANCHES.map(b => {
+    BRANCHES.filter(b => branchFilter === 'all' || b === branchFilter).map(b => {
       const bSales = (creditSales[b] || []);
       return {
         branch: b,
         outstanding: bSales.reduce((a, s) => a + s.creditAmount, 0),
         collected:   bSales.reduce((a, s) => a + s.amountPaid, 0),
       };
-    }), [creditSales]);
+    }), [creditSales, branchFilter]);
 
-  // Status pie
   const statusPieData = useMemo(() => {
     const counts = { Pending: 0, Partial: 0, Settled: 0 };
-    allSales.forEach(s => {
+    chartSales.forEach(s => {
       if (s.status === 'pending') counts.Pending++;
       else if (s.status === 'partial') counts.Partial++;
       else counts.Settled++;
     });
-    return Object.entries(counts)
-      .filter(([, v]) => v > 0)
-      .map(([name, value]) => ({ name, value }));
-  }, [allSales]);
+    return Object.entries(counts).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
+  }, [chartSales]);
 
   const PIE_COLORS_STATUS = ['#C5973E', '#5BA3C9', '#2D7D6F'];
 
-  // Monthly trend – last 6 months credit given
   const trendData = useMemo(() => {
     const months: Record<string, { given: number; collected: number }> = {};
     for (let i = 5; i >= 0; i--) {
-      const d = new Date();
-      d.setMonth(d.getMonth() - i);
+      const d = new Date(); d.setMonth(d.getMonth() - i);
       const key = d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
       months[key] = { given: 0, collected: 0 };
     }
-    allSales.forEach(s => {
+    chartSales.forEach(s => {
       const d = new Date(s.createdAt);
       const key = d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
-      if (months[key]) {
-        months[key].given     += s.subtotal;
-        months[key].collected += s.amountPaid;
-      }
+      if (months[key]) { months[key].given += s.subtotal; months[key].collected += s.amountPaid; }
     });
     return Object.entries(months).map(([month, v]) => ({ month, ...v }));
-  }, [allSales]);
+  }, [chartSales]);
 
-  // Top credit customers across all branches
   const topCustomers = useMemo(() => {
     const map = new Map<string, { name: string; outstanding: number; branch: Branch }>();
-    allSales.filter(s => s.status !== 'settled').forEach(s => {
+    chartSales.filter(s => s.status !== 'settled').forEach(s => {
       const ex = map.get(s.customerName);
       if (ex) ex.outstanding += s.creditAmount;
       else map.set(s.customerName, { name: s.customerName, outstanding: s.creditAmount, branch: s.branch });
     });
     return [...map.values()].sort((a, b) => b.outstanding - a.outstanding).slice(0, 8);
-  }, [allSales]);
+  }, [chartSales]);
 
-  // Filtered list
-  const filtered = useMemo(() => {
-    return allSales.filter(s => {
-      if (statusFilter !== 'all' && s.status !== statusFilter) return false;
-      if (branchFilter !== 'all' && s.branch !== branchFilter) return false;
-      return true;
-    });
-  }, [allSales, statusFilter, branchFilter]);
+  // CHANGE 6: CSV export
+  const exportCredits = () => ownerCsvDownload('owner-credits.csv', filtered.map(c => ({
+    Branch:      c.branch,
+    Customer:    c.customerName,
+    Phone:       c.customerPhone || '-',
+    Total:       c.subtotal,
+    Paid:        c.amountPaid || 0,
+    CreditDue:   c.creditAmount,
+    DueDate:     c.dueDate || '-',
+    Status:      c.status,
+    BillNo:      c.billNo || '-',
+    SoldBy:      c.soldBy,
+    Date:        ownerFmtDate(c.createdAt),
+  })));
 
   return (
     <div className="space-y-5">
+
+      {/* ── CHANGE 6: Filter bar ──────────────────────────────────────────────── */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <div className="flex items-center gap-1.5 text-muted-foreground"><Filter className="size-3.5" /><span className="text-xs font-semibold">Filters:</span></div>
+        <select value={branchFilter} onChange={e => setBranchFilter(e.target.value as Branch | 'all')}
+          className="rounded-xl border border-border bg-card px-3 py-1.5 text-xs outline-none">
+          <option value="all">All Branches</option>
+          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+          className="rounded-xl border border-border bg-card px-3 py-1.5 text-xs outline-none">
+          <option value="all">All Status</option>
+          <option value="pending">Pending</option>
+          <option value="partial">Partial</option>
+          <option value="settled">Settled</option>
+        </select>
+        <select value={dateRange} onChange={e => setDateRange(e.target.value as typeof dateRange)}
+          className="rounded-xl border border-border bg-card px-3 py-1.5 text-xs outline-none">
+          <option value="all">All Time</option>
+          <option value="7d">Last 7 Days</option>
+          <option value="15d">Last 15 Days</option>
+          <option value="30d">Last Month</option>
+        </select>
+        <button onClick={exportCredits}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border bg-card text-xs font-semibold hover:bg-muted transition ml-auto">
+          <Download className="size-3.5" />Export CSV
+        </button>
+      </div>
 
       {/* ── Grand KPIs ──────────────────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-2xl p-4">
         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
           All Branches · Credit Overview
         </p>
-        <p className="font-display text-3xl font-bold text-foreground tabular-nums">
-          {formatCurrency(totalOutstanding)}
-        </p>
+        <p className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(totalOutstanding)}</p>
         <p className="text-xs text-muted-foreground mt-1">
           Outstanding across {BRANCHES.length} branches · {allSales.length} transactions
         </p>
-        {/* Collection rate bar */}
         <div className="mt-3">
           <div className="flex justify-between text-xs mb-1">
             <span className="text-muted-foreground">Collection Rate</span>
             <span className="font-bold text-emerald-600">{collectionRate}%</span>
           </div>
           <div className="h-2 bg-muted rounded-full">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${collectionRate}%`, background: 'hsl(var(--primary))' }}
-            />
+            <div className="h-full rounded-full transition-all"
+              style={{ width: `${collectionRate}%`, background: 'hsl(var(--primary))' }} />
           </div>
         </div>
       </div>
 
+      {/* CHANGE 6: Added Total Overdue KPI alongside others */}
       <div className="grid grid-cols-2 gap-3">
-        <SummaryCard
-          icon={<IndianRupee className="size-4" />}
-          label="Total Given"
-          value={formatCurrency(totalGiven)}
-          sub={`${allSales.length} customers`}
-          color="bg-primary/10 text-primary"
-        />
-        <SummaryCard
-          icon={<CheckCircle2 className="size-4" />}
-          label="Collected"
-          value={formatCurrency(totalCollected)}
-          color="bg-emerald-50 text-emerald-700"
-          trend="up"
-        />
-        <SummaryCard
-          icon={<Clock className="size-4" />}
-          label="Outstanding"
-          value={formatCurrency(totalOutstanding)}
-          color="bg-amber-50 text-amber-700"
-        />
-        <SummaryCard
-          icon={<AlertTriangle className="size-4" />}
-          label="Overdue"
-          value={String(overdueCount)}
-          sub="past due date"
-          color={overdueCount > 0 ? 'bg-red-50 text-red-700' : 'bg-muted text-muted-foreground'}
-          trend={overdueCount > 0 ? 'down' : null}
-        />
+        <SummaryCard icon={<IndianRupee  className="size-4" />} label="Total Given"    value={formatCurrency(totalGiven)}       sub={`${allSales.length} transactions`} color="bg-primary/10 text-primary" />
+        <SummaryCard icon={<CheckCircle2 className="size-4" />} label="Collected"      value={formatCurrency(totalCollected)}   color="bg-emerald-50 text-emerald-700" trend="up" />
+        <SummaryCard icon={<Clock        className="size-4" />} label="Outstanding"    value={formatCurrency(totalOutstanding)} color="bg-amber-50 text-amber-700" />
+        <SummaryCard icon={<AlertTriangle className="size-4" />} label="Total Overdue" value={formatCurrency(totalOverdue)}    sub={`${overdueCount} entries past due`} color={overdueCount > 0 ? 'bg-red-50 text-red-700' : 'bg-muted text-muted-foreground'} trend={overdueCount > 0 ? 'down' : null} />
       </div>
 
-      {/* ── Per-Branch Summary Cards ─────────────────────────────────────────── */}
+      {/* ── Per-Branch Summary Cards ──────────────────────────────────────────── */}
       <div>
         <h3 className="font-display text-base font-bold text-foreground mb-3 flex items-center gap-2">
           <BarChart3 className="size-4 text-primary" /> Branch Breakdown
         </h3>
         <div className="grid grid-cols-1 gap-3">
-          {BRANCHES.map(b => (
+          {BRANCHES.filter(b => branchFilter === 'all' || b === branchFilter).map(b => (
             <BranchCreditCard key={b} branch={b} sales={creditSales[b] || []} />
           ))}
         </div>
       </div>
 
-      {/* ── Stacked Bar – outstanding vs collected per branch ────────────────── */}
+      {/* ── Stacked Bar ──────────────────────────────────────────────────────── */}
       {allSales.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1">Branch Credit Comparison</h3>
@@ -367,10 +348,7 @@ export default function OwnerCreditTab() {
             </BarChart>
           </ResponsiveContainer>
           <div className="flex gap-4 mt-2">
-            {[
-              { label: 'Outstanding', color: '#C5973E' },
-              { label: 'Collected',   color: '#2D7D6F' },
-            ].map(l => (
+            {[{ label: 'Outstanding', color: '#C5973E' }, { label: 'Collected', color: '#2D7D6F' }].map(l => (
               <div key={l.label} className="flex items-center gap-1.5">
                 <div className="size-2.5 rounded-sm" style={{ background: l.color }} />
                 <span className="text-[10px] text-muted-foreground">{l.label}</span>
@@ -384,22 +362,14 @@ export default function OwnerCreditTab() {
       {allSales.length > 0 && statusPieData.length > 0 && (
         <div className="bg-card border border-border rounded-xl p-4">
           <h3 className="font-display text-base font-bold mb-1">Status Distribution</h3>
-          <p className="text-[10px] text-muted-foreground mb-3">All branches · by transaction count</p>
+          <p className="text-[10px] text-muted-foreground mb-3">
+            {branchFilter === 'all' ? 'All branches' : branchFilter} · by transaction count
+          </p>
           <div className="flex items-center gap-4">
             <ResponsiveContainer width="50%" height={130}>
               <PieChart>
-                <Pie
-                  data={statusPieData}
-                  dataKey="value"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={35}
-                  outerRadius={55}
-                  paddingAngle={3}
-                >
-                  {statusPieData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS_STATUS[i % PIE_COLORS_STATUS.length]} />
-                  ))}
+                <Pie data={statusPieData} dataKey="value" cx="50%" cy="50%" innerRadius={35} outerRadius={55} paddingAngle={3}>
+                  {statusPieData.map((_, i) => <Cell key={i} fill={PIE_COLORS_STATUS[i % PIE_COLORS_STATUS.length]} />)}
                 </Pie>
                 <Tooltip />
               </PieChart>
@@ -408,10 +378,7 @@ export default function OwnerCreditTab() {
               {statusPieData.map((d, i) => (
                 <div key={d.name} className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <div
-                      className="size-2.5 rounded-full"
-                      style={{ background: PIE_COLORS_STATUS[i % PIE_COLORS_STATUS.length] }}
-                    />
+                    <div className="size-2.5 rounded-full" style={{ background: PIE_COLORS_STATUS[i % PIE_COLORS_STATUS.length] }} />
                     <span className="text-xs font-semibold">{d.name}</span>
                   </div>
                   <span className="text-xs font-bold tabular-nums">{d.value}</span>
@@ -419,7 +386,7 @@ export default function OwnerCreditTab() {
               ))}
               <div className="flex items-center justify-between border-t pt-1 mt-1">
                 <span className="text-xs text-muted-foreground">Total</span>
-                <span className="text-xs font-bold">{allSales.length}</span>
+                <span className="text-xs font-bold">{chartSales.length}</span>
               </div>
             </div>
           </div>
@@ -447,29 +414,12 @@ export default function OwnerCreditTab() {
               <XAxis dataKey="month" tick={{ fontSize: 9 }} />
               <YAxis tick={{ fontSize: 9 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
               <Tooltip formatter={(v: number) => [formatCurrency(v)]} />
-              <Area
-                type="monotone"
-                dataKey="given"
-                name="Given"
-                stroke="#C5973E"
-                strokeWidth={2}
-                fill="url(#givenGrad)"
-              />
-              <Area
-                type="monotone"
-                dataKey="collected"
-                name="Collected"
-                stroke="#2D7D6F"
-                strokeWidth={2}
-                fill="url(#collectedGrad)"
-              />
+              <Area type="monotone" dataKey="given"     name="Given"     stroke="#C5973E" strokeWidth={2} fill="url(#givenGrad)" />
+              <Area type="monotone" dataKey="collected" name="Collected" stroke="#2D7D6F" strokeWidth={2} fill="url(#collectedGrad)" />
             </AreaChart>
           </ResponsiveContainer>
           <div className="flex gap-4 mt-2">
-            {[
-              { label: 'Given',     color: '#C5973E' },
-              { label: 'Collected', color: '#2D7D6F' },
-            ].map(l => (
+            {[{ label: 'Given', color: '#C5973E' }, { label: 'Collected', color: '#2D7D6F' }].map(l => (
               <div key={l.label} className="flex items-center gap-1.5">
                 <div className="size-2.5 rounded-sm" style={{ background: l.color }} />
                 <span className="text-[10px] text-muted-foreground">{l.label}</span>
@@ -494,22 +444,13 @@ export default function OwnerCreditTab() {
                 <div key={c.name}>
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={cn(
-                          'size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
-                          i === 0 ? 'bg-amber-400 text-white' : 'bg-muted text-muted-foreground',
-                        )}
-                      >
+                      <span className={cn('size-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0',
+                        i === 0 ? 'bg-amber-400 text-white' : 'bg-muted text-muted-foreground')}>
                         {i + 1}
                       </span>
                       <span className="text-sm font-medium truncate">{c.name}</span>
-                      <span
-                        className="text-[10px] px-1 py-0.5 rounded font-semibold shrink-0"
-                        style={{
-                          background: `${BRANCH_COLORS[c.branch]}20`,
-                          color: BRANCH_COLORS[c.branch],
-                        }}
-                      >
+                      <span className="text-[10px] px-1 py-0.5 rounded font-semibold shrink-0"
+                        style={{ background: `${BRANCH_COLORS[c.branch]}20`, color: BRANCH_COLORS[c.branch] }}>
                         {c.branch}
                       </span>
                     </div>
@@ -518,10 +459,8 @@ export default function OwnerCreditTab() {
                     </span>
                   </div>
                   <div className="h-1.5 bg-muted rounded-full">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{ width: `${pct}%`, background: BRANCH_COLORS[c.branch] }}
-                    />
+                    <div className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, background: BRANCH_COLORS[c.branch] }} />
                   </div>
                 </div>
               );
@@ -530,57 +469,12 @@ export default function OwnerCreditTab() {
         </div>
       )}
 
-      {/* ── Transactions List ─────────────────────────────────────────────────── */}
+      {/* ── CHANGE 6: Transactions List with overdue borders + progress bars ──── */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="font-display text-base font-bold text-foreground">All Transactions</h3>
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={async () => {
-                const XLSX = await import('xlsx');
-                const rows = filtered.map(s => ({
-                  'Branch':           s.branch,
-                  'Bill No':          s.billNo ?? '',
-                  'Customer Name':    s.customerName,
-                  'Customer Phone':   s.customerPhone ?? '',
-                  'Items':            s.items.map(i => `${i.itemName} ×${i.quantity}`).join(', '),
-                  'Subtotal (₹)':    s.subtotal,
-                  'Amount Paid (₹)': s.amountPaid,
-                  'Credit Due (₹)':  s.creditAmount,
-                  'Status':           s.status,
-                  'Sold By':          s.soldBy,
-                  'Date':             new Date(s.createdAt).toLocaleDateString('en-IN'),
-                  'Due Date':         s.dueDate ? new Date(s.dueDate).toLocaleDateString('en-IN') : '',
-                  'Notes':            s.notes ?? '',
-                }));
-                const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ Note: 'No credit sales match filters' }]);
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, 'Credit Sales');
-                XLSX.writeFile(wb, `OwnerCreditReport_${new Date().toISOString().slice(0, 10)}.xlsx`);
-              }}
-              className="flex items-center gap-1 text-xs px-3 py-1.5 border rounded-lg hover:bg-muted transition"
-            >
-              <Download className="size-3" />Excel
-            </button>
-            <select
-              value={statusFilter}
-              onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
-              className="border rounded-lg px-2 py-1 text-xs bg-background"
-            >
-              <option value="all">All Status</option>
-              <option value="pending">Pending</option>
-              <option value="partial">Partial</option>
-              <option value="settled">Settled</option>
-            </select>
-            <select
-              value={branchFilter}
-              onChange={e => setBranchFilter(e.target.value as Branch | 'all')}
-              className="border rounded-lg px-2 py-1 text-xs bg-background"
-            >
-              <option value="all">All Branches</option>
-              {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-            </select>
-          </div>
+          <h3 className="font-display text-base font-bold text-foreground">
+            Credit Transactions <span className="text-sm font-normal text-muted-foreground">({filtered.length})</span>
+          </h3>
         </div>
 
         {filtered.length === 0 ? (
@@ -589,70 +483,58 @@ export default function OwnerCreditTab() {
             <p className="text-sm text-muted-foreground">No credit sales found</p>
           </div>
         ) : (
-          <div className="divide-y max-h-96 overflow-y-auto">
+          <div className="divide-y max-h-[480px] overflow-y-auto">
             {filtered.map(sale => {
-              const isOverdue =
-                sale.status !== 'settled' &&
-                sale.dueDate &&
-                new Date(sale.dueDate) < new Date();
+              const isOverdue = sale.status !== 'settled' && sale.dueDate && new Date(sale.dueDate) < new Date();
+              // CHANGE 6: payment progress
+              const progressPct = sale.subtotal > 0 ? Math.round((sale.amountPaid / sale.subtotal) * 100) : 0;
               return (
-                <div
-                  key={sale.id}
+                <div key={sale.id}
                   className={cn(
-                    'flex items-center justify-between px-4 py-3',
-                    isOverdue && 'bg-red-50/50',
-                  )}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-semibold">{sale.customerName}</span>
-                      <span
-                        className={cn(
-                          'text-[10px] px-1.5 py-0.5 rounded border font-semibold capitalize',
-                          STATUS_BG[sale.status],
-                        )}
-                      >
-                        {sale.status}
-                      </span>
-                      {isOverdue && (
-                        <span className="text-[10px] text-red-600 font-semibold">⚠ Overdue</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                      <span
-                        className="text-[10px] px-1 py-0.5 rounded font-semibold"
-                        style={{
-                          background: `${BRANCH_COLORS[sale.branch]}20`,
-                          color: BRANCH_COLORS[sale.branch],
-                        }}
-                      >
-                        {sale.branch}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {new Date(sale.createdAt).toLocaleDateString('en-IN', {
-                          day: '2-digit',
-                          month: 'short',
-                          year: 'numeric',
-                        })}
-                      </span>
-                      {sale.dueDate && (
-                        <span className={cn('text-[10px]', isOverdue ? 'text-red-600 font-semibold' : 'text-muted-foreground')}>
-                          Due:{' '}
-                          {new Date(sale.dueDate).toLocaleDateString('en-IN', {
-                            day: '2-digit',
-                            month: 'short',
-                          })}
+                    'px-4 py-3',
+                    // CHANGE 6: red left border for overdue
+                    isOverdue ? 'border-l-4 border-red-400 bg-red-50/30' : ''
+                  )}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold">{sale.customerName}</span>
+                        {sale.customerPhone && <span className="text-[10px] text-muted-foreground">{sale.customerPhone}</span>}
+                        <span className={cn('text-[10px] px-1.5 py-0.5 rounded border font-semibold capitalize', STATUS_BG[sale.status])}>
+                          {sale.status}
                         </span>
-                      )}
+                        {isOverdue && <span className="text-[10px] text-red-600 font-semibold">⚠ Overdue</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className="text-[10px] px-1 py-0.5 rounded font-semibold"
+                          style={{ background: `${BRANCH_COLORS[sale.branch]}20`, color: BRANCH_COLORS[sale.branch] }}>
+                          {sale.branch}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">{ownerFmtDate(sale.createdAt)}</span>
+                        {sale.billNo && <span className="text-[10px] text-muted-foreground">#{sale.billNo}</span>}
+                        {sale.dueDate && (
+                          <span className={cn('text-[10px]', isOverdue ? 'text-red-600 font-semibold' : 'text-muted-foreground')}>
+                            Due: {ownerFmtDate(sale.dueDate)}
+                          </span>
+                        )}
+                      </div>
+                      {/* CHANGE 6: Payment progress bar */}
+                      <div className="mt-2">
+                        <div className="flex justify-between text-[10px] mb-0.5">
+                          <span className="text-muted-foreground">Paid {formatCurrency(sale.amountPaid)} of {formatCurrency(sale.subtotal)}</span>
+                          <span className={cn('font-bold', progressPct >= 100 ? 'text-emerald-600' : progressPct > 0 ? 'text-blue-600' : 'text-amber-600')}>{progressPct}%</span>
+                        </div>
+                        <div className="h-1.5 bg-muted rounded-full">
+                          <div className={cn('h-full rounded-full transition-all',
+                            progressPct >= 100 ? 'bg-emerald-500' : progressPct > 0 ? 'bg-blue-500' : 'bg-amber-400')}
+                            style={{ width: `${Math.min(progressPct, 100)}%` }} />
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right ml-3 shrink-0">
-                    <p className="text-sm font-bold tabular-nums text-destructive">
-                      -{formatCurrency(sale.creditAmount)}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground">
-                      {formatCurrency(sale.amountPaid)} / {formatCurrency(sale.subtotal)}
-                    </p>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-bold tabular-nums text-destructive">-{formatCurrency(sale.creditAmount)}</p>
+                      <p className="text-[10px] text-muted-foreground">{sale.soldBy}</p>
+                    </div>
                   </div>
                 </div>
               );

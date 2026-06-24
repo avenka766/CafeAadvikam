@@ -1,5 +1,5 @@
 // src/branch/tabs/StockTab.tsx
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDownToLine, Package, AlertTriangle, Loader2,
   ChevronDown, ChevronUp, Scale, Hash, CheckCircle2, CheckCheck,
@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils';
 import { SectionHeader, EmptyState, fmt } from '../components';
 import { useBranchStore } from '../branchStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useBranchOpsStore } from '../branchOpsStore';
+import { supabase } from '@/lib/supabase';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
 import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
@@ -25,6 +27,10 @@ interface Props {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizeItemName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
 
 function detectSellUnit(itemName: string): 'kg' | 'pcs' {
   const lower = itemName.toLowerCase();
@@ -136,7 +142,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
     : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }));
 
   // Build a quick lookup: itemName → current quantity from DB
-  const stockMap = new Map(branchStock.map((s) => [s.itemName, s.quantity]));
+  const stockMap = new Map(branchStock.map((s) => [normalizeItemName(s.itemName), s.quantity]));
 
   const [search, setSearch]         = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -211,7 +217,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
           const wasSaved   = saved[item.name];
           // Use price list uom as authority: 'Kgs' → kg, anything else → pcs
           const isKg       = item.uom === 'Kgs' || item.uom === 'kg';
-          const currentQty = stockMap.get(item.name) ?? 0;
+          const currentQty = stockMap.get(normalizeItemName(item.name)) ?? 0;
           return (
             <div key={item.name} className={cn('flex items-center gap-3 px-4 py-3', wasSaved && 'bg-emerald-50/40')}>
               <div className="flex-1 min-w-0">
@@ -395,15 +401,25 @@ function NegativeStockTab({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative';
+type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative' | 'threshold';
 
 export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches }: Props) {
   const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
+  const { addNotification } = useBranchOpsStore();
+  const { currentUser } = useAuthStore();
   const [subTab, setSubTab]               = useState<StockSubTab>('incoming');
   const [outOfStockExpanded, setOutOfStockExpanded] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [confirmAllError, setConfirmAllError] = useState('');
   const [syncing, setSyncing]             = useState(false);
+  const [disputedIncoming, setDisputedIncoming] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(branchIncoming.filter((inc) => inc.disputed).map((inc) => [inc.id, true])),
+  );
+  const [disputeError, setDisputeError] = useState('');
+
+  useEffect(() => {
+    setDisputedIncoming(Object.fromEntries(branchIncoming.filter((inc) => inc.disputed).map((inc) => [inc.id, true])));
+  }, [branchIncoming]);
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
@@ -413,11 +429,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       : VRSNB_ITEMS.map((i) => i.name)
   );
 
-  const filteredStock = branchStock.filter((s) => allowedItemNames.has(s.itemName));
+  const allowedNormalizedNames = new Set(Array.from(allowedItemNames, normalizeItemName));
+  const filteredStock = branchStock.filter((s) => allowedNormalizedNames.has(normalizeItemName(s.itemName)));
 
   // Build uom lookup from price list — 'Kgs' → 'kg', 'Nos'/'pcs' → 'pcs'
   const uomMap = new Map<string, 'kg' | 'pcs'>(
-    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i) => [
+    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i): [string, 'kg' | 'pcs'] => [
       i.name,
       i.uom === 'Kgs' || i.uom === 'kg' ? 'kg' : 'pcs',
     ])
@@ -427,9 +444,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const allBranchItemNames = isSNBBranch
     ? SNB_ITEMS.map((i) => i.name)
     : VRSNB_ITEMS.map((i) => i.name);
-  const stockMap = new Map(filteredStock.map((s) => [s.itemName, s]));
+  const stockMap = new Map(filteredStock.map((s) => [normalizeItemName(s.itemName), s]));
   const completeStock = allBranchItemNames.map((name) => {
-    const s = stockMap.get(name);
+    const s = stockMap.get(normalizeItemName(name));
     const unit = uomMap.get(name);
     // Use saved threshold from store, fallback to DB row value, then default 10
     const minThreshold = branchThresholds[name] ?? s?.minThreshold ?? 10;
@@ -441,9 +458,9 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   // NEGATIVE-ITEM FIX: also include any DB rows with negative quantity that aren't
   // in the price list (e.g. newly added items sold before being seeded into stock).
   // Without this, items sold from zero stock are invisible in the Negative tab.
-  const completeStockNames = new Set(allBranchItemNames);
+  const completeStockNames = new Set(allBranchItemNames.map(normalizeItemName));
   const extraNegativeItems = branchStock.filter(
-    (s) => s.quantity < 0 && !completeStockNames.has(s.itemName)
+    (s) => s.quantity < 0 && !completeStockNames.has(normalizeItemName(s.itemName))
   ).map((s) => ({
     ...s,
     unit: s.unit ?? (detectSellUnit(s.itemName) as 'kg' | 'pcs'),
@@ -480,11 +497,40 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     setSyncing(false);
   };
 
+  const raiseIncomingDispute = async (inc: IncomingStock) => {
+    const reason = 'Received quantity does not match the dispatched/expected quantity';
+    addNotification({
+      branch,
+      type: 'Stock Dispute',
+      title: 'Incoming stock mismatch raised',
+      details: `${inc.itemName} · Expected/dispatch qty ${formatQtyLabel(inc.quantity, inc.itemName, inc.unit)} · ${reason}`,
+      raisedBy: currentUser?.displayName || currentUser?.username || 'Branch User',
+    });
+    setDisputedIncoming((prev) => ({ ...prev, [inc.id]: true }));
+    const raisedBy = currentUser?.displayName || currentUser?.username || 'Branch User';
+    setDisputeError('');
+    const { error } = await supabase
+      .from('branch_incoming')
+      .update({
+        disputed: true,
+        dispute_reason: reason,
+        disputed_by: raisedBy,
+        disputed_at: new Date().toISOString(),
+      })
+      .eq('id', inc.id);
+    if (error) {
+      setDisputeError(`Dispute notification was created, but the stock row could not be locked in Supabase: ${error.message}`);
+    } else {
+      await fetchBranchData(branch);
+    }
+  };
+
   const SUBTABS: { id: StockSubTab; label: string }[] = [
     { id: 'incoming', label: `Incoming${todayIncoming.length > 0 ? ` (${todayIncoming.length})` : ''}` },
     { id: 'current',  label: 'Current stock' },
     { id: 'manual',   label: 'Update stock' },
     { id: 'negative', label: `Negative${negativeItems.length > 0 ? ` (${negativeItems.length})` : ''}` },
+    { id: 'threshold', label: 'Thresholds' },
   ];
 
   return (
@@ -538,6 +584,11 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
               {confirmAllError}
             </p>
           )}
+          {disputeError && (
+            <p className="mx-4 mt-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-xl">
+              {disputeError}
+            </p>
+          )}
           {todayIncoming.length === 0 ? (
             <EmptyState message="No incoming stock today. Items dispatched from Packing will appear here." />
           ) : (
@@ -557,7 +608,12 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
                       <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full tabular-nums">
                         +{formatQtyLabel(inc.quantity, inc.itemName, inc.unit)}
                       </span>
-                      <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />
+                      <button onClick={() => void raiseIncomingDispute(inc)} className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition active:scale-95', (disputedIncoming[inc.id] || inc.disputed) ? 'bg-amber-100 text-amber-700' : 'bg-red-50 text-red-600 hover:bg-red-100')}>
+                        <AlertTriangle className="size-3.5" /> {(disputedIncoming[inc.id] || inc.disputed) ? 'Disputed' : 'Dispute'}
+                      </button>
+                      {/* Disputed incoming stock stays blocked until admin review. */}
+                      {!(disputedIncoming[inc.id] || inc.disputed) && <ConfirmButton onConfirm={() => confirmIncoming(branch, inc.id)} />}
+                      {(disputedIncoming[inc.id] || inc.disputed) && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-700">Awaiting Admin Review</span>}
                     </div>
                   </div>
                 );
@@ -639,6 +695,114 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
         />
       )}
 
+      {/* ── Thresholds ───────────────────────────────────────────────────────── */}
+      {subTab === 'threshold' && (
+        <ThresholdSubTab
+          branch={branch}
+          completeStock={completeStock}
+          branchThresholds={branchThresholds}
+        />
+      )}
+
+    </div>
+  );
+}
+
+// ─── Threshold sub-tab ────────────────────────────────────────────────────────
+
+function ThresholdSubTab({
+  branch,
+  completeStock,
+  branchThresholds,
+}: {
+  branch: Branch;
+  completeStock: Array<{ itemName: string; quantity: number; minThreshold: number; unit?: 'kg' | 'pcs' }>;
+  branchThresholds: Record<string, number>;
+}) {
+  const { updateThreshold } = useBranchStore();
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+
+  const handleSave = async (itemName: string) => {
+    const newVal = Number(edits[itemName]);
+    if (isNaN(newVal) || newVal < 0) return;
+    setSaving((s) => ({ ...s, [itemName]: true }));
+    await updateThreshold(branch, itemName, newVal);
+    setSaved((s) => ({ ...s, [itemName]: true }));
+    setSaving((s) => ({ ...s, [itemName]: false }));
+    setTimeout(() => setSaved((s) => ({ ...s, [itemName]: false })), 2000);
+  };
+
+  return (
+    <div className="rounded-[1.75rem] border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="flex items-center gap-3 border-b border-slate-200 px-5 py-4">
+        <div className="rounded-2xl bg-amber-50 p-3 text-amber-600"><AlertTriangle className="size-4" /></div>
+        <div>
+          <h3 className="text-xl font-black text-slate-950">Stock Thresholds</h3>
+          <p className="text-sm font-bold text-slate-500">Set low-stock alert thresholds per item. Rows highlighted when stock ≤ threshold.</p>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <th className="p-3">Item Name</th>
+              <th className="p-3 text-right">Current Qty</th>
+              <th className="p-3 text-right">Current Threshold</th>
+              <th className="p-3 text-right">New Threshold</th>
+              <th className="p-3 text-right">Save</th>
+            </tr>
+          </thead>
+          <tbody>
+            {completeStock.map((s) => {
+              const threshold = branchThresholds[s.itemName] ?? s.minThreshold;
+              const isLow = s.quantity <= threshold;
+              const editVal = edits[s.itemName] ?? '';
+              return (
+                <tr key={s.itemName} className={cn('border-t', isLow && 'bg-amber-50/70')}>
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      {isLow && <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />}
+                      <span className={cn('font-medium', isLow && 'font-black text-amber-900')}>{s.itemName}</span>
+                    </div>
+                  </td>
+                  <td className="p-3 text-right tabular-nums">
+                    <SmartStockBadge qty={s.quantity} threshold={threshold} itemName={s.itemName} unit={s.unit} />
+                  </td>
+                  <td className="p-3 text-right tabular-nums font-semibold">{threshold}</td>
+                  <td className="p-3 text-right">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder={String(threshold)}
+                      value={editVal}
+                      onChange={(e) => setEdits((prev) => ({ ...prev, [s.itemName]: e.target.value }))}
+                      className="w-24 rounded-xl border-2 border-slate-200 px-3 py-1.5 text-right text-sm font-bold outline-none focus:border-amber-400"
+                    />
+                  </td>
+                  <td className="p-3 text-right">
+                    {saved[s.itemName] ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-600">
+                        <CheckCircle2 className="size-3.5" /> Saved
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => void handleSave(s.itemName)}
+                        disabled={!editVal || saving[s.itemName]}
+                        className="inline-flex items-center gap-1 rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40"
+                      >
+                        {saving[s.itemName] ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                        Save
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
