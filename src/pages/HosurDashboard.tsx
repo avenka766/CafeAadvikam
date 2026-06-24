@@ -302,16 +302,12 @@ function inferHosurItemCategory(itemName: string): SnbItem['category'] {
 }
 
 function buildHosurCatalogItems(prices: HosurShopPrice[], shopId?: string): HosurCatalogItem[] {
-  const shopRows = shopId ? prices.filter((price) => price.shopId === shopId) : [];
-  const hidden = new Set(shopRows.filter((price) => !price.isActive).map((price) => normalize(price.itemName)));
+  // IMPORTANT: Hosur is shop-wise supply. Do not show the full SNB/VRSNB master list
+  // inside Shop Master or New Order, because each shop must see/order only its assigned items.
+  const shopRows = shopId ? prices.filter((price) => price.shopId === shopId && price.isActive) : prices.filter((price) => price.isActive);
   const rows = new Map<string, HosurCatalogItem>();
 
-  SNB_ITEMS.forEach((item) => {
-    const key = normalize(item.name);
-    if (!hidden.has(key)) rows.set(key, { ...item, source: 'master' });
-  });
-
-  shopRows.filter((price) => price.isActive).forEach((price, index) => {
+  shopRows.forEach((price, index) => {
     const key = normalize(price.itemName);
     const master = masterItemFor(price.itemName);
     rows.set(key, {
@@ -1443,7 +1439,13 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
+        <button className={softButton} disabled={busy} onClick={() => withBusy(importVrsnbPriceList, 'VRSNB Hosur shop list and shop-wise prices imported/updated.')}>
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+          Import VRSNB Hosur Price List
+        </button>
+      </div>
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
           <Card className="space-y-3">
@@ -1495,6 +1497,9 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <table className="min-w-full text-sm">
               <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Default</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
               <tbody className="divide-y">
+                {filteredItems.length === 0 && (
+                  <tr><td colSpan={5} className="px-3 py-8 text-center text-sm font-semibold text-muted-foreground">No items assigned to this shop yet. Use Import VRSNB Hosur Price List or add a custom item.</td></tr>
+                )}
                 {filteredItems.map((item) => {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
                   const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
@@ -1527,22 +1532,10 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   const shop = shops.find((s) => s.id === shopId) ?? shops[0];
 
   useEffect(() => { if (!shopId && shops[0]) setShopId(shops[0].id); }, [shops, shopId]);
+  useEffect(() => { setCategory('All'); setSearch(''); setCart({}); }, [shop?.id]);
 
-  const shopOnlyPrices = prices.filter((p) => p.shopId === shop?.id && p.isActive);
-  const hasShopPriceList = shopOnlyPrices.length > 0;
-  const catalogItems: HosurCatalogItem[] = hasShopPriceList
-    ? shopOnlyPrices.map((p, index) => {
-        const master = masterItemFor(p.itemName);
-        return {
-          barcode: master?.barcode ?? 90_000 + index,
-          name: p.itemName,
-          price: p.unitPrice,
-          uom: p.itemUnit === 'kg' ? 'Kgs' : 'Nos',
-          category: master?.category ?? inferHosurItemCategory(p.itemName),
-          source: (master ? 'master' : 'shop') as 'master' | 'shop',
-        };
-      })
-    : SNB_ITEMS.map((item) => ({ ...item, source: 'master' as const }));
+  const catalogItems = buildHosurCatalogItems(prices, shop?.id);
+  const availableCategories = Array.from(new Set(catalogItems.map((item) => item.category))).sort();
   const filteredItems = catalogItems.filter((item) => {
     if (search.trim()) return normalize(item.name).includes(normalize(search));
     return category === 'All' || item.category === category;
@@ -1651,8 +1644,13 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
             ) : (
               <>
             <div className="flex gap-2 overflow-x-auto pb-1">
-              {['All', ...SNB_CATEGORIES].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
+              {['All', ...availableCategories].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
             </div>
+            {catalogItems.length === 0 ? (
+              <EmptyState icon={<ShoppingCart className="size-6" />} title="No items assigned to this shop" subtitle="Open Shop Master and add/import this shop's item price list. The order tab will only show items that belong to the selected shop." />
+            ) : filteredItems.length === 0 ? (
+              <EmptyState icon={<Search className="size-6" />} title="No matching items" subtitle="Try another search or category for this shop." />
+            ) : (
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {filteredItems.slice(0, 120).map((item) => {
                 const current = cart[item.name]?.quantity ?? 0;
@@ -1679,6 +1677,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
                 </div>;
               })}
             </div>
+            )}
               </>
             )}
           </Card>
