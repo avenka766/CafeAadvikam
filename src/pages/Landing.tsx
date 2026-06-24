@@ -12,7 +12,6 @@ import {
   Leaf,
   MapPin,
   Menu as MenuIcon,
-  MessageCircle,
   Minus,
   Phone,
   Plus,
@@ -51,6 +50,7 @@ import paneerImg from '@/assets/foods/paneer-butter-masala.jpg';
 import limeSodaImg from '@/assets/foods/fresh-lime-soda.jpg';
 import ChatBot from '@/components/features/ChatBot';
 import { VRSNB_CATEGORIES, VRSNB_ITEMS } from '@/branch/vrsnbItems';
+import { supabase } from '@/lib/supabase';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
@@ -126,7 +126,7 @@ type CustomerOrderItem = {
 
 type CustomerCartLine = CustomerOrderItem & { qty: number };
 
-function buildWhatsappText(customer: { name: string; phone: string; address: string; locationPin: string; note: string; deliveryMethod: string; paymentMethod: string }, cart: CustomerCartLine[], total: number) {
+function buildWhatsappText(customer: { name: string; phone: string; address: string; locationPin: string; note: string }, cart: CustomerCartLine[], total: number) {
   const lines = cart.map((item, idx) => `${idx + 1}. ${item.name} (${item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'}) x ${item.qty} = ₹${item.price * item.qty}`);
   return [
     'New customer order - Cafe Aadvikam / VRSNB Bakery',
@@ -137,8 +137,7 @@ function buildWhatsappText(customer: { name: string; phone: string; address: str
     '',
     `Customer: ${customer.name || 'Not provided'}`,
     `Phone: ${customer.phone || 'Not provided'}`,
-    `Method: ${customer.deliveryMethod}`,
-    `Payment: ${customer.paymentMethod}`,
+    `Payment: Razorpay`,
     `Address: ${customer.address || 'Not provided'}`,
     `Location pin: ${customer.locationPin || 'Not provided'}`,
     customer.note ? `Delivery notes: ${customer.note}` : '',
@@ -151,7 +150,9 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
   const [sel, setSel] = useState('all');
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<CustomerCartLine[]>([]);
-  const [customer, setCustomer] = useState({ name: '', phone: '', address: '', locationPin: '', note: '', deliveryMethod: 'Delivery', paymentMethod: 'Cash on Delivery' });
+  const [customer, setCustomer] = useState({ name: '', phone: '', address: '', locationPin: '', note: '' });
+  const [paying, setPaying] = useState(false);
+  const [paymentError, setPaymentError] = useState('');
   const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
   const cafeItems = useMemo<CustomerOrderItem[]>(() => enabled.map((item) => {
     const cat = MENU_CATEGORIES.find((c) => c.id === item.category);
@@ -190,8 +191,6 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
   const total = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
   const totalQty = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart]);
   const whatsappText = useMemo(() => buildWhatsappText(customer, cart, total), [customer, cart, total]);
-  const whatsappUrl = `https://wa.me/${CAFE.whatsapp}?text=${encodeURIComponent(whatsappText)}`;
-  const upiUrl = `upi://pay?pa=${encodeURIComponent('9095445444@upi')}&pn=${encodeURIComponent('Cafe Aadvikam')}&am=${total}&cu=INR&tn=${encodeURIComponent('Cafe Aadvikam customer order')}`;
 
   useEffect(() => { setVenue(activeVenue); setSel('all'); }, [activeVenue]);
   useEffect(() => { setSel('all'); setQuery(''); }, [venue]);
@@ -206,6 +205,70 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
   };
   const changeQty = (key: string, delta: number) => {
     setCart((prev) => prev.map((line) => line.key === key ? { ...line, qty: line.qty + delta } : line).filter((line) => line.qty > 0));
+  };
+
+  const payWithRazorpay = async () => {
+    setPaymentError('');
+    if (!cart.length) { setPaymentError('Add at least one item.'); return; }
+    if (!customer.name.trim() || !customer.phone.trim() || !customer.address.trim() || !customer.locationPin.trim()) {
+      setPaymentError('Name, mobile, address and PIN are mandatory.');
+      return;
+    }
+    if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, ''))) {
+      setPaymentError('Enter a valid 10-digit mobile number.');
+      return;
+    }
+    setPaying(true);
+    try {
+      if (!(window as any).Razorpay) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error('Unable to load Razorpay checkout.'));
+          document.head.appendChild(script);
+        });
+      }
+      const payload = {
+        amount: Math.round(total * 100),
+        customer,
+        items: cart.map(({ key, name, price, unit, category, venue, qty }) => ({ key, name, price, unit, category, venue, qty })),
+        notes: { source: 'landing_page' },
+      };
+      const { data, error } = await supabase.functions.invoke('create-razorpay-order', { body: payload });
+      if (error || !data?.orderId || !data?.keyId) throw new Error(error?.message || data?.error || 'Unable to start payment.');
+      const razorpay = new (window as any).Razorpay({
+        key: data.keyId,
+        amount: data.amount,
+        currency: 'INR',
+        name: 'Cafe Aadvikam',
+        description: 'Customer order payment',
+        order_id: data.orderId,
+        prefill: { name: customer.name, contact: customer.phone },
+        notes: { public_order_id: data.publicOrderId },
+        theme: { color: '#d97706' },
+        handler: async (response: any) => {
+          const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', {
+            body: { ...response, publicOrderId: data.publicOrderId },
+          });
+          if (verifyError || !verified?.success) {
+            setPaymentError(verifyError?.message || verified?.error || 'Payment verification failed. Contact the cafe with your payment ID.');
+            setPaying(false);
+            return;
+          }
+          setCart([]);
+          setCustomer({ name: '', phone: '', address: '', locationPin: '', note: '' });
+          setPaying(false);
+          alert(`Payment successful. Order ${verified.orderNumber || ''} has been sent to Admin.`);
+          onClose();
+        },
+        modal: { ondismiss: () => setPaying(false) },
+      });
+      razorpay.open();
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Payment could not be started.');
+      setPaying(false);
+    }
   };
 
   return (
@@ -304,33 +367,20 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
               )}
             </div>
             <div className="shrink-0 space-y-3 border-t border-orange-900/10 bg-[#fff7ea] p-4">
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setCustomer({ ...customer, deliveryMethod: 'Delivery' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.deliveryMethod === 'Delivery' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>Delivery</button>
-                <button onClick={() => setCustomer({ ...customer, deliveryMethod: 'Pickup' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.deliveryMethod === 'Pickup' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>Pickup</button>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <input required value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name *" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+                <input required inputMode="numeric" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile *" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setCustomer({ ...customer, paymentMethod: 'Cash on Delivery' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.paymentMethod === 'Cash on Delivery' ? 'bg-green-600 text-white' : 'bg-white text-stone-700')}>COD</button>
-                <button onClick={() => setCustomer({ ...customer, paymentMethod: 'UPI / QR Paid' })} className={cn('rounded-xl px-3 py-2 text-xs font-black', customer.paymentMethod === 'UPI / QR Paid' ? 'bg-amber-300 text-stone-950' : 'bg-white text-stone-700')}>UPI / QR</button>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
-                <input value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
-              </div>
-              <input value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address / pickup time" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
-              <input value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="Location pin / Google Maps link" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
-              <input value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Delivery notes" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none" />
+              <input required value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address *" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+              <input required value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="PIN / Google Maps link *" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+              <input value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Order notes (optional)" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
               <div className="flex items-center justify-between rounded-2xl bg-white p-3 font-black text-stone-950">
                 <span>Total</span><span>{formatCurrency(total)}</span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <a href={cart.length ? upiUrl : undefined} onClick={(e) => { if (!cart.length) e.preventDefault(); }} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black', cart.length ? 'bg-amber-300 text-stone-950' : 'pointer-events-none bg-stone-200 text-stone-400')}>
-                  <CreditCard className="size-4" /> Pay UPI
-                </a>
-                <a href={cart.length ? whatsappUrl : undefined} target="_blank" rel="noreferrer" onClick={(e) => { if (!cart.length) e.preventDefault(); }} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black', cart.length ? 'bg-green-600 text-white' : 'pointer-events-none bg-stone-200 text-stone-400')}>
-                  <MessageCircle className="size-4" /> Send order
-                </a>
-              </div>
-              <p className="text-center text-[10px] font-bold leading-4 text-stone-500">COD is available. UPI opens the payment app now; QR image can be added after you attach it.</p>
+              {paymentError && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{paymentError}</p>}
+              <button type="button" onClick={() => void payWithRazorpay()} disabled={paying || !cart.length} className={cn('inline-flex w-full items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black transition active:scale-[.98]', cart.length && !paying ? 'bg-amber-300 text-stone-950 shadow-lg shadow-amber-500/20' : 'cursor-not-allowed bg-stone-200 text-stone-400')}>
+                <CreditCard className={cn('size-4', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : 'Pay securely with Razorpay'}
+              </button>
             </div>
           </aside>
         </div>
@@ -364,7 +414,7 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 
           <div className="hidden items-center gap-2 md:flex">
             <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
-              View Menu
+              Place Order
             </button>
             <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105">
               <CalendarCheck className="h-4 w-4" /> Book Party Hall
@@ -393,7 +443,7 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
                 </button>
               ))}
               <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">
-                View Menu
+                Place Order
               </button>
               <button onClick={() => navigate('/login')} className="text-left text-amber-200">
                 Login
@@ -409,7 +459,7 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
   return (
     <div
-      className="fixed right-3 z-50 flex flex-col gap-1.5 rounded-2xl p-1.5 shadow-2xl"
+      className="fixed right-3 z-50 flex flex-col gap-1.5 overflow-hidden rounded-2xl p-1.5 shadow-2xl"
       style={{
         top: '88px',
         background: 'rgba(15,6,2,0.85)',
@@ -418,6 +468,8 @@ function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange
         boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,215,0,0.08)',
       }}
     >
+      <motion.div className="pointer-events-none absolute inset-x-1.5 h-[58px] rounded-xl bg-white/10" animate={{ y: active === 'cafe' ? 0 : 66 }} transition={{ type: 'spring', stiffness: 420, damping: 28 }} />
+      <motion.div className="pointer-events-none absolute -right-1 top-1 text-amber-300" animate={{ rotate: active === 'cafe' ? 0 : 180, scale: [1, 1.25, 1] }} transition={{ rotate: { duration: .35 }, scale: { duration: .45 } }}><Sparkles className="size-4" /></motion.div>
       <button
         onClick={() => onChange('cafe')}
         aria-label="Switch to Cafe Aadvikam"
@@ -712,7 +764,7 @@ function VisitScene({ onMenuOpen }: { onMenuOpen: () => void }) {
           </div>
           <div className="mt-8 flex flex-col gap-4 sm:flex-row">
             <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">
-              View Menu <ArrowRight className="h-4 w-4" />
+              Place Order <ArrowRight className="h-4 w-4" />
             </button>
             <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
               Get Directions <MapPin className="h-4 w-4" />

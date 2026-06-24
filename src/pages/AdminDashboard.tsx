@@ -35,7 +35,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -51,7 +51,10 @@ type ClosureRow = {
 };
 
 // CHANGE 3: Removed 'stock-alerts' nav item
+type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{name:string;qty:number;price:number;venue:string}>; created_at: string };
+
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
+  { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
   { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
@@ -204,6 +207,8 @@ function AdminDashboard() {
   const allowedNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
   const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
+  const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
+  const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
   const [fromDate, setFromDate] = useState(lastWeekInput());
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
@@ -229,6 +234,15 @@ function AdminDashboard() {
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
   useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
+  useEffect(() => {
+    const loadPublicOrders = async () => {
+      setPublicOrdersLoading(true);
+      const { data } = await supabase.from('public_orders').select('*').order('created_at', { ascending: false }).limit(250);
+      setPublicOrders((data ?? []) as PublicOrder[]);
+      setPublicOrdersLoading(false);
+    };
+    void loadPublicOrders();
+  }, []);
   useEffect(() => {
     if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
       setActiveTab(requestedTab);
@@ -1429,7 +1443,22 @@ function AdminDashboard() {
     </div>
   );
 
+  const PublicOrdersTab = (
+    <Panel title="Paid Online Orders" subtitle="Orders appear here only after Razorpay signature verification succeeds">
+      {publicOrdersLoading ? <p className="p-8 text-center text-sm font-bold text-slate-500">Loading online orders…</p> : publicOrders.length === 0 ? <p className="p-8 text-center text-sm font-bold text-slate-500">No paid online orders yet.</p> : (
+        <div className="space-y-3">{publicOrders.map(order => <article key={order.id} className="rounded-2xl border border-slate-200 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black text-slate-950">{order.order_number} · {order.customer_name}</p><p className="text-xs text-slate-500">{order.customer_phone} · {fmtDateTime(order.created_at)}</p></div><div className="text-right"><p className="font-black text-emerald-700">{formatCurrency(order.amount)}</p><Badge tone="green">{order.status}</Badge></div></div>
+          <p className="mt-2 text-sm text-slate-700">{order.customer_address}</p><p className="text-xs text-slate-500">PIN: {order.location_pin}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">{(order.items || []).map((item, idx) => <div key={idx} className="rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-black">{item.name}</span> × {item.qty}<span className="float-right font-bold">{formatCurrency(item.price * item.qty)}</span></div>)}</div>
+          {order.notes && <p className="mt-2 text-xs text-slate-600">Note: {order.notes}</p>}
+          <p className="mt-2 text-[10px] font-bold text-slate-400">Payment ID: {order.payment_id || '—'}</p>
+        </article>)}</div>
+      )}
+    </Panel>
+  );
+
   const activeContent: Record<AdminTab, ReactNode> = {
+    'public-orders': PublicOrdersTab,
     overview: OverviewTab,
     cafe: CafeTab,
     branches: BranchesTab,

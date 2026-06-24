@@ -800,7 +800,7 @@ export default function HosurDashboard() {
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('admin_notifications').select('*').in('recipient_role', [isAdminRef.current ? 'admin' : 'branch_hosur']).order('created_at', { ascending: false }).limit(100),
+        supabase.from('admin_notifications').select('*').eq('recipient_role', isAdminRef.current ? 'admin' : 'branch_hosur').or('type.ilike.%stock%,type.ilike.%packing%,title.ilike.%stock%,title.ilike.%packing%,body.ilike.%stock%,body.ilike.%packing%').order('created_at', { ascending: false }).limit(100),
       ]);
 
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
@@ -853,8 +853,7 @@ export default function HosurDashboard() {
 
   useEffect(() => {
     void refreshRef.current();
-    const id = window.setInterval(() => void refreshRef.current(), 45_000);
-    return () => window.clearInterval(id);
+    // Manual refresh only: polling caused the whole workspace to visibly refresh while users were editing.
   }, []);
 
   useEffect(() => {
@@ -1264,9 +1263,15 @@ export default function HosurDashboard() {
         </div>
       </div>
 
-      <div className="min-h-[calc(100dvh-230px)]">
-        <main className="p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white">
+      <div className="grid min-h-[calc(100dvh-230px)] lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="hidden border-r border-white/10 bg-slate-950 p-4 text-white lg:block">
+          <div className="sticky top-[188px]">
+            <p className="mb-3 px-2 text-[10px] font-black uppercase tracking-[.22em] text-emerald-300">Hosur workspace</p>
+            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+          </div>
+        </aside>
+        <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white lg:hidden">
             <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
           </div>
 
@@ -1319,6 +1324,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
@@ -1333,14 +1339,19 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
     if (!cleanPhone(form.whatsappNumber)) throw new Error('WhatsApp number is required.');
-    const { error } = await supabase.from('hosur_shops').insert({
+    const payload = {
       shop_name: form.shopName.trim(),
       whatsapp_number: cleanPhone(form.whatsappNumber),
       address: form.address.trim(),
       discount_percent: Number(form.discountPercent) || 0,
       is_active: true,
-    });
-    if (error) throw error;
+      updated_at: new Date().toISOString(),
+    };
+    const result = editingShopId
+      ? await supabase.from('hosur_shops').update(payload).eq('id', editingShopId)
+      : await supabase.from('hosur_shops').insert(payload);
+    if (result.error) throw result.error;
+    setEditingShopId(null);
     setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   };
 
@@ -1441,15 +1452,11 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
     <div className="space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
-        <button className={softButton} disabled={busy} onClick={() => withBusy(importVrsnbPriceList, 'VRSNB Hosur shop list and shop-wise prices imported/updated.')}>
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-          Import VRSNB Hosur Price List
-        </button>
       </div>
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
           <Card className="space-y-3">
-            <h3 className="font-black">Add Shop</h3>
+            <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
@@ -1464,10 +1471,11 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 placeholder="e.g. 10 for 10% off"
               />
             </Field>
-            <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Save Shop</button>
+            <div className="flex gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}</button>{editingShopId && <button className={softButton} onClick={() => { setEditingShopId(null); setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' }); }}>Cancel</button>}</div>
           </Card>
           <Card className="space-y-2">
             <h3 className="font-black">Shops</h3>
+            <div className="max-h-[420px] space-y-2 overflow-y-auto overscroll-contain pr-1">
             {shops.length === 0 ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here. You can update the full shop list later." /> : shops.map((shop) => (
               <button key={shop.id} onClick={() => setSelectedShopId(shop.id)} className={cn('w-full rounded-2xl border p-3 text-left transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border hover:bg-muted/50')}>
                 <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
@@ -1476,8 +1484,10 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 {shop.discountPercent > 0 && (
                   <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
                 )}
+                <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') }); }} className="mt-2 inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
               </button>
             ))}
+            </div>
           </Card>
         </div>
         <Card className="space-y-4">
@@ -1493,12 +1503,12 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
-          <div className="overflow-x-auto rounded-2xl border">
+          <div className="max-h-[620px] overflow-auto overscroll-contain rounded-2xl border">
             <table className="min-w-full text-sm">
               <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Default</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
               <tbody className="divide-y">
                 {filteredItems.length === 0 && (
-                  <tr><td colSpan={5} className="px-3 py-8 text-center text-sm font-semibold text-muted-foreground">No items assigned to this shop yet. Use Import VRSNB Hosur Price List or add a custom item.</td></tr>
+                  <tr><td colSpan={5} className="px-3 py-8 text-center text-sm font-semibold text-muted-foreground">No items assigned to this shop yet. Add a custom item or save a master item price.</td></tr>
                 )}
                 {filteredItems.map((item) => {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
@@ -1795,7 +1805,7 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
                   </div>
                 </div>;
               })}</div>
-              <button className={primaryButton} disabled={busy || items.length === 0 || order.status !== 'dispatched'} title={order.status !== 'dispatched' ? 'Packing must dispatch this order before branch receipt.' : undefined} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
+              <button className={primaryButton} disabled={busy || items.length === 0} title={items.length === 0 ? 'Order items are required.' : undefined} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
             </div>;
           })}
         </Card>
