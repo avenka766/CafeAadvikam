@@ -66,6 +66,9 @@ function AppRoutes() {
   const isLandingRoute = location.pathname === '/';
   const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track'];
   const isPublicRoute = publicRoutes.includes(location.pathname);
+  // Hosur dashboard has its own full in-page navigation. In production, wrapping it
+  // with WorkspaceChrome/BottomNav creates duplicate tabs in two places.
+  const isHosurDashboardRoute = location.pathname === '/branch/hosur';
   const { currentUser } = useAuthStore();
   const [hydrated, setHydrated] = useState(
     () => useAuthStore.persist.hasHydrated()
@@ -141,10 +144,10 @@ function AppRoutes() {
   return (
     <>
       {!isLandingRoute && <Header />}
-      {currentUser && !isPublicRoute ? (
+      {currentUser && !isPublicRoute && !isHosurDashboardRoute ? (
         <WorkspaceChrome>{routes}</WorkspaceChrome>
       ) : routes}
-      {currentUser && <BottomNav />}
+      {currentUser && !isHosurDashboardRoute && <BottomNav />}
     </>
   );
 }
