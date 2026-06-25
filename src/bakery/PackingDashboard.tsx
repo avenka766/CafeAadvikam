@@ -6,7 +6,7 @@ import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock,
   BoxSelect, MapPin, FileSpreadsheet, Calendar, Send,
-  Printer, RefreshCw,
+  Printer, RefreshCw, ShoppingCart, ArrowDownToLine,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -14,6 +14,9 @@ import { BRANCHES } from './types';
 import type { Branch, PreparedItem } from './types';
 import { kgToPcs } from './itemMatcher';
 import { cn } from '@/lib/utils';
+import BranchBillingProTab from '@/branch/tabs/BranchBillingProTab';
+import { useBranchStore } from '@/branch/branchStore';
+import PackingTransferInTab from './PackingTransferInTab';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PackedEntry {
@@ -28,9 +31,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'leftover' | 'dispatched' | 'closure';
+type ActiveTab  = 'orders' | 'transfer-in' | 'selling' | 'leftover' | 'dispatched' | 'closure';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'leftover', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'transfer-in', 'selling', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -188,6 +191,9 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const [expanded,         setExpanded]         = useState(order.status === 'packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
   const [dispatchError,    setDispatchError]    = useState<string | null>(null);
+  const [transferBranch, setTransferBranch] = useState<Branch>(order.targetBranch ?? 'SNB');
+  const [transferQty, setTransferQty] = useState<Record<string, string>>({});
+  const [transferring, setTransferring] = useState(false);
 
   const [packedEntries, setPackedEntries] = useState<PackedEntry[]>([]);
   useEffect(() => {
@@ -257,6 +263,46 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   };
 
   const statusLabel = allDispatched ? 'DISPATCHED' : allConfirmed ? 'READY' : 'PACKING';
+  const printTransferChecklist = () => {
+    const checklist = [
+      'Verify standard quantity in box or Kgs or Pcs before transfer',
+      'Cross-check all boxes or Kgs or Pcs before transfer-out and sync',
+      'Sync the data in the Transfer-Out module',
+      'Manual verification by 2 employees against transfer-out list',
+      'Intimate factory and bill for extra products if received quantity exceeds list',
+      'Sync store computer after goods received',
+      'Perform “Transfer In” in the Billmaxo system',
+    ];
+    const rows = preparedItems.map((p, index) => {
+      const stock = stockByItem[p.itemName];
+      const qty = Number(transferQty[p.itemName] || stock?.available || 0);
+      return `<tr><td>${index + 1}</td><td>${p.itemName}</td><td>${qty}</td><td>${stock?.unit ?? 'kg'}</td><td>${transferBranch}</td></tr>`;
+    }).join('');
+    const checks = checklist.map((item, index) => `<tr><td>${index + 1}</td><td>${item}</td><td>☐</td><td></td><td></td><td></td></tr>`).join('');
+    const win = window.open('', '_blank', 'width=1000,height=800');
+    if (!win) return;
+    win.document.write(`<!doctype html><html><head><title>Transfer Out Checklist</title><style>body{font-family:Arial;padding:24px;color:#111}h2{text-align:center;font-size:16px}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #222;padding:7px;font-size:11px}th{background:#eee}.sign{height:60px}</style></head><body><h2>FINISHED GOODS TRANSFER – EMPLOYEE TRACKING INVOICE (PACKING TO ${transferBranch})</h2><p><b>Order:</b> #${order.orderNumber} &nbsp; <b>Date:</b> ${new Date().toLocaleString('en-IN')}</p><table><thead><tr><th>S.No</th><th>Item</th><th>Qty</th><th>Unit</th><th>Destination</th></tr></thead><tbody>${rows}</tbody></table><table><thead><tr><th>S.No</th><th>Task Description</th><th>Tick (✓)</th><th>Name</th><th>Signature</th><th>Time</th></tr></thead><tbody>${checks}</tbody></table><table><tr><th>Store In-Charge Final Acknowledgment</th><th>Remarks if any</th></tr><tr><td class="sign">Name:<br><br>Signature:<br><br>Date & Time:</td><td></td></tr></table></body></html>`);
+    win.document.close(); win.focus(); setTimeout(() => win.print(), 250);
+  };
+
+  const transferAll = async () => {
+    const rows = preparedItems.map(p => ({ p, stock: stockByItem[p.itemName], qty: Number(transferQty[p.itemName] || stockByItem[p.itemName]?.available || 0) }))
+      .filter(row => row.qty > 0);
+    if (!rows.length) { setDispatchError('Enter at least one transfer quantity.'); return; }
+    const invalid = rows.find(row => row.qty > (row.stock?.available ?? 0));
+    if (invalid) { setDispatchError(`${invalid.p.itemName} exceeds available quantity.`); return; }
+    setTransferring(true); setDispatchError(null);
+    try {
+      for (const row of rows) {
+        const entry = packedEntries.find(e => e.itemId === row.p.itemId);
+        await handleDispatch(row.p.itemName, row.qty, transferBranch, entry?.dispatchUnit ?? 'kg');
+      }
+      setTransferQty({});
+    } catch (error) {
+      setDispatchError(error instanceof Error ? error.message : 'Combined transfer failed.');
+    } finally { setTransferring(false); }
+  };
+
   const statusStyle = allDispatched
     ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
     : allConfirmed
@@ -419,23 +465,27 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                   </div>
                 </div>
               )}
-              {preparedItems.map(p => {
-                const stock = stockByItem[p.itemName];
-                return (
-                  <div key={p.itemId}>
-                    {isCustomItem(p.itemId) && (
-                      <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 inline-block mb-1">CUSTOM</span>
-                    )}
-                    <DispatchRow itemName={p.itemName} available={stock?.available ?? 0}
-                      onDispatch={async (qty, branch) => {
-                        const entry = packedEntries.find(e => e.itemId === p.itemId);
-                        await handleDispatch(p.itemName, qty, branch, entry?.dispatchUnit ?? 'kg');
-                      }}
-                      submitting={dispatchingItems.size > 0}
-                      defaultBranch={order.targetBranch} unit={stock?.unit ?? 'kg'} />
-                  </div>
-                );
-              })}
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
+                  <select value={transferBranch} onChange={e => setTransferBranch(e.target.value as Branch)} className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold">
+                    {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                  <p className="self-center text-[11px] font-semibold text-muted-foreground">Select all required quantities and use one combined Transfer Out.</p>
+                </div>
+                {preparedItems.map(p => {
+                  const stock = stockByItem[p.itemName];
+                  const value = transferQty[p.itemName] ?? String(stock?.available ?? 0);
+                  return <div key={p.itemId} className="grid grid-cols-[1fr_110px_54px] items-center gap-2 rounded-xl border border-border bg-background p-3">
+                    <div><p className="text-xs font-bold">{p.itemName}</p><p className="text-[10px] text-muted-foreground">Available: {stock?.available ?? 0} {stock?.unit ?? 'kg'}</p></div>
+                    <input type="number" min="0" max={stock?.available ?? 0} step={stock?.unit === 'pcs' ? 1 : 0.001} value={value} onChange={e => setTransferQty(current => ({ ...current, [p.itemName]: e.target.value }))} className="h-9 rounded-lg border border-border px-2 text-right text-xs font-bold" />
+                    <span className="text-[10px] font-bold text-muted-foreground">{stock?.unit ?? 'kg'}</span>
+                  </div>;
+                })}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={printTransferChecklist} className="h-11 rounded-xl border border-border bg-card text-xs font-bold flex items-center justify-center gap-2"><Printer className="size-4"/> Print Checklist</button>
+                  <button type="button" onClick={transferAll} disabled={transferring || allDispatched} className="h-11 rounded-xl bg-emerald-600 text-white text-xs font-black flex items-center justify-center gap-2 disabled:opacity-40">{transferring ? <Loader2 className="size-4 animate-spin"/> : <Truck className="size-4"/>} Transfer Out</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -678,6 +728,12 @@ export default function PackingDashboard() {
 
   const requestedTab = searchParams.get('tab') as ActiveTab | null;
   const activeTab: ActiveTab = requestedTab && PACKING_TABS.includes(requestedTab) ? requestedTab : 'orders';
+  const branchStock = useBranchStore(state => state.stock.SNB);
+  const fetchBranchData = useBranchStore(state => state.fetchBranchData);
+  useEffect(() => { if (activeTab === 'selling') void fetchBranchData('SNB'); }, [activeTab, fetchBranchData]);
+
+  if (activeTab === 'transfer-in') return <PackingTransferInTab />;
+  if (activeTab === 'selling') return <div className="dashboard-screen min-h-screen p-3 md:p-5"><BranchBillingProTab branch="SNB" branchStock={branchStock} /></div>;
 
   const packingOrders = useMemo(
     () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
