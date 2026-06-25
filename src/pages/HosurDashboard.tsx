@@ -1239,23 +1239,16 @@ export default function HosurDashboard() {
 
 
   return (
-    <div className="min-h-[calc(100dvh-72px)] bg-slate-50/50">
-      <div className="grid min-h-[calc(100dvh-72px)] lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="hidden border-r border-white/10 bg-slate-950 p-4 text-white lg:block">
-          <div className="sticky top-20">
-            <p className="mb-3 px-2 text-[10px] font-black uppercase tracking-[.22em] text-emerald-300">Hosur workspace</p>
-            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
-          </div>
-        </aside>
-        <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className="mb-3 flex justify-end">
+    <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
+      <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="lg:hidden min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
+              <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+            </div>
             <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
               {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh
             </button>
-          </div>
-          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white lg:hidden">
-            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
           </div>
 
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
@@ -1277,8 +1270,7 @@ export default function HosurDashboard() {
               {tab === 'notifications' && <NotificationsTab notifications={notifications} busy={busy} withBusy={withBusy} />}
             </div>
           )}
-        </main>
-      </div>
+      </main>
     </div>
   );
 }
@@ -1970,6 +1962,7 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   const [closedBy, setClosedBy] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [counterOpened, setCounterOpened] = useState(false);
 
   const dayBills = bills.filter((b) => (b.confirmedAt ?? b.createdAt).slice(0, 10) === date);
   const dayOrders = orders.filter((o) => o.createdAt.slice(0, 10) === date);
@@ -1998,9 +1991,26 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
       setRemarks(data?.remarks ?? '');
       setClosedBy(data?.closed_by ?? '');
       setSaved(Boolean(data));
+      const openKey = `hosur-counter-open-${date}`;
+      const openRecord = localStorage.getItem(openKey);
+      setCounterOpened(Boolean(openRecord) && !data);
+      if (!data && openRecord) {
+        try {
+          const parsed = JSON.parse(openRecord);
+          setOpeningCash(String(parsed.openingCash ?? ''));
+          setClosedBy(parsed.openedBy ?? '');
+        } catch { /* ignore invalid local state */ }
+      }
     });
     return () => { active = false; };
   }, [date]);
+
+  const openCounter = () => {
+    if (Number(openingCash || 0) < 0) return;
+    const openedBy = closedBy.trim() || 'Hosur Staff';
+    localStorage.setItem(`hosur-counter-open-${date}`, JSON.stringify({ openingCash: Number(openingCash || 0), openedBy, openedAt: new Date().toISOString() }));
+    setCounterOpened(true);
+  };
 
   const saveClosure = async () => {
     setSaving(true);
@@ -2015,6 +2025,8 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
     setSaving(false);
     if (error) throw error;
     setSaved(true);
+    setCounterOpened(false);
+    localStorage.removeItem(`hosur-counter-open-${date}`);
   };
 
   const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : 'Draft'}`, `
@@ -2027,7 +2039,7 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-2xl font-black">Daily Closure</h2><p className="text-sm text-muted-foreground">Record opening cash, reconcile collections, close the counter, and print a proper handover summary.</p></div><div className="flex flex-wrap gap-2"><input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} /><button className={softButton} onClick={printSummary}><Printer className="size-4" /> Print Summary</button></div></div>
     <div className="grid gap-3 md:grid-cols-4"><Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/><Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/><Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/><Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/></div>
-    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" value={openingCash} onChange={(e)=>setOpeningCash(e.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" value={countedCash} onChange={(e)=>setCountedCash(e.target.value)} /></Field><Field label="Closed by"><input className={inputClass} value={closedBy} onChange={(e)=>setClosedBy(e.target.value)} placeholder="Cashier / in-charge name" /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} onChange={(e)=>setRemarks(e.target.value)} /></Field><button className={primaryButton} disabled={saving || !closedBy.trim()} onClick={()=>void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved?'Update Closure':'Close Counter'}</button></Card>
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" value={openingCash} onChange={(e)=>setOpeningCash(e.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" value={countedCash} onChange={(e)=>setCountedCash(e.target.value)} /></Field><Field label="Closed by"><input className={inputClass} value={closedBy} onChange={(e)=>setClosedBy(e.target.value)} placeholder="Cashier / in-charge name" /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} onChange={(e)=>setRemarks(e.target.value)} /></Field><div className="flex flex-wrap gap-2">{!saved && !counterOpened ? <button className={primaryButton} disabled={!openingCash || !closedBy.trim()} onClick={openCounter}><CheckCircle2 className="size-4"/>Open Counter</button> : <button className={primaryButton} disabled={saving || !closedBy.trim() || (!saved && !counterOpened)} onClick={()=>void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved?'Update Closure':'Close Counter'}</button>}<span className={cn('inline-flex items-center rounded-xl px-3 py-2 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Counter Closed' : counterOpened ? 'Counter Open' : 'Counter Not Opened'}</span></div></Card>
     <Card className="space-y-3"><h3 className="font-black">Reconciliation</h3>{[['Opening Cash',Number(openingCash||0)],['Cash Sales',cashBills],['Cash Credit Collection',cashCollections],['Expected Cash',expectedCash],['Counted Cash',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex justify-between rounded-xl bg-muted/40 px-3 py-2 text-sm"><span>{label}</span><b>{money(Number(value))}</b></div>)}</Card></div>
     <Card><h3 className="mb-3 font-black">Payment Breakdown</h3><div className="grid gap-2 md:grid-cols-5">{[['Cash',cashBills+cashCollections],['UPI',upiBills],['Card',cardBills],['Bank',bankBills],['Mixed / Other',mixedBills+nonCashCollections]].map(([label,value])=><div key={String(label)} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{money(Number(value))}</p></div>)}</div></Card>
   </div>;
