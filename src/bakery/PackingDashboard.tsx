@@ -191,7 +191,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const [expanded,         setExpanded]         = useState(order.status === 'packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
   const [dispatchError,    setDispatchError]    = useState<string | null>(null);
-  const [transferBranch, setTransferBranch] = useState<Branch>(order.targetBranch ?? 'SNB');
+  const transferBranch: Branch = order.targetBranch ?? 'SNB';
   const [transferQty, setTransferQty] = useState<Record<string, string>>({});
   const [transferring, setTransferring] = useState(false);
 
@@ -444,10 +444,10 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                 <div className={cn('size-6 rounded-full flex items-center justify-center shrink-0', allConfirmed ? 'bg-emerald-600' : 'bg-muted')}>
                   <span className="text-[10px] font-bold text-white">2</span>
                 </div>
-                <p className="text-xs font-body font-bold text-foreground">Dispatch to Branches</p>
+                <p className="text-xs font-body font-bold text-foreground">Transfer Out</p>
                 {!allConfirmed && <Lock className="size-3 text-muted-foreground ml-auto" />}
               </div>
-              <p className="text-[10px] font-body text-muted-foreground mb-2 pl-8">Enter quantity, select branch, tap Send</p>
+              <p className="text-[10px] font-body text-muted-foreground mb-2 pl-8">Enter quantities and transfer to the pre-selected branch</p>
             </div>
             <div className="px-4 pb-3">
               {/* Remainder warning — shown above dispatch rows if any pcs item has leftover grams */}
@@ -467,10 +467,10 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
               )}
               <div className="space-y-3">
                 <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
-                  <select value={transferBranch} onChange={e => setTransferBranch(e.target.value as Branch)} className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-bold">
-                    {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
-                  </select>
-                  <p className="self-center text-[11px] font-semibold text-muted-foreground">Select all required quantities and use one combined Transfer Out.</p>
+                  <div className="h-10 rounded-xl border border-emerald-200 bg-emerald-50 px-3 flex items-center text-xs font-black text-emerald-800">
+                    {transferBranch}
+                  </div>
+                  <p className="self-center text-[11px] font-semibold text-muted-foreground">Destination is fixed from the order and cannot be changed. Select quantities and use one combined Transfer Out.</p>
                 </div>
                 {preparedItems.map(p => {
                   const stock = stockByItem[p.itemName];
@@ -712,7 +712,7 @@ function printDailyClosure(payload: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function PackingDashboard() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
@@ -950,6 +950,24 @@ export default function PackingDashboard() {
                   </button>
                 </>
               )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card p-2 overflow-x-auto">
+            <div className="flex min-w-max gap-2">
+              {([
+                ['orders', 'Packing Orders / Transfer Out', Package],
+                ['transfer-in', 'Transfer In', ArrowDownToLine],
+                ['billing', 'Billing', ShoppingCart],
+                ['leftover', 'Leftover Items', AlertTriangle],
+                ['dispatched', 'Dispatched', Truck],
+                ['closure', 'Daily Closure', ClipboardCheck],
+              ] as const).map(([id, label, Icon]) => (
+                <button key={id} type="button" onClick={() => setSearchParams(id === 'orders' ? {} : { tab: id })}
+                  className={cn('h-10 rounded-xl px-4 text-xs font-black flex items-center gap-2 whitespace-nowrap transition-all', activeTab === id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-muted/40 text-muted-foreground hover:text-foreground')}>
+                  <Icon className="size-4" />{label}
+                </button>
+              ))}
             </div>
           </div>
 

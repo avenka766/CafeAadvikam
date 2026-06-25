@@ -1,20 +1,124 @@
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, CheckCircle2, Package, Printer, Search, Trash2 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 
 type SourceBranch = 'SNB' | 'VRSNB';
-type TransferIn = { id:string; source:SourceBranch; reference:string; itemName:string; expected:number; received:number; unit:'kg'|'pcs'; receivedAt:string; receivedBy:string; remarks:string; };
-const KEY='packing-transfer-in-v1';
-const read=():TransferIn[]=>{try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch{return[]}};
+type Unit = 'kg' | 'pcs';
+type TransferIn = {
+  id: string;
+  source: SourceBranch;
+  reference: string;
+  itemName: string;
+  expected: number;
+  received: number;
+  unit: Unit;
+  receivedAt: string;
+  receivedBy: string;
+  remarks: string;
+};
 
-export default function PackingTransferInTab(){
- const {currentUser}=useAuthStore(); const [rows,setRows]=useState<TransferIn[]>(read); const [q,setQ]=useState('');
- const [form,setForm]=useState({source:'SNB' as SourceBranch,reference:'',itemName:'',expected:'',received:'',unit:'kg' as 'kg'|'pcs',remarks:''});
- useEffect(()=>localStorage.setItem(KEY,JSON.stringify(rows)),[rows]);
- const filtered=useMemo(()=>rows.filter(r=>`${r.source} ${r.reference} ${r.itemName} ${r.remarks}`.toLowerCase().includes(q.toLowerCase())),[rows,q]);
- const add=()=>{const expected=Number(form.expected),received=Number(form.received); if(!form.itemName.trim()||received<=0)return; setRows(v=>[{id:crypto.randomUUID(),...form,expected,received,receivedAt:new Date().toISOString(),receivedBy:currentUser?.displayName||currentUser?.username||'Packing Staff'},...v]); setForm(v=>({...v,reference:'',itemName:'',expected:'',received:'',remarks:''}));};
- const print=()=>{const w=window.open('','_blank');if(!w)return;w.document.write(`<html><head><style>body{font-family:Arial;padding:20px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #222;padding:7px;font-size:11px}</style></head><body><h2>PACKING TRANSFER-IN REGISTER</h2><table><tr><th>Date</th><th>From</th><th>Reference</th><th>Item</th><th>Expected</th><th>Received</th><th>Variance</th><th>Received By</th></tr>${filtered.map(r=>`<tr><td>${new Date(r.receivedAt).toLocaleString('en-IN')}</td><td>${r.source}</td><td>${r.reference||'-'}</td><td>${r.itemName}</td><td>${r.expected} ${r.unit}</td><td>${r.received} ${r.unit}</td><td>${(r.received-r.expected).toFixed(3)}</td><td>${r.receivedBy}</td></tr>`).join('')}</table></body></html>`);w.document.close();setTimeout(()=>w.print(),200)};
- return <div className="dashboard-screen min-h-screen p-4 md:p-6 space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Packing stock control</p><h1 className="text-2xl font-black">Transfer In</h1><p className="text-xs text-muted-foreground">Track every item returned or transferred from SNB and VRSNB, including excess, shortage and leftover stock.</p></div><button onClick={print} className="h-10 px-4 rounded-xl border bg-card text-xs font-bold flex items-center gap-2"><Printer className="size-4"/>Print Register</button></div>
- <div className="grid gap-4 xl:grid-cols-[380px_1fr]"><section className="rounded-2xl border bg-card p-4 space-y-3"><h2 className="font-black flex items-center gap-2"><ArrowDownToLine className="size-4"/>Receive Stock</h2><div className="grid grid-cols-2 gap-2"><select value={form.source} onChange={e=>setForm({...form,source:e.target.value as SourceBranch})} className="h-10 rounded-xl border px-3"><option>SNB</option><option>VRSNB</option></select><input placeholder="Transfer reference" value={form.reference} onChange={e=>setForm({...form,reference:e.target.value})} className="h-10 rounded-xl border px-3"/></div><input placeholder="Item name *" value={form.itemName} onChange={e=>setForm({...form,itemName:e.target.value})} className="h-10 w-full rounded-xl border px-3"/><div className="grid grid-cols-3 gap-2"><input type="number" placeholder="Expected" value={form.expected} onChange={e=>setForm({...form,expected:e.target.value})} className="h-10 rounded-xl border px-2"/><input type="number" placeholder="Received *" value={form.received} onChange={e=>setForm({...form,received:e.target.value})} className="h-10 rounded-xl border px-2"/><select value={form.unit} onChange={e=>setForm({...form,unit:e.target.value as 'kg'|'pcs'})} className="h-10 rounded-xl border px-2"><option value="kg">KG</option><option value="pcs">Pcs</option></select></div><textarea placeholder="Remarks / reason for return or leftover" value={form.remarks} onChange={e=>setForm({...form,remarks:e.target.value})} className="min-h-20 w-full rounded-xl border p-3"/><button onClick={add} className="h-11 w-full rounded-xl bg-emerald-600 text-white font-black flex items-center justify-center gap-2"><CheckCircle2 className="size-4"/>Confirm Transfer In</button></section>
- <section className="rounded-2xl border bg-card overflow-hidden"><div className="p-3 border-b flex items-center gap-2"><Search className="size-4 text-muted-foreground"/><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search item, branch or reference" className="h-9 flex-1 bg-transparent outline-none text-sm"/></div><div className="max-h-[68vh] overflow-auto"><table className="min-w-[850px] w-full text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{['Date','From','Reference','Item','Expected','Received','Variance','Status',''].map(x=><th key={x} className="p-3 text-left">{x}</th>)}</tr></thead><tbody>{filtered.map(r=>{const variance=r.received-r.expected;return <tr key={r.id} className="border-t"><td className="p-3">{new Date(r.receivedAt).toLocaleString('en-IN')}</td><td className="p-3 font-black">{r.source}</td><td className="p-3">{r.reference||'-'}</td><td className="p-3 font-bold">{r.itemName}</td><td className="p-3">{r.expected} {r.unit}</td><td className="p-3">{r.received} {r.unit}</td><td className={`p-3 font-black ${variance<0?'text-red-600':variance>0?'text-amber-600':'text-emerald-600'}`}>{variance.toFixed(3)}</td><td className="p-3">{variance===0?'Matched':variance<0?'Shortage':'Excess / Leftover'}</td><td className="p-3"><button onClick={()=>setRows(v=>v.filter(x=>x.id!==r.id))}><Trash2 className="size-4 text-red-500"/></button></td></tr>})}{!filtered.length&&<tr><td colSpan={9} className="p-16 text-center text-muted-foreground"><Package className="size-8 mx-auto mb-2"/>No transfer-in records</td></tr>}</tbody></table></div></section></div></div>
+const STORAGE_KEY = 'packing-transfer-in-v2';
+const emptyForm = { source: 'SNB' as SourceBranch, reference: '', itemName: '', expected: '', received: '', unit: 'kg' as Unit, remarks: '' };
+
+function readRows(): TransferIn[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export default function PackingTransferInTab() {
+  const { currentUser } = useAuthStore();
+  const [rows, setRows] = useState<TransferIn[]>(readRows);
+  const [query, setQuery] = useState('');
+  const [form, setForm] = useState(emptyForm);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((row) => `${row.source} ${row.reference} ${row.itemName} ${row.remarks}`.toLowerCase().includes(q));
+  }, [rows, query]);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setError('');
+    const expected = Number(form.expected || 0);
+    const received = Number(form.received || 0);
+    if (!form.reference.trim()) return setError('Transfer reference is required.');
+    if (!form.itemName.trim()) return setError('Item name is required.');
+    if (!Number.isFinite(received) || received <= 0) return setError('Received quantity must be greater than zero.');
+    if (!Number.isFinite(expected) || expected < 0) return setError('Expected quantity cannot be negative.');
+
+    setRows((current) => [{
+      id: crypto.randomUUID(),
+      source: form.source,
+      reference: form.reference.trim(),
+      itemName: form.itemName.trim(),
+      expected,
+      received,
+      unit: form.unit,
+      remarks: form.remarks.trim(),
+      receivedAt: new Date().toISOString(),
+      receivedBy: currentUser?.displayName || currentUser?.username || 'Packing Staff',
+    }, ...current]);
+    setForm(emptyForm);
+  };
+
+  const printRegister = () => {
+    const win = window.open('', '_blank', 'width=1100,height=800');
+    if (!win) return;
+    const body = filtered.map((row) => {
+      const variance = row.received - row.expected;
+      return `<tr><td>${new Date(row.receivedAt).toLocaleString('en-IN')}</td><td>${row.source}</td><td>${row.reference}</td><td>${row.itemName}</td><td>${row.expected} ${row.unit}</td><td>${row.received} ${row.unit}</td><td>${variance.toFixed(3)}</td><td>${variance === 0 ? 'Matched' : variance < 0 ? 'Shortage' : 'Excess / Leftover'}</td><td>${row.receivedBy}</td><td>${row.remarks || '-'}</td></tr>`;
+    }).join('');
+    win.document.write(`<!doctype html><html><head><title>Packing Transfer In Register</title><style>body{font-family:Arial;padding:22px;color:#111}h1{font-size:20px;margin:0 0 4px}.muted{font-size:11px;color:#666;margin-bottom:16px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #333;padding:7px;font-size:10px}th{background:#eee;text-align:left}</style></head><body><h1>PACKING TRANSFER-IN REGISTER</h1><div class="muted">Generated ${new Date().toLocaleString('en-IN')}</div><table><thead><tr><th>Date</th><th>From</th><th>Reference</th><th>Item</th><th>Expected</th><th>Received</th><th>Variance</th><th>Status</th><th>Received By</th><th>Remarks</th></tr></thead><tbody>${body || '<tr><td colspan="10">No records</td></tr>'}</tbody></table></body></html>`);
+    win.document.close();
+    setTimeout(() => win.print(), 250);
+  };
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-black">Receive stock from SNB or VRSNB</h3>
+          <p className="text-xs text-muted-foreground">Record expected and received quantities. Shortage, excess and leftover balances are calculated automatically.</p>
+        </div>
+        <button type="button" onClick={printRegister} className="h-10 rounded-xl border bg-card px-4 text-xs font-bold flex items-center gap-2"><Printer className="size-4" />Print Register</button>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[390px_minmax(0,1fr)]">
+        <form onSubmit={submit} className="rounded-2xl border bg-card p-4 space-y-3">
+          <div className="flex items-center gap-2 font-black"><ArrowDownToLine className="size-4" />New Transfer In</div>
+          <label className="block text-xs font-bold">Source branch<select value={form.source} onChange={(e) => setForm((v) => ({ ...v, source: e.target.value as SourceBranch }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="SNB">SNB</option><option value="VRSNB">VRSNB</option></select></label>
+          <label className="block text-xs font-bold">Transfer reference *<input value={form.reference} onChange={(e) => setForm((v) => ({ ...v, reference: e.target.value }))} placeholder="Example: TRF-2026-001" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          <label className="block text-xs font-bold">Item name *<input value={form.itemName} onChange={(e) => setForm((v) => ({ ...v, itemName: e.target.value }))} placeholder="Enter item name" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block text-xs font-bold">Expected<input type="number" min="0" step="0.001" value={form.expected} onChange={(e) => setForm((v) => ({ ...v, expected: e.target.value }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+            <label className="block text-xs font-bold">Received *<input type="number" min="0.001" step="0.001" value={form.received} onChange={(e) => setForm((v) => ({ ...v, received: e.target.value }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3" /></label>
+          </div>
+          <label className="block text-xs font-bold">Unit<select value={form.unit} onChange={(e) => setForm((v) => ({ ...v, unit: e.target.value as Unit }))} className="mt-1 h-11 w-full rounded-xl border bg-background px-3"><option value="kg">KG</option><option value="pcs">Pcs</option></select></label>
+          <label className="block text-xs font-bold">Remarks<textarea value={form.remarks} onChange={(e) => setForm((v) => ({ ...v, remarks: e.target.value }))} placeholder="Shortage, excess, return or leftover reason" className="mt-1 min-h-24 w-full rounded-xl border bg-background p-3" /></label>
+          {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{error}</p>}
+          <button type="submit" className="h-11 w-full rounded-xl bg-emerald-600 text-white font-black flex items-center justify-center gap-2"><CheckCircle2 className="size-4" />Confirm Transfer In</button>
+        </form>
+
+        <div className="rounded-2xl border bg-card overflow-hidden min-w-0">
+          <div className="border-b p-3 flex items-center gap-2"><Search className="size-4 text-muted-foreground" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search item, branch or reference" className="h-9 flex-1 bg-transparent outline-none text-sm" /></div>
+          <div className="max-h-[68vh] overflow-auto">
+            <table className="min-w-[950px] w-full text-xs">
+              <thead className="sticky top-0 bg-slate-950 text-white"><tr>{['Date','From','Reference','Item','Expected','Received','Variance','Status','Received by',''].map((x) => <th key={x} className="p-3 text-left">{x}</th>)}</tr></thead>
+              <tbody>{filtered.map((row) => { const variance = row.received - row.expected; return <tr key={row.id} className="border-t"><td className="p-3">{new Date(row.receivedAt).toLocaleString('en-IN')}</td><td className="p-3 font-black">{row.source}</td><td className="p-3">{row.reference}</td><td className="p-3 font-bold">{row.itemName}</td><td className="p-3">{row.expected} {row.unit}</td><td className="p-3">{row.received} {row.unit}</td><td className={`p-3 font-black ${variance < 0 ? 'text-red-600' : variance > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{variance.toFixed(3)}</td><td className="p-3">{variance === 0 ? 'Matched' : variance < 0 ? 'Shortage' : 'Excess / Leftover'}</td><td className="p-3">{row.receivedBy}</td><td className="p-3"><button type="button" aria-label="Delete record" onClick={() => setRows((current) => current.filter((x) => x.id !== row.id))}><Trash2 className="size-4 text-red-500" /></button></td></tr>; })}{filtered.length === 0 && <tr><td colSpan={10} className="p-16 text-center text-muted-foreground"><Package className="size-8 mx-auto mb-2" />No transfer-in records</td></tr>}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
