@@ -32,7 +32,6 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -1847,14 +1846,38 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
 
 
 function downloadWorkbook(fileName: string, sheets: { name: string; rows: Record<string, string | number | null>[] }[]) {
-  const workbook = XLSX.utils.book_new();
-  sheets.forEach(({ name, rows }) => {
-    const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Message: 'No records available' }]);
-    const widths = Object.keys(rows[0] ?? { Message: '' }).map((key) => ({ wch: Math.min(36, Math.max(12, key.length + 4)) }));
-    worksheet['!cols'] = widths;
-    XLSX.utils.book_append_sheet(workbook, worksheet, name.slice(0, 31));
-  });
-  XLSX.writeFile(workbook, fileName);
+  const escapeXml = (value: unknown) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+  const worksheetXml = sheets.map(({ name, rows }) => {
+    const safeRows = rows.length ? rows : [{ Message: 'No records available' }];
+    const headers = Array.from(new Set(safeRows.flatMap((row) => Object.keys(row))));
+    const headerCells = headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join('');
+    const dataRows = safeRows.map((row) => {
+      const cells = headers.map((header) => {
+        const value = row[header];
+        const isNumber = typeof value === 'number' && Number.isFinite(value);
+        return `<Cell><Data ss:Type="${isNumber ? 'Number' : 'String'}">${escapeXml(value)}</Data></Cell>`;
+      }).join('');
+      return `<Row>${cells}</Row>`;
+    }).join('');
+    return `<Worksheet ss:Name="${escapeXml(name.slice(0, 31))}"><Table><Row>${headerCells}</Row>${dataRows}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions></Worksheet>`;
+  }).join('');
+
+  const xml = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Borders/><Font/><Interior/><NumberFormat/><Protection/></Style><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#D1FAE5" ss:Pattern="Solid"/></Style></Styles>${worksheetXml}</Workbook>`;
+  const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName.replace(/\.xlsx$/i, '.xls');
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function printDocument(title: string, subtitle: string, body: string) {
@@ -1869,7 +1892,7 @@ function printDocument(title: string, subtitle: string, body: string) {
 function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLedger[]; payments: HosurCreditPayment[]; shops: HosurShop[] }) {
   const open = credits.filter((c) => c.status !== 'cleared' && c.balanceAmount > 0);
   const total = open.reduce((s, c) => s + c.balanceAmount, 0);
-  const exportExcel = () => downloadWorkbook(`hosur-credit-ledger-${TODAY_ISO()}.xlsx`, [
+  const exportExcel = () => downloadWorkbook(`hosur-credit-ledger-${TODAY_ISO()}.xls`, [
     { name: 'Credit Ledger', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status, 'Credit Type': c.creditType })) },
     { name: 'Payment History', rows: payments.map((p) => ({ Shop: shops.find((s) => s.id === p.shopId)?.shopName ?? '', Amount: p.amountCollected, Mode: p.paymentMode, Purpose: p.payment_purpose ?? '', Remarks: p.remarks ?? '', 'Collected By': p.collectedBy, Date: toDateTimeLabel(p.createdAt) })) },
   ]);
@@ -1890,7 +1913,7 @@ function PaymentCollectionTab({ credits, busy, withBusy, collectCredit }: {
 }) {
   const [draft, setDraft] = useState<Record<string, PaymentDraft>>({});
   const getDraft = (id: string) => draft[id] ?? EMPTY_PAYMENT;
-  const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xlsx`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
+  const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xls`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
   return (
     <div className="space-y-4">
       <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Hosur Branch and Admin can clear credit. Partial credit settlement is supported." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
@@ -2055,7 +2078,7 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   const totalSales = shopSales.reduce((s, r) => s + r.total, 0);
   const totalCredit = openCredits.reduce((s, c) => s + c.balanceAmount, 0);
 
-  const exportExcel = () => downloadWorkbook(`hosur-reports-${from}-to-${to}.xlsx`, [
+  const exportExcel = () => downloadWorkbook(`hosur-reports-${from}-to-${to}.xls`, [
     { name: 'Shop Sales', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Sales: r.total, 'Open Credit': r.credit })) },
     { name: 'Item Sales', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Amount: r.total })) },
     { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Status: c.status })) },
