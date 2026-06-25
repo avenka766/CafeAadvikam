@@ -238,8 +238,9 @@ export default function BottomNav() {
     );
   } else if (currentUser.role === "packing") {
     navItems.push(
-      { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/packing" },
-      { label: "Dispatch", icon: <History className="size-5" />, path: "/bakery/packing?tab=dispatched" },
+      { label: "Transfer Out", icon: <Package className="size-5" />, path: "/bakery/packing" },
+      { label: "Transfer In", icon: <History className="size-5" />, path: "/bakery/packing?tab=transfer-in" },
+      { label: "Selling", icon: <ShoppingCart className="size-5" />, path: "/bakery/packing?tab=selling" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/packing?tab=closure" },
     );
   } else if (currentUser.role === "branch_vrsnb") {
