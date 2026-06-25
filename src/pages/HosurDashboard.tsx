@@ -32,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -800,7 +801,7 @@ export default function HosurDashboard() {
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('admin_notifications').select('*').eq('recipient_role', isAdminRef.current ? 'admin' : 'branch_hosur').or('type.ilike.%stock%,type.ilike.%packing%,title.ilike.%stock%,title.ilike.%packing%,body.ilike.%stock%,body.ilike.%packing%').order('created_at', { ascending: false }).limit(100),
+        supabase.from('admin_notifications').select('*').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
       ]);
 
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
@@ -1236,41 +1237,24 @@ export default function HosurDashboard() {
     }
   };
 
-  const stats = {
-    todayBills: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).length,
-    todayCollection: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).reduce((sum, bill) => sum + bill.paidAmount, 0)
-      + payments
-        .filter((p) => p.createdAt.slice(0, 10) === TODAY_ISO() && p.remarks !== 'Hosur partial payment at billing')
-        .reduce((sum, p) => sum + p.amountCollected, 0),
-    pendingCredit: openCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
-    overdue: overdueCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
-  };
+
 
   return (
-    <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
-      <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="flex items-center justify-end gap-3 px-4 py-3 md:px-5 xl:px-6">
-          <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            <span className="hidden sm:inline">Refresh</span>
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2 px-4 pb-3 md:grid-cols-4 md:px-5 xl:px-6">
-          <Metric label="Today Bills" value={stats.todayBills} icon={<Receipt className="size-4" />} tone="emerald" />
-          <Metric label="Today Collection" value={money(stats.todayCollection)} icon={<IndianRupee className="size-4" />} tone="blue" />
-          <Metric label="Pending Credit" value={money(stats.pendingCredit)} icon={<CreditCard className="size-4" />} tone="amber" />
-          <Metric label="Overdue" value={money(stats.overdue)} icon={<AlertTriangle className="size-4" />} tone="red" />
-        </div>
-      </div>
-
-      <div className="grid min-h-[calc(100dvh-230px)] lg:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="min-h-[calc(100dvh-72px)] bg-slate-50/50">
+      <div className="grid min-h-[calc(100dvh-72px)] lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="hidden border-r border-white/10 bg-slate-950 p-4 text-white lg:block">
-          <div className="sticky top-[188px]">
+          <div className="sticky top-20">
             <p className="mb-3 px-2 text-[10px] font-black uppercase tracking-[.22em] text-emerald-300">Hosur workspace</p>
             <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
           </div>
         </aside>
         <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-3 flex justify-end">
+            <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
+              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              Refresh
+            </button>
+          </div>
           <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white lg:hidden">
             <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
           </div>
@@ -1861,12 +1845,37 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
   );
 }
 
+
+function downloadWorkbook(fileName: string, sheets: { name: string; rows: Record<string, string | number | null>[] }[]) {
+  const workbook = XLSX.utils.book_new();
+  sheets.forEach(({ name, rows }) => {
+    const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Message: 'No records available' }]);
+    const widths = Object.keys(rows[0] ?? { Message: '' }).map((key) => ({ wch: Math.min(36, Math.max(12, key.length + 4)) }));
+    worksheet['!cols'] = widths;
+    XLSX.utils.book_append_sheet(workbook, worksheet, name.slice(0, 31));
+  });
+  XLSX.writeFile(workbook, fileName);
+}
+
+function printDocument(title: string, subtitle: string, body: string) {
+  const popup = window.open('', '_blank', 'width=1100,height=780');
+  if (!popup) return;
+  popup.document.write(`<!doctype html><html><head><title>${title}</title><style>
+    @page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;background:#fff;font-size:11px}.wrap{padding:18px}.head{display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #0f766e;padding-bottom:12px;margin-bottom:14px}.brand{font-size:11px;font-weight:800;letter-spacing:.16em;color:#0f766e;text-transform:uppercase}h1{font-size:24px;margin:5px 0 0}.muted{color:#64748b}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.kpi{border:1px solid #dbe4ea;border-radius:10px;padding:10px}.kpi b{display:block;font-size:17px;margin-top:4px}.section{margin-top:14px}.section h2{font-size:13px;margin:0 0 7px;background:#ecfdf5;color:#065f46;padding:7px 9px;border-radius:7px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #dbe4ea;padding:6px 7px;text-align:left}th{background:#f1f5f9;font-size:9px;text-transform:uppercase}.right{text-align:right}.sign{margin-top:30px;display:grid;grid-template-columns:repeat(3,1fr);gap:40px}.line{border-top:1px solid #334155;padding-top:6px;text-align:center}.footer{margin-top:14px;text-align:center;color:#64748b;font-size:9px}@media print{button{display:none}.wrap{padding:0}}
+  </style></head><body><div class="wrap"><div class="head"><div><div class="brand">Cafe Aadvikam · Hosur Branch</div><h1>${title}</h1><div class="muted">${subtitle}</div></div><div class="muted">Generated ${new Date().toLocaleString('en-IN')}</div></div>${body}<div class="footer">System generated Hosur branch report</div></div><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}</script></body></html>`);
+  popup.document.close();
+}
+
 function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLedger[]; payments: HosurCreditPayment[]; shops: HosurShop[] }) {
   const open = credits.filter((c) => c.status !== 'cleared' && c.balanceAmount > 0);
   const total = open.reduce((s, c) => s + c.balanceAmount, 0);
+  const exportExcel = () => downloadWorkbook(`hosur-credit-ledger-${TODAY_ISO()}.xlsx`, [
+    { name: 'Credit Ledger', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status, 'Credit Type': c.creditType })) },
+    { name: 'Payment History', rows: payments.map((p) => ({ Shop: shops.find((s) => s.id === p.shopId)?.shopName ?? '', Amount: p.amountCollected, Mode: p.paymentMode, Purpose: p.payment_purpose ?? '', Remarks: p.remarks ?? '', 'Collected By': p.collectedBy, Date: toDateTimeLabel(p.createdAt) })) },
+  ]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Track shop-wise credit, due dates, overdue amounts, and payment history." />
+      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Track shop-wise credit, due dates, overdue amounts, and payment history." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       <div className="grid gap-3 md:grid-cols-3"><Metric label="Open Credits" value={open.length} icon={<CreditCard className="size-4" />} tone="amber" /><Metric label="Pending Amount" value={money(total)} icon={<IndianRupee className="size-4" />} tone="red" /><Metric label="Payments Recorded" value={payments.length} icon={<WalletCards className="size-4" />} tone="emerald" /></div>
       <Card className="space-y-2">{credits.length === 0 ? <EmptyState icon={<CreditCard className="size-6" />} title="No credit records" /> : credits.map((credit) => <div key={credit.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Due {toDateLabel(credit.dueDate)} · WhatsApp {shops.find((s) => s.id === credit.shopId)?.whatsappNumber ?? '—'}</p></div><Badge tone={statusTone(credit.status)}>{credit.status}</Badge></div><div className="mt-3 grid gap-2 text-sm md:grid-cols-3"><div className="rounded-xl bg-muted p-2">Opening <b>{money(credit.openingAmount)}</b></div><div className="rounded-xl bg-muted p-2">Paid <b>{money(credit.paidAmount)}</b></div><div className="rounded-xl bg-red-50 p-2 text-red-700">Balance <b>{money(credit.balanceAmount)}</b></div></div></div>)}</Card>
     </div>
@@ -1881,9 +1890,10 @@ function PaymentCollectionTab({ credits, busy, withBusy, collectCredit }: {
 }) {
   const [draft, setDraft] = useState<Record<string, PaymentDraft>>({});
   const getDraft = (id: string) => draft[id] ?? EMPTY_PAYMENT;
+  const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xlsx`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Hosur Branch and Admin can clear credit. Partial credit settlement is supported." />
+      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Hosur Branch and Admin can clear credit. Partial credit settlement is supported." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       {credits.length === 0 ? <EmptyState icon={<WalletCards className="size-6" />} title="No pending credit to collect" /> : credits.map((credit) => {
         const d = getDraft(credit.id);
         return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
@@ -1931,124 +1941,73 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   logs: HosurWhatsappLog[];
 }) {
   const [date, setDate] = useState(TODAY_ISO());
+  const [openingCash, setOpeningCash] = useState('');
+  const [countedCash, setCountedCash] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [closedBy, setClosedBy] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const dayBills = bills.filter((b) => (b.confirmedAt ?? b.createdAt).slice(0, 10) === date);
   const dayOrders = orders.filter((o) => o.createdAt.slice(0, 10) === date);
   const dayPayments = payments.filter((p) => p.createdAt.slice(0, 10) === date);
   const dayDisputes = disputes.filter((d) => d.createdAt.slice(0, 10) === date);
   const dayLogs = logs.filter((l) => l.createdAt.slice(0, 10) === date);
+  const cashBills = dayBills.filter((b) => b.paymentMode === 'cash').reduce((s, b) => s + b.paidAmount, 0);
+  const upiBills = dayBills.filter((b) => b.paymentMode === 'upi').reduce((s, b) => s + b.paidAmount, 0);
+  const cardBills = dayBills.filter((b) => b.paymentMode === 'card').reduce((s, b) => s + b.paidAmount, 0);
+  const bankBills = dayBills.filter((b) => b.paymentMode === 'bank').reduce((s, b) => s + b.paidAmount, 0);
+  const mixedBills = dayBills.filter((b) => b.paymentMode === 'mixed').reduce((s, b) => s + b.paidAmount, 0);
+  const cashCollections = dayPayments.filter((p) => p.paymentMode === 'cash').reduce((s, p) => s + p.amountCollected, 0);
+  const nonCashCollections = dayPayments.filter((p) => p.paymentMode !== 'cash').reduce((s, p) => s + p.amountCollected, 0);
+  const totalSales = dayBills.reduce((s, b) => s + b.subtotal, 0);
+  const totalCredit = dayBills.reduce((s, b) => s + b.creditAmount, 0);
+  const totalCollected = dayBills.reduce((s, b) => s + b.paidAmount, 0) + dayPayments.reduce((s, p) => s + p.amountCollected, 0);
+  const expectedCash = Number(openingCash || 0) + cashBills + cashCollections;
+  const difference = Number(countedCash || 0) - expectedCash;
 
-  const fullPayments = dayBills.filter((b) => b.paymentType === 'full').reduce((s, b) => s + b.paidAmount, 0);
-  const creditBills = dayBills.filter((b) => b.paymentType === 'credit').reduce((s, b) => s + b.creditAmount, 0);
-  const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
-  const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
-  const clearedCredit = dayPayments.filter((p) =>
-    p.payment_purpose === 'credit_collection'
-  ).reduce((s, p) => s + p.amountCollected, 0);
+  useEffect(() => {
+    let active = true;
+    void supabase.from('hosur_daily_closures').select('*').eq('closure_date', date).maybeSingle().then(({ data }) => {
+      if (!active) return;
+      setOpeningCash(data ? String(data.opening_cash ?? '') : '');
+      setCountedCash(data ? String(data.counted_cash ?? '') : '');
+      setRemarks(data?.remarks ?? '');
+      setClosedBy(data?.closed_by ?? '');
+      setSaved(Boolean(data));
+    });
+    return () => { active = false; };
+  }, [date]);
 
-  const totalCollection = fullPayments + partialPaid + clearedCredit;
-  const totalCredit = creditBills + partialCredit;
+  const saveClosure = async () => {
+    setSaving(true);
+    const { error } = await supabase.from('hosur_daily_closures').upsert({
+      closure_date: date, opening_cash: Number(openingCash || 0), cash_sales: cashBills, cash_collections: cashCollections,
+      upi_total: upiBills, card_total: cardBills, bank_total: bankBills, mixed_total: mixedBills + nonCashCollections,
+      gross_sales: totalSales, credit_given: totalCredit, total_collection: totalCollected, expected_cash: expectedCash,
+      counted_cash: Number(countedCash || 0), difference, bills_count: dayBills.length, orders_count: dayOrders.length,
+      disputes_count: dayDisputes.length, whatsapp_failed: dayLogs.filter((l) => l.status === 'failed').length,
+      remarks, closed_by: closedBy, closed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }, { onConflict: 'closure_date' });
+    setSaving(false);
+    if (error) throw error;
+    setSaved(true);
+  };
 
-  const waSent = dayLogs.filter((l) => l.status === 'sent').length;
-  const waFailed = dayLogs.filter((l) => l.status === 'failed').length;
+  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : 'Draft'}`, `
+    <div class="grid"><div class="kpi">Opening Cash<b>${money(Number(openingCash || 0))}</b></div><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Total Collection<b>${money(totalCollected)}</b></div><div class="kpi">Credit Given<b>${money(totalCredit)}</b></div></div>
+    <div class="section"><h2>Cash Reconciliation</h2><table><tbody><tr><td>Opening cash</td><td class="right">${money(Number(openingCash || 0))}</td><td>Cash sales</td><td class="right">${money(cashBills)}</td></tr><tr><td>Credit collections in cash</td><td class="right">${money(cashCollections)}</td><td>Expected cash</td><td class="right">${money(expectedCash)}</td></tr><tr><td>Counted closing cash</td><td class="right">${money(Number(countedCash || 0))}</td><td>Difference</td><td class="right">${money(difference)}</td></tr></tbody></table></div>
+    <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed / Other Collections</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills)}</td><td class="right">${money(cardBills)}</td><td class="right">${money(bankBills)}</td><td class="right">${money(mixedBills + nonCashCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
+    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Failed</th><th>Closed By</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${dayLogs.filter((l) => l.status === 'failed').length}</td><td>${closedBy || '—'}</td></tr></tbody></table></div>
+    <div class="section"><h2>Remarks</h2><div>${remarks || 'No remarks'}</div></div><div class="sign"><div class="line">Cashier Signature</div><div class="line">Branch In-Charge</div><div class="line">Accounts Verification</div></div>`);
 
-  return (
-    <div className="space-y-5 print:bg-white">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="font-display text-xl font-black text-foreground">Daily Closure</h2>
-          <p className="text-sm text-muted-foreground">Handover summary for Hosur Branch</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
-          <button className={softButton} onClick={() => window.print()}>
-            <Printer className="size-4" /> Print
-          </button>
-        </div>
-      </div>
-
-      {/* Top KPI row */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Orders Placed" value={dayOrders.length} icon={<ShoppingCart className="size-4" />} tone="blue" />
-        <Metric label="Bills Raised" value={dayBills.length} icon={<Receipt className="size-4" />} tone="emerald" />
-        <Metric label="Cash Collected" value={money(totalCollection)} icon={<IndianRupee className="size-4" />} tone="emerald" />
-        <Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
-      </div>
-
-      {/* Payment Breakdown */}
-      <div className="rounded-2xl border bg-card p-4 space-y-3">
-        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Payment Breakdown</h3>
-        <div className="grid gap-2 md:grid-cols-3">
-          {[
-            { label: 'Full Payments', value: money(fullPayments), color: 'text-emerald-700 bg-emerald-50' },
-            { label: 'Partial — Paid Now', value: money(partialPaid), color: 'text-blue-700 bg-blue-50' },
-            { label: 'Credit Cleared Today', value: money(clearedCredit), color: 'text-teal-700 bg-teal-50' },
-            { label: 'Full Credit Bills', value: money(creditBills), color: 'text-red-700 bg-red-50' },
-            { label: 'Partial — Credit Balance', value: money(partialCredit), color: 'text-orange-700 bg-orange-50' },
-          ].map(({ label, value, color }) => (
-            <div key={label} className={cn('rounded-2xl p-3', color)}>
-              <p className="text-xs font-bold uppercase opacity-70">{label}</p>
-              <p className="mt-1 font-display text-xl font-black">{value}</p>
-            </div>
-          ))}
-          <div className="rounded-2xl p-3 bg-slate-900 text-white">
-            <p className="text-xs font-bold uppercase opacity-70">Total Collected</p>
-            <p className="mt-1 font-display text-xl font-black">{money(totalCollection)}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Activity Summary */}
-      <div className="rounded-2xl border bg-card p-4 space-y-3">
-        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Activity Summary</h3>
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          {[
-            { label: 'Disputes Raised', value: dayDisputes.length, tone: dayDisputes.length > 0 ? 'text-amber-700' : 'text-foreground' },
-            { label: 'WhatsApp Sent', value: waSent, tone: 'text-emerald-700' },
-            { label: 'WhatsApp Failed', value: waFailed, tone: waFailed > 0 ? 'text-red-700' : 'text-foreground' },
-            { label: 'Payments Received', value: dayPayments.length, tone: 'text-blue-700' },
-          ].map(({ label, value, tone }) => (
-            <div key={label} className="rounded-2xl border bg-muted/30 p-3">
-              <p className="text-xs text-muted-foreground font-semibold">{label}</p>
-              <p className={cn('mt-1 font-display text-2xl font-black', tone)}>{value}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Bill List */}
-      {dayBills.length > 0 && (
-        <div className="rounded-2xl border bg-card p-4 space-y-3">
-          <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Bills for {toDateLabel(date)}</h3>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2">Bill No</th>
-                  <th className="px-3 py-2">Shop</th>
-                  <th className="px-3 py-2">Amount</th>
-                  <th className="px-3 py-2">Type</th>
-                  <th className="px-3 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {dayBills.map((b) => (
-                  <tr key={b.id} className="bg-card">
-                    <td className="px-3 py-2 font-semibold">{b.billNo}</td>
-                    <td className="px-3 py-2">{b.shopName}</td>
-                    <td className="px-3 py-2 font-black">{money(b.subtotal)}</td>
-                    <td className="px-3 py-2 capitalize">{b.paymentType ?? '—'}</td>
-                    <td className="px-3 py-2"><Badge tone={statusTone(b.status)}>{b.status}</Badge></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return <div className="space-y-5">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-2xl font-black">Daily Closure</h2><p className="text-sm text-muted-foreground">Record opening cash, reconcile collections, close the counter, and print a proper handover summary.</p></div><div className="flex flex-wrap gap-2"><input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} /><button className={softButton} onClick={printSummary}><Printer className="size-4" /> Print Summary</button></div></div>
+    <div className="grid gap-3 md:grid-cols-4"><Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/><Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/><Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/><Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/></div>
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" value={openingCash} onChange={(e)=>setOpeningCash(e.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" value={countedCash} onChange={(e)=>setCountedCash(e.target.value)} /></Field><Field label="Closed by"><input className={inputClass} value={closedBy} onChange={(e)=>setClosedBy(e.target.value)} placeholder="Cashier / in-charge name" /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} onChange={(e)=>setRemarks(e.target.value)} /></Field><button className={primaryButton} disabled={saving || !closedBy.trim()} onClick={()=>void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved?'Update Closure':'Close Counter'}</button></Card>
+    <Card className="space-y-3"><h3 className="font-black">Reconciliation</h3>{[['Opening Cash',Number(openingCash||0)],['Cash Sales',cashBills],['Cash Credit Collection',cashCollections],['Expected Cash',expectedCash],['Counted Cash',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex justify-between rounded-xl bg-muted/40 px-3 py-2 text-sm"><span>{label}</span><b>{money(Number(value))}</b></div>)}</Card></div>
+    <Card><h3 className="mb-3 font-black">Payment Breakdown</h3><div className="grid gap-2 md:grid-cols-5">{[['Cash',cashBills+cashCollections],['UPI',upiBills],['Card',cardBills],['Bank',bankBills],['Mixed / Other',mixedBills+nonCashCollections]].map(([label,value])=><div key={String(label)} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{money(Number(value))}</p></div>)}</div></Card>
+  </div>;
 }
 
 function ReportsTab({ shops, bills, billItems, credits, logs, reminders, disputes }: {
@@ -2096,21 +2055,19 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   const totalSales = shopSales.reduce((s, r) => s + r.total, 0);
   const totalCredit = openCredits.reduce((s, c) => s + c.balanceAmount, 0);
 
-  const exportCsv = () => {
-    const lines = [
-      ['Report', 'Name', 'Amount/Count'],
-      ...shopSales.map((r) => ['Shop Sales', r.shop, String(r.total)]),
-      ...itemSales.map((r) => ['Item Sales', r.item, String(r.total)]),
-      ...openCredits.map((c) => ['Open Credit', c.shopName, String(c.balanceAmount)]),
-    ];
-    const blob = new Blob([lines.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `hosur-reports-${from}-to-${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  const exportExcel = () => downloadWorkbook(`hosur-reports-${from}-to-${to}.xlsx`, [
+    { name: 'Shop Sales', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Sales: r.total, 'Open Credit': r.credit })) },
+    { name: 'Item Sales', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Amount: r.total })) },
+    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Status: c.status })) },
+    { name: 'WhatsApp', rows: rangeLogs.map((l) => ({ Shop: l.shopName, Bill: l.billNo ?? '', Type: l.messageType, Status: l.status, Date: toDateTimeLabel(l.createdAt), Error: l.errorMessage ?? '' })) },
+    { name: 'Disputes', rows: rangeDisputes.map((d) => ({ Order: d.orderNumber ?? '', Item: d.itemName, Expected: d.expectedQuantity, Received: d.receivedQuantity, Unit: d.unit, Status: d.status })) },
+  ]);
+
+  const printReport = () => printDocument('Hosur Management Report', `${toDateLabel(from)} to ${toDateLabel(to)}`, `
+    <div class="grid"><div class="kpi">Total Sales<b>${money(totalSales)}</b></div><div class="kpi">Bills<b>${rangeBills.length}</b></div><div class="kpi">Open Credit<b>${money(totalCredit)}</b></div><div class="kpi">Shops Served<b>${shopSales.length}</b></div></div>
+    <div class="section"><h2>Shop-wise Sales</h2><table><thead><tr><th>Shop</th><th>Bills</th><th class="right">Sales</th><th class="right">Open Credit</th></tr></thead><tbody>${shopSales.map((r)=>`<tr><td>${r.shop}</td><td>${r.bills}</td><td class="right">${money(r.total)}</td><td class="right">${money(r.credit)}</td></tr>`).join('') || '<tr><td colspan="4">No sales</td></tr>'}</tbody></table></div>
+    <div class="section"><h2>Top Item Sales</h2><table><thead><tr><th>Item</th><th class="right">Quantity</th><th class="right">Amount</th></tr></thead><tbody>${itemSales.slice(0,30).map((r)=>`<tr><td>${r.item}</td><td class="right">${num(r.qty)}</td><td class="right">${money(r.total)}</td></tr>`).join('') || '<tr><td colspan="3">No item sales</td></tr>'}</tbody></table></div>`);
+
 
   const reportTabs = [
     { id: 'sales', label: '🏪 Shop Sales' },
@@ -2132,8 +2089,8 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
           <input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
           <span className="self-center text-muted-foreground text-sm">to</span>
           <input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          <button className={softButton} onClick={exportCsv}><Download className="size-4" /> CSV</button>
-          <button className={softButton} onClick={() => window.print()}><Printer className="size-4" /> Print</button>
+          <button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel</button>
+          <button className={softButton} onClick={printReport}><Printer className="size-4" /> Print Summary</button>
         </div>
       </div>
 
