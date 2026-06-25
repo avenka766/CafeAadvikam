@@ -161,12 +161,12 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'packing':
       return [
-        { label: 'Transfer Out', path: '/bakery/packing', icon: <Truck className="size-4" />, group: 'Main' },
-        { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Package className="size-4" />, group: 'Main' },
-        { label: 'Selling', path: '/bakery/packing?tab=selling', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
-        { label: 'Leftover', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
+        { label: 'Packing Orders / Transfer Out', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Billing', path: '/bakery/packing?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
+        { label: 'Leftover Items', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
         { label: 'Dispatched', path: '/bakery/packing?tab=dispatched', icon: <Truck className="size-4" />, group: 'Stock' },
-        { label: 'Cashier / Daily Closure', path: '/bakery/packing?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Daily Closure', path: '/bakery/packing?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
       ];
     case 'receiver_vrsnb':
       return [
