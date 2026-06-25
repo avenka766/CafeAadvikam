@@ -31,9 +31,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'transfer-in' | 'selling' | 'leftover' | 'dispatched' | 'closure';
+type ActiveTab  = 'orders' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'transfer-in', 'selling', 'leftover', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -728,12 +728,14 @@ export default function PackingDashboard() {
 
   const requestedTab = searchParams.get('tab') as ActiveTab | null;
   const activeTab: ActiveTab = requestedTab && PACKING_TABS.includes(requestedTab) ? requestedTab : 'orders';
+  const [closureSubTab, setClosureSubTab] = useState<'transfer' | 'billing'>('transfer');
   const branchStock = useBranchStore(state => state.stock.SNB);
+  const branchSales = useBranchStore(state => state.sales.SNB);
+  const branchCreditSales = useBranchStore(state => state.creditSales.SNB);
   const fetchBranchData = useBranchStore(state => state.fetchBranchData);
-  useEffect(() => { if (activeTab === 'selling') void fetchBranchData('SNB'); }, [activeTab, fetchBranchData]);
-
-  if (activeTab === 'transfer-in') return <PackingTransferInTab />;
-  if (activeTab === 'selling') return <div className="dashboard-screen min-h-screen p-3 md:p-5"><BranchBillingProTab branch="SNB" branchStock={branchStock} /></div>;
+  useEffect(() => {
+    if (activeTab === 'billing' || activeTab === 'closure') void fetchBranchData('SNB');
+  }, [activeTab, fetchBranchData]);
 
   const packingOrders = useMemo(
     () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
@@ -857,6 +859,24 @@ export default function PackingDashboard() {
   const pendingForPeriod = readyToPackOrders.filter(order => branchFilter === 'all' || order.targetBranch === branchFilter).length;
   const holdCancelledForPeriod = 0;
 
+  const billingSalesForPeriod = useMemo(() => branchSales.filter(sale => new Date(sale.soldAt) >= cutoff), [branchSales, cutoff]);
+  const billingCreditForPeriod = useMemo(() => branchCreditSales.filter(sale => new Date(sale.createdAt) >= cutoff), [branchCreditSales, cutoff]);
+  const billingSummary = useMemo(() => {
+    const methodTotals: Record<string, number> = {};
+    let gross = 0;
+    const bills = new Set<string>();
+    billingSalesForPeriod.forEach(sale => {
+      const amount = sale.quantitySold * sale.unitPrice;
+      gross += amount;
+      const method = (sale.paymentMethod || 'cash').toLowerCase();
+      methodTotals[method] = (methodTotals[method] || 0) + amount;
+      if (sale.billNo) bills.add(sale.billNo);
+    });
+    const creditRaised = billingCreditForPeriod.reduce((sum, sale) => sum + sale.creditAmount, 0);
+    const creditCollected = billingCreditForPeriod.reduce((sum, sale) => sum + sale.amountPaid, 0);
+    return { gross, methodTotals, billCount: bills.size, creditRaised, creditCollected };
+  }, [billingSalesForPeriod, billingCreditForPeriod]);
+
   const handleExport = () => {
     setIsExporting(true);
     try {
@@ -892,10 +912,10 @@ export default function PackingDashboard() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
@@ -933,7 +953,11 @@ export default function PackingDashboard() {
             </div>
           </div>
 
-          {activeTab === 'orders' ? (
+          {activeTab === 'transfer-in' ? (
+            <PackingTransferInTab />
+          ) : activeTab === 'billing' ? (
+            <div className="min-h-[70vh]"><BranchBillingProTab branch="SNB" branchStock={branchStock} /></div>
+          ) : activeTab === 'orders' ? (
             <section className="space-y-4">
               {/* Filters */}
               <div className="rounded-2xl border border-border bg-card p-3 md:p-4">
@@ -1066,6 +1090,10 @@ export default function PackingDashboard() {
             </section>
           ) : (
             <section className="space-y-4">
+              <div className="inline-flex rounded-xl border border-border bg-card p-1 shadow-sm">
+                <button onClick={() => setClosureSubTab('transfer')} className={cn('px-4 py-2 rounded-lg text-xs font-body font-bold transition-all', closureSubTab === 'transfer' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>Items Sent Out</button>
+                <button onClick={() => setClosureSubTab('billing')} className={cn('px-4 py-2 rounded-lg text-xs font-body font-bold transition-all', closureSubTab === 'billing' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>Billing Amount</button>
+              </div>
               <div className="rounded-2xl border border-border bg-card p-3 md:p-4 space-y-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex gap-1.5 flex-wrap">
@@ -1094,6 +1122,7 @@ export default function PackingDashboard() {
                 </div>
               </div>
 
+              {closureSubTab === 'transfer' ? (
               <div className="grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
                 <div className="rounded-2xl border border-border bg-card overflow-hidden">
                   <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
@@ -1213,6 +1242,26 @@ export default function PackingDashboard() {
                   </div>
                 </div>
               </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-2xl border border-border bg-card p-4"><p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Bills</p><p className="mt-2 text-2xl font-display font-bold">{billingSummary.billCount}</p></div>
+                    <div className="rounded-2xl border border-border bg-card p-4"><p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Gross Sales</p><p className="mt-2 text-2xl font-display font-bold">₹{billingSummary.gross.toFixed(2)}</p></div>
+                    <div className="rounded-2xl border border-border bg-card p-4"><p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Credit Raised</p><p className="mt-2 text-2xl font-display font-bold">₹{billingSummary.creditRaised.toFixed(2)}</p></div>
+                    <div className="rounded-2xl border border-border bg-card p-4"><p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Credit Collected</p><p className="mt-2 text-2xl font-display font-bold">₹{billingSummary.creditCollected.toFixed(2)}</p></div>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border"><p className="text-sm font-body font-bold">Payment Summary</p></div>
+                      <div className="p-4 space-y-2">{Object.entries(billingSummary.methodTotals).length ? Object.entries(billingSummary.methodTotals).map(([method, amount]) => <div key={method} className="flex items-center justify-between rounded-xl border border-border bg-background px-3 py-2"><span className="text-sm font-body font-semibold capitalize">{method}</span><span className="text-sm font-body font-bold">₹{amount.toFixed(2)}</span></div>) : <p className="py-8 text-center text-sm text-muted-foreground">No billing activity for this period.</p>}</div>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border"><p className="text-sm font-body font-bold">Recent Bills</p></div>
+                      <div className="max-h-[420px] overflow-y-auto divide-y divide-border">{billingSalesForPeriod.length ? billingSalesForPeriod.slice(0, 50).map(sale => <div key={sale.id} className="p-3 flex items-start justify-between gap-3"><div><p className="text-sm font-body font-bold">{sale.itemName}</p><p className="text-[10px] text-muted-foreground">{sale.billNo || 'No bill number'} • {sale.paymentMethod || 'Cash'}</p></div><div className="text-right"><p className="text-sm font-body font-bold">₹{(sale.quantitySold * sale.unitPrice).toFixed(2)}</p><p className="text-[10px] text-muted-foreground">{formatDateTime(sale.soldAt)}</p></div></div>) : <p className="py-10 text-center text-sm text-muted-foreground">No bills found.</p>}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </section>
           )}
         </div>
