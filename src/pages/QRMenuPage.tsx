@@ -14,9 +14,9 @@ export default function QRMenuPage() {
 
   useEffect(() => {
     if (selectedTable === 'general') {
-      setMenuUrl(`${window.location.origin}/order`);
+      setMenuUrl(`${window.location.origin}/cafe-order`);
     } else {
-      setMenuUrl(`${window.location.origin}/order?table=${selectedTable}`);
+      setMenuUrl(`${window.location.origin}/cafe-order?table=${selectedTable}`);
     }
   }, [selectedTable]);
 
@@ -77,7 +77,7 @@ export default function QRMenuPage() {
   const downloadAllTables = async () => {
     for (let idx = 0; idx < TABLE_NUMBERS.length; idx++) {
       const tableNum = TABLE_NUMBERS[idx];
-      const url = `${window.location.origin}/order?table=${tableNum}`;
+      const url = `${window.location.origin}/cafe-order?table=${tableNum}`;
 
       const tempCanvas = document.createElement('canvas');
       await QRCode.toCanvas(tempCanvas, url, {

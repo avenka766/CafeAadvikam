@@ -1,132 +1,124 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft,
   Check,
-  ChevronRight,
+  CheckCircle2,
+  ChefHat,
+  ChevronDown,
   Clock3,
-  CreditCard,
+  Leaf,
   MapPin,
   Minus,
-  PackageCheck,
   Plus,
   Search,
-  ShieldCheck,
   ShoppingBag,
-  Smartphone,
+  Sparkles,
+  StickyNote,
   Trash2,
-  Truck,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
-import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '@/branch/vrsnbItems';
+import { useMenuStore } from '@/stores/menuStore';
+import { useOrderStore } from '@/stores/orderStore';
+import { CAFE_CONFIG, MENU_CATEGORIES, TABLE_NUMBERS } from '@/constants/config';
 import { cn, formatCurrency } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
-import snbLogo from '@/assets/snb-logo.png';
-import bakeryHero from '@/assets/bakery/bakery-counter.jpg';
+import type { OrderType } from '@/types';
+import EmptyState from '@/components/ui/EmptyState';
+import cafeLogo from '@/assets/cafe-logo.png';
 
-const CART_STORAGE_KEY = 'vrsnb-customer-order-v2';
-const PHONE_STORAGE_KEY = 'vrsnb-customer-phone';
-const TAX_RATE = 0.03;
+const MAX_ITEMS_PER_ORDER = 20;
+const MAX_QTY_PER_ITEM = 10;
+const QR_SUBMIT_COOLDOWN_MS = 10_000;
 
-type CartLine = VrsnbItem & { quantity: number };
-type CheckoutForm = {
-  name: string;
-  phone: string;
-  address: string;
-  locationPin: string;
-  note: string;
-  deliverySlot: string;
-};
-type StoredOrderDraft = { cart: CartLine[]; customer: CheckoutForm };
-
-type RazorpayResponse = {
-  razorpay_order_id: string;
-  razorpay_payment_id: string;
-  razorpay_signature: string;
+type SavedDraft = {
+  customerName: string;
+  notes: string;
+  orderType: OrderType;
+  tableNumber: number | null;
+  cart: Array<{ itemId: string; quantity: number }>;
 };
 
-declare global {
-  interface Window {
-    Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
-  }
-}
-
-const EMPTY_CUSTOMER: CheckoutForm = {
-  name: '',
-  phone: '',
-  address: '',
-  locationPin: '',
-  note: '',
-  deliverySlot: 'As soon as possible',
-};
-
-const CATEGORY_EMOJI: Record<string, string> = {
-  CHIPS: '🥔', MURUK: '🥨', MIXTURE: '🥣', PAKODA: '🧆', NIPPAT: '🫓', DAL: '🌾',
-  BAKERY: '🥐', CAKE: '🎂', COOKIES: '🍪', HALWA: '🍮', JAMUN: '🟤',
-  'MYSORE PAK': '🟨', BAKLAVA: '🥮', 'CASHEW SWEETS': '🌰', 'CASHEW BISCUIT': '🍪',
-  'CAKE ROLL': '🍰', BURFI: '◇', PEDA: '🟠', LADDU: '🟡', 'CASHEW LADDU': '🌰',
-  MIX: '🎁', CHOCOLATE: '🍫', SWEETS: '🍬', 'SPL SWEETS': '✨',
-};
-
-function roundMoney(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
-function quantityStep(item: VrsnbItem) {
-  return item.uom === 'Kgs' ? 0.25 : 1;
-}
-
-function quantityLabel(line: CartLine) {
-  return line.uom === 'Kgs' ? `${line.quantity.toFixed(2)} kg` : `${line.quantity} ${line.quantity === 1 ? 'item' : 'items'}`;
-}
-
-function loadStoredDraft(): StoredOrderDraft {
-  if (typeof window === 'undefined') return { cart: [], customer: EMPTY_CUSTOMER };
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || '{}') as Partial<StoredOrderDraft>;
-    return {
-      cart: Array.isArray(parsed.cart) ? parsed.cart : [],
-      customer: { ...EMPTY_CUSTOMER, ...(parsed.customer || {}) },
-    };
-  } catch {
-    return { cart: [], customer: EMPTY_CUSTOMER };
-  }
-}
-
-async function ensureRazorpayLoaded() {
-  if (window.Razorpay) return;
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-vrsnb-razorpay="true"]');
-    if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true });
-      existing.addEventListener('error', () => reject(new Error('Unable to load secure payment.')), { once: true });
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.async = true;
-    script.dataset.vrsnbRazorpay = 'true';
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Unable to load secure payment.'));
-    document.head.appendChild(script);
-  });
+function validTable(value: string | null) {
+  if (!value) return null;
+  const parsed = Number(value);
+  return TABLE_NUMBERS.includes(parsed) ? parsed : null;
 }
 
 export default function QROrderPage() {
   const navigate = useNavigate();
-  const initialDraft = useMemo(loadStoredDraft, []);
-  const [cart, setCart] = useState<CartLine[]>(initialDraft.cart);
-  const [customer, setCustomer] = useState<CheckoutForm>(initialDraft.customer);
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [searchParams] = useSearchParams();
+  const tableFromQr = validTable(searchParams.get('table'));
+  const storageKey = `cafe-table-order:${tableFromQr ?? 'general'}`;
+
+  const { items, loadMenu, loading } = useMenuStore();
+  const {
+    cart,
+    addToCart,
+    updateCartQuantity,
+    removeFromCart,
+    clearCart,
+    getCartTotal,
+    getCartCount,
+    submitOrder,
+  } = useOrderStore();
+
+  const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
-  const [screen, setScreen] = useState<'menu' | 'checkout'>('menu');
-  const [paying, setPaying] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
+  const [customerName, setCustomerName] = useState('');
+  const [notes, setNotes] = useState('');
+  const [orderType, setOrderType] = useState<OrderType>(tableFromQr ? 'dine_in' : 'takeaway');
+  const [tableNumber, setTableNumber] = useState<number | null>(tableFromQr);
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [addedNotice, setAddedNotice] = useState('');
+  const [placedOrder, setPlacedOrder] = useState<{ id: string; number: number | null } | null>(null);
+  const restoredRef = useRef(false);
+  const lastSubmitTime = useRef(0);
+
+  useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  const enabledItems = useMemo(() => items.filter((item) => item.enabled), [items]);
+  const activeCategories = useMemo(
+    () => MENU_CATEGORIES.filter((category) => enabledItems.some((item) => item.category === category.id)),
+    [enabledItems],
+  );
 
   useEffect(() => {
-    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify({ cart, customer } satisfies StoredOrderDraft));
-  }, [cart, customer]);
+    if (loading || restoredRef.current || enabledItems.length === 0) return;
+    restoredRef.current = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as SavedDraft | null;
+      if (!saved) return;
+      setCustomerName(saved.customerName || '');
+      setNotes(saved.notes || '');
+      setOrderType(tableFromQr ? 'dine_in' : (saved.orderType || 'takeaway'));
+      setTableNumber(tableFromQr ?? saved.tableNumber ?? null);
+      if (cart.length === 0 && Array.isArray(saved.cart)) {
+        saved.cart.forEach(({ itemId, quantity }) => {
+          const item = enabledItems.find((menuItem) => menuItem.id === itemId);
+          if (!item) return;
+          addToCart(item);
+          if (quantity > 1) updateCartQuantity(item.id, Math.min(MAX_QTY_PER_ITEM, quantity));
+        });
+      }
+    } catch {
+      localStorage.removeItem(storageKey);
+    }
+  }, [addToCart, cart.length, enabledItems, loading, storageKey, tableFromQr, updateCartQuantity]);
+
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    const draft: SavedDraft = {
+      customerName,
+      notes,
+      orderType,
+      tableNumber,
+      cart: cart.map((line) => ({ itemId: line.menuItem.id, quantity: line.quantity })),
+    };
+    localStorage.setItem(storageKey, JSON.stringify(draft));
+  }, [cart, customerName, notes, orderType, storageKey, tableNumber]);
 
   useEffect(() => {
     if (!addedNotice) return;
@@ -135,299 +127,339 @@ export default function QROrderPage() {
   }, [addedNotice]);
 
   const filteredItems = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return VRSNB_ITEMS.filter((item) => (
+    const query = search.trim().toLowerCase();
+    return enabledItems.filter((item) => (
       (selectedCategory === 'all' || item.category === selectedCategory)
-      && (!q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q) || String(item.barcode).includes(q))
+      && (!query || item.name.toLowerCase().includes(query))
     ));
-  }, [search, selectedCategory]);
+  }, [enabledItems, search, selectedCategory]);
 
-  const subtotal = useMemo(() => roundMoney(cart.reduce((sum, line) => sum + line.price * line.quantity, 0)), [cart]);
-  const taxAmount = useMemo(() => roundMoney(subtotal * TAX_RATE), [subtotal]);
-  const grandTotal = useMemo(() => roundMoney(subtotal + taxAmount), [subtotal, taxAmount]);
-  const cartUnits = useMemo(() => cart.reduce((sum, line) => sum + line.quantity, 0), [cart]);
+  const cartCount = getCartCount();
+  const cartTotal = getCartTotal();
+  const getQty = (id: string) => cart.find((line) => line.menuItem.id === id)?.quantity || 0;
 
-  const getQuantity = (barcode: number) => cart.find((line) => line.barcode === barcode)?.quantity || 0;
-
-  const setQuantity = (item: VrsnbItem, next: number) => {
-    const safeNext = Math.max(0, Math.round(next * 100) / 100);
-    setCart((current) => {
-      if (safeNext <= 0) return current.filter((line) => line.barcode !== item.barcode);
-      const existing = current.some((line) => line.barcode === item.barcode);
-      return existing
-        ? current.map((line) => line.barcode === item.barcode ? { ...line, quantity: safeNext } : line)
-        : [...current, { ...item, quantity: safeNext }];
-    });
+  const changeQuantity = (itemId: string, quantity: number) => {
+    updateCartQuantity(itemId, Math.max(0, Math.min(MAX_QTY_PER_ITEM, quantity)));
   };
 
-  const addItem = (item: VrsnbItem) => {
-    setQuantity(item, getQuantity(item.barcode) + quantityStep(item));
-    setAddedNotice(`${item.name} added to cart`);
-  };
-
-  const validateCheckout = () => {
-    if (!cart.length) return 'Add at least one bakery item.';
-    if (!customer.name.trim()) return 'Enter the customer name.';
-    if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, ''))) return 'Enter a valid 10-digit mobile number.';
-    if (!customer.address.trim()) return 'Enter the complete delivery address.';
-    if (!customer.locationPin.trim()) return 'Enter the area PIN code or map link.';
-    return '';
-  };
-
-  const openCheckout = () => {
-    if (!cart.length) {
-      setError('Add at least one item before checkout.');
+  const addItem = (item: (typeof enabledItems)[number]) => {
+    const current = getQty(item.id);
+    if (current >= MAX_QTY_PER_ITEM) {
+      setAddedNotice(`Maximum ${MAX_QTY_PER_ITEM} per item`);
       return;
     }
-    setError('');
-    setScreen('checkout');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    addToCart(item);
+    setAddedNotice(`${item.name} added`);
   };
 
-  const payAndPlaceOrder = async () => {
-    const validationError = validateCheckout();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
-    setPaying(true);
+  const handleSubmitOrder = async () => {
     setError('');
+    if (cart.length === 0) return setError('Add at least one item before placing the order.');
+    if (cart.length > MAX_ITEMS_PER_ORDER) return setError(`Maximum ${MAX_ITEMS_PER_ORDER} different items per order.`);
+    if (cart.some((line) => line.quantity > MAX_QTY_PER_ITEM)) return setError(`Maximum ${MAX_QTY_PER_ITEM} of any single item.`);
+    if (orderType === 'dine_in' && !tableNumber) return setError('Select your table number.');
+    if (Date.now() - lastSubmitTime.current < QR_SUBMIT_COOLDOWN_MS) return setError('Please wait a few seconds before placing another order.');
+
+    const safeName = customerName.replace(/<[^>]*>/g, '').trim().slice(0, 80);
+    const safeNotes = notes.replace(/<[^>]*>/g, '').trim().slice(0, 300);
+    setSubmitting(true);
+    lastSubmitTime.current = Date.now();
     try {
-      await ensureRazorpayLoaded();
-      const phone = customer.phone.replace(/\D/g, '');
-      const items = cart.map((line) => ({
-        barcode: line.barcode,
-        name: line.name,
-        price: line.price,
-        unit: line.uom,
-        category: line.category,
-        venue: 'bakery',
-        qty: line.quantity,
-      }));
-      const { data, error: createError } = await supabase.functions.invoke('create-razorpay-order', {
-        body: {
-          customer: { ...customer, phone },
-          items,
-          subtotal,
-          taxRate: 3,
-          taxAmount,
-          amount: Math.round(grandTotal * 100),
-          notes: { source: 'vrsnb_customer_booking', deliverySlot: customer.deliverySlot },
-        },
+      const id = await submitOrder({
+        tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+        orderType,
+        notes: safeNotes || undefined,
+        customerName: safeName || undefined,
+        createdBy: tableFromQr ? `QR-Table-${tableFromQr}` : 'QR-Customer',
+        orderSource: 'qr',
       });
-      if (createError || !data?.orderId || !data?.keyId || !data?.publicOrderId) {
-        throw new Error(createError?.message || data?.error || 'Unable to create the order.');
-      }
-      if (!window.Razorpay) throw new Error('Secure payment is unavailable. Please refresh and retry.');
-
-      const razorpay = new window.Razorpay({
-        key: data.keyId,
-        amount: data.amount,
-        currency: 'INR',
-        name: 'VRSNB Bakery',
-        description: `Bakery order · ${cart.length} products`,
-        order_id: data.orderId,
-        prefill: { name: customer.name.trim(), contact: phone },
-        notes: { public_order_id: data.publicOrderId, tax_rate: '3%' },
-        theme: { color: '#16120d' },
-        modal: { ondismiss: () => setPaying(false) },
-        handler: async (response: RazorpayResponse) => {
-          try {
-            const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', {
-              body: { ...response, publicOrderId: data.publicOrderId },
-            });
-            if (verifyError || !verified?.success) throw new Error(verifyError?.message || verified?.error || 'Payment verification failed.');
-            localStorage.setItem(PHONE_STORAGE_KEY, phone);
-            localStorage.removeItem(CART_STORAGE_KEY);
-            setCart([]);
-            setCustomer(EMPTY_CUSTOMER);
-            navigate(`/order/track?phone=${encodeURIComponent(phone)}&order=${encodeURIComponent(verified.orderNumber || data.orderNumber || '')}`, { replace: true });
-          } catch (verificationError) {
-            setError(verificationError instanceof Error ? verificationError.message : 'Payment verification failed.');
-            setPaying(false);
-          }
-        },
-      });
-      razorpay.open();
-    } catch (orderError) {
-      setError(orderError instanceof Error ? orderError.message : 'Unable to place the order.');
-      setPaying(false);
+      const order = useOrderStore.getState().orders.find((entry) => entry.id === id);
+      setPlacedOrder({ id, number: order?.orderNumber ?? null });
+      localStorage.removeItem(storageKey);
+      setCartOpen(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to place the order. Please try again.');
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  const startAnotherOrder = () => {
+    clearCart();
+    setNotes('');
+    setPlacedOrder(null);
+    setError('');
+    localStorage.removeItem(storageKey);
+  };
+
+  if (placedOrder) {
+    return (
+      <main className="min-h-[100dvh] bg-[#fff8eb] px-5 py-10 text-stone-950">
+        <div className="mx-auto flex min-h-[calc(100dvh-5rem)] max-w-lg flex-col justify-center">
+          <section className="overflow-hidden rounded-[2.25rem] border border-emerald-200 bg-white shadow-2xl shadow-emerald-950/10">
+            <div className="bg-gradient-to-br from-emerald-900 via-emerald-800 to-stone-950 px-7 py-9 text-center text-white">
+              <div className="mx-auto grid size-20 place-items-center rounded-full bg-white/15 ring-1 ring-white/25">
+                <CheckCircle2 className="size-11 text-emerald-200" />
+              </div>
+              <p className="mt-5 text-xs font-black uppercase tracking-[0.3em] text-emerald-200">Sent to the kitchen</p>
+              <h1 className="mt-2 font-display text-4xl font-black">Order placed</h1>
+              {placedOrder.number && <p className="mt-4 font-display text-6xl font-black text-amber-300">#{String(placedOrder.number).padStart(3, '0')}</p>}
+              <p className="mt-3 text-sm text-white/70">{orderType === 'dine_in' && tableNumber ? `Table ${tableNumber}` : 'Takeaway'} · We will update the status live.</p>
+            </div>
+            <div className="space-y-3 p-6">
+              <button
+                type="button"
+                onClick={() => navigate(`/cafe-order/track?id=${placedOrder.id}`)}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-stone-950 px-5 py-4 text-sm font-black text-white shadow-lg active:scale-[0.98]"
+              >
+                <ChefHat className="size-5 text-amber-300" /> Track order live
+              </button>
+              <button
+                type="button"
+                onClick={startAnotherOrder}
+                className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-5 py-4 text-sm font-black text-stone-900 active:scale-[0.98]"
+              >
+                Order more for this table
+              </button>
+              <p className="pt-2 text-center text-xs leading-5 text-stone-500">Please remain at your table. Payment can be completed with the cashier or serving staff.</p>
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <main className="min-h-screen bg-[#f7f2e8] text-stone-950">
-      <header className="sticky top-0 z-50 border-b border-stone-200/80 bg-[#f7f2e8]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <button type="button" onClick={() => screen === 'checkout' ? setScreen('menu') : navigate('/')} className="grid size-11 shrink-0 place-items-center rounded-2xl border border-stone-200 bg-white shadow-sm" aria-label="Go back">
-            <ArrowLeft className="size-5" />
-          </button>
-          <button type="button" onClick={() => { setScreen('menu'); window.scrollTo({ top: 0 }); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-            <img src={snbLogo} alt="VRSNB Bakery" className="size-11 rounded-2xl bg-white object-contain p-1.5 shadow-sm" />
-            <div className="min-w-0">
-              <p className="truncate font-display text-lg font-black">VRSNB Bakery</p>
-              <p className="truncate text-[11px] font-bold uppercase tracking-[0.16em] text-amber-800">Fresh bakery ordering</p>
-            </div>
-          </button>
-          <button type="button" onClick={() => navigate('/order/track')} className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-stone-200 bg-white px-3 text-xs font-black shadow-sm sm:px-4">
-            <PackageCheck className="size-4" /><span className="hidden sm:inline">Track order</span>
-          </button>
-        </div>
-      </header>
-
-      {addedNotice && (
-        <div className="fixed left-1/2 top-20 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-full bg-emerald-700 px-4 py-2 text-xs font-black text-white shadow-xl" role="status" aria-live="polite">
-          <Check className="size-4" /> {addedNotice}
-        </div>
-      )}
-
-      {screen === 'menu' ? (
-        <>
-          <section className="relative overflow-hidden bg-stone-950 text-white">
-            <img src={bakeryHero} alt="VRSNB bakery display" className="absolute inset-0 h-full w-full object-cover opacity-35" />
-            <div className="absolute inset-0 bg-gradient-to-r from-black via-black/80 to-black/25" />
-            <div className="relative mx-auto grid max-w-7xl gap-8 px-4 py-12 sm:px-6 md:grid-cols-[1fr_340px] md:items-end md:py-16">
+    <main className="min-h-[100dvh] bg-[#fff8eb] pb-32 text-stone-950">
+      <section className="relative overflow-hidden bg-gradient-to-br from-[#183f34] via-[#0e5a49] to-[#27170c] px-4 pb-7 pt-5 text-white sm:px-6">
+        <div className="absolute -right-16 -top-16 size-56 rounded-full bg-amber-300/15 blur-3xl" />
+        <div className="relative mx-auto max-w-6xl">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <img src={cafeLogo} alt={CAFE_CONFIG.name} className="size-12 rounded-2xl border border-white/20 bg-white object-cover p-0.5 shadow-xl" />
               <div>
-                <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 backdrop-blur">
-                  <Clock3 className="size-3.5" /> Fresh orders · 6 AM–10 PM
-                </span>
-                <h1 className="mt-5 max-w-3xl font-display text-4xl font-black leading-[.96] sm:text-6xl">Order VRSNB bakery favourites in a few simple steps.</h1>
-                <p className="mt-4 max-w-2xl text-sm font-semibold leading-6 text-white/70 sm:text-base">Choose products, adjust quantity, enter delivery details, pay securely and track the order using the same mobile number.</p>
-              </div>
-              <div className="rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur-xl">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  {[['1', 'Add items'], ['2', 'Pay'], ['3', 'Track']].map(([step, label]) => (
-                    <div key={step} className="rounded-2xl bg-black/25 p-3"><p className="text-xl font-black text-amber-300">{step}</p><p className="mt-1 text-[10px] font-black uppercase tracking-wide text-white/70">{label}</p></div>
-                  ))}
-                </div>
+                <p className="text-[10px] font-black uppercase tracking-[0.26em] text-amber-200">Table ordering</p>
+                <h1 className="font-display text-2xl font-black">{CAFE_CONFIG.name}</h1>
               </div>
             </div>
-          </section>
-
-          <section className="sticky top-[69px] z-40 border-b border-stone-200 bg-[#f7f2e8]/95 backdrop-blur-xl">
-            <div className="mx-auto max-w-7xl space-y-3 px-4 py-4 sm:px-6">
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 size-5 -translate-y-1/2 text-stone-400" />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search cakes, sweets, savouries or barcode" className="h-14 w-full rounded-2xl border border-stone-200 bg-white pl-12 pr-12 text-sm font-bold shadow-sm outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-200/50" />
-                {search && <button type="button" onClick={() => setSearch('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-stone-400" aria-label="Clear search"><X className="size-5" /></button>}
-              </div>
-
-              <label className="block md:hidden">
-                <span className="sr-only">Choose category</span>
-                <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} className="h-12 w-full rounded-2xl border border-stone-200 bg-white px-4 text-sm font-black outline-none focus:border-amber-500">
-                  <option value="all">All categories</option>
-                  {VRSNB_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
-                </select>
-              </label>
-
-              <div className="hidden flex-wrap gap-2 md:flex">
-                <button type="button" onClick={() => setSelectedCategory('all')} className={cn('rounded-full px-4 py-2 text-xs font-black transition', selectedCategory === 'all' ? 'bg-stone-950 text-white' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>All products</button>
-                {VRSNB_CATEGORIES.map((category) => (
-                  <button key={category} type="button" onClick={() => setSelectedCategory(category)} className={cn('rounded-full px-3 py-2 text-xs font-black transition', selectedCategory === category ? 'bg-amber-400 text-stone-950' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>
-                    {CATEGORY_EMOJI[category] || '•'} {category}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="mx-auto max-w-7xl px-4 py-7 pb-32 sm:px-6 lg:pb-12">
-            <div className="mb-5 flex items-end justify-between gap-3">
-              <div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">VRSNB catalogue</p><h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'All bakery products' : selectedCategory}</h2></div>
-              <p className="text-xs font-bold text-stone-500">{filteredItems.length} products</p>
-            </div>
-
-            {filteredItems.length ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {filteredItems.map((item) => {
-                  const quantity = getQuantity(item.barcode);
-                  const step = quantityStep(item);
-                  return (
-                    <article key={item.barcode} className={cn('flex min-h-[245px] flex-col overflow-hidden rounded-3xl border bg-white p-3 shadow-sm transition', quantity > 0 ? 'border-amber-400 ring-2 ring-amber-100' : 'border-stone-200 hover:-translate-y-0.5 hover:shadow-lg')}>
-                      <div className="grid h-24 place-items-center rounded-2xl bg-gradient-to-br from-amber-50 to-orange-100 text-4xl">{CATEGORY_EMOJI[item.category] || '🥐'}</div>
-                      <div className="flex flex-1 flex-col pt-3">
-                        <p className="line-clamp-2 text-sm font-black leading-5">{item.name}</p>
-                        <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-stone-400">{item.category} · {item.uom === 'Kgs' ? 'Price per kg' : 'Per pack/item'}</p>
-                        <p className="mt-2 text-lg font-black text-orange-700">{formatCurrency(item.price)}</p>
-                        <div className="mt-auto pt-3">
-                          {quantity <= 0 ? (
-                            <button type="button" onClick={() => addItem(item)} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-stone-950 text-sm font-black text-white active:scale-[.98]"><Plus className="size-4" /> Add</button>
-                          ) : (
-                            <div className="flex h-11 items-center justify-between rounded-2xl bg-stone-950 p-1 text-white">
-                              <button type="button" onClick={() => setQuantity(item, quantity - step)} className="grid size-9 place-items-center rounded-xl bg-white/10" aria-label={`Decrease ${item.name}`}><Minus className="size-4" /></button>
-                              <div className="text-center"><p className="text-sm font-black leading-none">{item.uom === 'Kgs' ? quantity.toFixed(2) : quantity}</p><p className="mt-0.5 text-[8px] font-bold uppercase text-white/55">{item.uom}</p></div>
-                              <button type="button" onClick={() => addItem(item)} className="grid size-9 place-items-center rounded-xl bg-amber-300 text-stone-950" aria-label={`Increase ${item.name}`}><Plus className="size-4" /></button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-3xl border border-dashed border-stone-300 bg-white p-12 text-center"><Search className="mx-auto size-8 text-stone-300" /><p className="mt-3 font-black">No matching bakery products</p><button type="button" onClick={() => { setSearch(''); setSelectedCategory('all'); }} className="mt-3 text-sm font-black text-orange-700">Clear filters</button></div>
-            )}
-          </section>
-
-          {cart.length > 0 && (
-            <div className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-stone-950 p-3 text-white shadow-2xl lg:sticky lg:bottom-0">
-              <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
-                <button type="button" onClick={openCheckout} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                  <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-amber-300 text-stone-950"><ShoppingBag className="size-5" /></span>
-                  <span className="min-w-0"><strong className="block truncate text-sm">{cart.length} products · {cartUnits.toFixed(cart.some((line) => line.uom === 'Kgs') ? 2 : 0)} units</strong><small className="text-white/55">Includes 3% tax at checkout</small></span>
-                </button>
-                <button type="button" onClick={openCheckout} className="inline-flex min-h-12 items-center gap-2 rounded-2xl bg-amber-300 px-4 text-sm font-black text-stone-950 sm:px-6">
-                  {formatCurrency(grandTotal)} <ChevronRight className="size-4" />
-                </button>
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <section className="mx-auto grid max-w-7xl gap-6 px-4 py-6 pb-12 sm:px-6 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-start">
-          <div className="space-y-5">
-            <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex items-center justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Step 1</p><h1 className="mt-1 font-display text-2xl font-black">Review your bakery order</h1></div><button type="button" onClick={() => setScreen('menu')} className="rounded-xl border border-stone-200 px-3 py-2 text-xs font-black">Add more</button></div>
-              <div className="mt-5 space-y-3">
-                {cart.map((line) => {
-                  const step = quantityStep(line);
-                  return (
-                    <article key={line.barcode} className="flex gap-3 rounded-2xl border border-stone-200 p-3">
-                      <div className="grid size-16 shrink-0 place-items-center rounded-2xl bg-amber-50 text-2xl">{CATEGORY_EMOJI[line.category] || '🥐'}</div>
-                      <div className="min-w-0 flex-1"><div className="flex justify-between gap-3"><div><p className="font-black">{line.name}</p><p className="text-[10px] font-black uppercase text-stone-400">{quantityLabel(line)} · {formatCurrency(line.price)} {line.uom === 'Kgs' ? '/ kg' : ''}</p></div><button type="button" onClick={() => setQuantity(line, 0)} className="text-stone-400" aria-label={`Remove ${line.name}`}><Trash2 className="size-4" /></button></div>
-                        <div className="mt-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2 rounded-xl bg-stone-100 p-1"><button type="button" onClick={() => setQuantity(line, line.quantity - step)} className="grid size-8 place-items-center rounded-lg bg-white"><Minus className="size-3.5" /></button><span className="min-w-12 text-center text-xs font-black">{line.uom === 'Kgs' ? line.quantity.toFixed(2) : line.quantity}</span><button type="button" onClick={() => setQuantity(line, line.quantity + step)} className="grid size-8 place-items-center rounded-lg bg-stone-950 text-white"><Plus className="size-3.5" /></button></div><p className="font-black text-orange-700">{formatCurrency(line.price * line.quantity)}</p></div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-800">Step 2</p><h2 className="mt-1 font-display text-2xl font-black">Delivery and contact details</h2>
-              <p className="mt-2 text-sm font-semibold text-stone-500">Use the same mobile number later to track every status update.</p>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <label className="space-y-1.5"><span className="text-xs font-black">Customer name *</span><input value={customer.name} onChange={(event) => setCustomer({ ...customer, name: event.target.value })} autoComplete="name" className="h-12 w-full rounded-2xl border border-stone-200 px-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="Full name" /></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">Mobile number *</span><div className="relative"><Smartphone className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={customer.phone} onChange={(event) => setCustomer({ ...customer, phone: event.target.value.replace(/\D/g, '').slice(0, 10) })} inputMode="numeric" autoComplete="tel" className="h-12 w-full rounded-2xl border border-stone-200 pl-11 pr-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="10-digit mobile" /></div></label>
-                <label className="space-y-1.5 sm:col-span-2"><span className="text-xs font-black">Delivery address *</span><textarea value={customer.address} onChange={(event) => setCustomer({ ...customer, address: event.target.value })} autoComplete="street-address" className="min-h-24 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="House/shop, street, area and landmark" /></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">PIN code or map link *</span><div className="relative"><MapPin className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={customer.locationPin} onChange={(event) => setCustomer({ ...customer, locationPin: event.target.value })} className="h-12 w-full rounded-2xl border border-stone-200 pl-11 pr-4 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="635105 or Google Maps link" /></div></label>
-                <label className="space-y-1.5"><span className="text-xs font-black">Preferred delivery</span><select value={customer.deliverySlot} onChange={(event) => setCustomer({ ...customer, deliverySlot: event.target.value })} className="h-12 w-full rounded-2xl border border-stone-200 bg-white px-4 text-sm font-bold outline-none focus:border-amber-500"><option>As soon as possible</option><option>Morning · 8 AM–12 PM</option><option>Afternoon · 12 PM–4 PM</option><option>Evening · 4 PM–8 PM</option></select></label>
-                <label className="space-y-1.5 sm:col-span-2"><span className="text-xs font-black">Order notes</span><textarea value={customer.note} onChange={(event) => setCustomer({ ...customer, note: event.target.value })} className="min-h-20 w-full rounded-2xl border border-stone-200 px-4 py-3 text-sm font-bold outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-100" placeholder="Cake message, packing request or delivery instructions" /></label>
-              </div>
+            <div className="rounded-2xl border border-white/15 bg-white/10 px-3 py-2 text-right backdrop-blur">
+              <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/55">Open</p>
+              <p className="mt-0.5 text-xs font-black">{CAFE_CONFIG.hours}</p>
             </div>
           </div>
 
-          <aside className="sticky top-24 rounded-3xl bg-stone-950 p-5 text-white shadow-2xl sm:p-6">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-300">Final bill</p><h2 className="mt-1 font-display text-2xl font-black">Payment summary</h2>
-            <div className="mt-5 space-y-3 border-y border-white/10 py-5 text-sm"><div className="flex justify-between text-white/70"><span>Subtotal</span><strong className="text-white">{formatCurrency(subtotal)}</strong></div><div className="flex justify-between text-white/70"><span>Tax (3%)</span><strong className="text-white">{formatCurrency(taxAmount)}</strong></div><div className="flex justify-between text-lg"><span className="font-black">Grand total</span><strong className="text-amber-300">{formatCurrency(grandTotal)}</strong></div></div>
-            <div className="mt-5 grid gap-2 text-xs font-bold text-white/60"><p className="flex items-center gap-2"><ShieldCheck className="size-4 text-emerald-400" /> Secure Razorpay payment</p><p className="flex items-center gap-2"><Truck className="size-4 text-amber-300" /> Delivery status tracking by mobile</p><p className="flex items-center gap-2"><PackageCheck className="size-4 text-blue-300" /> Order details saved after payment</p></div>
-            {error && <p className="mt-5 rounded-2xl border border-red-400/25 bg-red-500/10 px-3 py-3 text-xs font-bold text-red-200">{error}</p>}
-            <button type="button" onClick={() => void payAndPlaceOrder()} disabled={paying || !cart.length} className="mt-5 inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-amber-300 px-4 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"><CreditCard className={cn('size-5', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : `Pay ${formatCurrency(grandTotal)} & place order`}</button>
-            <button type="button" onClick={() => setScreen('menu')} className="mt-3 w-full rounded-2xl border border-white/10 px-4 py-3 text-xs font-black text-white/70">Continue shopping</button>
-          </aside>
-        </section>
+          <div className="mt-6 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div>
+              <h2 className="font-display text-4xl font-black leading-none sm:text-5xl">Choose. Tap. Enjoy.</h2>
+              <p className="mt-3 max-w-xl text-sm leading-6 text-white/70">Browse the cafe menu, customise quantities and send the order directly to our kitchen.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-2 text-xs font-black backdrop-blur">
+                <MapPin className="size-4 text-amber-300" /> {tableFromQr ? `Table ${tableFromQr}` : orderType === 'dine_in' && tableNumber ? `Table ${tableNumber}` : 'Choose table'}
+              </span>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3.5 py-2 text-xs font-black backdrop-blur">
+                <Clock3 className="size-4 text-amber-300" /> Kitchen live
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-3 gap-2 rounded-2xl border border-white/10 bg-black/15 p-2 backdrop-blur">
+            {[['1', 'Add items'], ['2', 'Review cart'], ['3', 'Track live']].map(([step, label]) => (
+              <div key={step} className="rounded-xl bg-white/8 px-2 py-2.5 text-center">
+                <p className="text-[10px] font-black text-amber-300">STEP {step}</p>
+                <p className="mt-0.5 text-[11px] font-bold text-white/75">{label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="sticky top-0 z-30 border-b border-amber-900/10 bg-[#fff8eb]/95 shadow-sm backdrop-blur-xl">
+        <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 size-5 -translate-y-1/2 text-stone-400" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search dosa, coffee, meals..."
+              className="h-12 w-full rounded-2xl border border-stone-200 bg-white pl-12 pr-12 text-sm font-semibold shadow-sm outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+            />
+            {search && <button type="button" onClick={() => setSearch('')} className="absolute right-3 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-full bg-stone-100"><X className="size-4" /></button>}
+          </div>
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('all')}
+              className={cn('shrink-0 rounded-full px-4 py-2 text-xs font-black transition', selectedCategory === 'all' ? 'bg-stone-950 text-white shadow-lg' : 'border border-stone-200 bg-white text-stone-700')}
+            >
+              ✨ All items
+            </button>
+            {activeCategories.map((category) => (
+              <button
+                type="button"
+                key={category.id}
+                onClick={() => setSelectedCategory(category.id)}
+                className={cn('shrink-0 rounded-full px-4 py-2 text-xs font-black transition', selectedCategory === category.id ? 'bg-stone-950 text-white shadow-lg' : 'border border-stone-200 bg-white text-stone-700')}
+              >
+                {category.icon} {category.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <section className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
+        <div className="mb-4 flex items-end justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-700">Fresh from our kitchen</p>
+            <h2 className="mt-1 font-display text-2xl font-black">{selectedCategory === 'all' ? 'Cafe menu' : MENU_CATEGORIES.find((category) => category.id === selectedCategory)?.name}</h2>
+          </div>
+          <p className="text-xs font-bold text-stone-500">{filteredItems.length} items</p>
+        </div>
+
+        {loading ? (
+          <div className="grid min-h-64 place-items-center"><div className="size-9 animate-spin rounded-full border-4 border-emerald-700 border-t-transparent" /></div>
+        ) : filteredItems.length === 0 ? (
+          <EmptyState icon="🍽️" message="No items found" sub="Try another category or clear the search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredItems.map((item) => {
+              const quantity = getQty(item.id);
+              const category = MENU_CATEGORIES.find((entry) => entry.id === item.category);
+              return (
+                <article key={item.id} className={cn('grid grid-cols-[6.5rem_1fr] overflow-hidden rounded-3xl border bg-white shadow-sm transition sm:grid-cols-1', quantity ? 'border-emerald-500 ring-2 ring-emerald-500/10' : 'border-stone-200')}>
+                  <div className="relative min-h-32 bg-[#f7f1df] sm:aspect-[16/10]">
+                    {item.imageUrl ? <img src={item.imageUrl} alt={item.name} className="size-full object-cover" /> : <div className="grid size-full place-items-center text-4xl">{category?.icon || '🍽️'}</div>}
+                    <span className="absolute left-2 top-2 rounded-full bg-emerald-700 px-2 py-1 text-[9px] font-black text-white shadow">PURE VEG</span>
+                    {quantity > 0 && <span className="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-amber-300 text-sm font-black text-stone-950 shadow-lg"><Check className="size-4" /></span>}
+                  </div>
+                  <div className="flex min-w-0 flex-col p-4">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-stone-400">{category?.name || 'Cafe item'}</p>
+                      <h3 className="mt-1 line-clamp-2 font-display text-lg font-black leading-tight">{item.name}</h3>
+                      {item.timing && <p className="mt-1 text-xs font-bold text-stone-400">{item.timing}</p>}
+                    </div>
+                    <div className="mt-auto flex items-center justify-between gap-2 pt-4">
+                      <p className="font-display text-xl font-black text-orange-700">{formatCurrency(item.price)}</p>
+                      {quantity === 0 ? (
+                        <button type="button" onClick={() => addItem(item)} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-stone-950 px-4 text-xs font-black text-white shadow-lg active:scale-95">
+                          <Plus className="size-4 text-amber-300" /> Add
+                        </button>
+                      ) : (
+                        <div className="flex items-center rounded-xl border border-emerald-200 bg-emerald-50 p-1">
+                          <button type="button" aria-label={`Remove one ${item.name}`} onClick={() => changeQuantity(item.id, quantity - 1)} className="grid size-8 place-items-center rounded-lg bg-white text-emerald-900 shadow-sm"><Minus className="size-4" /></button>
+                          <span className="min-w-9 text-center text-sm font-black text-emerald-950">{quantity}</span>
+                          <button type="button" aria-label={`Add one ${item.name}`} onClick={() => addItem(item)} className="grid size-8 place-items-center rounded-lg bg-emerald-800 text-white shadow-sm"><Plus className="size-4" /></button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {addedNotice && (
+        <div className="fixed left-1/2 top-4 z-[80] flex -translate-x-1/2 items-center gap-2 rounded-full bg-stone-950 px-4 py-2.5 text-xs font-black text-white shadow-2xl">
+          <Check className="size-4 text-emerald-300" /> {addedNotice}
+        </div>
+      )}
+
+      {cartCount > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-stone-950/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 text-white shadow-[0_-16px_45px_rgba(0,0,0,.22)] backdrop-blur-xl">
+          <button type="button" onClick={() => setCartOpen(true)} className="mx-auto flex min-h-16 w-full max-w-3xl items-center justify-between rounded-2xl bg-gradient-to-r from-emerald-700 to-emerald-600 px-4 shadow-xl active:scale-[0.99]">
+            <span className="flex items-center gap-3">
+              <span className="relative grid size-11 place-items-center rounded-xl bg-white/15"><ShoppingBag className="size-6" /><span className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-amber-300 text-[10px] font-black text-stone-950">{cartCount}</span></span>
+              <span className="text-left"><span className="block text-sm font-black">Review your order</span><span className="block text-[11px] text-white/65">Tap to change quantities</span></span>
+            </span>
+            <span className="text-right"><span className="block font-display text-xl font-black">{formatCurrency(cartTotal)}</span><span className="block text-[10px] font-black uppercase tracking-wider text-amber-200">View cart</span></span>
+          </button>
+        </div>
+      )}
+
+      {cartOpen && (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="dialog" aria-modal="true" aria-label="Review cafe order">
+          <button type="button" aria-label="Close cart" className="absolute inset-0" onClick={() => setCartOpen(false)} />
+          <section className="relative flex max-h-[94dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[2rem] bg-[#fffaf0] shadow-2xl sm:rounded-[2rem]">
+            <header className="flex items-center justify-between border-b border-stone-200 bg-white px-5 py-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-700">Table order</p>
+                <h2 className="font-display text-2xl font-black">Review cart</h2>
+              </div>
+              <button type="button" onClick={() => setCartOpen(false)} className="grid size-11 place-items-center rounded-full bg-stone-100"><X className="size-5" /></button>
+            </header>
+
+            <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+              <div className="space-y-3">
+                {cart.map((line) => (
+                  <div key={line.menuItem.id} className="flex items-center gap-3 rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+                    <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-[#f7f1df] text-2xl">
+                      {line.menuItem.imageUrl ? <img src={line.menuItem.imageUrl} alt="" className="size-full object-cover" /> : (MENU_CATEGORIES.find((category) => category.id === line.menuItem.category)?.icon || '🍽️')}
+                    </div>
+                    <div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{line.menuItem.name}</p><p className="mt-1 text-xs font-bold text-orange-700">{formatCurrency(line.menuItem.price * line.quantity)}</p></div>
+                    <div className="flex items-center rounded-xl border border-stone-200 bg-stone-50 p-1">
+                      <button type="button" onClick={() => changeQuantity(line.menuItem.id, line.quantity - 1)} className="grid size-8 place-items-center rounded-lg bg-white shadow-sm"><Minus className="size-4" /></button>
+                      <span className="min-w-8 text-center text-sm font-black">{line.quantity}</span>
+                      <button type="button" onClick={() => changeQuantity(line.menuItem.id, line.quantity + 1)} className="grid size-8 place-items-center rounded-lg bg-stone-950 text-white"><Plus className="size-4" /></button>
+                    </div>
+                    <button type="button" onClick={() => removeFromCart(line.menuItem.id)} aria-label={`Remove ${line.menuItem.name}`} className="grid size-9 place-items-center rounded-xl text-red-600 hover:bg-red-50"><Trash2 className="size-4" /></button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+                <p className="mb-3 text-xs font-black uppercase tracking-[0.18em] text-stone-500">How are you ordering?</p>
+                <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1.5">
+                  <button type="button" disabled={Boolean(tableFromQr)} onClick={() => setOrderType('dine_in')} className={cn('rounded-xl px-3 py-3 text-sm font-black transition', orderType === 'dine_in' ? 'bg-stone-950 text-white shadow' : 'text-stone-500', tableFromQr && 'cursor-default')}>Dine in</button>
+                  <button type="button" disabled={Boolean(tableFromQr)} onClick={() => setOrderType('takeaway')} className={cn('rounded-xl px-3 py-3 text-sm font-black transition', orderType === 'takeaway' ? 'bg-stone-950 text-white shadow' : 'text-stone-500', tableFromQr && 'cursor-not-allowed opacity-40')}>Takeaway</button>
+                </div>
+
+                {orderType === 'dine_in' && (
+                  <div className="relative mt-3">
+                    <button type="button" disabled={Boolean(tableFromQr)} onClick={() => setTablePickerOpen((open) => !open)} className="flex w-full items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-black disabled:cursor-default">
+                      <span className="flex items-center gap-2"><MapPin className="size-4 text-emerald-700" /> {tableNumber ? `Table ${tableNumber}` : 'Select table'}</span><ChevronDown className={cn('size-4 transition', tablePickerOpen && 'rotate-180')} />
+                    </button>
+                    {tablePickerOpen && !tableFromQr && (
+                      <div className="mt-2 grid grid-cols-5 gap-2 rounded-2xl border border-stone-200 bg-white p-3">
+                        {TABLE_NUMBERS.map((number) => <button type="button" key={number} onClick={() => { setTableNumber(number); setTablePickerOpen(false); }} className={cn('rounded-xl border px-2 py-2.5 text-sm font-black', tableNumber === number ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-stone-200 bg-stone-50')}>{number}</button>)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+                <label className="block text-xs font-black uppercase tracking-[0.16em] text-stone-500">Name <span className="normal-case tracking-normal text-stone-400">(optional)</span></label>
+                <div className="mt-2 flex items-center gap-2 rounded-2xl border border-stone-200 bg-stone-50 px-3">
+                  <UtensilsCrossed className="size-4 text-stone-400" />
+                  <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} maxLength={80} placeholder="Your name" className="h-12 min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none" />
+                </div>
+                <label className="mt-4 block text-xs font-black uppercase tracking-[0.16em] text-stone-500">Kitchen note <span className="normal-case tracking-normal text-stone-400">(optional)</span></label>
+                <div className="mt-2 flex items-start gap-2 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+                  <StickyNote className="mt-0.5 size-4 shrink-0 text-stone-400" />
+                  <textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={300} rows={3} placeholder="Less spicy, no onion, allergy information..." className="min-w-0 flex-1 resize-none bg-transparent text-sm font-semibold outline-none" />
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-stone-950 p-5 text-white">
+                <div className="flex items-center justify-between text-sm"><span className="text-white/60">Items</span><span className="font-black">{cartCount}</span></div>
+                <div className="mt-3 flex items-center justify-between border-t border-white/10 pt-3"><span className="font-black">Order total</span><span className="font-display text-3xl font-black text-amber-300">{formatCurrency(cartTotal)}</span></div>
+                <p className="mt-2 text-xs leading-5 text-white/50">The cashier or serving staff will collect payment after confirming your order.</p>
+              </div>
+
+              {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+            </div>
+
+            <footer className="border-t border-stone-200 bg-white px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4">
+              <button type="button" onClick={handleSubmitOrder} disabled={submitting || cart.length === 0} className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-800 to-emerald-700 px-5 text-sm font-black text-white shadow-xl disabled:cursor-not-allowed disabled:opacity-50 active:scale-[0.99]">
+                {submitting ? <><span className="size-5 animate-spin rounded-full border-2 border-white border-t-transparent" /> Sending to kitchen…</> : <><Sparkles className="size-5 text-amber-300" /> Place order · {formatCurrency(cartTotal)}</>}
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
     </main>
   );
