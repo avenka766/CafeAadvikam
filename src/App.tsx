@@ -22,10 +22,12 @@ const SalesReport = lazy(() => import('@/pages/SalesReport'));
 const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
 const StaffManagement = lazy(() => import('@/pages/StaffManagement'));
 const QRMenuPage = lazy(() => import('@/pages/QRMenuPage'));
+const BakeryOrderPage = lazy(() => import('@/pages/BakeryOrderPage'));
 const QROrderPage = lazy(() => import('@/pages/QROrderPage'));
 const KitchenDashboard = lazy(() => import('@/pages/KitchenDashboard'));
 const DigitalMenu = lazy(() => import('@/pages/DigitalMenu'));
 const OrderTrackingPage = lazy(() => import('@/pages/OrderTrackingPage'));
+const CafeOrderTrackingPage = lazy(() => import('@/pages/CafeOrderTrackingPage'));
 const AttendanceSalary = lazy(() => import('@/pages/AttendanceSalary'));
 const OrderReceiverDashboard = lazy(() => import('@/bakery/OrderReceiverDashboard'));
 const StoreDashboard = lazy(() => import('@/bakery/StoreDashboard'));
@@ -65,7 +67,7 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
-  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track'];
+  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track', '/cafe-order', '/cafe-order/track'];
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const [hydrated, setHydrated] = useState(
@@ -100,8 +102,10 @@ function AppRoutes() {
         <Route path="/login"        element={<Login />} />
         <Route path="/menu"         element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
-        <Route path="/order"        element={<QROrderPage />} />
-        <Route path="/order/track"  element={<OrderTrackingPage />} />
+        <Route path="/order"             element={<BakeryOrderPage />} />
+        <Route path="/order/track"       element={<OrderTrackingPage />} />
+        <Route path="/cafe-order"        element={<QROrderPage />} />
+        <Route path="/cafe-order/track"  element={<CafeOrderTrackingPage />} />
 
         <Route path="/order-pad"        element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
         <Route path="/billing"          element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
