@@ -953,24 +953,6 @@ export default function PackingDashboard() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-border bg-card p-2 overflow-x-auto">
-            <div className="flex min-w-max gap-2">
-              {([
-                ['orders', 'Packing Orders / Transfer Out', Package],
-                ['transfer-in', 'Transfer In', ArrowDownToLine],
-                ['billing', 'Billing', ShoppingCart],
-                ['leftover', 'Leftover Items', AlertTriangle],
-                ['dispatched', 'Dispatched', Truck],
-                ['closure', 'Daily Closure', ClipboardCheck],
-              ] as const).map(([id, label, Icon]) => (
-                <button key={id} type="button" onClick={() => setSearchParams(id === 'orders' ? {} : { tab: id })}
-                  className={cn('h-10 rounded-xl px-4 text-xs font-black flex items-center gap-2 whitespace-nowrap transition-all', activeTab === id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-muted/40 text-muted-foreground hover:text-foreground')}>
-                  <Icon className="size-4" />{label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {activeTab === 'transfer-in' ? (
             <PackingTransferInTab />
           ) : activeTab === 'billing' ? (
