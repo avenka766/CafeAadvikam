@@ -7,15 +7,18 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
+  BarChart3,
   BadgeCheck,
   Bell,
   CalendarDays,
   CheckCircle2,
+  Clock3,
   ChevronRight,
   CreditCard,
   Download,
   FileSpreadsheet,
   IndianRupee,
+  Percent,
   Loader2,
   MessageCircle,
   PackageCheck,
@@ -28,6 +31,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   Store,
+  TrendingUp,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -956,10 +960,27 @@ export default function HosurDashboard() {
           messageType,
           mediaUrl: paymentQrUrl,
           mediaType: shouldAttachPaymentQr ? 'image' : null,
-          fileName: shouldAttachPaymentQr ? 'VRSNB-UPI-Payment-QR.jpeg' : null,
+          fileName: shouldAttachPaymentQr ? 'hosur-payment-qr.png' : null,
         },
       });
-      if (fnError) throw fnError;
+      if (fnError) {
+        let message = fnError.message || 'WhatsApp Edge Function request failed.';
+        const context = (fnError as { context?: Response }).context;
+        if (context) {
+          try {
+            const details = await context.clone().json() as { error?: string };
+            if (details?.error) message = details.error;
+          } catch {
+            try {
+              const details = await context.clone().text();
+              if (details.trim()) message = details;
+            } catch {
+              // Keep the original FunctionsHttpError message.
+            }
+          }
+        }
+        throw new Error(message);
+      }
       if (!fnData?.ok) throw new Error(fnData?.error || 'WhatsApp provider did not confirm delivery.');
     } catch (err: any) {
       status = 'failed';
@@ -1981,124 +2002,251 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
   disputes: HosurDispute[];
   logs: HosurWhatsappLog[];
 }) {
-  void credits;
   const [date, setDate] = useState(TODAY_ISO());
-  const [openingCash, setOpeningCash] = useState('');
+  const [openingCash, setOpeningCash] = useState('0');
   const [countedCash, setCountedCash] = useState('');
   const [remarks, setRemarks] = useState('');
   const [closedBy, setClosedBy] = useState(actorName);
   const [saving, setSaving] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState(false);
   const [saved, setSaved] = useState(false);
   const [counterOpened, setCounterOpened] = useState(false);
   const [statusError, setStatusError] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
 
-  const dayBills = bills.filter((b) => businessDate(b.confirmedAt ?? b.createdAt) === date);
+  const dayBills = bills.filter((b) => businessDate(b.confirmedAt ?? b.createdAt) === date && !['draft', 'cancelled'].includes(b.status));
   const dayOrders = orders.filter((o) => businessDate(o.createdAt) === date);
+  // Partial money received at billing is already included in bill.paidAmount. Excluding
+  // it here prevents the same collection being counted twice in closure.
   const dayPayments = payments.filter((p) => businessDate(p.createdAt) === date && p.payment_purpose !== 'partial_at_billing');
   const dayDisputes = disputes.filter((d) => businessDate(d.createdAt) === date);
   const dayLogs = logs.filter((l) => businessDate(l.createdAt) === date);
-  const cashBills = dayBills.filter((b) => b.paymentMode === 'cash').reduce((sum, bill) => sum + bill.paidAmount, 0);
-  const upiBills = dayBills.filter((b) => b.paymentMode === 'upi').reduce((sum, bill) => sum + bill.paidAmount, 0);
-  const cardBills = dayBills.filter((b) => b.paymentMode === 'card').reduce((sum, bill) => sum + bill.paidAmount, 0);
-  const bankBills = dayBills.filter((b) => b.paymentMode === 'bank').reduce((sum, bill) => sum + bill.paidAmount, 0);
-  const mixedBills = dayBills.filter((b) => b.paymentMode === 'mixed').reduce((sum, bill) => sum + bill.paidAmount, 0);
-  const cashCollections = dayPayments.filter((p) => p.paymentMode === 'cash').reduce((sum, payment) => sum + payment.amountCollected, 0);
-  const upiCollections = dayPayments.filter((p) => p.paymentMode === 'upi').reduce((sum, payment) => sum + payment.amountCollected, 0);
-  const cardCollections = dayPayments.filter((p) => p.paymentMode === 'card').reduce((sum, payment) => sum + payment.amountCollected, 0);
-  const bankCollections = dayPayments.filter((p) => p.paymentMode === 'bank').reduce((sum, payment) => sum + payment.amountCollected, 0);
-  const mixedCollections = dayPayments.filter((p) => p.paymentMode === 'mixed').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const dayCredits = credits.filter((c) => businessDate(c.createdAt) === date);
+
+  const billByMode = (mode: PaymentMode) => dayBills.filter((b) => b.paymentMode === mode).reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const collectionByMode = (mode: PaymentMode) => dayPayments.filter((p) => p.paymentMode === mode).reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const cashBills = billByMode('cash');
+  const upiBills = billByMode('upi');
+  const cardBills = billByMode('card');
+  const bankBills = billByMode('bank');
+  const mixedBills = billByMode('mixed');
+  const cashCollections = collectionByMode('cash');
+  const upiCollections = collectionByMode('upi');
+  const cardCollections = collectionByMode('card');
+  const bankCollections = collectionByMode('bank');
+  const mixedCollections = collectionByMode('mixed');
   const totalSales = dayBills.reduce((sum, bill) => sum + bill.subtotal, 0);
   const totalCredit = dayBills.reduce((sum, bill) => sum + bill.creditAmount, 0);
-  const totalCollected = dayBills.reduce((sum, bill) => sum + bill.paidAmount, 0) + dayPayments.reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const billCollections = dayBills.reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const laterCreditCollections = dayPayments.reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const totalCollected = billCollections + laterCreditCollections;
   const expectedCash = Number(openingCash || 0) + cashBills + cashCollections;
   const difference = Number(countedCash || 0) - expectedCash;
+  const whatsappSent = dayLogs.filter((log) => log.status === 'sent').length;
+  const whatsappFailed = dayLogs.filter((log) => log.status === 'failed').length;
 
-  useEffect(() => {
-    let active = true;
+  const loadStatus = useCallback(async () => {
+    setLoadingStatus(true);
     setStatusError('');
-    const load = async () => {
-      if (!actorId) {
-        if (active) setStatusError('Your staff session is missing. Sign out and sign in again.');
-        return;
-      }
-      const { data: statusData, error: statusLoadError } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
-      if (!active) return;
-      if (statusLoadError) { setStatusError(statusLoadError.message || 'Unable to load counter status.'); return; }
-      const status = statusData as { session?: { status?: string; opening_cash?: number; opened_by?: string; closed_by?: string } | null; closure?: Record<string, unknown> | null } | null;
-      const closure = status?.closure as { opening_cash?: number; counted_cash?: number; remarks?: string; closed_by?: string } | null;
-      const currentSession = status?.session ?? null;
-      setOpeningCash(String(closure?.opening_cash ?? currentSession?.opening_cash ?? ''));
-      setCountedCash(String(closure?.counted_cash ?? ''));
-      setRemarks(closure?.remarks ?? '');
-      setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
-      setSaved(Boolean(closure));
-      setCounterOpened(currentSession?.status === 'open' && !closure);
-    };
-    void load();
-    return () => { active = false; };
+    setStatusMessage('');
+    setSaved(false);
+    setCounterOpened(false);
+    setOpeningCash('0');
+    setCountedCash('');
+    setRemarks('');
+    setClosedBy(actorName);
+
+    if (!actorId) {
+      setLoadingStatus(false);
+      setStatusError('Your staff session is missing. Exit and sign in again.');
+      return;
+    }
+
+    const { data: statusData, error: statusLoadError } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
+    setLoadingStatus(false);
+    if (statusLoadError) {
+      setStatusError(`Counter status could not be loaded: ${statusLoadError.message}. Billing remains available.`);
+      return;
+    }
+
+    const status = statusData as {
+      session?: { status?: string; opening_cash?: number; opened_by?: string; closed_by?: string } | null;
+      closure?: Record<string, unknown> | null;
+    } | null;
+    const closure = status?.closure as {
+      opening_cash?: number;
+      counted_cash?: number;
+      remarks?: string;
+      closed_by?: string;
+    } | null;
+    const currentSession = status?.session ?? null;
+
+    setOpeningCash(String(closure?.opening_cash ?? currentSession?.opening_cash ?? 0));
+    setCountedCash(closure?.counted_cash == null ? '' : String(closure.counted_cash));
+    setRemarks(closure?.remarks ?? '');
+    setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
+    setSaved(Boolean(closure));
+    setCounterOpened(currentSession?.status === 'open' && !closure);
   }, [actorId, actorName, date]);
+
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
 
   const openCounter = async () => {
     setStatusError('');
-    if (!actorId) return setStatusError('Your staff session is missing.');
-    if (!openingCash.trim() || Number(openingCash) < 0) return setStatusError('Enter a valid opening cash amount.');
+    setStatusMessage('');
+    if (!actorId) return setStatusError('Your staff session is missing. Exit and sign in again.');
+    const opening = Number(openingCash || 0);
+    if (!Number.isFinite(opening) || opening < 0) return setStatusError('Enter a valid opening cash amount. Use 0 when there is no opening float.');
     setSaving(true);
     const { error } = await supabase.rpc('open_hosur_counter_secure', {
       p_business_date: date,
-      p_opening_cash: Number(openingCash),
+      p_opening_cash: opening,
     });
     setSaving(false);
     if (error) return setStatusError(error.message);
     setCounterOpened(true);
     setClosedBy(actorName);
+    setStatusMessage('Counter opened. Billing was already available and remains available.');
+    await loadStatus();
   };
 
   const saveClosure = async () => {
     setStatusError('');
-    if (!actorId) return setStatusError('Your staff session is missing.');
-    if (!counterOpened) return setStatusError('Open the counter before closing it.');
-    if (!countedCash.trim() || Number(countedCash) < 0) return setStatusError('Enter counted closing cash.');
+    setStatusMessage('');
+    if (!actorId) return setStatusError('Your staff session is missing. Exit and sign in again.');
+    const counted = Number(countedCash);
+    if (!countedCash.trim() || !Number.isFinite(counted) || counted < 0) return setStatusError('Enter the physical counted closing cash before closing the day.');
+    const opening = Number(openingCash || 0);
+    if (!Number.isFinite(opening) || opening < 0) return setStatusError('Opening cash must be zero or more.');
+
     setSaving(true);
-    const { error } = await supabase.rpc('close_hosur_counter_secure', {
-      p_business_date: date,
-      p_counted_cash: Number(countedCash),
-      p_remarks: remarks,
-      p_cash_sales: cashBills,
-      p_cash_collections: cashCollections,
-      p_upi_total: upiBills + upiCollections,
-      p_card_total: cardBills + cardCollections,
-      p_bank_total: bankBills + bankCollections,
-      p_mixed_total: mixedBills + mixedCollections,
-      p_gross_sales: totalSales,
-      p_credit_given: totalCredit,
-      p_total_collection: totalCollected,
-      p_expected_cash: expectedCash,
-      p_bills_count: dayBills.length,
-      p_orders_count: dayOrders.length,
-      p_disputes_count: dayDisputes.length,
-      p_whatsapp_failed: dayLogs.filter((log) => log.status === 'failed').length,
-    });
-    setSaving(false);
-    if (error) return setStatusError(error.message);
-    setSaved(true);
-    setCounterOpened(false);
-    setClosedBy(actorName);
+    try {
+      // Opening a counter is optional for billing. If the cashier skipped it, create
+      // the session automatically at closure so the day can still be reconciled.
+      if (!counterOpened) {
+        const { error: openError } = await supabase.rpc('open_hosur_counter_secure', {
+          p_business_date: date,
+          p_opening_cash: opening,
+        });
+        const alreadyOpen = /already|open|duplicate|exists/i.test(openError?.message ?? '');
+        if (openError && !alreadyOpen) throw openError;
+      }
+
+      const { error } = await supabase.rpc('close_hosur_counter_secure', {
+        p_business_date: date,
+        p_counted_cash: counted,
+        p_remarks: remarks,
+        p_cash_sales: cashBills,
+        p_cash_collections: cashCollections,
+        p_upi_total: upiBills + upiCollections,
+        p_card_total: cardBills + cardCollections,
+        p_bank_total: bankBills + bankCollections,
+        p_mixed_total: mixedBills + mixedCollections,
+        p_gross_sales: totalSales,
+        p_credit_given: totalCredit,
+        p_total_collection: totalCollected,
+        p_expected_cash: expectedCash,
+        p_bills_count: dayBills.length,
+        p_orders_count: dayOrders.length,
+        p_disputes_count: dayDisputes.length,
+        p_whatsapp_failed: whatsappFailed,
+      });
+      if (error) throw error;
+
+      setSaved(true);
+      setCounterOpened(false);
+      setClosedBy(actorName);
+      setStatusMessage('Daily closure saved and the counter is closed.');
+      await loadStatus();
+    } catch (error: any) {
+      setStatusError(error?.message ?? 'Daily closure could not be saved.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened'}`, `
+  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened (billing allowed)'}`, `
     <div class="grid"><div class="kpi">Opening Cash<b>${money(Number(openingCash || 0))}</b></div><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Total Collection<b>${money(totalCollected)}</b></div><div class="kpi">Credit Given<b>${money(totalCredit)}</b></div></div>
     <div class="section"><h2>Cash Reconciliation</h2><table><tbody><tr><td>Opening cash</td><td class="right">${money(Number(openingCash || 0))}</td><td>Cash sales</td><td class="right">${money(cashBills)}</td></tr><tr><td>Credit collections in cash</td><td class="right">${money(cashCollections)}</td><td>Expected cash</td><td class="right">${money(expectedCash)}</td></tr><tr><td>Counted closing cash</td><td class="right">${money(Number(countedCash || 0))}</td><td>Difference</td><td class="right">${money(difference)}</td></tr></tbody></table></div>
     <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills + upiCollections)}</td><td class="right">${money(cardBills + cardCollections)}</td><td class="right">${money(bankBills + bankCollections)}</td><td class="right">${money(mixedBills + mixedCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
-    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Failed</th><th>Closed By</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${dayLogs.filter((log) => log.status === 'failed').length}</td><td>${closedBy || '—'}</td></tr></tbody></table></div>
+    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Sent / Failed</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayCredits.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${whatsappSent} / ${whatsappFailed}</td></tr></tbody></table></div>
     <div class="section"><h2>Remarks</h2><div>${remarks || 'No remarks'}</div></div><div class="sign"><div class="line">Cashier Signature</div><div class="line">Branch In-Charge</div><div class="line">Accounts Verification</div></div>`);
 
+  const paymentRows: Array<[string, number]> = [
+    ['Cash', cashBills + cashCollections],
+    ['UPI', upiBills + upiCollections],
+    ['Card', cardBills + cardCollections],
+    ['Bank', bankBills + bankCollections],
+    ['Mixed', mixedBills + mixedCollections],
+  ];
+
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-2xl font-black">Daily Closure</h2><p className="text-sm text-muted-foreground">Opening and closure are server-recorded, immutable, and tied to the signed-in staff member.</p></div><div className="flex flex-wrap gap-2"><input type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /><button className={softButton} onClick={printSummary}><Printer className="size-4" /> Print Summary</button></div></div>
-    {statusError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm font-bold text-red-700">{statusError}</div>}
-    <div className="grid gap-3 md:grid-cols-4"><Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/><Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/><Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/><Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/></div>
-    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={!counterOpened || saved} onChange={(event)=>setCountedCash(event.target.value)} /></Field><Field label="Staff"><input className={inputClass} value={closedBy} readOnly /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} /></Field><div className="flex flex-wrap gap-2">{!saved && !counterOpened ? <button className={primaryButton} disabled={saving || !openingCash.trim()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter</button> : !saved ? <button className={primaryButton} disabled={saving || !countedCash.trim()} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Close Counter</button> : null}<span className={cn('inline-flex items-center rounded-xl px-3 py-2 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Counter Closed' : counterOpened ? 'Counter Open' : 'Counter Not Opened'}</span></div></Card>
-    <Card className="space-y-3"><h3 className="font-black">Reconciliation</h3>{[['Opening Cash',Number(openingCash||0)],['Cash Sales',cashBills],['Cash Credit Collection',cashCollections],['Expected Cash',expectedCash],['Counted Cash',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex justify-between rounded-xl bg-muted/40 px-3 py-2 text-sm"><span>{label}</span><b>{money(Number(value))}</b></div>)}</Card></div>
-    <Card><h3 className="mb-3 font-black">Payment Breakdown</h3><div className="grid gap-2 md:grid-cols-5">{[['Cash',cashBills+cashCollections],['UPI',upiBills+upiCollections],['Card',cardBills+cardCollections],['Bank',bankBills+bankCollections],['Mixed',mixedBills+mixedCollections]].map(([label,value])=><div key={String(label)} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{money(Number(value))}</p></div>)}</div></Card>
+    <div className="rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-5 text-white shadow-xl">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-200">Hosur counter control</span>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black text-white/80">Billing never requires counter opening</span>
+          </div>
+          <h2 className="font-display text-2xl font-black">Daily Closure & Cash Reconciliation</h2>
+          <p className="mt-1 max-w-3xl text-sm text-white/65">Opening the counter is optional. Staff can create bills at any time; when closing the day, the system automatically creates a session if one was not opened.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <input type="date" className="h-11 rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-bold text-white [color-scheme:dark]" value={date} onChange={(event) => setDate(event.target.value)} />
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" onClick={() => void loadStatus()} disabled={loadingStatus}><RefreshCw className={cn('size-4', loadingStatus && 'animate-spin')} /> Reload</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-xs font-black text-emerald-950 hover:bg-emerald-50" onClick={printSummary}><Printer className="size-4" /> Print Summary</button>
+        </div>
+      </div>
+    </div>
+
+    {statusError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{statusError}</div>}
+    {statusMessage && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{statusMessage}</div>}
+
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/>
+      <Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/>
+      <Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/>
+      <Metric label="Expected Cash" value={money(expectedCash)} icon={<WalletCards className="size-4" />} tone="slate"/>
+      <Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
+      <Card className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h3 className="font-display text-lg font-black">Counter & Physical Cash</h3><p className="text-xs text-muted-foreground">Opening is optional. Closing cash is required for reconciliation.</p></div>
+          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened — billing allowed'}</span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Opening cash (optional)"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field>
+          <Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={saved} onChange={(event)=>setCountedCash(event.target.value)} placeholder="Enter physical cash" /></Field>
+          <Field label="Responsible staff"><input className={inputClass} value={closedBy} readOnly /></Field>
+          <Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field>
+        </div>
+        <Field label="Closure remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} placeholder="Cash variance, pending dispatch, failed WhatsApp or handover notes" /></Field>
+        <div className="flex flex-wrap gap-2">
+          <button className={softButton} disabled={saving || saved || counterOpened} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter (Optional)</button>
+          <button className={primaryButton} disabled={saving || saved} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Close Day & Save</button>
+        </div>
+      </Card>
+
+      <Card className="space-y-3">
+        <div><h3 className="font-display text-lg font-black">Reconciliation</h3><p className="text-xs text-muted-foreground">What should physically remain in the drawer.</p></div>
+        {[['Opening Cash',Number(openingCash||0)],['Cash Bill Collection',cashBills],['Cash Credit Collection',cashCollections],['Expected Closing Cash',expectedCash],['Physical Count',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex items-center justify-between rounded-xl border bg-muted/25 px-3 py-2.5 text-sm"><span className="text-muted-foreground">{label}</span><b className={String(label)==='Difference' && Number(value)!==0 ? 'text-red-600' : ''}>{money(Number(value))}</b></div>)}
+      </Card>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
+      <Card>
+        <div className="mb-3 flex items-center justify-between"><div><h3 className="font-black">Payment Breakdown</h3><p className="text-xs text-muted-foreground">Bill collections plus later credit collections</p></div><WalletCards className="size-5 text-emerald-600" /></div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{paymentRows.map(([label,value])=><div key={label} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-lg font-black">{money(value)}</p></div>)}</div>
+      </Card>
+      <Card>
+        <div className="mb-3"><h3 className="font-black">Operational Activity</h3><p className="text-xs text-muted-foreground">Complete day-end checklist</p></div>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          {[['Orders created',dayOrders.length],['Bills completed',dayBills.length],['Credit bills',dayCredits.length],['Credit payments',dayPayments.length],['Disputes',dayDisputes.length],['WhatsApp sent',whatsappSent],['WhatsApp failed',whatsappFailed],['Open credit',money(totalCredit)]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 font-black">{value}</p></div>)}
+        </div>
+      </Card>
+    </div>
   </div>;
 }
 
@@ -2111,293 +2259,167 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   reminders: HosurReminder[];
   disputes: HosurDispute[];
 }) {
+  type ReportTab = 'sales' | 'items' | 'credit' | 'whatsapp' | 'disputes';
   const [from, setFrom] = useState(TODAY_ISO().slice(0, 8) + '01');
   const [to, setTo] = useState(TODAY_ISO());
-  const [reportTab, setReportTab] = useState<'sales' | 'credit' | 'items' | 'whatsapp' | 'disputes'>('sales');
+  const [reportTab, setReportTab] = useState<ReportTab>('sales');
+  const [search, setSearch] = useState('');
 
-  const inRange = (date: string) => date.slice(0, 10) >= from && date.slice(0, 10) <= to;
-  const rangeBills = bills.filter((b) => inRange(b.confirmedAt ?? b.createdAt));
+  const setPreset = (preset: 'today' | '7d' | 'month' | '30d') => {
+    const end = TODAY_ISO();
+    const date = new Date(`${end}T00:00:00+05:30`);
+    if (preset === 'today') setFrom(end);
+    if (preset === 'month') setFrom(end.slice(0, 8) + '01');
+    if (preset === '7d' || preset === '30d') {
+      date.setDate(date.getDate() - (preset === '7d' ? 6 : 29));
+      setFrom(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date));
+    }
+    setTo(end);
+  };
 
-  const shopSales = shops
-    .map((s) => ({
-      shop: s.shopName,
-      bills: rangeBills.filter((b) => b.shopId === s.id).length,
-      total: rangeBills.filter((b) => b.shopId === s.id).reduce((sum, b) => sum + b.subtotal, 0),
-      credit: credits.filter((c) => c.shopId === s.id && c.balanceAmount > 0).reduce((sum, c) => sum + c.balanceAmount, 0),
-    }))
-    .filter((r) => r.total > 0 || r.credit > 0)
-    .sort((a, b) => b.total - a.total);
+  const validRange = from <= to;
+  const inRange = (value: string) => {
+    const date = businessDate(value);
+    return validRange && date >= from && date <= to;
+  };
+  const rangeBills = bills.filter((b) => !['draft', 'cancelled'].includes(b.status) && inRange(b.confirmedAt ?? b.createdAt));
+  const rangeLogs = logs.filter((l) => inRange(l.createdAt));
+  const rangeReminders = reminders.filter((r) => inRange(r.createdAt));
+  const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
+  const openCredits = credits.filter((c) => c.balanceAmount > 0).sort((a, b) => b.balanceAmount - a.balanceAmount);
+  const overdueCredits = openCredits.filter((c) => Boolean(c.dueDate) && daysBetween(c.dueDate!) > 0);
 
-  const itemMap = new Map<string, { qty: number; total: number }>();
+  const shopSales = shops.map((shop) => {
+    const shopBills = rangeBills.filter((bill) => bill.shopId === shop.id);
+    return {
+      shopId: shop.id,
+      shop: shop.shopName,
+      bills: shopBills.length,
+      billed: shopBills.reduce((sum, bill) => sum + bill.subtotal, 0),
+      collected: shopBills.reduce((sum, bill) => sum + bill.paidAmount, 0),
+      creditRaised: shopBills.reduce((sum, bill) => sum + bill.creditAmount, 0),
+      openCredit: openCredits.filter((credit) => credit.shopId === shop.id).reduce((sum, credit) => sum + credit.balanceAmount, 0),
+    };
+  }).filter((row) => row.bills > 0 || row.openCredit > 0).sort((a, b) => b.billed - a.billed);
+
+  const itemMap = new Map<string, { qty: number; total: number; bills: Set<string> }>();
   rangeBills.forEach((bill) => (billItems[bill.id] ?? []).forEach((item) => {
-    const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0 };
+    const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0, bills: new Set<string>() };
     row.qty += item.quantity;
     row.total += item.lineTotal;
+    row.bills.add(bill.id);
     itemMap.set(item.itemName, row);
   }));
-  const itemSales = Array.from(itemMap.entries())
-    .map(([item, row]) => ({ item, ...row }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 60);
+  const itemSales = Array.from(itemMap.entries()).map(([item, row]) => ({ item, qty: row.qty, total: row.total, bills: row.bills.size })).sort((a, b) => b.total - a.total);
 
-  const openCredits = credits.filter((c) => c.balanceAmount > 0).sort((a, b) => b.balanceAmount - a.balanceAmount);
-  const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
-  const rangeLogs = logs.filter((l) => inRange(l.createdAt));
+  const totalSales = rangeBills.reduce((sum, bill) => sum + bill.subtotal, 0);
+  const totalCollected = rangeBills.reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const creditRaised = rangeBills.reduce((sum, bill) => sum + bill.creditAmount, 0);
+  const totalOpenCredit = openCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0);
+  const averageBill = rangeBills.length ? totalSales / rangeBills.length : 0;
+  const collectionRate = totalSales > 0 ? (totalCollected / totalSales) * 100 : 0;
+  const sentLogs = rangeLogs.filter((log) => log.status === 'sent').length;
+  const failedLogs = rangeLogs.filter((log) => log.status === 'failed').length;
+  const whatsappSuccessRate = rangeLogs.length ? (sentLogs / rangeLogs.length) * 100 : 0;
 
-  const totalSales = shopSales.reduce((s, r) => s + r.total, 0);
-  const totalCredit = openCredits.reduce((s, c) => s + c.balanceAmount, 0);
+  const paymentMix = (['cash', 'upi', 'card', 'bank', 'mixed'] as PaymentMode[]).map((mode) => ({
+    mode,
+    amount: rangeBills.filter((bill) => bill.paymentMode === mode).reduce((sum, bill) => sum + bill.paidAmount, 0),
+  }));
+  const maxPayment = Math.max(1, ...paymentMix.map((row) => row.amount));
+  const maxShopSales = Math.max(1, ...shopSales.map((row) => row.billed));
+  const maxItemSales = Math.max(1, ...itemSales.map((row) => row.total));
+  const query = search.trim().toLowerCase();
+  const visibleShops = shopSales.filter((row) => !query || row.shop.toLowerCase().includes(query));
+  const visibleItems = itemSales.filter((row) => !query || row.item.toLowerCase().includes(query));
+  const visibleCredits = openCredits.filter((row) => !query || `${row.shopName} ${row.billNo}`.toLowerCase().includes(query));
 
-  const exportExcel = () => downloadWorkbook(`hosur-reports-${from}-to-${to}.xls`, [
-    { name: 'Shop Sales', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Sales: r.total, 'Open Credit': r.credit })) },
-    { name: 'Item Sales', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Amount: r.total })) },
-    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Status: c.status })) },
+  const exportExcel = () => downloadWorkbook(`hosur-management-report-${from}-to-${to}.xls`, [
+    { name: 'Shop Performance', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Billed: r.billed, Collected: r.collected, 'Credit Raised': r.creditRaised, 'Open Credit': r.openCredit })) },
+    { name: 'Item Performance', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Bills: r.bills, Amount: r.total })) },
+    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Overdue: c.dueDate && daysBetween(c.dueDate) > 0 ? 'Yes' : 'No', Status: c.status })) },
     { name: 'WhatsApp', rows: rangeLogs.map((l) => ({ Shop: l.shopName, Bill: l.billNo ?? '', Type: l.messageType, Status: l.status, Date: toDateTimeLabel(l.createdAt), Error: l.errorMessage ?? '' })) },
     { name: 'Disputes', rows: rangeDisputes.map((d) => ({ Order: d.orderNumber ?? '', Item: d.itemName, Expected: d.expectedQuantity, Received: d.receivedQuantity, Unit: d.unit, Status: d.status })) },
   ]);
 
   const printReport = () => printDocument('Hosur Management Report', `${toDateLabel(from)} to ${toDateLabel(to)}`, `
-    <div class="grid"><div class="kpi">Total Sales<b>${money(totalSales)}</b></div><div class="kpi">Bills<b>${rangeBills.length}</b></div><div class="kpi">Open Credit<b>${money(totalCredit)}</b></div><div class="kpi">Shops Served<b>${shopSales.length}</b></div></div>
-    <div class="section"><h2>Shop-wise Sales</h2><table><thead><tr><th>Shop</th><th>Bills</th><th class="right">Sales</th><th class="right">Open Credit</th></tr></thead><tbody>${shopSales.map((r)=>`<tr><td>${r.shop}</td><td>${r.bills}</td><td class="right">${money(r.total)}</td><td class="right">${money(r.credit)}</td></tr>`).join('') || '<tr><td colspan="4">No sales</td></tr>'}</tbody></table></div>
-    <div class="section"><h2>Top Item Sales</h2><table><thead><tr><th>Item</th><th class="right">Quantity</th><th class="right">Amount</th></tr></thead><tbody>${itemSales.slice(0,30).map((r)=>`<tr><td>${r.item}</td><td class="right">${num(r.qty)}</td><td class="right">${money(r.total)}</td></tr>`).join('') || '<tr><td colspan="3">No item sales</td></tr>'}</tbody></table></div>`);
+    <div class="grid"><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Collected<b>${money(totalCollected)}</b></div><div class="kpi">Open Credit<b>${money(totalOpenCredit)}</b></div><div class="kpi">Average Bill<b>${money(averageBill)}</b></div></div>
+    <div class="section"><h2>Shop Performance</h2><table><thead><tr><th>Shop</th><th>Bills</th><th class="right">Billed</th><th class="right">Collected</th><th class="right">Open Credit</th></tr></thead><tbody>${shopSales.map((r)=>`<tr><td>${r.shop}</td><td>${r.bills}</td><td class="right">${money(r.billed)}</td><td class="right">${money(r.collected)}</td><td class="right">${money(r.openCredit)}</td></tr>`).join('') || '<tr><td colspan="5">No sales</td></tr>'}</tbody></table></div>
+    <div class="section"><h2>Top Items</h2><table><thead><tr><th>Item</th><th class="right">Quantity</th><th class="right">Amount</th></tr></thead><tbody>${itemSales.slice(0,30).map((r)=>`<tr><td>${r.item}</td><td class="right">${num(r.qty)}</td><td class="right">${money(r.total)}</td></tr>`).join('') || '<tr><td colspan="3">No item sales</td></tr>'}</tbody></table></div>`);
 
+  const reportTabs: Array<{ id: ReportTab; label: string; icon: React.ReactNode; badge?: number }> = [
+    { id: 'sales', label: 'Sales & Shops', icon: <TrendingUp className="size-4" /> },
+    { id: 'items', label: 'Item Performance', icon: <PackageCheck className="size-4" /> },
+    { id: 'credit', label: 'Credit Control', icon: <CreditCard className="size-4" />, badge: overdueCredits.length },
+    { id: 'whatsapp', label: 'WhatsApp Delivery', icon: <MessageCircle className="size-4" />, badge: failedLogs },
+    { id: 'disputes', label: 'Disputes', icon: <AlertTriangle className="size-4" />, badge: rangeDisputes.filter((d) => !['resolved', 'cleared'].includes(d.status)).length },
+  ];
 
-  const reportTabs = [
-    { id: 'sales', label: '🏪 Shop Sales' },
-    { id: 'items', label: '📦 Item Sales' },
-    { id: 'credit', label: '💳 Credit Due' },
-    { id: 'whatsapp', label: '💬 WhatsApp' },
-    { id: 'disputes', label: '⚠️ Disputes' },
-  ] as const;
-
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+  return <div className="space-y-5">
+    <section className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-900 text-white shadow-xl">
+      <div className="grid gap-5 p-5 lg:grid-cols-[1fr_auto] lg:items-end">
         <div>
-          <h2 className="font-display text-xl font-black">Reports</h2>
-          <p className="text-sm text-muted-foreground">Shop-wise sales, credit, items, WhatsApp & disputes</p>
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300"><BarChart3 className="size-4" /> Hosur business intelligence</div>
+          <h2 className="font-display text-3xl font-black">Management Reports</h2>
+          <p className="mt-1 max-w-2xl text-sm text-white/60">Sales, collections, credit exposure, item movement, WhatsApp delivery and operational exceptions in one readable workspace.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          <span className="self-center text-muted-foreground text-sm">to</span>
-          <input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          <button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel</button>
-          <button className={softButton} onClick={printReport}><Printer className="size-4" /> Print Summary</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" onClick={exportExcel}><FileSpreadsheet className="size-4" /> Export Excel</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-xs font-black text-slate-950 hover:bg-emerald-50" onClick={printReport}><Printer className="size-4" /> Print Report</button>
         </div>
       </div>
-
-      {/* Summary KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Total Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald" />
-        <Metric label="Bills Count" value={rangeBills.length} icon={<Receipt className="size-4" />} tone="blue" />
-        <Metric label="Open Credit" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
-        <Metric label="Shops Served" value={shopSales.length} icon={<Store className="size-4" />} tone="slate" />
+      <div className="grid border-t border-white/10 sm:grid-cols-2 xl:grid-cols-4">
+        {[['Gross Sales',money(totalSales)],['Collected',money(totalCollected)],['Open Credit',money(totalOpenCredit)],['Average Bill',money(averageBill)]].map(([label,value])=><div key={label} className="border-white/10 p-4 sm:border-r last:border-r-0"><p className="text-[10px] font-black uppercase tracking-wider text-white/45">{label}</p><p className="mt-1 text-2xl font-black">{value}</p></div>)}
       </div>
+    </section>
 
-      {/* Sub-tab pills */}
-      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {reportTabs.map((t) => (
-          <button key={t.id} onClick={() => setReportTab(t.id)}
-            className={cn('shrink-0 rounded-full border px-4 py-1.5 text-xs font-black whitespace-nowrap transition',
-              reportTab === t.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card hover:bg-muted'
-            )}>
-            {t.label}
-          </button>
-        ))}
+    <Card className="space-y-3">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[['today','Today'],['7d','Last 7 Days'],['month','This Month'],['30d','Last 30 Days']].map(([id,label])=><button key={id} className="rounded-xl border bg-background px-3 py-2 text-xs font-black hover:border-emerald-400 hover:text-emerald-700" onClick={() => setPreset(id as 'today'|'7d'|'month'|'30d')}>{label}</button>)}
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Field label="From"><input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
+          <Field label="To"><input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
+          <Field label="Search"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"/><input className={cn(inputClass,'pl-9')} value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Shop, item or bill" /></div></Field>
+        </div>
       </div>
+      {!validRange && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">The From date must be before or equal to the To date.</p>}
+    </Card>
 
-      {/* Shop Sales */}
-      {reportTab === 'sales' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Shop-wise Sales — {toDateLabel(from)} to {toDateLabel(to)}</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Shop</th>
-                  <th className="px-4 py-2 text-right">Bills</th>
-                  <th className="px-4 py-2 text-right">Sales</th>
-                  <th className="px-4 py-2 text-right">Credit Pending</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {shopSales.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No sales in this period</td></tr>
-                  : shopSales.map((r) => (
-                    <tr key={r.shop} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{r.shop}</td>
-                      <td className="px-4 py-2 text-right">{r.bills}</td>
-                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
-                      <td className="px-4 py-2 text-right font-semibold text-red-600">{r.credit > 0 ? money(r.credit) : '—'}</td>
-                    </tr>
-                  ))}
-              </tbody>
-              {shopSales.length > 0 && (
-                <tfoot className="bg-muted/60 font-black text-sm">
-                  <tr>
-                    <td className="px-4 py-2">Total</td>
-                    <td className="px-4 py-2 text-right">{rangeBills.length}</td>
-                    <td className="px-4 py-2 text-right text-emerald-700">{money(totalSales)}</td>
-                    <td className="px-4 py-2 text-right text-red-600">{money(totalCredit)}</td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Item Sales */}
-      {reportTab === 'items' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Item-wise Sales — Top {itemSales.length} items</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">#</th>
-                  <th className="px-4 py-2">Item</th>
-                  <th className="px-4 py-2 text-right">Qty</th>
-                  <th className="px-4 py-2 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {itemSales.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No items in this period</td></tr>
-                  : itemSales.map((r, i) => (
-                    <tr key={r.item} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
-                      <td className="px-4 py-2 font-semibold">{r.item}</td>
-                      <td className="px-4 py-2 text-right">{num(r.qty)}</td>
-                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Credit Due */}
-      {reportTab === 'credit' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Open Credit Dues (all time)</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Shop</th>
-                  <th className="px-4 py-2">Bill No</th>
-                  <th className="px-4 py-2">Due Date</th>
-                  <th className="px-4 py-2 text-right">Balance</th>
-                  <th className="px-4 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {openCredits.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No open credit dues</td></tr>
-                  : openCredits.map((c) => (
-                    <tr key={c.id} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{c.shopName}</td>
-                      <td className="px-4 py-2">{c.billNo}</td>
-                      <td className="px-4 py-2">{toDateLabel(c.dueDate)}</td>
-                      <td className="px-4 py-2 text-right font-black text-red-600">{money(c.balanceAmount)}</td>
-                      <td className="px-4 py-2"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* WhatsApp */}
-      {reportTab === 'whatsapp' && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-2xl border bg-card overflow-hidden">
-            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">WhatsApp Log</h3></div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                  <tr><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Count</th></tr>
-                </thead>
-                <tbody className="divide-y">
-                  {(['sent', 'failed', 'queued'] as const).map((s) => (
-                    <tr key={s} className="bg-card">
-                      <td className="px-4 py-2 capitalize font-semibold">{s}</td>
-                      <td className="px-4 py-2 text-right font-black">{rangeLogs.filter((l) => l.status === s).length}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="rounded-2xl border bg-card overflow-hidden">
-            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">Reminder History</h3></div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                  <tr><th className="px-4 py-2">Shop</th><th className="px-4 py-2 text-right">Pending</th><th className="px-4 py-2">Status</th></tr>
-                </thead>
-                <tbody className="divide-y">
-                  {reminders.filter((r) => inRange(r.createdAt)).length === 0
-                    ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={3}>No reminders in this period</td></tr>
-                    : reminders.filter((r) => inRange(r.createdAt)).map((r) => (
-                      <tr key={r.id} className="bg-card">
-                        <td className="px-4 py-2 font-semibold">{r.shopName}</td>
-                        <td className="px-4 py-2 text-right">{money(r.pendingAmount)}</td>
-                        <td className="px-4 py-2"><Badge tone={statusTone(r.status)}>{r.status}</Badge></td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Disputes */}
-      {reportTab === 'disputes' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Disputes — {toDateLabel(from)} to {toDateLabel(to)}</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Order</th>
-                  <th className="px-4 py-2">Item</th>
-                  <th className="px-4 py-2 text-right">Expected</th>
-                  <th className="px-4 py-2 text-right">Received</th>
-                  <th className="px-4 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rangeDisputes.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No disputes in this period</td></tr>
-                  : rangeDisputes.map((d) => (
-                    <tr key={d.id} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{d.orderNumber ?? '—'}</td>
-                      <td className="px-4 py-2">{d.itemName}</td>
-                      <td className="px-4 py-2 text-right">{num(d.expectedQuantity)} {d.unit}</td>
-                      <td className="px-4 py-2 text-right">{num(d.receivedQuantity)} {d.unit}</td>
-                      <td className="px-4 py-2"><Badge tone={statusTone(d.status)}>{d.status}</Badge></td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-emerald-100 p-2 text-emerald-700"><Percent className="size-4"/></span><span className="text-xs font-black text-emerald-700">{collectionRate.toFixed(1)}%</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Collection rate</p><p className="mt-1 text-sm font-bold">{money(totalCollected)} of {money(totalSales)}</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-blue-100 p-2 text-blue-700"><Receipt className="size-4"/></span><span className="text-xs font-black text-blue-700">{rangeBills.length}</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Completed bills</p><p className="mt-1 text-sm font-bold">{shopSales.length} shops served</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-amber-100 p-2 text-amber-700"><Clock3 className="size-4"/></span><span className="text-xs font-black text-red-600">{overdueCredits.length}</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Overdue credits</p><p className="mt-1 text-sm font-bold">{money(overdueCredits.reduce((sum,c)=>sum+c.balanceAmount,0))}</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-violet-100 p-2 text-violet-700"><MessageCircle className="size-4"/></span><span className="text-xs font-black text-violet-700">{whatsappSuccessRate.toFixed(0)}%</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">WhatsApp success</p><p className="mt-1 text-sm font-bold">{sentLogs} sent · {failedLogs} failed</p></div>
     </div>
-  );
+
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
+      <Card>
+        <div className="mb-4"><h3 className="font-display text-lg font-black">Payment Mix</h3><p className="text-xs text-muted-foreground">Collected at billing, excluding pure credit bills</p></div>
+        <div className="space-y-3">{paymentMix.map((row)=><div key={row.mode}><div className="mb-1 flex items-center justify-between text-sm"><span className="font-bold capitalize">{row.mode}</span><span className="font-black">{money(row.amount)}</span></div><div className="h-2.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-600" style={{width:`${Math.max(0,(row.amount/maxPayment)*100)}%`}} /></div></div>)}</div>
+      </Card>
+      <Card>
+        <div className="mb-4"><h3 className="font-display text-lg font-black">Period Snapshot</h3><p className="text-xs text-muted-foreground">Financial and operational health</p></div>
+        <div className="grid grid-cols-2 gap-2">{[['Credit raised',money(creditRaised)],['Open credit',money(totalOpenCredit)],['Reminders',rangeReminders.length],['Disputes',rangeDisputes.length],['WhatsApp sent',sentLogs],['WhatsApp failed',failedLogs]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 font-black">{value}</p></div>)}</div>
+      </Card>
+    </div>
+
+    <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">{reportTabs.map((tab)=><button key={tab.id} onClick={()=>setReportTab(tab.id)} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black transition',reportTab===tab.id?'border-emerald-700 bg-emerald-700 text-white shadow-md':'bg-card hover:border-emerald-300 hover:text-emerald-700')}>{tab.icon}{tab.label}{Boolean(tab.badge) && <span className={cn('rounded-full px-2 py-0.5 text-[10px]',reportTab===tab.id?'bg-white/20':'bg-red-100 text-red-700')}>{tab.badge}</span>}</button>)}</div>
+
+    {reportTab === 'sales' && <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+      <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Shop Performance</h3><p className="text-xs text-muted-foreground">Billed, collected and current outstanding balance</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Shop</th><th className="px-4 py-3 text-right">Bills</th><th className="px-4 py-3 text-right">Billed</th><th className="px-4 py-3 text-right">Collected</th><th className="px-4 py-3 text-right">Open Credit</th></tr></thead><tbody className="divide-y">{visibleShops.length?visibleShops.map((row)=><tr key={row.shopId} className="hover:bg-muted/20"><td className="px-4 py-3"><p className="font-black">{row.shop}</p><div className="mt-1 h-1.5 w-32 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-600" style={{width:`${(row.billed/maxShopSales)*100}%`}}/></div></td><td className="px-4 py-3 text-right">{row.bills}</td><td className="px-4 py-3 text-right font-black text-emerald-700">{money(row.billed)}</td><td className="px-4 py-3 text-right font-bold">{money(row.collected)}</td><td className="px-4 py-3 text-right font-black text-red-600">{row.openCredit?money(row.openCredit):'—'}</td></tr>):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No matching shop activity.</td></tr>}</tbody></table></div></div>
+      <Card><h3 className="font-black">Top Shops</h3><p className="mb-3 text-xs text-muted-foreground">Highest billed value in selected period</p><div className="space-y-2">{shopSales.slice(0,8).map((row,index)=><div key={row.shopId} className="flex items-center gap-3 rounded-xl border p-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-100 text-xs font-black text-emerald-700">{index+1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{row.shop}</p><p className="text-[10px] text-muted-foreground">{row.bills} bills</p></div><p className="text-sm font-black">{money(row.billed)}</p></div>)}{!shopSales.length&&<p className="py-8 text-center text-sm text-muted-foreground">No sales in this period.</p>}</div></Card>
+    </div>}
+
+    {reportTab === 'items' && <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Item Performance</h3><p className="text-xs text-muted-foreground">Quantity, bill reach and revenue contribution</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Rank</th><th className="px-4 py-3">Item</th><th className="px-4 py-3 text-right">Bills</th><th className="px-4 py-3 text-right">Quantity</th><th className="px-4 py-3 text-right">Amount</th></tr></thead><tbody className="divide-y">{visibleItems.length?visibleItems.map((row,index)=><tr key={row.item} className="hover:bg-muted/20"><td className="px-4 py-3 text-muted-foreground">#{index+1}</td><td className="px-4 py-3"><p className="font-black">{row.item}</p><div className="mt-1 h-1.5 w-40 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-blue-600" style={{width:`${(row.total/maxItemSales)*100}%`}}/></div></td><td className="px-4 py-3 text-right">{row.bills}</td><td className="px-4 py-3 text-right font-bold">{num(row.qty)}</td><td className="px-4 py-3 text-right font-black text-emerald-700">{money(row.total)}</td></tr>):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No matching item activity.</td></tr>}</tbody></table></div></div>}
+
+    {reportTab === 'credit' && <div className="space-y-4"><div className="grid gap-3 md:grid-cols-3"><Metric label="Open Accounts" value={openCredits.length} icon={<CreditCard className="size-4"/>} tone="amber"/><Metric label="Outstanding" value={money(totalOpenCredit)} icon={<IndianRupee className="size-4"/>} tone="red"/><Metric label="Overdue" value={money(overdueCredits.reduce((sum,c)=>sum+c.balanceAmount,0))} icon={<Clock3 className="size-4"/>} tone="red"/></div><div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Credit Control</h3><p className="text-xs text-muted-foreground">Prioritized by outstanding balance</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Shop / Bill</th><th className="px-4 py-3">Due Date</th><th className="px-4 py-3 text-right">Balance</th><th className="px-4 py-3">Age</th><th className="px-4 py-3">Status</th></tr></thead><tbody className="divide-y">{visibleCredits.length?visibleCredits.map((credit)=>{const overdue=Boolean(credit.dueDate)&&daysBetween(credit.dueDate!)>0;return <tr key={credit.id} className="hover:bg-muted/20"><td className="px-4 py-3"><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">{credit.billNo}</p></td><td className="px-4 py-3">{toDateLabel(credit.dueDate)}</td><td className="px-4 py-3 text-right font-black text-red-600">{money(credit.balanceAmount)}</td><td className="px-4 py-3">{credit.dueDate ? (overdue ? `${daysBetween(credit.dueDate)} days overdue` : 'Within due date') : 'No due date'}</td><td className="px-4 py-3"><Badge tone={overdue?'red':statusTone(credit.status)}>{overdue?'overdue':credit.status}</Badge></td></tr>}):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No open credit dues.</td></tr>}</tbody></table></div></div></div>}
+
+    {reportTab === 'whatsapp' && <div className="grid gap-4 xl:grid-cols-[.75fr_1.25fr]"><div className="space-y-4"><Card><h3 className="font-black">Delivery Health</h3><div className="mt-3 grid grid-cols-2 gap-2">{[['Sent',sentLogs],['Failed',failedLogs],['Queued',rangeLogs.filter(l=>l.status==='queued').length],['Success',`${whatsappSuccessRate.toFixed(0)}%`]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{value}</p></div>)}</div></Card><Card><h3 className="font-black">Reminder Activity</h3><p className="mt-1 text-xs text-muted-foreground">{rangeReminders.length} reminder attempts in the selected period.</p><p className="mt-3 text-2xl font-black">{money(rangeReminders.reduce((sum,r)=>sum+r.pendingAmount,0))}</p><p className="text-xs text-muted-foreground">Pending amount covered by reminders</p></Card></div><div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Message Log</h3><p className="text-xs text-muted-foreground">Errors are shown directly for faster correction</p></div><div className="max-h-[560px] overflow-auto divide-y">{rangeLogs.length?rangeLogs.map((log)=><div key={log.id} className="p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-black">{log.shopName}</p><p className="text-xs text-muted-foreground">{log.billNo||log.messageType} · {toDateTimeLabel(log.createdAt)}</p></div><Badge tone={statusTone(log.status)}>{log.status}</Badge></div>{log.errorMessage&&<p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{log.errorMessage}</p>}</div>):<p className="p-10 text-center text-sm text-muted-foreground">No WhatsApp activity in this period.</p>}</div></div></div>}
+
+    {reportTab === 'disputes' && <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Receiving Disputes</h3><p className="text-xs text-muted-foreground">Expected versus physically received quantity</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Item</th><th className="px-4 py-3 text-right">Expected</th><th className="px-4 py-3 text-right">Received</th><th className="px-4 py-3 text-right">Variance</th><th className="px-4 py-3">Status</th></tr></thead><tbody className="divide-y">{rangeDisputes.length?rangeDisputes.map((dispute)=><tr key={dispute.id} className="hover:bg-muted/20"><td className="px-4 py-3 font-black">{dispute.orderNumber??'—'}</td><td className="px-4 py-3">{dispute.itemName}</td><td className="px-4 py-3 text-right">{num(dispute.expectedQuantity)} {dispute.unit}</td><td className="px-4 py-3 text-right">{num(dispute.receivedQuantity)} {dispute.unit}</td><td className="px-4 py-3 text-right font-black text-red-600">{num(dispute.receivedQuantity-dispute.expectedQuantity)} {dispute.unit}</td><td className="px-4 py-3"><Badge tone={statusTone(dispute.status)}>{dispute.status}</Badge></td></tr>):<tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No disputes in this period.</td></tr>}</tbody></table></div></div>}
+  </div>;
 }
 
 function NotificationsTab({ notifications, busy, withBusy }: {
