@@ -237,7 +237,13 @@ function AdminDashboard() {
   useEffect(() => {
     const loadPublicOrders = async () => {
       setPublicOrdersLoading(true);
-      const { data } = await supabase.from('public_orders').select('*').order('created_at', { ascending: false }).limit(250);
+      const { data, error } = await supabase.rpc('list_public_orders_secure', {
+        p_limit: 250,
+        p_offset: 0,
+        p_include_full_contact: true,
+        p_purpose: 'order_fulfilment',
+      });
+      if (error) throw error;
       setPublicOrders((data ?? []) as PublicOrder[]);
       setPublicOrdersLoading(false);
     };

@@ -56,7 +56,8 @@ const toDateLabel = (value?: string | null) => {
   const date = dateOnly ? new Date(`${value}T00:00:00`) : new Date(value);
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: dateOnly ? 'Asia/Kolkata' : undefined });
 };
-const toDateTimeLabel = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+const toDateTimeLabel = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—';
+const businessDate = (value?: string | null) => value ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : '';
 const daysBetween = (from: string, to = new Date()) => Math.floor((to.getTime() - new Date(`${from}T00:00:00`).getTime()) / 86_400_000);
 
 type HosurTab =
@@ -1265,7 +1266,7 @@ export default function HosurDashboard() {
               {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
-              {tab === 'closure' && <DailyClosureTab orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} />}
+              {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} />}
               {tab === 'reports' && <ReportsTab shops={shops} bills={bills} billItems={billItems} credits={credits} logs={whatsappLogs} reminders={reminders} disputes={disputes} />}
               {tab === 'notifications' && <NotificationsTab notifications={notifications} busy={busy} withBusy={withBusy} />}
             </div>
@@ -1947,7 +1948,9 @@ function ReminderHistoryTab({ reminders, credits, busy, withBusy, runDueReminder
   );
 }
 
-function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
+function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments, disputes, logs }: {
+  actorId: string;
+  actorName: string;
   orders: HosurOrder[];
   bills: HosurBill[];
   credits: HosurCreditLedger[];
@@ -1955,93 +1958,124 @@ function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
   disputes: HosurDispute[];
   logs: HosurWhatsappLog[];
 }) {
+  void credits;
   const [date, setDate] = useState(TODAY_ISO());
   const [openingCash, setOpeningCash] = useState('');
   const [countedCash, setCountedCash] = useState('');
   const [remarks, setRemarks] = useState('');
-  const [closedBy, setClosedBy] = useState('');
+  const [closedBy, setClosedBy] = useState(actorName);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [counterOpened, setCounterOpened] = useState(false);
+  const [statusError, setStatusError] = useState('');
 
-  const dayBills = bills.filter((b) => (b.confirmedAt ?? b.createdAt).slice(0, 10) === date);
-  const dayOrders = orders.filter((o) => o.createdAt.slice(0, 10) === date);
-  const dayPayments = payments.filter((p) => p.createdAt.slice(0, 10) === date);
-  const dayDisputes = disputes.filter((d) => d.createdAt.slice(0, 10) === date);
-  const dayLogs = logs.filter((l) => l.createdAt.slice(0, 10) === date);
-  const cashBills = dayBills.filter((b) => b.paymentMode === 'cash').reduce((s, b) => s + b.paidAmount, 0);
-  const upiBills = dayBills.filter((b) => b.paymentMode === 'upi').reduce((s, b) => s + b.paidAmount, 0);
-  const cardBills = dayBills.filter((b) => b.paymentMode === 'card').reduce((s, b) => s + b.paidAmount, 0);
-  const bankBills = dayBills.filter((b) => b.paymentMode === 'bank').reduce((s, b) => s + b.paidAmount, 0);
-  const mixedBills = dayBills.filter((b) => b.paymentMode === 'mixed').reduce((s, b) => s + b.paidAmount, 0);
-  const cashCollections = dayPayments.filter((p) => p.paymentMode === 'cash').reduce((s, p) => s + p.amountCollected, 0);
-  const nonCashCollections = dayPayments.filter((p) => p.paymentMode !== 'cash').reduce((s, p) => s + p.amountCollected, 0);
-  const totalSales = dayBills.reduce((s, b) => s + b.subtotal, 0);
-  const totalCredit = dayBills.reduce((s, b) => s + b.creditAmount, 0);
-  const totalCollected = dayBills.reduce((s, b) => s + b.paidAmount, 0) + dayPayments.reduce((s, p) => s + p.amountCollected, 0);
+  const dayBills = bills.filter((b) => businessDate(b.confirmedAt ?? b.createdAt) === date);
+  const dayOrders = orders.filter((o) => businessDate(o.createdAt) === date);
+  const dayPayments = payments.filter((p) => businessDate(p.createdAt) === date);
+  const dayDisputes = disputes.filter((d) => businessDate(d.createdAt) === date);
+  const dayLogs = logs.filter((l) => businessDate(l.createdAt) === date);
+  const cashBills = dayBills.filter((b) => b.paymentMode === 'cash').reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const upiBills = dayBills.filter((b) => b.paymentMode === 'upi').reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const cardBills = dayBills.filter((b) => b.paymentMode === 'card').reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const bankBills = dayBills.filter((b) => b.paymentMode === 'bank').reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const mixedBills = dayBills.filter((b) => b.paymentMode === 'mixed').reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const cashCollections = dayPayments.filter((p) => p.paymentMode === 'cash').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const upiCollections = dayPayments.filter((p) => p.paymentMode === 'upi').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const cardCollections = dayPayments.filter((p) => p.paymentMode === 'card').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const bankCollections = dayPayments.filter((p) => p.paymentMode === 'bank').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const mixedCollections = dayPayments.filter((p) => p.paymentMode === 'mixed').reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const totalSales = dayBills.reduce((sum, bill) => sum + bill.subtotal, 0);
+  const totalCredit = dayBills.reduce((sum, bill) => sum + bill.creditAmount, 0);
+  const totalCollected = dayBills.reduce((sum, bill) => sum + bill.paidAmount, 0) + dayPayments.reduce((sum, payment) => sum + payment.amountCollected, 0);
   const expectedCash = Number(openingCash || 0) + cashBills + cashCollections;
   const difference = Number(countedCash || 0) - expectedCash;
 
   useEffect(() => {
     let active = true;
-    void supabase.from('hosur_daily_closures').select('*').eq('closure_date', date).maybeSingle().then(({ data }) => {
-      if (!active) return;
-      setOpeningCash(data ? String(data.opening_cash ?? '') : '');
-      setCountedCash(data ? String(data.counted_cash ?? '') : '');
-      setRemarks(data?.remarks ?? '');
-      setClosedBy(data?.closed_by ?? '');
-      setSaved(Boolean(data));
-      const openKey = `hosur-counter-open-${date}`;
-      const openRecord = localStorage.getItem(openKey);
-      setCounterOpened(Boolean(openRecord) && !data);
-      if (!data && openRecord) {
-        try {
-          const parsed = JSON.parse(openRecord);
-          setOpeningCash(String(parsed.openingCash ?? ''));
-          setClosedBy(parsed.openedBy ?? '');
-        } catch { /* ignore invalid local state */ }
+    setStatusError('');
+    const load = async () => {
+      if (!actorId) {
+        if (active) setStatusError('Your staff session is missing. Sign out and sign in again.');
+        return;
       }
-    });
+      const { data: statusData, error: statusLoadError } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
+      if (!active) return;
+      if (statusLoadError) { setStatusError(statusLoadError.message || 'Unable to load counter status.'); return; }
+      const status = statusData as { session?: { status?: string; opening_cash?: number; opened_by?: string; closed_by?: string } | null; closure?: Record<string, unknown> | null } | null;
+      const closure = status?.closure as { opening_cash?: number; counted_cash?: number; remarks?: string; closed_by?: string } | null;
+      const currentSession = status?.session ?? null;
+      setOpeningCash(String(closure?.opening_cash ?? currentSession?.opening_cash ?? ''));
+      setCountedCash(String(closure?.counted_cash ?? ''));
+      setRemarks(closure?.remarks ?? '');
+      setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
+      setSaved(Boolean(closure));
+      setCounterOpened(currentSession?.status === 'open' && !closure);
+    };
+    void load();
     return () => { active = false; };
-  }, [date]);
+  }, [actorId, actorName, date]);
 
-  const openCounter = () => {
-    if (Number(openingCash || 0) < 0) return;
-    const openedBy = closedBy.trim() || 'Hosur Staff';
-    localStorage.setItem(`hosur-counter-open-${date}`, JSON.stringify({ openingCash: Number(openingCash || 0), openedBy, openedAt: new Date().toISOString() }));
+  const openCounter = async () => {
+    setStatusError('');
+    if (!actorId) return setStatusError('Your staff session is missing.');
+    if (!openingCash.trim() || Number(openingCash) < 0) return setStatusError('Enter a valid opening cash amount.');
+    setSaving(true);
+    const { error } = await supabase.rpc('open_hosur_counter_secure', {
+      p_business_date: date,
+      p_opening_cash: Number(openingCash),
+    });
+    setSaving(false);
+    if (error) return setStatusError(error.message);
     setCounterOpened(true);
+    setClosedBy(actorName);
   };
 
   const saveClosure = async () => {
+    setStatusError('');
+    if (!actorId) return setStatusError('Your staff session is missing.');
+    if (!counterOpened) return setStatusError('Open the counter before closing it.');
+    if (!countedCash.trim() || Number(countedCash) < 0) return setStatusError('Enter counted closing cash.');
     setSaving(true);
-    const { error } = await supabase.from('hosur_daily_closures').upsert({
-      closure_date: date, opening_cash: Number(openingCash || 0), cash_sales: cashBills, cash_collections: cashCollections,
-      upi_total: upiBills, card_total: cardBills, bank_total: bankBills, mixed_total: mixedBills + nonCashCollections,
-      gross_sales: totalSales, credit_given: totalCredit, total_collection: totalCollected, expected_cash: expectedCash,
-      counted_cash: Number(countedCash || 0), difference, bills_count: dayBills.length, orders_count: dayOrders.length,
-      disputes_count: dayDisputes.length, whatsapp_failed: dayLogs.filter((l) => l.status === 'failed').length,
-      remarks, closed_by: closedBy, closed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    }, { onConflict: 'closure_date' });
+    const { error } = await supabase.rpc('close_hosur_counter_secure', {
+      p_business_date: date,
+      p_counted_cash: Number(countedCash),
+      p_remarks: remarks,
+      p_cash_sales: cashBills,
+      p_cash_collections: cashCollections,
+      p_upi_total: upiBills + upiCollections,
+      p_card_total: cardBills + cardCollections,
+      p_bank_total: bankBills + bankCollections,
+      p_mixed_total: mixedBills + mixedCollections,
+      p_gross_sales: totalSales,
+      p_credit_given: totalCredit,
+      p_total_collection: totalCollected,
+      p_expected_cash: expectedCash,
+      p_bills_count: dayBills.length,
+      p_orders_count: dayOrders.length,
+      p_disputes_count: dayDisputes.length,
+      p_whatsapp_failed: dayLogs.filter((log) => log.status === 'failed').length,
+    });
     setSaving(false);
-    if (error) throw error;
+    if (error) return setStatusError(error.message);
     setSaved(true);
     setCounterOpened(false);
-    localStorage.removeItem(`hosur-counter-open-${date}`);
+    setClosedBy(actorName);
   };
 
-  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : 'Draft'}`, `
+  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened'}`, `
     <div class="grid"><div class="kpi">Opening Cash<b>${money(Number(openingCash || 0))}</b></div><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Total Collection<b>${money(totalCollected)}</b></div><div class="kpi">Credit Given<b>${money(totalCredit)}</b></div></div>
     <div class="section"><h2>Cash Reconciliation</h2><table><tbody><tr><td>Opening cash</td><td class="right">${money(Number(openingCash || 0))}</td><td>Cash sales</td><td class="right">${money(cashBills)}</td></tr><tr><td>Credit collections in cash</td><td class="right">${money(cashCollections)}</td><td>Expected cash</td><td class="right">${money(expectedCash)}</td></tr><tr><td>Counted closing cash</td><td class="right">${money(Number(countedCash || 0))}</td><td>Difference</td><td class="right">${money(difference)}</td></tr></tbody></table></div>
-    <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed / Other Collections</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills)}</td><td class="right">${money(cardBills)}</td><td class="right">${money(bankBills)}</td><td class="right">${money(mixedBills + nonCashCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
-    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Failed</th><th>Closed By</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${dayLogs.filter((l) => l.status === 'failed').length}</td><td>${closedBy || '—'}</td></tr></tbody></table></div>
+    <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills + upiCollections)}</td><td class="right">${money(cardBills + cardCollections)}</td><td class="right">${money(bankBills + bankCollections)}</td><td class="right">${money(mixedBills + mixedCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
+    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Failed</th><th>Closed By</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${dayLogs.filter((log) => log.status === 'failed').length}</td><td>${closedBy || '—'}</td></tr></tbody></table></div>
     <div class="section"><h2>Remarks</h2><div>${remarks || 'No remarks'}</div></div><div class="sign"><div class="line">Cashier Signature</div><div class="line">Branch In-Charge</div><div class="line">Accounts Verification</div></div>`);
 
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-2xl font-black">Daily Closure</h2><p className="text-sm text-muted-foreground">Record opening cash, reconcile collections, close the counter, and print a proper handover summary.</p></div><div className="flex flex-wrap gap-2"><input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} /><button className={softButton} onClick={printSummary}><Printer className="size-4" /> Print Summary</button></div></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-2xl font-black">Daily Closure</h2><p className="text-sm text-muted-foreground">Opening and closure are server-recorded, immutable, and tied to the signed-in staff member.</p></div><div className="flex flex-wrap gap-2"><input type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /><button className={softButton} onClick={printSummary}><Printer className="size-4" /> Print Summary</button></div></div>
+    {statusError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-sm font-bold text-red-700">{statusError}</div>}
     <div className="grid gap-3 md:grid-cols-4"><Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/><Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/><Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/><Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/></div>
-    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" value={openingCash} onChange={(e)=>setOpeningCash(e.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" value={countedCash} onChange={(e)=>setCountedCash(e.target.value)} /></Field><Field label="Closed by"><input className={inputClass} value={closedBy} onChange={(e)=>setClosedBy(e.target.value)} placeholder="Cashier / in-charge name" /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} onChange={(e)=>setRemarks(e.target.value)} /></Field><div className="flex flex-wrap gap-2">{!saved && !counterOpened ? <button className={primaryButton} disabled={!openingCash || !closedBy.trim()} onClick={openCounter}><CheckCircle2 className="size-4"/>Open Counter</button> : <button className={primaryButton} disabled={saving || !closedBy.trim() || (!saved && !counterOpened)} onClick={()=>void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved?'Update Closure':'Close Counter'}</button>}<span className={cn('inline-flex items-center rounded-xl px-3 py-2 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Counter Closed' : counterOpened ? 'Counter Open' : 'Counter Not Opened'}</span></div></Card>
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]"><Card className="space-y-4"><h3 className="font-black">Opening & Closing Cash</h3><div className="grid gap-3 md:grid-cols-2"><Field label="Opening cash"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field><Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={!counterOpened || saved} onChange={(event)=>setCountedCash(event.target.value)} /></Field><Field label="Staff"><input className={inputClass} value={closedBy} readOnly /></Field><Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field></div><Field label="Remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} /></Field><div className="flex flex-wrap gap-2">{!saved && !counterOpened ? <button className={primaryButton} disabled={saving || !openingCash.trim()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter</button> : !saved ? <button className={primaryButton} disabled={saving || !countedCash.trim()} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Close Counter</button> : null}<span className={cn('inline-flex items-center rounded-xl px-3 py-2 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Counter Closed' : counterOpened ? 'Counter Open' : 'Counter Not Opened'}</span></div></Card>
     <Card className="space-y-3"><h3 className="font-black">Reconciliation</h3>{[['Opening Cash',Number(openingCash||0)],['Cash Sales',cashBills],['Cash Credit Collection',cashCollections],['Expected Cash',expectedCash],['Counted Cash',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex justify-between rounded-xl bg-muted/40 px-3 py-2 text-sm"><span>{label}</span><b>{money(Number(value))}</b></div>)}</Card></div>
-    <Card><h3 className="mb-3 font-black">Payment Breakdown</h3><div className="grid gap-2 md:grid-cols-5">{[['Cash',cashBills+cashCollections],['UPI',upiBills],['Card',cardBills],['Bank',bankBills],['Mixed / Other',mixedBills+nonCashCollections]].map(([label,value])=><div key={String(label)} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{money(Number(value))}</p></div>)}</div></Card>
+    <Card><h3 className="mb-3 font-black">Payment Breakdown</h3><div className="grid gap-2 md:grid-cols-5">{[['Cash',cashBills+cashCollections],['UPI',upiBills+upiCollections],['Card',cardBills+cardCollections],['Bank',bankBills+bankCollections],['Mixed',mixedBills+mixedCollections]].map(([label,value])=><div key={String(label)} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{money(Number(value))}</p></div>)}</div></Card>
   </div>;
 }
 
