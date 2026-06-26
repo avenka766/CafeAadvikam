@@ -7,6 +7,7 @@ import { clearAppSession, saveAppSession } from '@/lib/appSession';
 import type { User, UserRole } from '@/types';
 
 const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
+const AUTH_STORAGE_KEY = 'cafe-aadvikam-auth';
 
 interface AuthState {
   currentUser: User | null;
@@ -73,12 +74,32 @@ export const useAuthStore = create<AuthState>()(
       logout: () => {
         const timer = get()._sessionTimer;
         if (timer) clearTimeout(timer);
-        // HYGIENE FIX: detach sliding-session listeners on logout so they don't accumulate
-        // across login/logout cycles on a shared terminal.
+
+        // Clear the browser session first. A remote logout failure must never keep the
+        // user trapped inside a dashboard. PostgREST builders are PromiseLike but do
+        // not reliably expose .catch(), so calling `.catch()` directly can throw before
+        // the local state is cleared.
         _detachActivityListeners();
-        void supabase.rpc('logout_staff_secure').catch(() => undefined);
         clearAppSession();
         set({ currentUser: null, sessionExpiresAt: null, _sessionTimer: null });
+
+        try {
+          sessionStorage.removeItem(AUTH_STORAGE_KEY);
+          // Remove the key from localStorage as well for installations upgraded from
+          // older builds that persisted auth outside sessionStorage.
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+        } catch {
+          // Storage may be unavailable in private/restricted browser contexts.
+        }
+
+        // Best-effort server invalidation. Local logout is already complete.
+        void (async () => {
+          try {
+            await supabase.rpc('logout_staff_secure');
+          } catch {
+            // The local session remains cleared even if the network is unavailable.
+          }
+        })();
       },
 
       // SM-02: never fetch the password column
@@ -163,7 +184,7 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: 'cafe-aadvikam-auth',
+      name: AUTH_STORAGE_KEY,
       storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null, sessionExpiresAt: state.sessionExpiresAt }),
       // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
