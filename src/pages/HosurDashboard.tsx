@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import {
   AlertCircle,
   AlertTriangle,
@@ -44,6 +46,8 @@ import type { SnbItem } from '@/branch/snbItems';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
 const BRANCH = 'Hosur' as const;
+const HOSUR_UPI_ID = '328969176350835@cnrb';
+const HOSUR_PAYEE_NAME = 'Sri Nanjundeshwara Bakery';
 const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 type HosurCounterStatus = { isOpen: boolean; isClosed: boolean; openingCash: number };
@@ -564,6 +568,255 @@ async function notifyBranch(title: string, body: string, refId?: string, refLabe
   if (error) console.error('Hosur branch notification failed:', error.message);
 }
 
+function safeMediaFileName(value: string) {
+  return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'hosur-bill';
+}
+
+function dataUrlPayload(dataUrl: string) {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) throw new Error('Unable to prepare WhatsApp media.');
+  return dataUrl.slice(comma + 1);
+}
+
+function buildUpiPaymentUrl(amount?: number) {
+  const params = new URLSearchParams({
+    pa: HOSUR_UPI_ID,
+    pn: HOSUR_PAYEE_NAME,
+    cu: 'INR',
+  });
+  if (Number(amount) > 0) params.set('am', Number(amount).toFixed(2));
+  return `upi://pay?${params.toString()}`;
+}
+
+async function createWhatsappQrMedia(amount?: number, reference?: string | null) {
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(amount), {
+    width: 720,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+  });
+  return {
+    base64: dataUrlPayload(qrDataUrl),
+    mimeType: 'image/png',
+    fileName: `${safeMediaFileName(reference || 'hosur-payment')}-qr.png`,
+    caption: Number(amount) > 0
+      ? `Scan to pay Rs. ${Number(amount).toFixed(2)} to ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`
+      : `Scan to pay ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`,
+  };
+}
+
+async function createWhatsappBillDocument(bill: HosurBill, items: HosurBillItem[]) {
+  const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
+    width: 640,
+    margin: 1,
+    errorCorrectionLevel: 'M',
+  });
+
+  const pageHeight = Math.max(190, 132 + items.length * 8);
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, pageHeight], compress: true });
+  const left = 5;
+  const right = 75;
+  let y = 8;
+  const line = (text: string, size = 8, bold = false, align: 'left' | 'center' | 'right' = 'left') => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(size);
+    const x = align === 'center' ? 40 : align === 'right' ? right : left;
+    doc.text(text, x, y, { align });
+    y += size <= 8 ? 4.3 : 5.2;
+  };
+  const divider = () => {
+    doc.setDrawColor(110);
+    doc.setLineDashPattern([1, 1], 0);
+    doc.line(left, y, right, y);
+    doc.setLineDashPattern([], 0);
+    y += 4;
+  };
+
+  line('SRI NANJUNDESHWARA BAKERY', 11, true, 'center');
+  line('HOSUR BRANCH', 9, true, 'center');
+  line('ORIGINAL BILL', 9, true, 'center');
+  divider();
+  line(`Bill No: ${bill.billNo}`, 8, true);
+  line(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, 7.5);
+  line(`Shop: ${bill.shopName}`, 8, true);
+  divider();
+
+  items.forEach((item, index) => {
+    const itemLines = doc.splitTextToSize(`${index + 1}. ${item.itemName}`, 45) as string[];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text(itemLines, left, y);
+    const itemHeight = Math.max(4, itemLines.length * 3.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    doc.text(`${num(item.quantity)} ${item.unit}`, 53, y, { align: 'right' });
+    doc.text(`Rs. ${Number(item.lineTotal).toFixed(2)}`, right, y, { align: 'right' });
+    y += itemHeight + 1.5;
+  });
+  divider();
+  line(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, 10, true, 'right');
+  line(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, 8, false, 'right');
+  line(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, 8, bill.creditAmount > 0, 'right');
+  if (bill.dueDate) line(`Due Date: ${toDateLabel(bill.dueDate)}`, 8, true, 'right');
+  divider();
+
+  const qrSize = 36;
+  doc.addImage(qrDataUrl, 'PNG', 22, y, qrSize, qrSize);
+  y += qrSize + 4;
+  line(`UPI: ${HOSUR_UPI_ID}`, 7.5, true, 'center');
+  line(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, 7.5, false, 'center');
+  y += 2;
+  line('Thank you!', 9, true, 'center');
+
+  const dataUri = doc.output('datauristring');
+  return {
+    base64: dataUrlPayload(dataUri),
+    mimeType: 'application/pdf',
+    fileName: `${safeMediaFileName(bill.billNo)}.pdf`,
+    caption: `${bill.billNo} - ${bill.shopName} - Total Rs. ${Number(bill.subtotal).toFixed(2)}`,
+  };
+}
+
+function base64MediaBlob(base64: string, mimeType: string) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType });
+}
+
+function loadCanvasImage(source: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to prepare the bill image.'));
+    image.src = source;
+  });
+}
+
+function canvasBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Unable to create the bill image.')), 'image/png');
+  });
+}
+
+async function createWhatsappBillImage(bill: HosurBill, items: HosurBillItem[]) {
+  const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
+    width: 720,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+  });
+  const qrImage = await loadCanvasImage(qrDataUrl);
+  const width = 900;
+  const padding = 58;
+  const rowHeight = 58;
+  const height = 760 + Math.max(items.length, 1) * rowHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to prepare the WhatsApp bill image.');
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = '#111827';
+  context.textAlign = 'center';
+  context.font = '700 32px Arial';
+  context.fillText('SRI NANJUNDESHWARA BAKERY', width / 2, 58);
+  context.font = '700 25px Arial';
+  context.fillText('HOSUR BRANCH', width / 2, 96);
+  context.fillStyle = '#047857';
+  context.fillRect(padding, 118, width - padding * 2, 48);
+  context.fillStyle = '#ffffff';
+  context.font = '700 22px Arial';
+  context.fillText('ORIGINAL BILL', width / 2, 150);
+
+  context.textAlign = 'left';
+  context.fillStyle = '#111827';
+  context.font = '700 20px Arial';
+  context.fillText(`Bill No: ${bill.billNo}`, padding, 205);
+  context.font = '18px Arial';
+  context.fillText(`Shop: ${bill.shopName}`, padding, 238);
+  context.fillText(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, padding, 270);
+
+  let y = 320;
+  context.fillStyle = '#f3f4f6';
+  context.fillRect(padding, y - 34, width - padding * 2, 48);
+  context.fillStyle = '#374151';
+  context.font = '700 17px Arial';
+  context.fillText('ITEM', padding + 12, y - 3);
+  context.textAlign = 'right';
+  context.fillText('QTY', 600, y - 3);
+  context.fillText('AMOUNT', width - padding - 12, y - 3);
+  y += 38;
+
+  items.forEach((item, index) => {
+    context.textAlign = 'left';
+    context.fillStyle = '#111827';
+    context.font = '700 17px Arial';
+    const itemLabel = `${index + 1}. ${item.itemName}`;
+    const clipped = itemLabel.length > 42 ? `${itemLabel.slice(0, 39)}...` : itemLabel;
+    context.fillText(clipped, padding + 12, y);
+    context.textAlign = 'right';
+    context.font = '17px Arial';
+    context.fillText(`${num(item.quantity)} ${item.unit}`, 600, y);
+    context.font = '700 17px Arial';
+    context.fillText(`Rs. ${Number(item.lineTotal).toFixed(2)}`, width - padding - 12, y);
+    context.strokeStyle = '#e5e7eb';
+    context.beginPath();
+    context.moveTo(padding, y + 22);
+    context.lineTo(width - padding, y + 22);
+    context.stroke();
+    y += rowHeight;
+  });
+
+  y += 12;
+  context.textAlign = 'right';
+  context.fillStyle = '#111827';
+  context.font = '700 25px Arial';
+  context.fillText(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, width - padding, y);
+  y += 38;
+  context.font = '20px Arial';
+  context.fillText(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, width - padding, y);
+  y += 32;
+  context.fillStyle = bill.creditAmount > 0 ? '#b91c1c' : '#111827';
+  context.font = '700 20px Arial';
+  context.fillText(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, width - padding, y);
+  if (bill.dueDate) {
+    y += 32;
+    context.fillText(`Due Date: ${toDateLabel(bill.dueDate)}`, width - padding, y);
+  }
+
+  y += 38;
+  context.fillStyle = '#ecfdf5';
+  context.fillRect(padding, y, width - padding * 2, 360);
+  context.drawImage(qrImage, width / 2 - 135, y + 20, 270, 270);
+  context.textAlign = 'center';
+  context.fillStyle = '#065f46';
+  context.font = '700 20px Arial';
+  context.fillText(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, width / 2, y + 318);
+  context.font = '17px Arial';
+  context.fillText(`UPI: ${HOSUR_UPI_ID}`, width / 2, y + 346);
+
+  context.fillStyle = '#111827';
+  context.font = '700 21px Arial';
+  context.fillText('Thank you!', width / 2, height - 34);
+  return canvasBlob(canvas);
+}
+
+async function uploadWhatsappMedia(blob: Blob, fileName: string) {
+  const path = `bills/${TODAY_ISO()}/${Date.now()}-${crypto.randomUUID()}-${safeMediaFileName(fileName)}`;
+  const { error } = await supabase.storage.from('hosur-whatsapp-media').upload(path, blob, {
+    cacheControl: '3600',
+    contentType: blob.type || 'image/png',
+    upsert: false,
+  });
+  if (error) throw new Error(`Unable to upload WhatsApp bill media: ${error.message}`);
+  const { data } = supabase.storage.from('hosur-whatsapp-media').getPublicUrl(path);
+  if (!data.publicUrl) throw new Error('Unable to create the WhatsApp bill media URL.');
+  return data.publicUrl;
+}
+
 function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
   const lines = items.map((item, idx) =>
     `${idx + 1}. ${item.itemName} - ${num(item.quantity)} ${item.unit} × ${money(item.unitPrice)} = ${money(item.lineTotal)}`,
@@ -581,7 +834,7 @@ function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
     `Credit Amount: ${money(bill.creditAmount)}`,
     bill.dueDate ? `Due Date: ${toDateLabel(bill.dueDate)}` : '',
     '',
-    `Payment UPI ID: 328969176350835@cnrb`,
+    `Payment UPI ID: ${HOSUR_UPI_ID}`,
     `Scan the attached QR code to pay through any UPI app.`,
     '',
     `Please keep this bill for your records. Thank you.`,
@@ -598,7 +851,7 @@ function buildReminderMessage(ledger: HosurCreditLedger) {
     `Pending Amount: ${money(ledger.balanceAmount)}`,
     `Due Date: ${toDateLabel(ledger.dueDate)}`,
     '',
-    `Payment UPI ID: 328969176350835@cnrb`,
+    `Payment UPI ID: ${HOSUR_UPI_ID}`,
     `Scan the attached QR code to pay through any UPI app.`,
     '',
     `Kindly clear the pending payment at the earliest. Thank you.`,
@@ -988,6 +1241,9 @@ export default function HosurDashboard() {
     messageType,
     body,
     retryLogId,
+    billForMedia,
+    itemsForMedia,
+    qrAmount,
   }: {
     shopId?: string | null;
     shopName: string;
@@ -997,6 +1253,9 @@ export default function HosurDashboard() {
     messageType: HosurWhatsappLog['messageType'];
     body: string;
     retryLogId?: string;
+    billForMedia?: HosurBill | null;
+    itemsForMedia?: HosurBillItem[];
+    qrAmount?: number;
   }) => {
     const normalizedPhone = cleanPhone(phone);
     let status: HosurWhatsappLog['status'] = 'sent';
@@ -1006,13 +1265,52 @@ export default function HosurDashboard() {
       const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
       if (!supabaseUrl || !anonKey) throw new Error('Supabase URL or publishable key is missing in the deployed app.');
 
-      // Use a dedicated browser request instead of the session-aware Supabase
-      // fetch wrapper. The wrapper adds x-cafe-session/x-client-app, while the
-      // currently deployed Edge Function only permits the standard Supabase
-      // headers. Sending text first also avoids protected Vercel preview URLs
-      // preventing Meta from downloading the payment QR image.
+      // Build media in the browser and send the actual bytes to the Edge Function.
+      // The function uploads them to Meta's /media endpoint and sends by media ID,
+      // so neither Vercel preview protection nor a private asset URL can block delivery.
+      let resolvedBill = billForMedia ?? null;
+      let resolvedItems = itemsForMedia ?? [];
+      if (messageType === 'bill' && billId && !resolvedBill) {
+        resolvedBill = bills.find((entry) => entry.id === billId) ?? null;
+        resolvedItems = billItems[billId] ?? [];
+        if (!resolvedBill) {
+          const [{ data: billRow, error: billLookupError }, { data: itemRows, error: itemLookupError }] = await Promise.all([
+            supabase.from('hosur_bills').select('*').eq('id', billId).single(),
+            supabase.from('hosur_bill_items').select('*').eq('bill_id', billId).order('created_at', { ascending: true }),
+          ]);
+          if (billLookupError) throw billLookupError;
+          if (itemLookupError) throw itemLookupError;
+          resolvedBill = mapBill(billRow);
+          resolvedItems = (itemRows ?? []).map(mapBillItem);
+        }
+      }
+
+      const billDocument = messageType === 'bill' && resolvedBill
+        ? await createWhatsappBillDocument(resolvedBill, resolvedItems)
+        : null;
+      const qrMedia = messageType === 'bill' || messageType === 'reminder'
+        ? await createWhatsappQrMedia(
+            qrAmount ?? (resolvedBill ? (resolvedBill.creditAmount > 0 ? resolvedBill.creditAmount : resolvedBill.subtotal) : undefined),
+            billNo,
+          )
+        : null;
+
+      // Backward-compatible media URL for the currently deployed function.
+      // The uploaded bill image contains both the complete bill and the QR.
+      let legacyMediaUrl: string | null = null;
+      let legacyFileName: string | null = null;
+      if (messageType === 'bill' && resolvedBill) {
+        const imageBlob = await createWhatsappBillImage(resolvedBill, resolvedItems);
+        legacyFileName = `${safeMediaFileName(resolvedBill.billNo)}-bill-and-qr.png`;
+        legacyMediaUrl = await uploadWhatsappMedia(imageBlob, legacyFileName);
+      } else if (messageType === 'reminder' && qrMedia) {
+        const qrBlob = base64MediaBlob(qrMedia.base64, qrMedia.mimeType);
+        legacyFileName = qrMedia.fileName;
+        legacyMediaUrl = await uploadWhatsappMedia(qrBlob, legacyFileName);
+      }
+
       const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+      const timeoutId = window.setTimeout(() => controller.abort(), 60000);
       let response: Response;
       try {
         response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
@@ -1029,9 +1327,11 @@ export default function HosurDashboard() {
             billId,
             billNo,
             messageType,
-            mediaUrl: null,
-            mediaType: null,
-            fileName: null,
+            billDocument,
+            qrImage: qrMedia,
+            mediaUrl: legacyMediaUrl,
+            mediaType: legacyMediaUrl ? 'image' : null,
+            fileName: legacyFileName,
           }),
           signal: controller.signal,
         });
@@ -1040,7 +1340,7 @@ export default function HosurDashboard() {
       }
 
       const responseText = await response.text();
-      let fnData: { ok?: boolean; error?: string; messageId?: string | null; details?: unknown } = {};
+      let fnData: { ok?: boolean; error?: string; messageId?: string | null; details?: unknown; mediaErrors?: string[]; sentAs?: string; fallbackUsed?: boolean; imageError?: string | null; sentParts?: { billDocument?: boolean; qrImage?: boolean; text?: boolean } } = {};
       if (responseText) {
         try {
           fnData = JSON.parse(responseText) as typeof fnData;
@@ -1049,7 +1349,13 @@ export default function HosurDashboard() {
         }
       }
       if (!response.ok || !fnData.ok) {
-        throw new Error(fnData.error || `WhatsApp service returned HTTP ${response.status}.`);
+        throw new Error([fnData.error, ...(fnData.mediaErrors ?? [])].filter(Boolean).join(' | ') || `WhatsApp service returned HTTP ${response.status}.`);
+      }
+      if ((messageType === 'bill' || messageType === 'reminder') && (fnData.fallbackUsed || fnData.sentAs === 'text')) {
+        throw new Error(fnData.imageError || 'The message text was sent, but WhatsApp could not download the bill/QR image. Retry from WhatsApp Logs.');
+      }
+      if (messageType === 'bill' && fnData.sentParts && (!fnData.sentParts.billDocument || !fnData.sentParts.qrImage)) {
+        throw new Error('WhatsApp did not confirm both the bill document and QR image.');
       }
     } catch (err: any) {
       status = 'failed';
@@ -1248,7 +1554,7 @@ export default function HosurDashboard() {
 
     const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: paymentType === 'credit' ? null : draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
     const body = buildBillMessage(finalBill, items);
-    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body });
+    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: items });
     if (whatsapp.status === 'failed') {
       await notifyAdmin('Hosur WhatsApp bill failed', `${bill.billNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.billNo, { error: whatsapp.errorMessage });
     }
@@ -1312,7 +1618,7 @@ export default function HosurDashboard() {
       const shop = shops.find((s) => s.id === ledger.shopId);
       const reminderNo = reminders.filter((r) => r.ledgerId === ledger.id).length + 1;
       const body = buildReminderMessage(ledger);
-      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body });
+      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body, qrAmount: ledger.balanceAmount });
       const { error: reminderError } = await supabase.from('hosur_payment_reminders').insert({
         credit_sale_id: ledger.id,
         ledger_id: null,
