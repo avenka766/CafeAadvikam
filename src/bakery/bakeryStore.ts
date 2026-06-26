@@ -286,6 +286,28 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       throw new Error(error.message || 'Dispatch failed while saving the dispatch log.');
     }
 
+    // Keep the Hosur shop-order record behind the bakery workflow. It becomes
+    // visible in "Received From Packing" only after Packing has dispatched it.
+    const hosurOrderMatch = String(freshOrder.notes ?? '').match(/HOSUR_ORDER_ID:([^|]+)/);
+    if (entry.branch === 'Hosur' && hosurOrderMatch?.[1]) {
+      const hosurOrderId = hosurOrderMatch[1];
+      const itemDispatchTotal = updatedLog
+        .filter(d => d.branch === 'Hosur' && d.itemName === entry.itemName)
+        .reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+      const { error: hosurItemError } = await supabase
+        .from('hosur_order_items')
+        .update({ dispatched_quantity: itemDispatchTotal })
+        .eq('order_id', hosurOrderId)
+        .eq('item_name', entry.itemName);
+      if (hosurItemError) throw new Error(`Hosur dispatch sync failed: ${hosurItemError.message}`);
+
+      const { error: hosurOrderError } = await supabase
+        .from('hosur_orders')
+        .update({ status: allFullyDispatched ? 'dispatched' : 'pending_packing' })
+        .eq('id', hosurOrderId);
+      if (hosurOrderError) throw new Error(`Hosur order status sync failed: ${hosurOrderError.message}`);
+    }
+
     // ── DISCREPANCY CHECK: collect ALL items' discrepancies each time we dispatch ──
     // Strategy: always pass the full list of discrepant items to pushPackingDiscrepancy
     // on every dispatch call. pushPackingDiscrepancy now upserts (merges) rather than
