@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
@@ -28,6 +28,8 @@ import {
   Sparkles,
   ShieldCheck,
   Store,
+  Menu,
+  X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -273,6 +275,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const { currentUser } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
@@ -289,8 +292,82 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     return names.map((name) => ({ name, items: items.filter((item) => item.group === name) })).filter((group) => group.items.length > 0);
   }, [items]);
 
+  const goTo = (path: string) => {
+    navigate(path);
+    setMobileNavOpen(false);
+  };
+
+  const renderNavGroups = (mobile = false) => groups.map((group) => (
+    <section key={group.name} className="space-y-2">
+      <p className="workspace-nav-group">{group.name}</p>
+      <div className="space-y-1.5">
+        {group.items.map((item) => {
+          const currentRoute = `${location.pathname}${location.search}`;
+          const isQueryRoute = item.path.includes('?');
+          const active = isQueryRoute
+            ? currentRoute === item.path
+            : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
+          return (
+            <button
+              key={item.path}
+              type="button"
+              onClick={() => goTo(item.path)}
+              className={cn('workspace-nav-item', mobile && 'min-h-12', active && 'workspace-nav-item-active')}
+            >
+              <span className="workspace-nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  ));
+
   return (
     <div className="workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]">
+      {items.length > 0 && (
+        <>
+          <button
+            type="button"
+            aria-label="Open dashboard menu"
+            aria-expanded={mobileNavOpen}
+            onClick={() => setMobileNavOpen(true)}
+            className="workspace-mobile-menu-button md:hidden"
+          >
+            <Menu className="size-5" />
+            <span>Menu</span>
+          </button>
+
+          {mobileNavOpen && (
+            <div className="workspace-mobile-nav-layer md:hidden" role="dialog" aria-modal="true" aria-label="Dashboard navigation">
+              <button type="button" className="workspace-mobile-nav-backdrop" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} />
+              <aside className="workspace-mobile-drawer">
+                <div className="workspace-mobile-drawer-head">
+                  <div className="workspace-brand-card">
+                    <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.28em] text-white/45">Aadvikam</p>
+                      <h2 className="font-display text-2xl font-black leading-none text-white">Cafe OS</h2>
+                    </div>
+                  </div>
+                  <button type="button" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} className="workspace-mobile-close">
+                    <X className="size-5" />
+                  </button>
+                </div>
+                <nav className="workspace-nav-scroll workspace-mobile-nav-scroll">{renderNavGroups(true)}</nav>
+                <div className="workspace-sidebar-footer">
+                  <ShieldCheck className="size-4 text-emerald-300" />
+                  <div>
+                    <p className="text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+                    <p className="text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          )}
+        </>
+      )}
+
       <aside className="workspace-sidebar hidden md:flex">
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
@@ -300,33 +377,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </div>
         </div>
 
-        <nav className="workspace-nav-scroll">
-          {groups.map((group) => (
-            <section key={group.name} className="space-y-2">
-              <p className="workspace-nav-group">{group.name}</p>
-              <div className="space-y-1.5">
-                {group.items.map((item) => {
-                  const currentRoute = `${location.pathname}${location.search}`;
-                  const isQueryRoute = item.path.includes('?');
-                  const active = isQueryRoute
-                    ? currentRoute === item.path
-                    : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
-                  return (
-                    <button
-                      key={item.path}
-                      type="button"
-                      onClick={() => navigate(item.path)}
-                      className={cn('workspace-nav-item', active && 'workspace-nav-item-active')}
-                    >
-                      <span className="workspace-nav-icon">{item.icon}</span>
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </nav>
+        <nav className="workspace-nav-scroll">{renderNavGroups()}</nav>
 
         <div className="workspace-sidebar-footer">
           <ShieldCheck className="size-4 text-emerald-300" />
