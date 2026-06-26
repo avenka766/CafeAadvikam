@@ -98,7 +98,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
-        { label: 'Items', path: '/admin-dashboard?tab=items', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Items', path: '/bakery/items', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Operations' },
         { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Operations' },
@@ -110,7 +110,6 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <FileText className="size-4" />, group: 'Reports' },
         { label: 'Attendance & Payroll', path: '/admin-dashboard?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
-        { label: 'Menu Management', path: '/menu-management', icon: <UtensilsCrossed className="size-4" />, group: 'Admin' },
         { label: 'Staff Management', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
         { label: 'QR Table Codes', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
       ];
