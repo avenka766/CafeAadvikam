@@ -68,12 +68,18 @@ const IMG = {
   bakeryCounter: bakeryCounter,
 };
 
-const navItems = [
+const cafeNavItems = [
   ['Feast', '#leaf'],
   ['Bakery', '#bakery'],
   ['Signature', '#signature'],
   ['Party Hall', '#party-hall'],
   ['Location', '#visit'],
+] as const;
+
+const bakeryNavItems = [
+  ['Bakery Home', '#bakery-hero'],
+  ['Fresh Story', '#bakery-story'],
+  ['Bakery Menu', '#bakery-menu'],
 ] as const;
 
 const leafItems = [
@@ -101,23 +107,57 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
+function VenueToggle({ activeVenue, onChange }: { activeVenue: 'cafe' | 'bakery'; onChange: (venue: 'cafe' | 'bakery') => void }) {
+  return (
+    <div className="fixed left-1/2 top-[4.9rem] z-[49] -translate-x-1/2 px-3 md:top-[5.75rem]">
+      <div className="grid grid-cols-2 rounded-full border border-white/20 bg-black/70 p-1.5 text-white shadow-2xl backdrop-blur-xl">
+        <button
+          type="button"
+          aria-pressed={activeVenue === 'cafe'}
+          onClick={() => onChange('cafe')}
+          className={cn(
+            'inline-flex min-w-[8.25rem] items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-black transition md:min-w-[10rem]',
+            activeVenue === 'cafe' ? 'bg-amber-300 text-stone-950 shadow-lg' : 'text-white/75 hover:bg-white/10 hover:text-white',
+          )}
+        >
+          <Coffee className="h-4 w-4" /> Cafe
+        </button>
+        <button
+          type="button"
+          aria-pressed={activeVenue === 'bakery'}
+          onClick={() => onChange('bakery')}
+          className={cn(
+            'inline-flex min-w-[8.25rem] items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-black transition md:min-w-[10rem]',
+            activeVenue === 'bakery' ? 'bg-amber-300 text-stone-950 shadow-lg' : 'text-white/75 hover:bg-white/10 hover:text-white',
+          )}
+        >
+          <Croissant className="h-4 w-4" /> VRSNB Bakery
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FloatingNav({ activeVenue, onVenueChange, onMenuOpen }: { activeVenue: 'cafe' | 'bakery'; onVenueChange: (venue: 'cafe' | 'bakery') => void; onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const activeNavItems = activeVenue === 'bakery' ? bakeryNavItems : cafeNavItems;
+  const activeLogo = activeVenue === 'bakery' ? snbLogo : cafeLogo;
+  const activeName = activeVenue === 'bakery' ? 'VRSNB Bakery' : 'Cafe Aadvikam';
   return (
     <>
       <header className="fixed left-0 right-0 top-0 z-50 px-3 pt-3 md:px-8 md:pt-5">
         <div className="mx-auto flex max-w-7xl items-center justify-between rounded-full border border-white/15 bg-black/45 px-3 py-3 text-white shadow-2xl backdrop-blur-xl md:px-5">
           <button onClick={() => scrollToId('#hero')} className="flex items-center gap-3 text-left">
-            <img src={cafeLogo} alt="Cafe Aadvikam" className="h-10 w-10 rounded-full bg-white object-contain p-1" />
+            <img src={activeLogo} alt={activeName} className="h-10 w-10 rounded-full bg-white object-contain p-1" />
             <div>
-              <p className="font-display text-base font-black leading-none md:text-lg">Cafe Aadvikam</p>
+              <p className="font-display text-base font-black leading-none md:text-lg">{activeName}</p>
               <p className="text-[9px] font-bold uppercase tracking-[0.24em] text-amber-100/75 md:text-[10px]">Cafe · Bakery · Party Hall</p>
             </div>
           </button>
 
           <nav className="hidden items-center gap-5 text-sm font-semibold text-white/75 lg:flex">
-            {navItems.map(([label, href]) => (
+            {activeNavItems.map(([label, href]) => (
               <button key={label} onClick={() => scrollToId(href)} className="transition hover:text-amber-200">
                 {label}
               </button>
@@ -165,13 +205,29 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
             >
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
                 <div className="flex items-center gap-3">
-                  <img src={cafeLogo} alt="Cafe Aadvikam" className="size-11 rounded-full bg-white object-contain p-1" />
-                  <div><p className="font-display text-lg font-black">Cafe Aadvikam</p><p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-100/70">Cafe · Bakery</p></div>
+                  <img src={activeLogo} alt={activeName} className="size-11 rounded-full bg-white object-contain p-1" />
+                  <div><p className="font-display text-lg font-black">{activeName}</p><p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-100/70">Cafe · Bakery</p></div>
                 </div>
                 <button onClick={() => setOpen(false)} className="grid size-10 place-items-center rounded-full bg-white/10"><X className="size-5" /></button>
               </div>
+              <div className="mt-5 grid grid-cols-2 rounded-2xl border border-white/10 bg-white/5 p-1.5">
+                <button
+                  type="button"
+                  onClick={() => { onVenueChange('cafe'); setOpen(false); }}
+                  className={cn('inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-black', activeVenue === 'cafe' ? 'bg-amber-300 text-stone-950' : 'text-white/70')}
+                >
+                  <Coffee className="size-4" /> Cafe
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { onVenueChange('bakery'); setOpen(false); }}
+                  className={cn('inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-black', activeVenue === 'bakery' ? 'bg-amber-300 text-stone-950' : 'text-white/70')}
+                >
+                  <Croissant className="size-4" /> Bakery
+                </button>
+              </div>
               <nav className="mt-5 flex flex-col gap-2">
-                {navItems.map(([label, href]) => (
+                {activeNavItems.map(([label, href]) => (
                   <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="rounded-2xl px-4 py-3 text-left text-base font-black transition active:bg-white/10">{label}</button>
                 ))}
               </nav>
@@ -632,8 +688,18 @@ function BakeryLanding({ onMenuOpen }: { onMenuOpen: () => void }) {
 export default function Landing() {
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
-  const [activeVenue] = useState<'cafe' | 'bakery'>('cafe');
+  const [activeVenue, setActiveVenue] = useState<'cafe' | 'bakery'>(() => {
+    const savedVenue = window.localStorage.getItem('aadvikam-landing-venue');
+    return savedVenue === 'bakery' ? 'bakery' : 'cafe';
+  });
   const progressSections = useMemo(() => ['#hero', '#leaf', '#bakery', '#signature', '#party-hall', '#visit'], []);
+
+  const changeVenue = (venue: 'cafe' | 'bakery') => {
+    if (venue === activeVenue) return;
+    setActiveVenue(venue);
+    window.localStorage.setItem('aadvikam-landing-venue', venue);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  };
 
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
@@ -643,7 +709,8 @@ export default function Landing() {
 
   return (
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
-      <FloatingNav onMenuOpen={() => navigate('/order')} />
+      <FloatingNav activeVenue={activeVenue} onVenueChange={changeVenue} onMenuOpen={() => navigate('/order')} />
+      <VenueToggle activeVenue={activeVenue} onChange={changeVenue} />
       {activeVenue === 'bakery' ? (
         <BakeryLanding onMenuOpen={() => navigate('/order')} />
       ) : (
