@@ -3221,3 +3221,27 @@
     padding-top: 4.15rem;
   }
 }
+
+/* Reliable, visible dashboard exit action in every WorkspaceChrome sidebar. */
+.workspace-sidebar-footer-with-exit {
+  justify-content: space-between;
+  gap: .55rem;
+}
+.workspace-exit-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+  min-height: 2.35rem;
+  padding: .55rem .7rem;
+  border-radius: .8rem;
+  color: #fff;
+  background: rgba(239, 68, 68, .2);
+  border: 1px solid rgba(252, 165, 165, .26);
+  font-size: .72rem;
+  font-weight: 900;
+  flex-shrink: 0;
+  transition: background .18s ease, transform .18s ease;
+}
+.workspace-exit-button:hover { background: rgba(239, 68, 68, .34); }
+.workspace-exit-button:active { transform: scale(.96); }
