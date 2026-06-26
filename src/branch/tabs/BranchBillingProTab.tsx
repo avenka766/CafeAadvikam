@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { printCounterBill } from '../printUtils';
 import {
-  AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee,
+  AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee, Lock,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
   Trash2, WalletCards, XCircle, Plus, Minus, ClipboardList, ScanBarcode, Keyboard,
 } from 'lucide-react';
@@ -41,6 +41,10 @@ type Props = {
   branch: Branch;
   branchStock: StockItem[];
   onOpenTab?: (tab: string) => void;
+  billingAllowed?: boolean;
+  billingBlockedMessage?: string;
+  beforeCheckout?: () => Promise<void>;
+  onOpenCounter?: () => void;
 };
 
 const TAX_RATE = 0;
@@ -144,7 +148,15 @@ function toBillItem(item: BillingItem, qty: number): BranchBillItem {
 // printCounterBill is imported from shared printUtils
 
 
-export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
+export default function BranchBillingProTab({
+  branch,
+  branchStock,
+  onOpenTab,
+  billingAllowed = true,
+  billingBlockedMessage = 'Open the cashier counter before billing.',
+  beforeCheckout,
+  onOpenCounter,
+}: Props) {
   const { currentUser } = useAuthStore();
   const { fetchBranchData } = useBranchStore();
   const {
@@ -390,12 +402,17 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
 
   const checkout = async () => {
     if (checkoutInFlightRef.current) return;
+    if (!billingAllowed) {
+      setError(billingBlockedMessage);
+      return;
+    }
     const validationError = validateCheckout();
     if (validationError) { setError(validationError); return; }
     checkoutInFlightRef.current = true;
     setSaving(true);
     setError('');
     try {
+      if (beforeCheckout) await beforeCheckout();
       const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
       if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
         throw new Error('Split payment must exactly match the bill total.');
@@ -501,6 +518,24 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [cart, holdBill, items, selectedIndex, total, visibleItems]);
+
+  if (!billingAllowed) {
+    return (
+      <div className="flex min-h-[540px] items-center justify-center rounded-[2rem] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-slate-50 p-6 shadow-xl shadow-slate-200/60">
+        <div className="max-w-xl rounded-3xl border border-amber-200 bg-white p-7 text-center shadow-lg">
+          <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-amber-100 text-amber-700"><Lock className="size-8" /></div>
+          <h2 className="mt-4 font-display text-2xl font-black text-slate-950">Billing Counter Locked</h2>
+          <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{billingBlockedMessage}</p>
+          <p className="mt-2 text-xs text-slate-500">Opening the counter is mandatory. No cart, payment, final bill, or keyboard checkout is available until the counter is open.</p>
+          {onOpenCounter && (
+            <button type="button" onClick={onOpenCounter} className="mt-5 inline-flex h-11 items-center gap-2 rounded-xl bg-slate-950 px-5 text-sm font-black text-white hover:bg-slate-800">
+              <Lock className="size-4" /> Go to Open Counter
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 md:h-[calc(100dvh-var(--header-h,4rem)-7rem)] md:overflow-hidden">
