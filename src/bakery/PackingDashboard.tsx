@@ -1,5 +1,5 @@
 // src/bakery/PackingDashboard.tsx (Redesigned — Tabs + Excel Export)
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as XLSX from '@/lib/safeSpreadsheet';
 import {
@@ -18,6 +18,7 @@ import BranchBillingProTab from '@/branch/tabs/BranchBillingProTab';
 import { useBranchStore } from '@/branch/branchStore';
 import PackingTransferInTab from './PackingTransferInTab';
 import PackingDailyClosureTab from './PackingDailyClosureTab';
+import { getPackingCounterStatus } from './packingCounter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PackedEntry {
@@ -734,9 +735,54 @@ export default function PackingDashboard() {
   const branchSales = useBranchStore(state => state.sales.SNB);
   const branchCreditSales = useBranchStore(state => state.creditSales.SNB);
   const fetchBranchData = useBranchStore(state => state.fetchBranchData);
+  const [packingCounterOpen, setPackingCounterOpen] = useState(false);
+  const [packingCounterLoading, setPackingCounterLoading] = useState(true);
+  const [packingCounterError, setPackingCounterError] = useState('');
+
+  const refreshPackingCounter = useCallback(async () => {
+    setPackingCounterLoading(true);
+    setPackingCounterError('');
+    try {
+      const status = await getPackingCounterStatus();
+      setPackingCounterOpen(status.isOpen);
+      return status.isOpen;
+    } catch (error) {
+      setPackingCounterOpen(false);
+      setPackingCounterError(error instanceof Error ? error.message : 'Packing counter status could not be loaded.');
+      return false;
+    } finally {
+      setPackingCounterLoading(false);
+    }
+  }, []);
+
+  const requirePackingCounterOpen = useCallback(async () => {
+    const status = await getPackingCounterStatus();
+    setPackingCounterOpen(status.isOpen);
+    if (!status.isOpen) throw new Error('Packing cashier counter is closed. Open the counter from Daily Closure before creating a bill.');
+  }, []);
+
+  const handlePackingCounterChange = useCallback((isOpen: boolean) => {
+    setPackingCounterOpen(isOpen);
+    setPackingCounterLoading(false);
+    setPackingCounterError('');
+  }, []);
+
+  const goToPackingCounter = useCallback(() => {
+    setSearchParams({ tab: 'closure' });
+  }, [setSearchParams]);
+
   useEffect(() => {
-    if (activeTab === 'billing' || activeTab === 'closure') void fetchBranchData('SNB');
-  }, [activeTab, fetchBranchData]);
+    if (activeTab === 'billing' || activeTab === 'closure') {
+      void fetchBranchData('SNB');
+      void refreshPackingCounter();
+    }
+  }, [activeTab, fetchBranchData, refreshPackingCounter]);
+
+  useEffect(() => {
+    const onFocus = () => { if (activeTab === 'billing') void refreshPackingCounter(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [activeTab, refreshPackingCounter]);
 
   const packingOrders = useMemo(
     () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
@@ -957,7 +1003,17 @@ export default function PackingDashboard() {
           {activeTab === 'transfer-in' ? (
             <PackingTransferInTab />
           ) : activeTab === 'billing' ? (
-            <div className="min-h-[70vh]"><BranchBillingProTab branch="SNB" branchStock={branchStock} /></div>
+            <div className="min-h-[70vh] space-y-3">
+              {packingCounterError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{packingCounterError}</div>}
+              <BranchBillingProTab
+                branch="SNB"
+                branchStock={branchStock}
+                billingAllowed={!packingCounterLoading && packingCounterOpen}
+                billingBlockedMessage={packingCounterLoading ? 'Checking today’s packing counter status…' : 'Open today’s Packing cashier counter in Daily Closure before billing.'}
+                beforeCheckout={requirePackingCounterOpen}
+                onOpenCounter={goToPackingCounter}
+              />
+            </div>
           ) : activeTab === 'orders' ? (
             <section className="space-y-4">
               {/* Filters */}
@@ -1090,7 +1146,7 @@ export default function PackingDashboard() {
               )}
             </section>
           ) : (
-            <PackingDailyClosureTab />
+            <PackingDailyClosureTab onCounterStatusChange={handlePackingCounterChange} />
           )}
         </div>
       </main>
