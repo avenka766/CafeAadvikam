@@ -14,6 +14,7 @@ import {
   History,
   Inbox,
   LayoutDashboard,
+  LogOut,
   Package,
   QrCode,
   Receipt,
@@ -272,7 +273,7 @@ function routeMeta(pathname: string): PageMeta {
 }
 
 export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
-  const { currentUser } = useAuthStore();
+  const { currentUser, logout } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -295,6 +296,13 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const goTo = (path: string) => {
     navigate(path);
     setMobileNavOpen(false);
+  };
+
+
+  const exitDashboard = () => {
+    setMobileNavOpen(false);
+    logout();
+    window.location.replace('/login');
   };
 
   const renderNavGroups = (mobile = false) => groups.map((group) => (
@@ -355,12 +363,17 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
                   </button>
                 </div>
                 <nav className="workspace-nav-scroll workspace-mobile-nav-scroll">{renderNavGroups(true)}</nav>
-                <div className="workspace-sidebar-footer">
-                  <ShieldCheck className="size-4 text-emerald-300" />
-                  <div>
-                    <p className="text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
-                    <p className="text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+                <div className="workspace-sidebar-footer workspace-sidebar-footer-with-exit">
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                    <ShieldCheck className="size-4 shrink-0 text-emerald-300" />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+                      <p className="truncate text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+                    </div>
                   </div>
+                  <button type="button" onClick={exitDashboard} className="workspace-exit-button" aria-label="Exit dashboard" title="Exit dashboard">
+                    <LogOut className="size-4" /><span>Exit</span>
+                  </button>
                 </div>
               </aside>
             </div>
@@ -379,12 +392,17 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
 
         <nav className="workspace-nav-scroll">{renderNavGroups()}</nav>
 
-        <div className="workspace-sidebar-footer">
-          <ShieldCheck className="size-4 text-emerald-300" />
-          <div>
-            <p className="text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
-            <p className="text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+        <div className="workspace-sidebar-footer workspace-sidebar-footer-with-exit">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <ShieldCheck className="size-4 shrink-0 text-emerald-300" />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+              <p className="truncate text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+            </div>
           </div>
+          <button type="button" onClick={exitDashboard} className="workspace-exit-button" aria-label="Exit dashboard" title="Exit dashboard">
+            <LogOut className="size-4" /><span>Exit</span>
+          </button>
         </div>
       </aside>
 

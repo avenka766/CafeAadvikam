@@ -32,6 +32,13 @@ export default function Header() {
   const location = useLocation();
   const { activeVenue } = useVenueStore();
 
+  const handleLogout = () => {
+    logout();
+    // Force a clean document navigation so no dashboard state, pending route
+    // transition, or stale persisted store can immediately restore the session.
+    window.location.replace('/login');
+  };
+
   const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
   const isQROrder = location.pathname === '/order';
   const isTracking = location.pathname === '/order/track';
@@ -108,10 +115,11 @@ export default function Header() {
             </div>
           )}
           <button
-            onClick={() => { logout(); navigate('/login', { replace: true }); }}
+            onClick={handleLogout}
             className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
             style={{ background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.12)' }}
-            aria-label="Logout"
+            aria-label="Exit dashboard"
+            title="Exit dashboard"
           >
             <LogOut className="size-4 text-white/80" />
           </button>
