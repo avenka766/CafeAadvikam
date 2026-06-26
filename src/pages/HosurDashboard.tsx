@@ -891,7 +891,7 @@ export default function HosurDashboard() {
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
     { id: 'newOrder', label: 'New Order', icon: ShoppingCart },
-    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: branchIncoming.filter((i) => !i.confirmed).length + orders.filter((o) => ['pending_packing', 'dispatched'].includes(o.status)).length },
+    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: branchIncoming.filter((i) => !i.confirmed).length + orders.filter((o) => o.status === 'dispatched').length },
     { id: 'billing', label: 'Billing', icon: Receipt, badge: draftBills.length },
     { id: 'credit', label: 'Credit Ledger', icon: CreditCard, badge: openCredits.length },
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
@@ -944,9 +944,9 @@ export default function HosurDashboard() {
     try {
       const shouldAttachPaymentQr = messageType === 'bill' || messageType === 'reminder';
       const paymentQrUrl = shouldAttachPaymentQr
-        ? new URL('/hosur-payment-qr.jpeg', window.location.origin).toString()
+        ? new URL('/hosur-payment-qr.png', window.location.origin).toString()
         : null;
-      const { error: fnError } = await supabase.functions.invoke('send-hosur-whatsapp', {
+      const { data: fnData, error: fnError } = await supabase.functions.invoke('send-hosur-whatsapp', {
         body: {
           phone: normalizedPhone,
           message: body,
@@ -960,6 +960,7 @@ export default function HosurDashboard() {
         },
       });
       if (fnError) throw fnError;
+      if (!fnData?.ok) throw new Error(fnData?.error || 'WhatsApp provider did not confirm delivery.');
     } catch (err: any) {
       status = 'failed';
       errorMessage = err?.message || 'WhatsApp Edge Function not configured or sending failed.';
@@ -1076,7 +1077,7 @@ export default function HosurDashboard() {
       paid_amount: paid,
       credit_amount: credit,
       payment_type: paymentType,
-      payment_mode: draft.paymentMode,
+      payment_mode: paymentType === 'credit' ? null : draft.paymentMode,
       due_date: credit > 0 ? draft.dueDate : null,
       status,
       confirmed_by: userName,
@@ -1119,6 +1120,7 @@ export default function HosurDashboard() {
           bill_no: bill.billNo,
           amount: paid,
           payment_mode: draft.paymentMode,
+          payment_purpose: 'partial_at_billing',
           remarks: 'Hosur partial payment at billing',
           collected_by: userName,
           collected_role: userRole,
@@ -1153,7 +1155,7 @@ export default function HosurDashboard() {
       });
     }
 
-    const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
+    const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: paymentType === 'credit' ? null : draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
     const body = buildBillMessage(finalBill, items);
     const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body });
     if (whatsapp.status === 'failed') {
@@ -1552,7 +1554,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
       shop_name: shop.shopName,
       shop_whatsapp: shop.whatsappNumber,
       shop_address: shop.address,
-      status: 'pending_packing',
+      status: 'draft',
       subtotal,
       created_by: userName,
       notes: notes.trim() || null,
@@ -1570,12 +1572,33 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
     }));
     const { error: itemsError } = await supabase.from('hosur_order_items').insert(rows);
     if (itemsError) {
-      // FIX (MD Bug #22): if hosur_order_items insert fails after the hosur_orders row was
-      // created, clean up the orphaned order row so it doesn't appear as a ghost pending order.
       await supabase.from('hosur_orders').delete().eq('id', order.id);
       throw itemsError;
     }
-    await notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName}. Total ${money(subtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal });
+
+    // Route every Hosur shop order through the shared bakery workflow:
+    // Store -> Baker -> Packing -> Hosur Received From Packing.
+    const bakeryItems = cartItems.map((item) => ({
+      itemId: `hosur-${order.id}-${normalize(item.itemName).replace(/\s+/g, '-')}`,
+      itemName: item.itemName,
+      quantity: item.quantity,
+      originalPcs: item.unit === 'pcs' ? item.quantity : undefined,
+      dispatchUnit: item.unit,
+      isCustom: !buildHosurCatalogItems(prices, shop.id).some((catalogItem) => normalize(catalogItem.name) === normalize(item.itemName)),
+    }));
+    const { error: bakeryOrderError } = await supabase.from('bakery_orders').insert({
+      items: bakeryItems,
+      status: 'pending',
+      created_by: userName,
+      target_branch: 'Hosur',
+      notes: `HOSUR_ORDER_ID:${order.id}|${orderNumber}|${shop.shopName}${notes.trim() ? `|${notes.trim()}` : ''}`,
+    });
+    if (bakeryOrderError) {
+      await supabase.from('hosur_order_items').delete().eq('order_id', order.id);
+      await supabase.from('hosur_orders').delete().eq('id', order.id);
+      throw new Error(`Unable to send the order to Store: ${bakeryOrderError.message}`);
+    }
+    await notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName} and sent to Store. Total ${money(subtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal });
     setCart({});
     setNotes('');
   };
@@ -1690,7 +1713,7 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
   createDraftBill: (order: HosurOrder, items: HosurOrderItem[]) => Promise<string>;
   userName: string;
 }) {
-  const pendingOrders = orders.filter((o) => ['pending_packing', 'dispatched'].includes(o.status));
+  const pendingOrders = orders.filter((o) => o.status === 'dispatched');
   const [receivedQty, setReceivedQty] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<Record<string, string>>({});
   const [disputeRemarks, setDisputeRemarks] = useState<Record<string, string>>({});
@@ -1822,7 +1845,7 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
           <div className="overflow-x-auto rounded-2xl border"><table className="min-w-full text-sm"><thead className="bg-muted text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Qty</th><th className="px-3 py-2">Rate</th><th className="px-3 py-2 text-right">Total</th></tr></thead><tbody className="divide-y">{items.map((item) => <tr key={item.id}><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2">{num(item.quantity)} {item.unit}</td><td className="px-3 py-2">{money(item.unitPrice)}</td><td className="px-3 py-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div>
           <div className="grid gap-3 md:grid-cols-4">
             {(['full', 'credit', 'partial'] as PaymentType[]).map((type) => <button key={type} className={cn('rounded-2xl border p-3 text-left font-black', pType === type ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'bg-card')} onClick={() => setPaymentType((prev) => ({ ...prev, [bill.id]: type }))}>{type === 'full' ? 'Full Payment' : type === 'credit' ? 'Credit' : 'Partial Payment'}</button>)}
-            <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>
+            {pType !== 'credit' && <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>}
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             {pType === 'partial' && <Field label="Paid amount"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paidAmount: e.target.value } }))} placeholder="Enter paid amount" /></Field>}
@@ -1971,7 +1994,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
 
   const dayBills = bills.filter((b) => businessDate(b.confirmedAt ?? b.createdAt) === date);
   const dayOrders = orders.filter((o) => businessDate(o.createdAt) === date);
-  const dayPayments = payments.filter((p) => businessDate(p.createdAt) === date);
+  const dayPayments = payments.filter((p) => businessDate(p.createdAt) === date && p.payment_purpose !== 'partial_at_billing');
   const dayDisputes = disputes.filter((d) => businessDate(d.createdAt) === date);
   const dayLogs = logs.filter((l) => businessDate(l.createdAt) === date);
   const cashBills = dayBills.filter((b) => b.paymentMode === 'cash').reduce((sum, bill) => sum + bill.paidAmount, 0);
