@@ -55,9 +55,10 @@ async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterSt
     session?: { status?: string; opening_cash?: number } | null;
     closure?: Record<string, unknown> | null;
   } | null;
+  const closureStatus = typeof status?.closure?.status === 'string' ? status.closure.status : null;
   return {
-    isOpen: status?.session?.status === 'open' && !status?.closure,
-    isClosed: Boolean(status?.closure) || status?.session?.status === 'closed',
+    isOpen: status?.session?.status === 'open',
+    isClosed: status?.session?.status === 'closed' || closureStatus === 'closed',
     openingCash: Number(status?.session?.opening_cash ?? 0),
   };
 }
@@ -750,10 +751,8 @@ export default function HosurDashboard() {
   const isAdmin = ['admin', 'owner', 'branch_hosur'].includes(userRole);
 
   const {
-    incoming,
     fetchBranchData,
     syncIncomingFromDispatches,
-    confirmIncoming,
     fetchCreditSales,
   } = useBranchStore();
 
@@ -814,7 +813,6 @@ export default function HosurDashboard() {
     setHosurCounterError('');
   }, []);
 
-  const branchIncoming = incoming[BRANCH] || [];
 
   const isAdminRef = useRef(isAdmin);
   useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
@@ -953,7 +951,7 @@ export default function HosurDashboard() {
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
     { id: 'newOrder', label: 'New Order', icon: ShoppingCart },
-    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: branchIncoming.filter((i) => !i.confirmed).length + orders.filter((o) => o.status === 'dispatched').length },
+    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: orders.filter((o) => o.status === 'dispatched').length },
     { id: 'billing', label: 'Billing', icon: Receipt, badge: draftBills.length },
     { id: 'credit', label: 'Credit Ledger', icon: CreditCard, badge: openCredits.length },
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
@@ -1004,42 +1002,55 @@ export default function HosurDashboard() {
     let status: HosurWhatsappLog['status'] = 'sent';
     let errorMessage: string | null = null;
     try {
-      const shouldAttachPaymentQr = messageType === 'bill' || messageType === 'reminder';
-      const paymentQrUrl = shouldAttachPaymentQr
-        ? new URL('/hosur-payment-qr.png', window.location.origin).toString()
-        : null;
-      const { data: fnData, error: fnError } = await supabase.functions.invoke('send-hosur-whatsapp', {
-        body: {
-          phone: normalizedPhone,
-          message: body,
-          shopId,
-          billId,
-          billNo,
-          messageType,
-          mediaUrl: paymentQrUrl,
-          mediaType: shouldAttachPaymentQr ? 'image' : null,
-          fileName: shouldAttachPaymentQr ? 'hosur-payment-qr.png' : null,
-        },
-      });
-      if (fnError) {
-        let message = fnError.message || 'WhatsApp Edge Function request failed.';
-        const context = (fnError as { context?: Response }).context;
-        if (context) {
-          try {
-            const details = await context.clone().json() as { error?: string };
-            if (details?.error) message = details.error;
-          } catch {
-            try {
-              const details = await context.clone().text();
-              if (details.trim()) message = details;
-            } catch {
-              // Keep the original FunctionsHttpError message.
-            }
-          }
-        }
-        throw new Error(message);
+      const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+      const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
+      if (!supabaseUrl || !anonKey) throw new Error('Supabase URL or publishable key is missing in the deployed app.');
+
+      // Use a dedicated browser request instead of the session-aware Supabase
+      // fetch wrapper. The wrapper adds x-cafe-session/x-client-app, while the
+      // currently deployed Edge Function only permits the standard Supabase
+      // headers. Sending text first also avoids protected Vercel preview URLs
+      // preventing Meta from downloading the payment QR image.
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+      let response: Response;
+      try {
+        response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
+          method: 'POST',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            phone: normalizedPhone,
+            message: body,
+            shopId,
+            billId,
+            billNo,
+            messageType,
+            mediaUrl: null,
+            mediaType: null,
+            fileName: null,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
       }
-      if (!fnData?.ok) throw new Error(fnData?.error || 'WhatsApp provider did not confirm delivery.');
+
+      const responseText = await response.text();
+      let fnData: { ok?: boolean; error?: string; messageId?: string | null; details?: unknown } = {};
+      if (responseText) {
+        try {
+          fnData = JSON.parse(responseText) as typeof fnData;
+        } catch {
+          throw new Error(`WhatsApp service returned an invalid response (HTTP ${response.status}).`);
+        }
+      }
+      if (!response.ok || !fnData.ok) {
+        throw new Error(fnData.error || `WhatsApp service returned HTTP ${response.status}.`);
+      }
     } catch (err: any) {
       status = 'failed';
       errorMessage = err?.message || 'WhatsApp Edge Function not configured or sending failed.';
@@ -1342,7 +1353,7 @@ export default function HosurDashboard() {
             <div className="space-y-4">
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
-              {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} branchIncoming={branchIncoming} busy={busy} withBusy={withBusy} confirmIncoming={confirmIncoming} createDraftBill={createDraftBill} userName={userName} />}
+              {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
               {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
               {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
@@ -1783,116 +1794,204 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   );
 }
 
-function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, confirmIncoming, createDraftBill, userName }: {
+function ReceivingTab({ orders, orderItems, busy, withBusy, createDraftBill, userName }: {
   orders: HosurOrder[];
   orderItems: Record<string, HosurOrderItem[]>;
-  branchIncoming: { id: string; itemName: string; quantity: number; unit: 'pcs' | 'kg'; receivedAt: string; dispatchedBy: string; confirmed: boolean }[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  confirmIncoming: (branch: typeof BRANCH, incomingId: string) => Promise<string | null>;
   createDraftBill: (order: HosurOrder, items: HosurOrderItem[]) => Promise<string>;
   userName: string;
 }) {
-  const pendingOrders = orders.filter((o) => o.status === 'dispatched');
   const [receivedQty, setReceivedQty] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<Record<string, string>>({});
-  const [disputeRemarks, setDisputeRemarks] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState('');
+  const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+
+  const pendingOrders = orders
+    .filter((order) => order.status === 'dispatched')
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const query = normalize(search);
+  const visibleOrders = pendingOrders.filter((order) => {
+    if (!query) return true;
+    return normalize(`${order.orderNumber} ${order.shopName} ${(orderItems[order.id] ?? []).map((item) => item.itemName).join(' ')}`).includes(query);
+  });
+  const pendingLines = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id]?.length ?? 0), 0);
+  const expectedKg = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => item.unit === 'kg').reduce((lineSum, item) => lineSum + (item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity), 0), 0);
+  const expectedPcs = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => item.unit === 'pcs').reduce((lineSum, item) => lineSum + (item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity), 0), 0);
+  const liveMismatchCount = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => {
+    const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+    const received = Number(receivedQty[item.id] ?? expected);
+    return Number.isFinite(received) && Math.abs(received - expected) > 0.001;
+  }).length, 0);
 
   const confirmOrder = async (order: HosurOrder) => {
     const items = orderItems[order.id] ?? [];
-    if (items.length === 0) throw new Error('Order items not found.');
-    let hasMismatch = false;
-    for (const item of items) {
-      const qty = Number(receivedQty[item.id] ?? item.quantity);
+    if (items.length === 0) throw new Error('Order items not found. Refresh the page and try again.');
+
+    const normalizedItems = items.map((item) => {
       const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
-      await supabase.from('hosur_order_items').update({ dispatched_quantity: expected, received_quantity: qty }).eq('id', item.id);
-      if (Math.abs(qty - expected) > 0.001) {
+      const received = Number(receivedQty[item.id] ?? expected);
+      if (!Number.isFinite(received) || received < 0) throw new Error(`Enter a valid received quantity for ${item.itemName}.`);
+      return { item, expected, received, variance: Math.round((received - expected) * 1000) / 1000 };
+    });
+
+    let hasMismatch = false;
+    for (const { item, expected, received, variance } of normalizedItems) {
+      const { error: itemError } = await supabase
+        .from('hosur_order_items')
+        .update({ dispatched_quantity: expected, received_quantity: received })
+        .eq('id', item.id);
+      if (itemError) throw itemError;
+
+      if (Math.abs(variance) > 0.001) {
         hasMismatch = true;
-        await supabase.from('hosur_disputes').insert({
+        const { error: disputeError } = await supabase.from('hosur_disputes').insert({
           order_id: order.id,
           order_number: order.orderNumber,
           item_name: item.itemName,
           expected_quantity: expected,
-          received_quantity: qty,
+          received_quantity: received,
           unit: item.unit,
           raised_by: userName,
           status: 'open',
-          admin_remarks: remarks[item.id] || null,
+          admin_remarks: remarks[item.id]?.trim() || `Receiving variance ${variance > 0 ? '+' : ''}${num(variance)} ${item.unit}`,
         });
+        if (disputeError) throw disputeError;
       }
     }
-    await supabase.from('hosur_orders').update({ status: 'received_confirmed', received_at: new Date().toISOString() }).eq('id', order.id);
-    const freshItems = items.map((item) => { const receivedQuantity = Number(receivedQty[item.id] ?? item.quantity); return { ...item, receivedQuantity, dispatchedQuantity: item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity, lineTotal: Math.round(receivedQuantity * item.unitPrice * 100) / 100 }; });
+
+    const { error: orderError } = await supabase
+      .from('hosur_orders')
+      .update({ status: 'received_confirmed', received_at: new Date().toISOString() })
+      .eq('id', order.id);
+    if (orderError) throw orderError;
+
+    const freshItems = normalizedItems.map(({ item, expected, received }) => ({
+      ...item,
+      receivedQuantity: received,
+      dispatchedQuantity: expected,
+      lineTotal: Math.round(received * item.unitPrice * 100) / 100,
+    }));
     await createDraftBill(order, freshItems);
+
     if (hasMismatch) {
-      await notifyAdmin('Hosur receiving mismatch raised', `${order.shopName} order ${order.orderNumber} has received quantity mismatch.`, order.id, order.orderNumber, { orderId: order.id });
+      await notifyAdmin(
+        'Hosur receiving mismatch raised',
+        `${order.shopName} order ${order.orderNumber} has a received quantity variance.`,
+        order.id,
+        order.orderNumber,
+        { orderId: order.id },
+      );
     }
+
+    setReceivedQty((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => delete next[item.id]);
+      return next;
+    });
+    setRemarks((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => delete next[item.id]);
+      return next;
+    });
+    setExpandedOrder(null);
   };
 
   return (
-    <div className="space-y-4">
-      <SectionTitle icon={<PackageCheck className="size-5" />} title="Received From Packing" subtitle="Confirm stock/order receipt. Raise dispute if received quantity is different from dispatched quantity." />
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="space-y-3">
-          <h3 className="font-black">Shop Orders Waiting For Branch Confirmation</h3>
-          {pendingOrders.length === 0 ? <EmptyState icon={<PackageCheck className="size-6" />} title="No pending shop orders" subtitle="Orders created for shops will appear here after packing/dispatch." /> : pendingOrders.map((order) => {
+    <div className="space-y-5">
+      <div className="overflow-hidden rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-5 text-white shadow-xl">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <span className="inline-flex rounded-full bg-emerald-300/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-100">Hosur receiving desk</span>
+            <h2 className="mt-3 font-display text-2xl font-black">Received From Packing</h2>
+            <p className="mt-1 max-w-3xl text-sm text-white/65">Only shop orders completed and dispatched by Packing appear here. Verify every line, record the physical quantity, and create the bill draft after receipt.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[520px]">
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Orders</p><p className="mt-1 text-2xl font-black">{pendingOrders.length}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Item lines</p><p className="mt-1 text-2xl font-black">{pendingLines}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Expected KG</p><p className="mt-1 text-2xl font-black">{num(expectedKg)}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Expected Pcs</p><p className="mt-1 text-2xl font-black">{num(expectedPcs)}</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Waiting Confirmation" value={pendingOrders.length} icon={<Clock3 className="size-4" />} tone="amber" />
+        <Metric label="Ready Item Lines" value={pendingLines} icon={<PackageCheck className="size-4" />} tone="blue" />
+        <Metric label="Live Variances" value={liveMismatchCount} icon={<AlertTriangle className="size-4" />} tone={liveMismatchCount ? 'red' : 'emerald'} />
+        <Metric label="Billing Result" value="Draft bill" icon={<Receipt className="size-4" />} tone="emerald" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,.55fr)]">
+        <Card className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><h3 className="font-display text-lg font-black">Dispatches Waiting For Receipt</h3><p className="text-xs text-muted-foreground">Oldest dispatched order is shown first.</p></div>
+            <label className="relative block sm:w-80"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search shop, order or item" /></label>
+          </div>
+
+          {visibleOrders.length === 0 ? (
+            <EmptyState icon={<PackageCheck className="size-6" />} title={pendingOrders.length ? 'No matching dispatched orders' : 'No orders waiting for receipt'} subtitle={pendingOrders.length ? 'Clear the search to view the full receiving queue.' : 'A shop order will appear only after Store, Baker and Packing complete the workflow and Packing dispatches it.'} />
+          ) : visibleOrders.map((order) => {
             const items = orderItems[order.id] ?? [];
-            return <div key={order.id} className="rounded-3xl border bg-card p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{order.shopName}</p><p className="text-xs text-muted-foreground">{order.orderNumber} · {toDateTimeLabel(order.createdAt)}</p></div><Badge tone={statusTone(order.status)}>{order.status.replace(/_/g, ' ')}</Badge></div>
-              <div className="mt-3 space-y-2">{items.map((item) => {
-                const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
-                return <div key={item.id} className="rounded-2xl bg-muted/30 p-3">
-                  <div className="grid gap-2 md:grid-cols-[1fr_120px_1fr]"><div><p className="text-sm font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">Expected {num(expected)} {item.unit}</p></div><input className="rounded-xl border px-2 py-2 text-sm" type="number" step={item.unit === 'kg' ? 0.25 : 1} value={receivedQty[item.id] ?? String(expected)} onChange={(e) => setReceivedQty((p) => ({ ...p, [item.id]: e.target.value }))} /><input className="rounded-xl border px-2 py-2 text-sm" value={remarks[item.id] ?? ''} onChange={(e) => setRemarks((p) => ({ ...p, [item.id]: e.target.value }))} placeholder="Mismatch remarks" /></div>
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      className={cn(inputClass, 'flex-1 text-xs')}
-                      value={disputeRemarks[item.id] ?? ''}
-                      onChange={(e) => setDisputeRemarks((p) => ({ ...p, [item.id]: e.target.value }))}
-                      placeholder="Raise dispute — describe the issue (optional)"
-                    />
-                    <button
-                      className="rounded-2xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 hover:bg-amber-100 border border-amber-200"
-                      disabled={busy || !disputeRemarks[item.id]?.trim()}
-                      onClick={() => withBusy(async () => {
-                        const remark = disputeRemarks[item.id]?.trim();
-                        if (!remark) throw new Error('Enter a dispute reason.');
-                        const received = Number(receivedQty[item.id] ?? expected);
-                        const { error } = await supabase.from('hosur_disputes').insert({
-                          order_id: order.id,
-                          order_number: order.orderNumber,
-                          item_name: item.itemName,
-                          expected_quantity: expected,
-                          received_quantity: received,
-                          unit: item.unit,
-                          raised_by: userName,
-                          status: 'open',
-                          admin_remarks: remark,
-                        });
-                        if (error) throw error;
-                        await notifyAdmin(
-                          'Hosur dispute raised',
-                          `${order.shopName} · ${item.itemName} · ${remark}`,
-                          order.id,
-                          order.orderNumber,
-                          { orderId: order.id }
-                        );
-                        setDisputeRemarks((p) => { const n = { ...p }; delete n[item.id]; return n; });
-                      }, 'Dispute raised and sent to Admin.')}
-                    >
-                      <AlertTriangle className="size-3 inline mr-1" />Raise Dispute
-                    </button>
-                  </div>
-                </div>;
-              })}</div>
-              <button className={primaryButton} disabled={busy || items.length === 0} title={items.length === 0 ? 'Order items are required.' : undefined} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
-            </div>;
+            const isExpanded = expandedOrder === order.id || visibleOrders.length === 1;
+            const mismatchCount = items.filter((item) => {
+              const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+              const received = Number(receivedQty[item.id] ?? expected);
+              return Number.isFinite(received) && Math.abs(received - expected) > 0.001;
+            }).length;
+            const totalValue = items.reduce((sum, item) => {
+              const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+              const received = Number(receivedQty[item.id] ?? expected);
+              return sum + (Number.isFinite(received) ? received : 0) * item.unitPrice;
+            }, 0);
+
+            return <article key={order.id} className={cn('overflow-hidden rounded-3xl border transition-shadow', isExpanded ? 'border-emerald-300 shadow-md' : 'bg-card hover:shadow-sm')}>
+              <button type="button" className="flex w-full flex-col gap-3 p-4 text-left sm:flex-row sm:items-center sm:justify-between" onClick={() => setExpandedOrder(isExpanded && visibleOrders.length !== 1 ? null : order.id)}>
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-emerald-100 text-emerald-700"><PackageCheck className="size-5" /></span>
+                  <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="truncate font-black">{order.shopName}</p><Badge tone="blue">{order.orderNumber}</Badge>{mismatchCount > 0 && <Badge tone="red">{mismatchCount} variance</Badge>}</div><p className="mt-1 text-xs text-muted-foreground">Dispatched order · {items.length} item lines · Created {toDateTimeLabel(order.createdAt)}</p>{order.notes && <p className="mt-1 line-clamp-1 text-xs font-semibold text-amber-700">Note: {order.notes}</p>}</div>
+                </div>
+                <div className="flex items-center gap-3"><div className="text-right"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Receipt value</p><p className="font-display text-lg font-black">{money(totalValue)}</p></div><ChevronRight className={cn('size-5 text-muted-foreground transition-transform', isExpanded && 'rotate-90')} /></div>
+              </button>
+
+              {isExpanded && <div className="border-t bg-muted/10 p-4">
+                <div className="overflow-x-auto rounded-2xl border bg-card">
+                  <table className="min-w-[760px] w-full text-sm">
+                    <thead className="bg-muted/45 text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3 text-left">Item</th><th className="px-4 py-3 text-right">Dispatched</th><th className="px-4 py-3 text-left">Received</th><th className="px-4 py-3 text-right">Variance</th><th className="px-4 py-3 text-left">Variance / receiving remarks</th></tr></thead>
+                    <tbody className="divide-y">{items.map((item) => {
+                      const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+                      const rawReceived = receivedQty[item.id] ?? String(expected);
+                      const received = Number(rawReceived);
+                      const variance = Number.isFinite(received) ? Math.round((received - expected) * 1000) / 1000 : 0;
+                      const hasVariance = Math.abs(variance) > 0.001;
+                      return <tr key={item.id} className={cn(hasVariance && 'bg-amber-50/70')}>
+                        <td className="px-4 py-3"><p className="font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">{money(item.unitPrice)} / {item.unit}</p></td>
+                        <td className="px-4 py-3 text-right font-black">{num(expected)} {item.unit}</td>
+                        <td className="px-4 py-3"><input className="h-10 w-28 rounded-xl border bg-background px-3 text-right font-black" type="number" min="0" step={item.unit === 'kg' ? 0.001 : 1} value={rawReceived} onChange={(event) => setReceivedQty((previous) => ({ ...previous, [item.id]: event.target.value }))} /></td>
+                        <td className={cn('px-4 py-3 text-right font-black', hasVariance ? variance < 0 ? 'text-red-700' : 'text-amber-700' : 'text-emerald-700')}>{hasVariance ? `${variance > 0 ? '+' : ''}${num(variance)} ${item.unit}` : 'Matched'}</td>
+                        <td className="px-4 py-3"><input className="h-10 w-full min-w-64 rounded-xl border bg-background px-3 text-sm" value={remarks[item.id] ?? ''} onChange={(event) => setRemarks((previous) => ({ ...previous, [item.id]: event.target.value }))} placeholder={hasVariance ? 'Reason required for clear audit trail' : 'Optional receiving note'} /></td>
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+                {mismatchCount > 0 && <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800"><AlertTriangle className="mr-2 inline size-4" />Quantity variances will automatically create disputes and notify Admin when this receipt is confirmed.</div>}
+                <div className="mt-4 flex flex-col gap-3 rounded-2xl border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-black">Confirm physical receipt</p><p className="text-xs text-muted-foreground">This moves the order to Billing and creates a draft using the shop price list.</p></div><button className={primaryButton} disabled={busy || items.length === 0} title={items.length === 0 ? 'Order items are required.' : undefined} onClick={() => withBusy(() => confirmOrder(order), mismatchCount ? 'Order received. Variance dispute raised and bill draft created.' : 'Order received and bill draft created.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Receipt & Create Bill</button></div>
+              </div>}
+            </article>;
           })}
         </Card>
-        <Card className="space-y-3">
-          <h3 className="font-black">Packing Dispatch Bridge</h3>
-          <p className="text-sm text-muted-foreground">Existing packing dispatch rows from the bakery workflow are shown here. Confirming adds them to Hosur branch stock.</p>
-          {branchIncoming.filter((i) => !i.confirmed).length === 0 ? <EmptyState icon={<PackageCheck className="size-6" />} title="No unconfirmed dispatch rows" /> : branchIncoming.filter((i) => !i.confirmed).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3"><div><p className="font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">{num(item.quantity)} {item.unit} · {item.dispatchedBy} · {toDateTimeLabel(item.receivedAt)}</p></div><button className={softButton} disabled={busy} onClick={() => withBusy(async () => { const err = await confirmIncoming(BRANCH, item.id); if (err) throw new Error(err); }, 'Incoming stock confirmed.')}>Confirm Stock</button></div>)}
-        </Card>
+
+        <div className="space-y-4 xl:sticky xl:top-28 xl:self-start">
+          <Card className="space-y-3">
+            <div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-emerald-100 text-emerald-700"><CheckCircle2 className="size-5" /></span><div><h3 className="font-black">Receiving Checklist</h3><p className="text-xs text-muted-foreground">Complete before confirmation</p></div></div>
+            {[['Match shop and order number', 'Confirm the package belongs to the selected shop.'], ['Count every item physically', 'Do not copy dispatched quantity without checking.'], ['Record every variance', 'A mismatch automatically becomes an Admin dispute.'], ['Confirm once only', 'Confirmation creates the billing draft immediately.']].map(([title, detail], index) => <div key={title} className="flex gap-3 rounded-2xl bg-muted/30 p-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-black text-white">{index + 1}</span><div><p className="text-sm font-black">{title}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div></div>)}
+          </Card>
+          <Card className="space-y-3">
+            <h3 className="font-black">Queue Summary</h3>
+            <div className="grid grid-cols-2 gap-2"><div className="rounded-2xl bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-700">Waiting</p><p className="mt-1 text-2xl font-black">{pendingOrders.length}</p></div><div className={cn('rounded-2xl p-3', liveMismatchCount ? 'bg-red-50' : 'bg-emerald-50')}><p className={cn('text-[10px] font-black uppercase', liveMismatchCount ? 'text-red-700' : 'text-emerald-700')}>Variances</p><p className="mt-1 text-2xl font-black">{liveMismatchCount}</p></div></div>
+            <p className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs font-semibold text-blue-800">Orders do not enter this screen at creation. They appear only after the Store → Baker → Packing workflow reaches dispatched status.</p>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -2149,15 +2248,17 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
       counted_cash?: number;
       remarks?: string;
       closed_by?: string;
+      status?: string;
     } | null;
     const currentSession = status?.session ?? null;
+    const isOpen = currentSession?.status === 'open';
+    const isClosed = currentSession?.status === 'closed' && closure?.status !== 'reopened';
 
-    setOpeningCash(String(closure?.opening_cash ?? currentSession?.opening_cash ?? 0));
-    setCountedCash(closure?.counted_cash == null ? '' : String(closure.counted_cash));
+    setOpeningCash(String(currentSession?.opening_cash ?? closure?.opening_cash ?? 0));
+    setCountedCash(isClosed && closure?.counted_cash != null ? String(closure.counted_cash) : '');
     setRemarks(closure?.remarks ?? '');
     setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
-    setSaved(Boolean(closure));
-    const isOpen = currentSession?.status === 'open' && !closure;
+    setSaved(isClosed);
     setCounterOpened(isOpen);
     if (date === TODAY_ISO()) onCounterStatusChange?.(isOpen);
   }, [actorId, actorName, date, onCounterStatusChange]);
@@ -2181,7 +2282,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     setClosedBy(actorName);
     onCounterStatusChange?.(true);
     await loadStatus();
-    setStatusMessage('Counter opened. Hosur billing is now unlocked for today.');
+    setStatusMessage(saved ? 'Counter reopened. Hosur billing is unlocked again for today.' : 'Counter opened. Hosur billing is now unlocked for today.');
   };
 
   const saveClosure = async () => {
@@ -2223,7 +2324,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
       setClosedBy(actorName);
       onCounterStatusChange?.(false);
       await loadStatus();
-      setStatusMessage('Daily closure saved with exact cash reconciliation. Billing is locked until the next counter is opened.');
+      setStatusMessage('Daily closure saved with exact cash reconciliation. Billing is locked; use Reopen Counter to continue billing on the same business date.');
     } catch (error: any) {
       setStatusError(error?.message ?? 'Daily closure could not be saved.');
     } finally {
@@ -2280,7 +2381,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
       <Card className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h3 className="font-display text-lg font-black">Counter & Physical Cash</h3><p className="text-xs text-muted-foreground">Counter opening is mandatory. Exact physical cash reconciliation is required before closure.</p></div>
-          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed' : counterOpened ? 'Open' : 'Counter Closed — Billing Locked'}</span>
+          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed — Reopen Available' : counterOpened ? 'Open' : 'Counter Closed — Billing Locked'}</span>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Opening cash"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field>
@@ -2291,7 +2392,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
         <Field label="Closure remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} placeholder="Cash variance, pending dispatch, failed WhatsApp or handover notes" /></Field>
         {counterOpened && countedCash.trim() && difference !== 0 && <div className={cn('rounded-xl border px-3 py-2 text-sm font-bold', difference < 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700')}><AlertTriangle className="mr-2 inline size-4" />{difference < 0 ? `Cash shortage: ${money(Math.abs(difference))}` : `Cash excess: ${money(difference)}`}. Resolve the difference before closure.</div>}
         <div className="flex flex-wrap gap-2">
-          <button className={softButton} disabled={saving || saved || counterOpened || date !== TODAY_ISO()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter</button>
+          <button className={softButton} disabled={saving || counterOpened || date !== TODAY_ISO()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved ? 'Reopen Counter' : 'Open Counter'}</button>
           <button className={primaryButton} disabled={saving || saved || !counterOpened || !cashMatches} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Close Day & Save</button>
         </div>
       </Card>
