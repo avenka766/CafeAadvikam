@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { printCounterBill } from '../printUtils';
 import {
-  AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee,
+  AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee, Lock,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
   Trash2, WalletCards, XCircle, Plus, Minus, ClipboardList, ScanBarcode, Keyboard,
 } from 'lucide-react';
@@ -41,6 +41,10 @@ type Props = {
   branch: Branch;
   branchStock: StockItem[];
   onOpenTab?: (tab: string) => void;
+  billingAllowed?: boolean;
+  billingBlockedMessage?: string;
+  beforeCheckout?: () => Promise<void>;
+  onOpenCounter?: () => void;
 };
 
 const TAX_RATE = 0;
@@ -144,7 +148,15 @@ function toBillItem(item: BillingItem, qty: number): BranchBillItem {
 // printCounterBill is imported from shared printUtils
 
 
-export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: Props) {
+export default function BranchBillingProTab({
+  branch,
+  branchStock,
+  onOpenTab,
+  billingAllowed = true,
+  billingBlockedMessage = 'Open the cashier counter before billing.',
+  beforeCheckout,
+  onOpenCounter,
+}: Props) {
   const { currentUser } = useAuthStore();
   const { fetchBranchData } = useBranchStore();
   const {
@@ -178,6 +190,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const checkoutInFlightRef = useRef(false);
   const [lastBill, setLastBill] = useState<BranchBillRecord | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showHold, setShowHold] = useState(false);
@@ -193,7 +206,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     if (isVRSNB) return [];
     const configured = salespeople.filter((p) => p.branch === branch && p.active).map((p) => p.name);
     return Array.from(new Set(configured.filter(Boolean)));
-  }, [branch, isVRSNB, salespeople, userName]);
+  }, [branch, isVRSNB, salespeople]);
 
   const billingStaff = requiresSalesperson ? salesperson : userName;
   const shortcutHelp = useMemo(() => BASE_SHORTCUTS, []);
@@ -388,11 +401,18 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
   };
 
   const checkout = async () => {
+    if (checkoutInFlightRef.current) return;
+    if (!billingAllowed) {
+      setError(billingBlockedMessage);
+      return;
+    }
     const validationError = validateCheckout();
     if (validationError) { setError(validationError); return; }
+    checkoutInFlightRef.current = true;
     setSaving(true);
     setError('');
     try {
+      if (beforeCheckout) await beforeCheckout();
       const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
       if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
         throw new Error('Split payment must exactly match the bill total.');
@@ -454,7 +474,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
         salesperson: billingStaff,
         biller: userName,
       });
-      printCounterBill(saved, false);
+      await printCounterBill(saved, false);
       setLastBill(saved);
       setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       await fetchBranchData(branch);
@@ -462,22 +482,28 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
       setError(e instanceof Error ? e.message : 'Billing failed.');
       addNotification({ branch, type: 'Stock Dispute', title: 'Bill blocked during stock validation', details: String(e), raisedBy: userName });
     } finally {
+      checkoutInFlightRef.current = false;
       setSaving(false);
     }
   };
+
+  const selectPaymentModeRef = useRef(selectPaymentMode);
+  const checkoutRef = useRef(checkout);
+  useEffect(() => { selectPaymentModeRef.current = selectPaymentMode; });
+  useEffect(() => { checkoutRef.current = checkout; });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F1') { e.preventDefault(); selectRef.current?.focus(); }
       if (e.key === 'F2') { e.preventDefault(); searchRef.current?.focus(); }
-      if (e.key === 'F3') { e.preventDefault(); selectPaymentMode('cash'); }
-      if (e.key === 'F4') { e.preventDefault(); selectPaymentMode('upi'); }
-      if (e.key === 'F5') { e.preventDefault(); selectPaymentMode('card'); }
-      if (e.key === 'F6') { e.preventDefault(); selectPaymentMode('split'); }
-      if (e.key === 'F7') { e.preventDefault(); selectPaymentMode('credit'); }
+      if (e.key === 'F3') { e.preventDefault(); selectPaymentModeRef.current('cash'); }
+      if (e.key === 'F4') { e.preventDefault(); selectPaymentModeRef.current('upi'); }
+      if (e.key === 'F5') { e.preventDefault(); selectPaymentModeRef.current('card'); }
+      if (e.key === 'F6') { e.preventDefault(); selectPaymentModeRef.current('split'); }
+      if (e.key === 'F7') { e.preventDefault(); selectPaymentModeRef.current('credit'); }
       if (e.key === 'F8') { e.preventDefault(); cashTenderedRef.current?.focus(); }
       if (e.key === 'F9') { e.preventDefault(); holdBill(); }
-      if (e.key === 'F10') { e.preventDefault(); checkout(); }
+      if (e.key === 'F10') { e.preventDefault(); checkoutRef.current(); }
       if (e.key === 'F11') { e.preventDefault(); setShowHold(true); }
       if (e.key === 'F12') {
         e.preventDefault();
@@ -491,7 +517,25 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, checkout, holdBill, items, selectPaymentMode, selectedIndex, total, visibleItems]);
+  }, [cart, holdBill, items, selectedIndex, total, visibleItems]);
+
+  if (!billingAllowed) {
+    return (
+      <div className="flex min-h-[540px] items-center justify-center rounded-[2rem] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-slate-50 p-6 shadow-xl shadow-slate-200/60">
+        <div className="max-w-xl rounded-3xl border border-amber-200 bg-white p-7 text-center shadow-lg">
+          <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-amber-100 text-amber-700"><Lock className="size-8" /></div>
+          <h2 className="mt-4 font-display text-2xl font-black text-slate-950">Billing Counter Locked</h2>
+          <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{billingBlockedMessage}</p>
+          <p className="mt-2 text-xs text-slate-500">Opening the counter is mandatory. No cart, payment, final bill, or keyboard checkout is available until the counter is open.</p>
+          {onOpenCounter && (
+            <button type="button" onClick={onOpenCounter} className="mt-5 inline-flex h-11 items-center gap-2 rounded-xl bg-slate-950 px-5 text-sm font-black text-white hover:bg-slate-800">
+              <Lock className="size-4" /> Go to Open Counter
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 md:h-[calc(100dvh-var(--header-h,4rem)-7rem)] md:overflow-hidden">
@@ -640,7 +684,7 @@ export default function BranchBillingProTab({ branch, branchStock, onOpenTab }: 
               <button onClick={holdBill} className="rounded-2xl bg-amber-100 px-3 py-2 text-sm font-black text-amber-800"><PauseCircle className="mx-auto mb-1 size-4"/>Hold <span className="ml-1 text-[9px] font-black opacity-70">[F9]</span></button>
               <button onClick={checkout} disabled={saving || cart.length === 0} className="rounded-2xl bg-orange-500 px-3 py-2 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"><Printer className="mx-auto mb-1 size-4"/>{saving ? 'Saving' : 'Final Bill'} <span className="ml-1 text-[9px] font-black opacity-70">[F10]</span></button>
             </div>
-            {lastBill && <button onClick={() => printCounterBill(lastBill, true)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white py-2 text-sm font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
+            {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white py-2 text-sm font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
           </div>
         </aside>
 

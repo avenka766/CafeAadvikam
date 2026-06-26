@@ -1,12 +1,12 @@
 // src/bakery/PackingDashboard.tsx (Redesigned — Tabs + Excel Export)
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import * as XLSX from '@/lib/safeSpreadsheet';
 import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock,
   BoxSelect, MapPin, FileSpreadsheet, Calendar, Send,
-  Printer, RefreshCw,
+  Printer, RefreshCw, ShoppingCart, ArrowDownToLine,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -14,6 +14,11 @@ import { BRANCHES } from './types';
 import type { Branch, PreparedItem } from './types';
 import { kgToPcs } from './itemMatcher';
 import { cn } from '@/lib/utils';
+import BranchBillingProTab from '@/branch/tabs/BranchBillingProTab';
+import { useBranchStore } from '@/branch/branchStore';
+import PackingTransferInTab from './PackingTransferInTab';
+import PackingDailyClosureTab from './PackingDailyClosureTab';
+import { getPackingCounterStatus } from './packingCounter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PackedEntry {
@@ -28,9 +33,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'leftover' | 'dispatched' | 'closure';
+type ActiveTab  = 'orders' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'leftover', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -188,6 +193,9 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const [expanded,         setExpanded]         = useState(order.status === 'packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
   const [dispatchError,    setDispatchError]    = useState<string | null>(null);
+  const transferBranch: Branch = order.targetBranch ?? 'SNB';
+  const [transferQty, setTransferQty] = useState<Record<string, string>>({});
+  const [transferring, setTransferring] = useState(false);
 
   const [packedEntries, setPackedEntries] = useState<PackedEntry[]>([]);
   useEffect(() => {
@@ -257,6 +265,46 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   };
 
   const statusLabel = allDispatched ? 'DISPATCHED' : allConfirmed ? 'READY' : 'PACKING';
+  const printTransferChecklist = () => {
+    const checklist = [
+      'Verify standard quantity in box or Kgs or Pcs before transfer',
+      'Cross-check all boxes or Kgs or Pcs before transfer-out and sync',
+      'Sync the data in the Transfer-Out module',
+      'Manual verification by 2 employees against transfer-out list',
+      'Intimate factory and bill for extra products if received quantity exceeds list',
+      'Sync store computer after goods received',
+      'Perform “Transfer In” in the Billmaxo system',
+    ];
+    const rows = preparedItems.map((p, index) => {
+      const stock = stockByItem[p.itemName];
+      const qty = Number(transferQty[p.itemName] || stock?.available || 0);
+      return `<tr><td>${index + 1}</td><td>${p.itemName}</td><td>${qty}</td><td>${stock?.unit ?? 'kg'}</td><td>${transferBranch}</td></tr>`;
+    }).join('');
+    const checks = checklist.map((item, index) => `<tr><td>${index + 1}</td><td>${item}</td><td>☐</td><td></td><td></td><td></td></tr>`).join('');
+    const win = window.open('', '_blank', 'width=1000,height=800');
+    if (!win) return;
+    win.document.write(`<!doctype html><html><head><title>Transfer Out Checklist</title><style>body{font-family:Arial;padding:24px;color:#111}h2{text-align:center;font-size:16px}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #222;padding:7px;font-size:11px}th{background:#eee}.sign{height:60px}</style></head><body><h2>FINISHED GOODS TRANSFER – EMPLOYEE TRACKING INVOICE (PACKING TO ${transferBranch})</h2><p><b>Order:</b> #${order.orderNumber} &nbsp; <b>Date:</b> ${new Date().toLocaleString('en-IN')}</p><table><thead><tr><th>S.No</th><th>Item</th><th>Qty</th><th>Unit</th><th>Destination</th></tr></thead><tbody>${rows}</tbody></table><table><thead><tr><th>S.No</th><th>Task Description</th><th>Tick (✓)</th><th>Name</th><th>Signature</th><th>Time</th></tr></thead><tbody>${checks}</tbody></table><table><tr><th>Store In-Charge Final Acknowledgment</th><th>Remarks if any</th></tr><tr><td class="sign">Name:<br><br>Signature:<br><br>Date & Time:</td><td></td></tr></table></body></html>`);
+    win.document.close(); win.focus(); setTimeout(() => win.print(), 250);
+  };
+
+  const transferAll = async () => {
+    const rows = preparedItems.map(p => ({ p, stock: stockByItem[p.itemName], qty: Number(transferQty[p.itemName] || stockByItem[p.itemName]?.available || 0) }))
+      .filter(row => row.qty > 0);
+    if (!rows.length) { setDispatchError('Enter at least one transfer quantity.'); return; }
+    const invalid = rows.find(row => row.qty > (row.stock?.available ?? 0));
+    if (invalid) { setDispatchError(`${invalid.p.itemName} exceeds available quantity.`); return; }
+    setTransferring(true); setDispatchError(null);
+    try {
+      for (const row of rows) {
+        const entry = packedEntries.find(e => e.itemId === row.p.itemId);
+        await handleDispatch(row.p.itemName, row.qty, transferBranch, entry?.dispatchUnit ?? 'kg');
+      }
+      setTransferQty({});
+    } catch (error) {
+      setDispatchError(error instanceof Error ? error.message : 'Combined transfer failed.');
+    } finally { setTransferring(false); }
+  };
+
   const statusStyle = allDispatched
     ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
     : allConfirmed
@@ -398,10 +446,10 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                 <div className={cn('size-6 rounded-full flex items-center justify-center shrink-0', allConfirmed ? 'bg-emerald-600' : 'bg-muted')}>
                   <span className="text-[10px] font-bold text-white">2</span>
                 </div>
-                <p className="text-xs font-body font-bold text-foreground">Dispatch to Branches</p>
+                <p className="text-xs font-body font-bold text-foreground">Transfer Out</p>
                 {!allConfirmed && <Lock className="size-3 text-muted-foreground ml-auto" />}
               </div>
-              <p className="text-[10px] font-body text-muted-foreground mb-2 pl-8">Enter quantity, select branch, tap Send</p>
+              <p className="text-[10px] font-body text-muted-foreground mb-2 pl-8">Enter quantities and transfer to the pre-selected branch</p>
             </div>
             <div className="px-4 pb-3">
               {/* Remainder warning — shown above dispatch rows if any pcs item has leftover grams */}
@@ -419,23 +467,27 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                   </div>
                 </div>
               )}
-              {preparedItems.map(p => {
-                const stock = stockByItem[p.itemName];
-                return (
-                  <div key={p.itemId}>
-                    {isCustomItem(p.itemId) && (
-                      <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 inline-block mb-1">CUSTOM</span>
-                    )}
-                    <DispatchRow itemName={p.itemName} available={stock?.available ?? 0}
-                      onDispatch={async (qty, branch) => {
-                        const entry = packedEntries.find(e => e.itemId === p.itemId);
-                        await handleDispatch(p.itemName, qty, branch, entry?.dispatchUnit ?? 'kg');
-                      }}
-                      submitting={dispatchingItems.size > 0}
-                      defaultBranch={order.targetBranch} unit={stock?.unit ?? 'kg'} />
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
+                  <div className="h-10 rounded-xl border border-emerald-200 bg-emerald-50 px-3 flex items-center text-xs font-black text-emerald-800">
+                    {transferBranch}
                   </div>
-                );
-              })}
+                  <p className="self-center text-[11px] font-semibold text-muted-foreground">Destination is fixed from the order and cannot be changed. Select quantities and use one combined Transfer Out.</p>
+                </div>
+                {preparedItems.map(p => {
+                  const stock = stockByItem[p.itemName];
+                  const value = transferQty[p.itemName] ?? String(stock?.available ?? 0);
+                  return <div key={p.itemId} className="grid grid-cols-[1fr_110px_54px] items-center gap-2 rounded-xl border border-border bg-background p-3">
+                    <div><p className="text-xs font-bold">{p.itemName}</p><p className="text-[10px] text-muted-foreground">Available: {stock?.available ?? 0} {stock?.unit ?? 'kg'}</p></div>
+                    <input type="number" min="0" max={stock?.available ?? 0} step={stock?.unit === 'pcs' ? 1 : 0.001} value={value} onChange={e => setTransferQty(current => ({ ...current, [p.itemName]: e.target.value }))} className="h-9 rounded-lg border border-border px-2 text-right text-xs font-bold" />
+                    <span className="text-[10px] font-bold text-muted-foreground">{stock?.unit ?? 'kg'}</span>
+                  </div>;
+                })}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={printTransferChecklist} className="h-11 rounded-xl border border-border bg-card text-xs font-bold flex items-center justify-center gap-2"><Printer className="size-4"/> Print Checklist</button>
+                  <button type="button" onClick={transferAll} disabled={transferring || allDispatched} className="h-11 rounded-xl bg-emerald-600 text-white text-xs font-black flex items-center justify-center gap-2 disabled:opacity-40">{transferring ? <Loader2 className="size-4 animate-spin"/> : <Truck className="size-4"/>} Transfer Out</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -662,7 +714,7 @@ function printDailyClosure(payload: {
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function PackingDashboard() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { orders, fetchOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
@@ -678,6 +730,59 @@ export default function PackingDashboard() {
 
   const requestedTab = searchParams.get('tab') as ActiveTab | null;
   const activeTab: ActiveTab = requestedTab && PACKING_TABS.includes(requestedTab) ? requestedTab : 'orders';
+  const [closureSubTab, setClosureSubTab] = useState<'transfer' | 'billing'>('transfer');
+  const branchStock = useBranchStore(state => state.stock.SNB);
+  const branchSales = useBranchStore(state => state.sales.SNB);
+  const branchCreditSales = useBranchStore(state => state.creditSales.SNB);
+  const fetchBranchData = useBranchStore(state => state.fetchBranchData);
+  const [packingCounterOpen, setPackingCounterOpen] = useState(false);
+  const [packingCounterLoading, setPackingCounterLoading] = useState(true);
+  const [packingCounterError, setPackingCounterError] = useState('');
+
+  const refreshPackingCounter = useCallback(async () => {
+    setPackingCounterLoading(true);
+    setPackingCounterError('');
+    try {
+      const status = await getPackingCounterStatus();
+      setPackingCounterOpen(status.isOpen);
+      return status.isOpen;
+    } catch (error) {
+      setPackingCounterOpen(false);
+      setPackingCounterError(error instanceof Error ? error.message : 'Packing counter status could not be loaded.');
+      return false;
+    } finally {
+      setPackingCounterLoading(false);
+    }
+  }, []);
+
+  const requirePackingCounterOpen = useCallback(async () => {
+    const status = await getPackingCounterStatus();
+    setPackingCounterOpen(status.isOpen);
+    if (!status.isOpen) throw new Error('Packing cashier counter is closed. Open the counter from Daily Closure before creating a bill.');
+  }, []);
+
+  const handlePackingCounterChange = useCallback((isOpen: boolean) => {
+    setPackingCounterOpen(isOpen);
+    setPackingCounterLoading(false);
+    setPackingCounterError('');
+  }, []);
+
+  const goToPackingCounter = useCallback(() => {
+    setSearchParams({ tab: 'closure' });
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    if (activeTab === 'billing' || activeTab === 'closure') {
+      void fetchBranchData('SNB');
+      void refreshPackingCounter();
+    }
+  }, [activeTab, fetchBranchData, refreshPackingCounter]);
+
+  useEffect(() => {
+    const onFocus = () => { if (activeTab === 'billing') void refreshPackingCounter(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [activeTab, refreshPackingCounter]);
 
   const packingOrders = useMemo(
     () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
@@ -801,6 +906,24 @@ export default function PackingDashboard() {
   const pendingForPeriod = readyToPackOrders.filter(order => branchFilter === 'all' || order.targetBranch === branchFilter).length;
   const holdCancelledForPeriod = 0;
 
+  const billingSalesForPeriod = useMemo(() => branchSales.filter(sale => new Date(sale.soldAt) >= cutoff), [branchSales, cutoff]);
+  const billingCreditForPeriod = useMemo(() => branchCreditSales.filter(sale => new Date(sale.createdAt) >= cutoff), [branchCreditSales, cutoff]);
+  const billingSummary = useMemo(() => {
+    const methodTotals: Record<string, number> = {};
+    let gross = 0;
+    const bills = new Set<string>();
+    billingSalesForPeriod.forEach(sale => {
+      const amount = sale.quantitySold * sale.unitPrice;
+      gross += amount;
+      const method = (sale.paymentMethod || 'cash').toLowerCase();
+      methodTotals[method] = (methodTotals[method] || 0) + amount;
+      if (sale.billNo) bills.add(sale.billNo);
+    });
+    const creditRaised = billingCreditForPeriod.reduce((sum, sale) => sum + sale.creditAmount, 0);
+    const creditCollected = billingCreditForPeriod.reduce((sum, sale) => sum + sale.amountPaid, 0);
+    return { gross, methodTotals, billCount: bills.size, creditRaised, creditCollected };
+  }, [billingSalesForPeriod, billingCreditForPeriod]);
+
   const handleExport = () => {
     setIsExporting(true);
     try {
@@ -836,10 +959,10 @@ export default function PackingDashboard() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
@@ -877,7 +1000,21 @@ export default function PackingDashboard() {
             </div>
           </div>
 
-          {activeTab === 'orders' ? (
+          {activeTab === 'transfer-in' ? (
+            <PackingTransferInTab />
+          ) : activeTab === 'billing' ? (
+            <div className="min-h-[70vh] space-y-3">
+              {packingCounterError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{packingCounterError}</div>}
+              <BranchBillingProTab
+                branch="SNB"
+                branchStock={branchStock}
+                billingAllowed={!packingCounterLoading && packingCounterOpen}
+                billingBlockedMessage={packingCounterLoading ? 'Checking today’s packing counter status…' : 'Open today’s Packing cashier counter in Daily Closure before billing.'}
+                beforeCheckout={requirePackingCounterOpen}
+                onOpenCounter={goToPackingCounter}
+              />
+            </div>
+          ) : activeTab === 'orders' ? (
             <section className="space-y-4">
               {/* Filters */}
               <div className="rounded-2xl border border-border bg-card p-3 md:p-4">
@@ -1009,155 +1146,7 @@ export default function PackingDashboard() {
               )}
             </section>
           ) : (
-            <section className="space-y-4">
-              <div className="rounded-2xl border border-border bg-card p-3 md:p-4 space-y-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="flex gap-1.5 flex-wrap">
-                    {TIME_FILTERS.map(tf => (
-                      <button
-                        key={tf.key}
-                        onClick={() => setTimeFilter(tf.key)}
-                        className={cn(
-                          'flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-body font-semibold border transition-all',
-                          timeFilter === tf.key
-                            ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                            : 'bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-foreground'
-                        )}>
-                        <Calendar className="size-3" />
-                        {tf.label}
-                      </button>
-                    ))}
-                  </div>
-                  <select
-                    value={branchFilter}
-                    onChange={e => setBranchFilter(e.target.value as BranchFilter)}
-                    className="h-10 rounded-xl border border-border bg-background px-3 text-xs font-body font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/25">
-                    <option value="all">All Branches</option>
-                    {BRANCHES.map(branch => <option key={branch} value={branch}>{branch}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid gap-4 xl:grid-cols-[1.35fr_0.85fr]">
-                <div className="rounded-2xl border border-border bg-card overflow-hidden">
-                  <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-body font-bold text-foreground">Item-wise Summary</p>
-                      <p className="text-[10px] font-body text-muted-foreground">Dispatch totals for {periodLabel.toLowerCase()}</p>
-                    </div>
-                    <span className="text-[10px] font-body font-bold text-muted-foreground bg-muted rounded-full px-2 py-1">
-                      {itemSummary.length} items
-                    </span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted/50 text-[10px] uppercase text-muted-foreground font-body font-bold">
-                        <tr>
-                          <th className="text-left px-4 py-3 min-w-[220px]">Item</th>
-                          <th className="text-right px-4 py-3">KG</th>
-                          <th className="text-right px-4 py-3">Pcs</th>
-                          <th className="text-right px-4 py-3">Entries</th>
-                          <th className="text-left px-4 py-3 min-w-[160px]">Branches</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {itemSummary.length > 0 ? itemSummary.map(row => (
-                          <tr key={row.itemName} className="hover:bg-muted/30">
-                            <td className="px-4 py-3 font-body font-semibold text-foreground">{row.itemName}</td>
-                            <td className="px-4 py-3 text-right font-body tabular-nums">{formatQty(row.kg)}</td>
-                            <td className="px-4 py-3 text-right font-body tabular-nums">{formatQty(row.pcs)}</td>
-                            <td className="px-4 py-3 text-right font-body tabular-nums">{row.entries}</td>
-                            <td className="px-4 py-3">
-                              <div className="flex flex-wrap gap-1">
-                                {row.branches.map(branch => {
-                                  const meta = BRANCH_META[branch as Branch];
-                                  return <span key={branch} className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', meta?.bg, meta?.color)}>{branch}</span>;
-                                })}
-                              </div>
-                            </td>
-                          </tr>
-                        )) : (
-                          <tr>
-                            <td colSpan={5} className="px-4 py-12 text-center text-sm font-body text-muted-foreground">No dispatch summary available for the selected filters.</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-border bg-card p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <p className="text-sm font-body font-bold text-foreground">Branch Summary</p>
-                      <MapPin className="size-4 text-muted-foreground" />
-                    </div>
-                    <div className="space-y-2">
-                      {BRANCHES.map(branch => {
-                        const meta = BRANCH_META[branch];
-                        const total = closureBranchTotals[branch];
-                        return (
-                          <div key={branch} className={cn('rounded-xl border p-3', (total.kg > 0 || total.pcs > 0) ? meta.bg : 'bg-background border-border')}>
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-2">
-                                <span className="text-base">{meta.icon}</span>
-                                <div>
-                                  <p className={cn('text-sm font-display font-bold', meta.color)}>{branch}</p>
-                                  <p className="text-[10px] font-body text-muted-foreground">{total.orders} order{total.orders !== 1 ? 's' : ''}</p>
-                                </div>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-xs font-body font-bold text-foreground">{formatQty(total.kg)} kg</p>
-                                <p className="text-xs font-body font-bold text-foreground">{formatQty(total.pcs)} pcs</p>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-border bg-card p-4">
-                    <p className="text-sm font-body font-bold text-foreground mb-3">Recent Closure Orders</p>
-                    <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-                      {closureOrders.length > 0 ? closureOrders
-                        .slice()
-                        .sort((a, b) => new Date(orderLastDispatchAt(b) || b.sentToPackingAt || b.createdAt).getTime() - new Date(orderLastDispatchAt(a) || a.sentToPackingAt || a.createdAt).getTime())
-                        .map(order => {
-                          const meta = order.targetBranch ? BRANCH_META[order.targetBranch] : null;
-                          return (
-                            <div key={order.id} className="rounded-xl border border-border bg-background p-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <p className="text-sm font-body font-bold text-foreground">#{order.orderNumber}</p>
-                                    <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', order.status === 'dispatched' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-purple-100 text-purple-700 border-purple-200')}>
-                                      {order.status === 'dispatched' ? 'Dispatched' : 'Pending'}
-                                    </span>
-                                    {meta && <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', meta.bg, meta.color)}>{order.targetBranch}</span>}
-                                  </div>
-                                  <p className="text-[10px] font-body text-muted-foreground mt-1">
-                                    {order.preparedItems?.map(item => item.itemName).join(', ') || 'No items'}
-                                  </p>
-                                </div>
-                                <p className="text-[10px] font-body text-muted-foreground text-right shrink-0">
-                                  {formatDateTime(orderLastDispatchAt(order) || order.sentToPackingAt || order.createdAt)}
-                                </p>
-                              </div>
-                            </div>
-                          );
-                        }) : (
-                        <div className="text-center py-10">
-                          <Send className="size-8 text-muted-foreground/40 mx-auto mb-2" />
-                          <p className="text-sm font-body font-semibold text-foreground">No closure orders found</p>
-                          <p className="text-xs font-body text-muted-foreground mt-1">Adjust the date, branch, or search filter.</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
+            <PackingDailyClosureTab onCounterStatusChange={handlePackingCounterChange} />
           )}
         </div>
       </main>

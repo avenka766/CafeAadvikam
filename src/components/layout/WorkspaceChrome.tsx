@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
@@ -14,6 +14,7 @@ import {
   History,
   Inbox,
   LayoutDashboard,
+  LogOut,
   Package,
   QrCode,
   Receipt,
@@ -28,6 +29,9 @@ import {
   Sparkles,
   ShieldCheck,
   Store,
+  Smartphone,
+  Menu,
+  X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -40,7 +44,7 @@ interface NavItem {
   label: string;
   path: string;
   icon: React.ReactNode;
-  group: 'Main' | 'Operations' | 'Reports' | 'Admin';
+  group: 'Main' | 'Operations' | 'Sales' | 'Stock' | 'Reports' | 'Admin';
 }
 
 interface PageMeta {
@@ -89,25 +93,25 @@ const DEFAULT_META: PageMeta = {
 function navForRole(role?: string): NavItem[] {
   switch (role) {
     case 'admin':
-      // CHANGE 2: Removed Billing, Orders, Daily Closure, Bakery Store, Packing, Recipes
       return [
+        { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
-        { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
-        { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Reports' },
-        { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Reports' },
-        { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
-        { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
-        { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
-        { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
-        { label: 'Waste & Loss', path: '/admin-dashboard?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
+        { label: 'Items', path: '/bakery/items', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Operations' },
+        { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Operations' },
+        { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
+        { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
+        { label: 'Waste & Loss', path: '/admin-dashboard?tab=waste', icon: <Trash2 className="size-4" />, group: 'Stock' },
+        { label: 'Invoices', path: '/admin-dashboard?tab=invoices', icon: <Receipt className="size-4" />, group: 'Reports' },
         { label: 'Audit Logs', path: '/admin-dashboard?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
-        { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'Attendance', path: '/attendance-salary', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
-        { label: 'Staff', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
-        { label: 'Invoices', path: '/admin/invoices', icon: <FileText className="size-4" />, group: 'Reports' },
-        { label: 'QR Menu', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
+        { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <FileText className="size-4" />, group: 'Reports' },
+        { label: 'Attendance & Payroll', path: '/admin-dashboard?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
+        { label: 'Staff Management', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
+        { label: 'QR Table Codes', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
       ];
     case 'owner':
       return [
@@ -161,9 +165,11 @@ function navForRole(role?: string): NavItem[] {
       ];
     case 'packing':
       return [
-        { label: 'Packing Orders', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
-        { label: 'Leftover', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Main' },
-        { label: 'Dispatched', path: '/bakery/packing?tab=dispatched', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Packing Orders / Transfer Out', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Billing', path: '/bakery/packing?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
+        { label: 'Leftover Items', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
+        { label: 'Dispatched', path: '/bakery/packing?tab=dispatched', icon: <Truck className="size-4" />, group: 'Stock' },
         { label: 'Daily Closure', path: '/bakery/packing?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
       ];
     case 'receiver_vrsnb':
@@ -205,13 +211,14 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Shop Master', path: '/branch/hosur?tab=shops', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'New Order', path: '/branch/hosur?tab=newOrder', icon: <ShoppingCart className="size-4" />, group: 'Main' },
-        { label: 'Receiving', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Received From Packing', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
         { label: 'Billing', path: '/branch/hosur?tab=billing', icon: <Receipt className="size-4" />, group: 'Main' },
-        { label: 'Credit', path: '/branch/hosur?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
-        { label: 'Collection', path: '/branch/hosur?tab=collection', icon: <WalletCards className="size-4" />, group: 'Reports' },
-        { label: 'Disputes', path: '/branch/hosur?tab=disputes', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Credit Ledger', path: '/branch/hosur?tab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
+        { label: 'Payment Collection', path: '/branch/hosur?tab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'WhatsApp Logs', path: '/branch/hosur?tab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
+        { label: 'Reminder History', path: '/branch/hosur?tab=reminders', icon: <Bell className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/branch/hosur?tab=closure', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
-        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Notifications', path: '/branch/hosur?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'admin_vrsnb':
@@ -267,9 +274,10 @@ function routeMeta(pathname: string): PageMeta {
 }
 
 export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
-  const { currentUser } = useAuthStore();
+  const { currentUser, logout } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
@@ -282,12 +290,98 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
-    const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
+    const names: NavItem['group'][] = ['Main', 'Operations', 'Sales', 'Stock', 'Reports', 'Admin'];
     return names.map((name) => ({ name, items: items.filter((item) => item.group === name) })).filter((group) => group.items.length > 0);
   }, [items]);
 
+  const goTo = (path: string) => {
+    navigate(path);
+    setMobileNavOpen(false);
+  };
+
+
+  const exitDashboard = () => {
+    setMobileNavOpen(false);
+    logout();
+    window.location.replace('/login');
+  };
+
+  const renderNavGroups = (mobile = false) => groups.map((group) => (
+    <section key={group.name} className="space-y-2">
+      <p className="workspace-nav-group">{group.name}</p>
+      <div className="space-y-1.5">
+        {group.items.map((item) => {
+          const currentRoute = `${location.pathname}${location.search}`;
+          const isQueryRoute = item.path.includes('?');
+          const active = isQueryRoute
+            ? currentRoute === item.path
+            : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
+          return (
+            <button
+              key={item.path}
+              type="button"
+              onClick={() => goTo(item.path)}
+              className={cn('workspace-nav-item', mobile && 'min-h-12', active && 'workspace-nav-item-active')}
+            >
+              <span className="workspace-nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  ));
+
   return (
     <div className="workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]">
+      {items.length > 0 && (
+        <>
+          <button
+            type="button"
+            aria-label="Open dashboard menu"
+            aria-expanded={mobileNavOpen}
+            onClick={() => setMobileNavOpen(true)}
+            className="workspace-mobile-menu-button md:hidden"
+          >
+            <Menu className="size-5" />
+            <span>Menu</span>
+          </button>
+
+          {mobileNavOpen && (
+            <div className="workspace-mobile-nav-layer md:hidden" role="dialog" aria-modal="true" aria-label="Dashboard navigation">
+              <button type="button" className="workspace-mobile-nav-backdrop" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} />
+              <aside className="workspace-mobile-drawer">
+                <div className="workspace-mobile-drawer-head">
+                  <div className="workspace-brand-card">
+                    <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-[0.28em] text-white/45">Aadvikam</p>
+                      <h2 className="font-display text-2xl font-black leading-none text-white">Cafe OS</h2>
+                    </div>
+                  </div>
+                  <button type="button" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} className="workspace-mobile-close">
+                    <X className="size-5" />
+                  </button>
+                </div>
+                <nav className="workspace-nav-scroll workspace-mobile-nav-scroll">{renderNavGroups(true)}</nav>
+                <div className="workspace-sidebar-footer workspace-sidebar-footer-with-exit">
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                    <ShieldCheck className="size-4 shrink-0 text-emerald-300" />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+                      <p className="truncate text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+                    </div>
+                  </div>
+                  <button type="button" onClick={exitDashboard} className="workspace-exit-button" aria-label="Exit dashboard" title="Exit dashboard">
+                    <LogOut className="size-4" /><span>Exit</span>
+                  </button>
+                </div>
+              </aside>
+            </div>
+          )}
+        </>
+      )}
+
       <aside className="workspace-sidebar hidden md:flex">
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
@@ -297,40 +391,19 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </div>
         </div>
 
-        <nav className="workspace-nav-scroll">
-          {groups.map((group) => (
-            <section key={group.name} className="space-y-2">
-              <p className="workspace-nav-group">{group.name}</p>
-              <div className="space-y-1.5">
-                {group.items.map((item) => {
-                  const currentRoute = `${location.pathname}${location.search}`;
-                  const isQueryRoute = item.path.includes('?');
-                  const active = isQueryRoute
-                    ? currentRoute === item.path
-                    : (location.pathname === item.path && !location.search) || location.pathname.startsWith(item.path + '/');
-                  return (
-                    <button
-                      key={item.path}
-                      type="button"
-                      onClick={() => navigate(item.path)}
-                      className={cn('workspace-nav-item', active && 'workspace-nav-item-active')}
-                    >
-                      <span className="workspace-nav-icon">{item.icon}</span>
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </nav>
+        <nav className="workspace-nav-scroll">{renderNavGroups()}</nav>
 
-        <div className="workspace-sidebar-footer">
-          <ShieldCheck className="size-4 text-emerald-300" />
-          <div>
-            <p className="text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
-            <p className="text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+        <div className="workspace-sidebar-footer workspace-sidebar-footer-with-exit">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <ShieldCheck className="size-4 shrink-0 text-emerald-300" />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-bold text-white">{currentUser?.displayName || currentUser?.username || 'Staff'}</p>
+              <p className="truncate text-[11px] text-white/45 capitalize">{currentUser?.role?.replace(/_/g, ' ') || 'Role based access active'}</p>
+            </div>
           </div>
+          <button type="button" onClick={exitDashboard} className="workspace-exit-button" aria-label="Exit dashboard" title="Exit dashboard">
+            <LogOut className="size-4" /><span>Exit</span>
+          </button>
         </div>
       </aside>
 

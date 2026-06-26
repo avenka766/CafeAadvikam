@@ -334,7 +334,7 @@ function SalesOverviewTab() {
       });
     });
     return branches;
-  }, [bills, returns, cutoff, cutoffEnd, salesLedger.closureRows]);
+  }, [bills, returns, cutoff, cutoffEnd, salesLedger]);
 
   const totalBakeryRevenue = Object.values(branchSales).reduce((a, v) => a + v.revenue, 0);
   const totalBakeryQty     = Object.values(branchSales).reduce((a, v) => a + v.qty, 0);
@@ -1432,7 +1432,7 @@ function BranchOverviewTab() {
   const toKey = useMemo(() => ownerDateInput(to), [to]);
   const ownerLedger = useBranchLedger(fromKey, toKey, ['VRSNB', 'SNB', 'Hosur']);
 
-  const branchStockAlertCount = (branch: Branch) => {
+  const branchStockAlertCount = useCallback((branch: Branch) => {
     if (branch === 'Hosur') return 0;
 
     // Owner alerts must represent real stock mismatch events, not every
@@ -1451,12 +1451,12 @@ function BranchOverviewTab() {
     );
 
     return uniqueMismatches.size;
-  };
+  }, [stockMismatches]);
 
-  const pendingIncomingCount = (branch: Branch) => {
+  const pendingIncomingCount = useCallback((branch: Branch) => {
     if (branch === 'Hosur') return 0;
     return new Set((incoming[branch] || []).filter(item => !item.confirmed).map(item => item.id)).size;
-  };
+  }, [incoming]);
 
   const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
     if (unit === 'Cafe') {
@@ -1555,7 +1555,7 @@ function BranchOverviewTab() {
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, incoming, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, stockMismatches, from, to]);
+  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, from, to, branchStockAlertCount, pendingIncomingCount]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
@@ -1826,7 +1826,7 @@ function OwnerAlertsTab() {
 
   useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
-  useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
+  useEffect(() => { void fetchStockMismatches(); }, []);
   useEffect(() => { load(); }, [load]);
 
   const alerts: OwnerAlert[] = useMemo(() => {

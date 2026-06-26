@@ -3,12 +3,15 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { supabase } from '@/lib/supabase';
+import { clearAppSession, saveAppSession } from '@/lib/appSession';
 import type { User, UserRole } from '@/types';
 
 const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
+const AUTH_STORAGE_KEY = 'cafe-aadvikam-auth';
 
 interface AuthState {
   currentUser: User | null;
+  sessionExpiresAt: string | null;
   staffList: User[];
   staffLoaded: boolean;
   _sessionTimer: ReturnType<typeof setTimeout> | null;
@@ -36,6 +39,7 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       currentUser: null,
+      sessionExpiresAt: null,
       staffList: [],
       staffLoaded: false,
       _sessionTimer: null,
@@ -48,13 +52,21 @@ export const useAuthStore = create<AuthState>()(
       },
 
       login: async (username, password) => {
-        const { data, error } = await supabase
-          .rpc('login_staff', { p_username: username, p_password: password });
-        if (error || !data || data.length === 0) return false;
-        const user = rowToUser(data[0] as Record<string, unknown>);
-        set({ currentUser: user });
+        const { data, error } = await supabase.rpc('login_staff_secure', {
+          p_username: username,
+          p_password: password,
+          p_device_info: navigator.userAgent,
+        });
+        const row = Array.isArray(data) ? data[0] : data;
+        if (error || !row) return false;
+        const record = row as Record<string, unknown>;
+        const token = String(record.session_token ?? '');
+        const expiresAt = String(record.expires_at ?? '');
+        if (!token || !expiresAt) return false;
+        const user = rowToUser(record);
+        saveAppSession(token, expiresAt);
+        set({ currentUser: user, sessionExpiresAt: expiresAt });
         get()._resetSessionTimer();
-        // M-03 FIX: start sliding-session listeners on fresh login too
         _attachActivityListeners();
         return true;
       },
@@ -62,19 +74,37 @@ export const useAuthStore = create<AuthState>()(
       logout: () => {
         const timer = get()._sessionTimer;
         if (timer) clearTimeout(timer);
-        // HYGIENE FIX: detach sliding-session listeners on logout so they don't accumulate
-        // across login/logout cycles on a shared terminal.
+
+        // Clear the browser session first. A remote logout failure must never keep the
+        // user trapped inside a dashboard. PostgREST builders are PromiseLike but do
+        // not reliably expose .catch(), so calling `.catch()` directly can throw before
+        // the local state is cleared.
         _detachActivityListeners();
-        set({ currentUser: null, _sessionTimer: null });
+        clearAppSession();
+        set({ currentUser: null, sessionExpiresAt: null, _sessionTimer: null });
+
+        try {
+          sessionStorage.removeItem(AUTH_STORAGE_KEY);
+          // Remove the key from localStorage as well for installations upgraded from
+          // older builds that persisted auth outside sessionStorage.
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+        } catch {
+          // Storage may be unavailable in private/restricted browser contexts.
+        }
+
+        // Best-effort server invalidation. Local logout is already complete.
+        void (async () => {
+          try {
+            await supabase.rpc('logout_staff_secure');
+          } catch {
+            // The local session remains cleared even if the network is unavailable.
+          }
+        })();
       },
 
       // SM-02: never fetch the password column
       loadStaff: async () => {
-        const { data, error } = await supabase
-          .from('staff_users')
-          .select('id, username, display_name, role, is_active, created_at')
-          .eq('is_active', true)
-          .order('created_at', { ascending: true });
+        const { data, error } = await supabase.rpc('list_staff_secure');
         if (!error && data) {
           set({ staffList: data.map((d) => rowToUser(d as Record<string, unknown>)), staffLoaded: true });
         }
@@ -128,7 +158,11 @@ export const useAuthStore = create<AuthState>()(
           if (existing) return 'Username already taken';
         }
 
-        const { error } = await supabase.from('staff_users').update(payload).eq('id', userId);
+        const { error } = await supabase.rpc('update_staff_details_secure', {
+          p_user_id: userId,
+          p_username: payload.username ?? null,
+          p_display_name: payload.display_name ?? null,
+        });
         if (error) return error.code === '23505' ? 'Username already taken' : 'Failed to update. Please try again.';
 
         set((s) => {
@@ -144,15 +178,15 @@ export const useAuthStore = create<AuthState>()(
       },
 
       removeStaff: async (userId) => {
-        const { error } = await supabase.from('staff_users').update({ is_active: false }).eq('id', userId);
+        const { error } = await supabase.rpc('deactivate_staff_secure', { p_user_id: userId, p_reason: 'Deactivated by administrator' });
         if (error) throw error;
         set((s) => ({ staffList: s.staffList.filter((u) => u.id !== userId) }));
       },
     }),
     {
-      name: 'cafe-aadvikam-auth',
+      name: AUTH_STORAGE_KEY,
       storage: createJSONStorage(() => sessionStorage),
-      partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null }),
+      partialize: (state) => ({ currentUser: state.currentUser ? { ...state.currentUser, password: '' } : null, sessionExpiresAt: state.sessionExpiresAt }),
       // BUG #21 FIX: _sessionTimer is not persisted (correctly excluded by partialize),
       // but that means after a page reload the 8-hour auto-logout timer is never restarted.
       // onRehydrateStorage fires once after sessionStorage is loaded; restart the timer here

@@ -3,6 +3,7 @@
 
 import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
+import { supabase } from '@/lib/supabase';
 
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
 export function printHtml(title: string, body: string) {
@@ -37,7 +38,7 @@ export function printHtml(title: string, body: string) {
 
 // ─── VRSNB receipt-style counter bill ─────────────────────────────────────────
 // Matches the physical receipt format from the SNB/VRSNB receipt image.
-function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
+function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target?: Window | null) {
   const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
   const printedAt = new Date(bill.createdAt);
 
@@ -118,12 +119,12 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false) {
     <script>window.onload=()=>window.print()</script>
   </body></html>`;
 
-  const win = window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.write(html); win.document.close(); }
+  const win = target ?? window.open('', '_blank', 'width=420,height=680');
+  if (win) { win.document.open(); win.document.write(html); win.document.close(); }
 }
 
 // ─── Full-format counter bill (SNB style / tax invoice) ───────────────────────
-function printSnbCounterBill(bill: BranchBillRecord, duplicate = false) {
+function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?: Window | null) {
   const returnBill = bill as BranchBillRecord & { _isReturn?: boolean; _originalBillNo?: string; _returnReason?: string };
   const title = returnBill._isReturn ? 'RETURN BILL' : duplicate ? 'DUPLICATE BILL' : 'ORIGINAL BILL';
   const business = {
@@ -157,8 +158,8 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false) {
     <div class="footer">Thank you, Visit Again</div>
     <script>window.onload=()=>window.print()</script>
   </body></html>`;
-  const win = window.open('', '_blank', 'width=420,height=680');
-  if (win) { win.document.write(html); win.document.close(); }
+  const win = target ?? window.open('', '_blank', 'width=420,height=680');
+  if (win) { win.document.open(); win.document.write(html); win.document.close(); }
 }
 
 // ─── Branch Cashier Closure print — same layout/style as the Biller (DailyClosure) print ──
@@ -293,10 +294,26 @@ export function printBranchCashierClosure(input: {
 }
 
 
-export function printCounterBill(bill: BranchBillRecord, duplicate = false) {
-  if (bill.branch === 'VRSNB') {
-    printVrsnbReceiptBill(bill, duplicate);
-  } else {
-    printSnbCounterBill(bill, duplicate);
+export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
+  const target = window.open('', '_blank', 'width=420,height=680');
+  if (!target) throw new Error('Print window was blocked. Allow pop-ups and try again.');
+  target.document.write('<!doctype html><title>Preparing print</title><body style="font-family:Arial;padding:24px">Allocating controlled print copy…</body>');
+  target.document.close();
+  const { data, error } = await supabase.rpc('allocate_document_print', {
+    p_document_type: 'branch_bill',
+    p_document_id: bill.id || bill.billNo,
+    p_branch: bill.branch,
+    p_reason: duplicate ? 'User-requested duplicate print' : null,
+    p_device_info: navigator.userAgent,
+  });
+  if (error || !data) {
+    target.document.open();
+    target.document.write(`<body style="font-family:Arial;padding:24px;color:#991b1b"><h2>Print blocked</h2><p>${String(error?.message || 'Unable to allocate print copy').replace(/[<>]/g, '')}</p></body>`);
+    target.document.close();
+    throw new Error(error?.message || 'Unable to allocate controlled print copy.');
   }
+  const row = Array.isArray(data) ? data[0] : data;
+  const isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+  if (bill.branch === 'VRSNB') printVrsnbReceiptBill(bill, isDuplicate, target);
+  else printSnbCounterBill(bill, isDuplicate, target);
 }

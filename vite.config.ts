@@ -10,6 +10,19 @@ export default defineConfig({
   },
   build: {
     sourcemap: false, // SEC-14: never expose source in production
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("@supabase")) return "supabase-vendor";
+          if (id.includes("recharts") || id.includes("chart.js")) return "charts-vendor";
+          if (id.includes("jspdf") || id.includes("qrcode")) return "document-vendor";
+          if (id.includes("framer-motion")) return "motion-vendor";
+          if (id.includes("@radix-ui") || id.includes("cmdk") || id.includes("vaul")) return "ui-vendor";
+          return "vendor";
+        },
+      },
+    },
   },
   plugins: [
     react(),

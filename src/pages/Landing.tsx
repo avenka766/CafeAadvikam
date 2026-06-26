@@ -20,11 +20,8 @@ import {
   X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { useMenuStore } from '@/stores/menuStore';
 import { getRoleDefaultPath } from '@/lib/routing';
-import { MENU_CATEGORIES } from '@/constants/config';
-import { cn, formatCurrency } from '@/lib/utils';
-import { useScrollLock } from '@/hooks/useScrollLock';
+import { cn } from '@/lib/utils';
 import heroMeal from '@/assets/hero-bg.jpg';
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
@@ -44,7 +41,6 @@ import filterCoffeeImg from '@/assets/foods/filter-coffee.jpg';
 import paneerImg from '@/assets/foods/paneer-butter-masala.jpg';
 import limeSodaImg from '@/assets/foods/fresh-lime-soda.jpg';
 import ChatBot from '@/components/features/ChatBot';
-import { SNB_CATEGORIES, SNB_ITEMS } from '@/branch/snbItems';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
@@ -106,147 +102,6 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue: 'cafe' | 'bakery' }) {
-  const { items } = useMenuStore();
-  const [sel, setSel] = useState('all');
-  const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
-  const activeCats = useMemo(() => MENU_CATEGORIES.filter((c) => enabled.some((i) => i.category === c.id)), [enabled]);
-  const display = useMemo(() => (sel === 'all' ? activeCats : activeCats.filter((c) => c.id === sel)), [sel, activeCats]);
-  const bakeryCats = useMemo(() => SNB_CATEGORIES.filter((c) => SNB_ITEMS.some((i) => i.category === c)), []);
-  const bakeryDisplay = useMemo(() => (sel === 'all' ? bakeryCats : bakeryCats.filter((c) => c === sel)), [sel, bakeryCats]);
-  useEffect(() => { setSel('all'); }, [activeVenue]);
-  useScrollLock();
-
-  return (
-    <div className="fixed inset-0 z-[95] flex items-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-      <div
-        className="relative flex h-[90vh] w-full flex-col rounded-t-3xl bg-background shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-5 pb-3 pt-5">
-          <div>
-            <h2 className="font-display text-xl font-bold text-foreground">{activeVenue === 'bakery' ? 'SNB Bakery Menu' : 'Full Menu'}</h2>
-            <p className="text-xs font-body text-muted-foreground">{activeVenue === 'bakery' ? `Bakery items · ${SNB_ITEMS.length} items` : `Pure vegetarian · ${enabled.length} items`}</p>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close menu"
-            className="flex size-10 items-center justify-center rounded-full bg-muted transition-transform active:scale-90"
-          >
-            <X className="size-5 text-muted-foreground" />
-          </button>
-        </div>
-        <div className="shrink-0 border-b border-border">
-          <div className="flex gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none]">
-            <button
-              onClick={() => setSel('all')}
-              className={cn(
-                'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                sel === 'all' ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-              )}
-            >
-              All Items
-            </button>
-            {activeVenue === 'bakery'
-              ? bakeryCats.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setSel(c)}
-                    className={cn(
-                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                      sel === c ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-                    )}
-                  >
-                    🥐 {c}
-                  </button>
-                ))
-              : activeCats.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSel(c.id)}
-                    className={cn(
-                      'shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-xs font-body font-semibold transition-all',
-                      sel === c.id ? 'cafe-gradient text-primary-foreground shadow-sm' : 'border border-border bg-card text-foreground',
-                    )}
-                  >
-                    {c.icon} {c.name}
-                  </button>
-                ))}
-          </div>
-        </div>
-        <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
-          {activeVenue === 'bakery' ? (
-            bakeryDisplay.map((cat) => {
-              const ci = SNB_ITEMS.filter((i) => i.category === cat);
-              if (!ci.length) return null;
-              return (
-                <div key={cat}>
-                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
-                    <span className="text-xl">🥐</span>
-                    <div>
-                      <h3 className="font-display text-lg font-bold text-foreground">{cat}</h3>
-                      <p className="text-[10px] font-body text-muted-foreground">SNB Bakery</p>
-                    </div>
-                  </div>
-                  {ci.map((item) => (
-                    <div key={item.barcode} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
-                      <div className="flex min-w-0 flex-1 items-center gap-3">
-                        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-lg">🥐</div>
-                        <div className="min-w-0">
-                          <span className="block truncate text-sm font-body text-foreground">{item.name}</span>
-                          <span className="text-[10px] text-muted-foreground">{item.uom}</span>
-                        </div>
-                      </div>
-                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
-                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
-                        <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-amber-700">SNB</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })
-          ) : (
-            display.map((cat) => {
-              const ci = enabled.filter((i) => i.category === cat.id);
-              if (!ci.length) return null;
-              return (
-                <div key={cat.id}>
-                  <div className="mb-3 flex items-center gap-2 border-b border-border pb-2">
-                    <span className="text-xl">{cat.icon}</span>
-                    <div>
-                      <h3 className="font-display text-lg font-bold text-foreground">{cat.name}</h3>
-                      <p className="text-[10px] font-body text-muted-foreground">{cat.timing}</p>
-                    </div>
-                  </div>
-                  {ci.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between border-b border-border/40 py-2.5 last:border-0">
-                      <div className="flex min-w-0 flex-1 items-center gap-3">
-                        {item.imageUrl ? (
-                          <img src={item.imageUrl} alt="" className="size-12 shrink-0 rounded-xl border border-border object-cover" />
-                        ) : (
-                          <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-muted text-lg">{cat.icon}</div>
-                        )}
-                        <span className="text-sm font-body text-foreground">{item.name}</span>
-                      </div>
-                      <div className="ml-3 flex shrink-0 flex-col items-end gap-1">
-                        <span className="tabular-nums text-sm font-body font-bold text-primary">{formatCurrency(item.price)}</span>
-                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-body font-semibold text-emerald-700">VEG</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })
-          )}
-          <div className="h-6" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
@@ -272,7 +127,10 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 
           <div className="hidden items-center gap-2 md:flex">
             <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
-              View Menu
+              Place Order
+            </button>
+            <button onClick={() => navigate('/order/track')} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
+              Track Order
             </button>
             <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105">
               <CalendarCheck className="h-4 w-4" /> Book Party Hall
@@ -290,34 +148,51 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 
       <AnimatePresence>
         {open && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] bg-stone-950/96 p-6 text-white md:hidden">
-            <button onClick={() => setOpen(false)} className="ml-auto grid h-11 w-11 place-items-center rounded-full bg-white/10">
-              <X />
-            </button>
-            <div className="mt-14 grid gap-5 text-4xl font-black">
-              {navItems.map(([label, href]) => (
-                <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="text-left">
-                  {label}
-                </button>
-              ))}
-              <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">
-                View Menu
-              </button>
-              <button onClick={() => navigate('/login')} className="text-left text-amber-200">
-                Login
-              </button>
-            </div>
-          </motion.div>
+          <>
+            <motion.button
+              aria-label="Close navigation"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setOpen(false)}
+              className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm md:hidden"
+            />
+            <motion.aside
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 30 }}
+              className="fixed inset-y-0 right-0 z-[61] flex w-[min(86vw,360px)] flex-col bg-[#130d08] p-5 text-white shadow-2xl md:hidden"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-3">
+                  <img src={cafeLogo} alt="Cafe Aadvikam" className="size-11 rounded-full bg-white object-contain p-1" />
+                  <div><p className="font-display text-lg font-black">Cafe Aadvikam</p><p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-100/70">Cafe · Bakery</p></div>
+                </div>
+                <button onClick={() => setOpen(false)} className="grid size-10 place-items-center rounded-full bg-white/10"><X className="size-5" /></button>
+              </div>
+              <nav className="mt-5 flex flex-col gap-2">
+                {navItems.map(([label, href]) => (
+                  <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="rounded-2xl px-4 py-3 text-left text-base font-black transition active:bg-white/10">{label}</button>
+                ))}
+              </nav>
+              <div className="mt-auto space-y-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+                <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="w-full rounded-2xl bg-amber-300 px-4 py-3.5 text-sm font-black text-stone-950">Place Order</button>
+                <button onClick={() => { setOpen(false); navigate('/order/track'); }} className="w-full rounded-2xl border border-white/15 bg-white/10 px-4 py-3.5 text-sm font-black">Track Order</button>
+                <button onClick={() => { setOpen(false); navigate('/login'); }} className="w-full rounded-2xl border border-white/15 bg-white/10 px-4 py-3.5 text-sm font-black">Login</button>
+              </div>
+            </motion.aside>
+          </>
         )}
       </AnimatePresence>
     </>
   );
 }
 
-function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
+function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (venue: 'cafe' | 'bakery') => void }) {
   return (
     <div
-      className="fixed right-3 z-50 flex flex-col gap-1.5 rounded-2xl p-1.5 shadow-2xl"
+      className="fixed right-3 z-50 flex flex-col gap-1.5 overflow-hidden rounded-2xl p-1.5 shadow-2xl"
       style={{
         top: '88px',
         background: 'rgba(15,6,2,0.85)',
@@ -326,23 +201,43 @@ function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange
         boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,215,0,0.08)',
       }}
     >
+      <motion.div
+        className="pointer-events-none absolute inset-x-1.5 h-[58px] rounded-xl bg-white/10"
+        animate={{ y: active === 'cafe' ? 0 : 66 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+      />
+      <motion.div
+        className="pointer-events-none absolute -right-1 top-1 text-amber-300"
+        animate={{ rotate: active === 'cafe' ? 0 : 180, scale: [1, 1.25, 1] }}
+        transition={{ rotate: { duration: 0.35 }, scale: { duration: 0.45 } }}
+      >
+        <Sparkles className="size-4" />
+      </motion.div>
       <button
+        type="button"
         onClick={() => onChange('cafe')}
         aria-label="Switch to Cafe Aadvikam"
+        aria-pressed={active === 'cafe'}
         className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
-        style={active === 'cafe' ? { background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', boxShadow: '0 4px 16px rgba(200,75,10,0.55)' } : { background: 'rgba(255,255,255,0.05)' }}
+        style={active === 'cafe'
+          ? { background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', boxShadow: '0 4px 16px rgba(200,75,10,0.55)' }
+          : { background: 'rgba(255,255,255,0.05)' }}
       >
         <UtensilsCrossed className={cn('size-4 transition-all', active === 'cafe' ? 'text-white' : 'text-white/40')} />
         <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'cafe' ? 'text-white' : 'text-white/35')}>Cafe</span>
       </button>
       <div className="mx-1.5 h-px bg-amber-300/15" />
       <button
+        type="button"
         onClick={() => onChange('bakery')}
-        aria-label="Switch to SNB Bakery"
+        aria-label="Switch to VRSNB Bakery"
+        aria-pressed={active === 'bakery'}
         className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
-        style={active === 'bakery' ? { background: 'linear-gradient(135deg,#b8860b,#8B5E04)', boxShadow: '0 4px 16px rgba(180,140,0,0.5)' } : { background: 'rgba(255,255,255,0.05)' }}
+        style={active === 'bakery'
+          ? { background: 'linear-gradient(135deg,#b8860b,#8B5E04)', boxShadow: '0 4px 16px rgba(180,140,0,0.5)' }
+          : { background: 'rgba(255,255,255,0.05)' }}
       >
-        <img src={snbLogo} alt="SNB" className={cn('size-6 object-contain transition-all', active === 'bakery' ? 'opacity-100 drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')} />
+        <img src={snbLogo} alt="VRSNB Bakery" className={cn('size-6 object-contain transition-all', active === 'bakery' ? 'opacity-100 drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')} />
         <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'bakery' ? 'text-white' : 'text-white/35')}>Bakery</span>
       </button>
     </div>
@@ -620,7 +515,7 @@ function VisitScene({ onMenuOpen }: { onMenuOpen: () => void }) {
           </div>
           <div className="mt-8 flex flex-col gap-4 sm:flex-row">
             <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950 shadow-2xl shadow-amber-500/20">
-              View Menu <ArrowRight className="h-4 w-4" />
+              Place Order <ArrowRight className="h-4 w-4" />
             </button>
             <a href={mapsUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/10 px-8 py-4 font-black backdrop-blur-xl">
               Get Directions <MapPin className="h-4 w-4" />
@@ -653,18 +548,18 @@ function BakeryHero() {
   return (
     <section id="bakery-hero" ref={ref} className="relative h-[210vh] bg-[#160d05]">
       <div className="sticky top-0 h-screen overflow-hidden">
-        <motion.img src={bakeryCounter} alt="SNB Bakery counter" style={{ scale, y }} className="absolute inset-0 h-full w-full object-cover" />
+        <motion.img src={bakeryCounter} alt="VRSNB Bakery counter" style={{ scale, y }} className="absolute inset-0 h-full w-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-r from-[#160d05] via-[#160d05]/82 to-[#160d05]/25" />
         <motion.div style={{ opacity }} className="relative z-10 flex h-full items-center px-5 py-28 md:px-12 lg:px-20">
           <div className="mx-auto w-full max-w-7xl">
             <div className="flex items-center gap-4">
-              <img src={snbLogo} alt="SNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
+              <img src={snbLogo} alt="VRSNB Bakery" className="h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-2xl" />
               <div>
                 <p className="text-sm font-black uppercase tracking-[0.35em] text-amber-300">Sri Nanjundeshwara Bakery</p>
                 <h1 className="mt-2 font-display text-6xl font-black leading-none md:text-8xl">Fresh from the oven.</h1>
               </div>
             </div>
-            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/78">A warm bakery story of breads, cakes, cookies, sweets, savouries, and celebration treats from SNB Bakery.</p>
+            <p className="mt-8 max-w-3xl text-xl leading-9 text-white/78">A warm bakery story of breads, cakes, cookies, sweets, savouries, and celebration treats from VRSNB Bakery.</p>
             <div className="mt-10 flex flex-col gap-4 sm:flex-row">
               <button onClick={() => scrollToId('#bakery-story')} className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-300 px-8 py-4 font-black text-stone-950">
                 Start Bakery Story <ChevronDown className="h-4 w-4" />
@@ -689,7 +584,7 @@ function BakeryStoryScene() {
   return (
     <section id="bakery-story" className="bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
       <div className="mx-auto max-w-7xl">
-        <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">SNB bakery journey</p>
+        <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">VRSNB bakery journey</p>
         <h2 className="mt-4 max-w-4xl font-display text-5xl font-black leading-none md:text-7xl">From dough to display, every shelf tells a story.</h2>
         <div className="mt-14 space-y-8">
           {rows.map(([title, copy, image], i) => (
@@ -732,7 +627,7 @@ function BakeryMenuHighlights() {
       <div className="sticky top-0 flex h-screen items-center overflow-hidden">
         <div className="absolute left-5 top-28 z-20 md:left-12">
           <p className="text-sm font-bold uppercase tracking-[0.35em] text-amber-300">Bakery menu</p>
-          <h2 className="mt-3 max-w-3xl font-display text-5xl font-black leading-none md:text-7xl">The SNB bakery menu, told visually.</h2>
+          <h2 className="mt-3 max-w-3xl font-display text-5xl font-black leading-none md:text-7xl">The VRSNB bakery menu, told visually.</h2>
         </div>
         <motion.div style={{ x }} className="flex gap-6 pl-[5vw] pt-48">
           {cards.map(([title, copy, image]) => (
@@ -740,7 +635,7 @@ function BakeryMenuHighlights() {
               <img src={image} alt={title} className="absolute inset-0 h-full w-full object-cover transition duration-700 hover:scale-110" />
               <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
               <div className="absolute bottom-0 p-8 md:p-10">
-                <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-black uppercase tracking-[0.25em] text-amber-200 backdrop-blur-xl">SNB Bakery</div>
+                <div className="mb-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-black uppercase tracking-[0.25em] text-amber-200 backdrop-blur-xl">VRSNB Bakery</div>
                 <h3 className="font-display text-4xl font-black md:text-5xl">{title}</h3>
                 <p className="mt-3 text-lg text-white/75 md:text-xl">{copy}</p>
               </div>
@@ -757,14 +652,14 @@ function BakeryFinalCTA({ onMenuOpen }: { onMenuOpen: () => void }) {
     <section className="relative overflow-hidden bg-[#fff3de] px-5 py-28 text-stone-950 md:px-12 lg:px-20">
       <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
         <div>
-          <img src={snbLogo} alt="SNB Bakery" className="mb-8 h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-xl" />
+          <img src={snbLogo} alt="VRSNB Bakery" className="mb-8 h-20 w-20 rounded-3xl bg-white p-3 object-contain shadow-xl" />
           <p className="text-sm font-black uppercase tracking-[0.35em] text-orange-800">Order bakery items</p>
           <h2 className="mt-4 font-display text-5xl font-black leading-none md:text-7xl">Fresh bakery favourites for home, work, and celebrations.</h2>
           <div className="mt-10 flex flex-col gap-4 sm:flex-row">
             <button onClick={onMenuOpen} className="inline-flex items-center justify-center gap-2 rounded-full bg-stone-950 px-8 py-4 font-black text-white">
               Open Bakery Menu <ArrowRight className="h-4 w-4" />
             </button>
-            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from SNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-8 py-4 font-black text-stone-950">
+            <a href={`https://wa.me/${BAKERY.whatsapp}?text=${encodeURIComponent('Hi, I want to order from VRSNB Bakery')}`} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-full border border-stone-950/15 bg-white px-8 py-4 font-black text-stone-950">
               <MessageCircle className="h-4 w-4" /> WhatsApp Order
             </a>
           </div>
@@ -793,12 +688,9 @@ function BakeryLanding({ onMenuOpen }: { onMenuOpen: () => void }) {
 export default function Landing() {
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
-  const { loadMenu } = useMenuStore();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [activeVenue, setActiveVenue] = useState<'cafe' | 'bakery'>('cafe');
   const progressSections = useMemo(() => ['#hero', '#leaf', '#bakery', '#signature', '#party-hall', '#visit'], []);
 
-  useEffect(() => { loadMenu(); }, [loadMenu]);
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
   }, [currentUser, navigate]);
@@ -807,11 +699,10 @@ export default function Landing() {
 
   return (
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
-      <FloatingNav onMenuOpen={() => setMenuOpen(true)} />
+      <FloatingNav onMenuOpen={() => navigate('/order')} />
       <VenueToggle active={activeVenue} onChange={setActiveVenue} />
-      {menuOpen && <MenuPopup activeVenue={activeVenue} onClose={() => setMenuOpen(false)} />}
       {activeVenue === 'bakery' ? (
-        <BakeryLanding onMenuOpen={() => setMenuOpen(true)} />
+        <BakeryLanding onMenuOpen={() => navigate('/order')} />
       ) : (
         <>
           <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
@@ -825,7 +716,7 @@ export default function Landing() {
           <BakeryScene />
           <SignatureScene />
           <PartyHallScene />
-          <VisitScene onMenuOpen={() => setMenuOpen(true)} />
+          <VisitScene onMenuOpen={() => navigate('/order')} />
         </>
       )}
           <ChatBot />

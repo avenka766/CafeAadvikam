@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import Header from '@/components/layout/Header';
@@ -7,43 +7,46 @@ import BottomNav from '@/components/layout/BottomNav';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import ErrorBoundary from '@/components/layout/ErrorBoundary';
 import OfflineBanner from '@/components/layout/OfflineBanner';
+import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
-import MenuPage from '@/pages/MenuPage';
-import OrderPad from '@/pages/OrderPad';
-import BillingDashboard from '@/pages/BillingDashboard';
-import DailyClosure from '@/pages/DailyClosure';
-import MenuManagement from '@/pages/MenuManagement';
-import OrderHistory from '@/pages/OrderHistory';
-import SalesReport from '@/pages/SalesReport';
-import AdminDashboard from '@/pages/AdminDashboard';
-import StaffManagement from '@/pages/StaffManagement';
-import QRMenuPage from '@/pages/QRMenuPage';
-import QROrderPage from '@/pages/QROrderPage';
-import KitchenDashboard from '@/pages/KitchenDashboard';
-import DigitalMenu from '@/pages/DigitalMenu';
-import OrderTrackingPage from '@/pages/OrderTrackingPage';
-import AttendanceSalary from '@/pages/AttendanceSalary';
-import OrderReceiverDashboard from '@/bakery/OrderReceiverDashboard';
-import StoreDashboard from '@/bakery/StoreDashboard';
-import BakerDashboard from '@/bakery/BakerDashboard';
-import PackingDashboard from '@/bakery/PackingDashboard';
-import BakeryItemManagement from '@/bakery/BakeryItemManagement';
-import RecipeManagement from '@/bakery/RecipeManagement';
-import VRSNBDashboard from '@/pages/VRSNBDashboard';
-import SNBDashboard   from '@/pages/SNBDashboard';
-import HosurDashboard from '@/pages/HosurDashboard';
-import AdminVRSNBDashboard from '@/pages/AdminVRSNBDashboard';
-import AdminSNBDashboard   from '@/pages/AdminSNBDashboard';
-import OwnerDashboard      from '@/pages/OwnerDashboard';
-import VRSNBItemsPage      from '@/pages/VRSNBItemsPage';
-import SNBItemsPage        from '@/pages/SNBItemsPage';
-import VRSNBHistoryPage    from '@/pages/VRSNBHistoryPage';
-import SNBHistoryPage      from '@/pages/SNBHistoryPage';
-import AdminInvoicesPage   from '@/pages/AdminInvoicesPage';
-import AdminAlertsPage     from '@/pages/AdminAlertsPage';
+const MenuPage = lazy(() => import('@/pages/MenuPage'));
+const OrderPad = lazy(() => import('@/pages/OrderPad'));
+const BillingDashboard = lazy(() => import('@/pages/BillingDashboard'));
+const DailyClosure = lazy(() => import('@/pages/DailyClosure'));
+const MenuManagement = lazy(() => import('@/pages/MenuManagement'));
+const OrderHistory = lazy(() => import('@/pages/OrderHistory'));
+const SalesReport = lazy(() => import('@/pages/SalesReport'));
+const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
+const StaffManagement = lazy(() => import('@/pages/StaffManagement'));
+const QRMenuPage = lazy(() => import('@/pages/QRMenuPage'));
+const BakeryOrderPage = lazy(() => import('@/pages/BakeryOrderPage'));
+const QROrderPage = lazy(() => import('@/pages/QROrderPage'));
+const KitchenDashboard = lazy(() => import('@/pages/KitchenDashboard'));
+const DigitalMenu = lazy(() => import('@/pages/DigitalMenu'));
+const OrderTrackingPage = lazy(() => import('@/pages/OrderTrackingPage'));
+const CafeOrderTrackingPage = lazy(() => import('@/pages/CafeOrderTrackingPage'));
+const AttendanceSalary = lazy(() => import('@/pages/AttendanceSalary'));
+const OrderReceiverDashboard = lazy(() => import('@/bakery/OrderReceiverDashboard'));
+const StoreDashboard = lazy(() => import('@/bakery/StoreDashboard'));
+const BakerDashboard = lazy(() => import('@/bakery/BakerDashboard'));
+const PackingDashboard = lazy(() => import('@/bakery/PackingDashboard'));
+const BakeryItemManagement = lazy(() => import('@/bakery/BakeryItemManagement'));
+const RecipeManagement = lazy(() => import('@/bakery/RecipeManagement'));
+const VRSNBDashboard = lazy(() => import('@/pages/VRSNBDashboard'));
+const SNBDashboard = lazy(() => import('@/pages/SNBDashboard'));
+const HosurDashboard = lazy(() => import('@/pages/HosurDashboard'));
+const AdminVRSNBDashboard = lazy(() => import('@/pages/AdminVRSNBDashboard'));
+const AdminSNBDashboard = lazy(() => import('@/pages/AdminSNBDashboard'));
+const OwnerDashboard = lazy(() => import('@/pages/OwnerDashboard'));
+const VRSNBItemsPage = lazy(() => import('@/pages/VRSNBItemsPage'));
+const SNBItemsPage = lazy(() => import('@/pages/SNBItemsPage'));
+const VRSNBHistoryPage = lazy(() => import('@/pages/VRSNBHistoryPage'));
+const SNBHistoryPage = lazy(() => import('@/pages/SNBHistoryPage'));
+const AdminInvoicesPage = lazy(() => import('@/pages/AdminInvoicesPage'));
+const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 
 // ── INFRASTRUCTURE NOTE (MD Bug #4) ──────────────────────────────────────────
 // The following Supabase RPCs and tables are required for a clean deployment.
@@ -64,7 +67,7 @@ import AdminAlertsPage     from '@/pages/AdminAlertsPage';
 function AppRoutes() {
   const location = useLocation();
   const isLandingRoute = location.pathname === '/';
-  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track'];
+  const publicRoutes = ['/', '/login', '/menu', '/digital-menu', '/order', '/order/track', '/cafe-order', '/cafe-order/track'];
   const isPublicRoute = publicRoutes.includes(location.pathname);
   const { currentUser } = useAuthStore();
   const [hydrated, setHydrated] = useState(
@@ -93,13 +96,16 @@ function AppRoutes() {
     currentUser ? getRoleDefaultPath(currentUser.role) : '/';
 
   const routes = (
+    <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-foreground">Loading workspace…</div>}>
       <Routes>
         <Route path="/"             element={<Landing />} />
         <Route path="/login"        element={<Login />} />
         <Route path="/menu"         element={<MenuPage />} />
         <Route path="/digital-menu" element={<DigitalMenu />} />
-        <Route path="/order"        element={<QROrderPage />} />
-        <Route path="/order/track"  element={<OrderTrackingPage />} />
+        <Route path="/order"             element={<BakeryOrderPage />} />
+        <Route path="/order/track"       element={<OrderTrackingPage />} />
+        <Route path="/cafe-order"        element={<QROrderPage />} />
+        <Route path="/cafe-order/track"  element={<CafeOrderTrackingPage />} />
 
         <Route path="/order-pad"        element={<ProtectedRoute allowedRoles={['order_taker']}><OrderPad /></ProtectedRoute>} />
         <Route path="/billing"          element={<ProtectedRoute allowedRoles={['billing']}><BillingDashboard /></ProtectedRoute>} />
@@ -136,6 +142,7 @@ function AppRoutes() {
         <Route path="/owner"               element={<ProtectedRoute allowedRoles={['owner']}><OwnerDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to={getDefaultRoute()} replace />} />
       </Routes>
+    </Suspense>
   );
 
   return (
@@ -153,6 +160,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <OfflineBanner />
+      <DataHealthBanner />
       <BrowserRouter>
         <AppRoutes />
       </BrowserRouter>

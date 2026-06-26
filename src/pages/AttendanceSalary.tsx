@@ -1668,7 +1668,7 @@ export default function AttendanceSalary() {
       gross += e.grossSalary; net += c.net; canteen += c.canteenTotal; advanceTotal += e.salaryAdvance;
     });
     return { count: list.length, gross, net, canteen, advanceTotal };
-  }, [employees, branch, dept, att, decisions, activeMonth.daysInMonth, getDecision]);
+  }, [employees, branch, dept, att, activeMonth.daysInMonth, getDecision]);
 
   const handleExcelExport = () => {
     let list = branch === 'All' ? employees : employees.filter(e => e.branch === branch);

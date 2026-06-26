@@ -4,18 +4,23 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import {
   AlertCircle,
   AlertTriangle,
+  BarChart3,
   BadgeCheck,
   Bell,
   CalendarDays,
   CheckCircle2,
+  Clock3,
   ChevronRight,
   CreditCard,
   Download,
   FileSpreadsheet,
   IndianRupee,
+  Percent,
   Loader2,
   MessageCircle,
   PackageCheck,
@@ -28,6 +33,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   Store,
+  TrendingUp,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -40,7 +46,26 @@ import type { SnbItem } from '@/branch/snbItems';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
 const BRANCH = 'Hosur' as const;
+const HOSUR_UPI_ID = '328969176350835@cnrb';
+const HOSUR_PAYEE_NAME = 'Sri Nanjundeshwara Bakery';
 const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+type HosurCounterStatus = { isOpen: boolean; isClosed: boolean; openingCash: number };
+
+async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterStatus> {
+  const { data, error } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
+  if (error) throw error;
+  const status = data as {
+    session?: { status?: string; opening_cash?: number } | null;
+    closure?: Record<string, unknown> | null;
+  } | null;
+  const closureStatus = typeof status?.closure?.status === 'string' ? status.closure.status : null;
+  return {
+    isOpen: status?.session?.status === 'open',
+    isClosed: status?.session?.status === 'closed' || closureStatus === 'closed',
+    openingCash: Number(status?.session?.opening_cash ?? 0),
+  };
+}
 
 const money = (value: number | null | undefined) =>
   `₹${Number(value ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -56,7 +81,8 @@ const toDateLabel = (value?: string | null) => {
   const date = dateOnly ? new Date(`${value}T00:00:00`) : new Date(value);
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: dateOnly ? 'Asia/Kolkata' : undefined });
 };
-const toDateTimeLabel = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+const toDateTimeLabel = (value?: string | null) => value ? new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—';
+const businessDate = (value?: string | null) => value ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : '';
 const daysBetween = (from: string, to = new Date()) => Math.floor((to.getTime() - new Date(`${from}T00:00:00`).getTime()) / 86_400_000);
 
 type HosurTab =
@@ -302,16 +328,12 @@ function inferHosurItemCategory(itemName: string): SnbItem['category'] {
 }
 
 function buildHosurCatalogItems(prices: HosurShopPrice[], shopId?: string): HosurCatalogItem[] {
-  const shopRows = shopId ? prices.filter((price) => price.shopId === shopId) : [];
-  const hidden = new Set(shopRows.filter((price) => !price.isActive).map((price) => normalize(price.itemName)));
+  // IMPORTANT: Hosur is shop-wise supply. Do not show the full SNB/VRSNB master list
+  // inside Shop Master or New Order, because each shop must see/order only its assigned items.
+  const shopRows = shopId ? prices.filter((price) => price.shopId === shopId && price.isActive) : prices.filter((price) => price.isActive);
   const rows = new Map<string, HosurCatalogItem>();
 
-  SNB_ITEMS.forEach((item) => {
-    const key = normalize(item.name);
-    if (!hidden.has(key)) rows.set(key, { ...item, source: 'master' });
-  });
-
-  shopRows.filter((price) => price.isActive).forEach((price, index) => {
+  shopRows.forEach((price, index) => {
     const key = normalize(price.itemName);
     const master = masterItemFor(price.itemName);
     rows.set(key, {
@@ -546,6 +568,255 @@ async function notifyBranch(title: string, body: string, refId?: string, refLabe
   if (error) console.error('Hosur branch notification failed:', error.message);
 }
 
+function safeMediaFileName(value: string) {
+  return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'hosur-bill';
+}
+
+function dataUrlPayload(dataUrl: string) {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) throw new Error('Unable to prepare WhatsApp media.');
+  return dataUrl.slice(comma + 1);
+}
+
+function buildUpiPaymentUrl(amount?: number) {
+  const params = new URLSearchParams({
+    pa: HOSUR_UPI_ID,
+    pn: HOSUR_PAYEE_NAME,
+    cu: 'INR',
+  });
+  if (Number(amount) > 0) params.set('am', Number(amount).toFixed(2));
+  return `upi://pay?${params.toString()}`;
+}
+
+async function createWhatsappQrMedia(amount?: number, reference?: string | null) {
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(amount), {
+    width: 720,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+  });
+  return {
+    base64: dataUrlPayload(qrDataUrl),
+    mimeType: 'image/png',
+    fileName: `${safeMediaFileName(reference || 'hosur-payment')}-qr.png`,
+    caption: Number(amount) > 0
+      ? `Scan to pay Rs. ${Number(amount).toFixed(2)} to ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`
+      : `Scan to pay ${HOSUR_PAYEE_NAME}. UPI: ${HOSUR_UPI_ID}`,
+  };
+}
+
+async function createWhatsappBillDocument(bill: HosurBill, items: HosurBillItem[]) {
+  const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
+    width: 640,
+    margin: 1,
+    errorCorrectionLevel: 'M',
+  });
+
+  const pageHeight = Math.max(190, 132 + items.length * 8);
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, pageHeight], compress: true });
+  const left = 5;
+  const right = 75;
+  let y = 8;
+  const line = (text: string, size = 8, bold = false, align: 'left' | 'center' | 'right' = 'left') => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(size);
+    const x = align === 'center' ? 40 : align === 'right' ? right : left;
+    doc.text(text, x, y, { align });
+    y += size <= 8 ? 4.3 : 5.2;
+  };
+  const divider = () => {
+    doc.setDrawColor(110);
+    doc.setLineDashPattern([1, 1], 0);
+    doc.line(left, y, right, y);
+    doc.setLineDashPattern([], 0);
+    y += 4;
+  };
+
+  line('SRI NANJUNDESHWARA BAKERY', 11, true, 'center');
+  line('HOSUR BRANCH', 9, true, 'center');
+  line('ORIGINAL BILL', 9, true, 'center');
+  divider();
+  line(`Bill No: ${bill.billNo}`, 8, true);
+  line(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, 7.5);
+  line(`Shop: ${bill.shopName}`, 8, true);
+  divider();
+
+  items.forEach((item, index) => {
+    const itemLines = doc.splitTextToSize(`${index + 1}. ${item.itemName}`, 45) as string[];
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text(itemLines, left, y);
+    const itemHeight = Math.max(4, itemLines.length * 3.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    doc.text(`${num(item.quantity)} ${item.unit}`, 53, y, { align: 'right' });
+    doc.text(`Rs. ${Number(item.lineTotal).toFixed(2)}`, right, y, { align: 'right' });
+    y += itemHeight + 1.5;
+  });
+  divider();
+  line(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, 10, true, 'right');
+  line(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, 8, false, 'right');
+  line(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, 8, bill.creditAmount > 0, 'right');
+  if (bill.dueDate) line(`Due Date: ${toDateLabel(bill.dueDate)}`, 8, true, 'right');
+  divider();
+
+  const qrSize = 36;
+  doc.addImage(qrDataUrl, 'PNG', 22, y, qrSize, qrSize);
+  y += qrSize + 4;
+  line(`UPI: ${HOSUR_UPI_ID}`, 7.5, true, 'center');
+  line(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, 7.5, false, 'center');
+  y += 2;
+  line('Thank you!', 9, true, 'center');
+
+  const dataUri = doc.output('datauristring');
+  return {
+    base64: dataUrlPayload(dataUri),
+    mimeType: 'application/pdf',
+    fileName: `${safeMediaFileName(bill.billNo)}.pdf`,
+    caption: `${bill.billNo} - ${bill.shopName} - Total Rs. ${Number(bill.subtotal).toFixed(2)}`,
+  };
+}
+
+function base64MediaBlob(base64: string, mimeType: string) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType });
+}
+
+function loadCanvasImage(source: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Unable to prepare the bill image.'));
+    image.src = source;
+  });
+}
+
+function canvasBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Unable to create the bill image.')), 'image/png');
+  });
+}
+
+async function createWhatsappBillImage(bill: HosurBill, items: HosurBillItem[]) {
+  const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
+  const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
+    width: 720,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+  });
+  const qrImage = await loadCanvasImage(qrDataUrl);
+  const width = 900;
+  const padding = 58;
+  const rowHeight = 58;
+  const height = 760 + Math.max(items.length, 1) * rowHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to prepare the WhatsApp bill image.');
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = '#111827';
+  context.textAlign = 'center';
+  context.font = '700 32px Arial';
+  context.fillText('SRI NANJUNDESHWARA BAKERY', width / 2, 58);
+  context.font = '700 25px Arial';
+  context.fillText('HOSUR BRANCH', width / 2, 96);
+  context.fillStyle = '#047857';
+  context.fillRect(padding, 118, width - padding * 2, 48);
+  context.fillStyle = '#ffffff';
+  context.font = '700 22px Arial';
+  context.fillText('ORIGINAL BILL', width / 2, 150);
+
+  context.textAlign = 'left';
+  context.fillStyle = '#111827';
+  context.font = '700 20px Arial';
+  context.fillText(`Bill No: ${bill.billNo}`, padding, 205);
+  context.font = '18px Arial';
+  context.fillText(`Shop: ${bill.shopName}`, padding, 238);
+  context.fillText(`Date: ${toDateTimeLabel(bill.confirmedAt ?? bill.createdAt)}`, padding, 270);
+
+  let y = 320;
+  context.fillStyle = '#f3f4f6';
+  context.fillRect(padding, y - 34, width - padding * 2, 48);
+  context.fillStyle = '#374151';
+  context.font = '700 17px Arial';
+  context.fillText('ITEM', padding + 12, y - 3);
+  context.textAlign = 'right';
+  context.fillText('QTY', 600, y - 3);
+  context.fillText('AMOUNT', width - padding - 12, y - 3);
+  y += 38;
+
+  items.forEach((item, index) => {
+    context.textAlign = 'left';
+    context.fillStyle = '#111827';
+    context.font = '700 17px Arial';
+    const itemLabel = `${index + 1}. ${item.itemName}`;
+    const clipped = itemLabel.length > 42 ? `${itemLabel.slice(0, 39)}...` : itemLabel;
+    context.fillText(clipped, padding + 12, y);
+    context.textAlign = 'right';
+    context.font = '17px Arial';
+    context.fillText(`${num(item.quantity)} ${item.unit}`, 600, y);
+    context.font = '700 17px Arial';
+    context.fillText(`Rs. ${Number(item.lineTotal).toFixed(2)}`, width - padding - 12, y);
+    context.strokeStyle = '#e5e7eb';
+    context.beginPath();
+    context.moveTo(padding, y + 22);
+    context.lineTo(width - padding, y + 22);
+    context.stroke();
+    y += rowHeight;
+  });
+
+  y += 12;
+  context.textAlign = 'right';
+  context.fillStyle = '#111827';
+  context.font = '700 25px Arial';
+  context.fillText(`Total: Rs. ${Number(bill.subtotal).toFixed(2)}`, width - padding, y);
+  y += 38;
+  context.font = '20px Arial';
+  context.fillText(`Paid: Rs. ${Number(bill.paidAmount).toFixed(2)}`, width - padding, y);
+  y += 32;
+  context.fillStyle = bill.creditAmount > 0 ? '#b91c1c' : '#111827';
+  context.font = '700 20px Arial';
+  context.fillText(`Credit: Rs. ${Number(bill.creditAmount).toFixed(2)}`, width - padding, y);
+  if (bill.dueDate) {
+    y += 32;
+    context.fillText(`Due Date: ${toDateLabel(bill.dueDate)}`, width - padding, y);
+  }
+
+  y += 38;
+  context.fillStyle = '#ecfdf5';
+  context.fillRect(padding, y, width - padding * 2, 360);
+  context.drawImage(qrImage, width / 2 - 135, y + 20, 270, 270);
+  context.textAlign = 'center';
+  context.fillStyle = '#065f46';
+  context.font = '700 20px Arial';
+  context.fillText(`Scan to pay Rs. ${Number(paymentAmount).toFixed(2)}`, width / 2, y + 318);
+  context.font = '17px Arial';
+  context.fillText(`UPI: ${HOSUR_UPI_ID}`, width / 2, y + 346);
+
+  context.fillStyle = '#111827';
+  context.font = '700 21px Arial';
+  context.fillText('Thank you!', width / 2, height - 34);
+  return canvasBlob(canvas);
+}
+
+async function uploadWhatsappMedia(blob: Blob, fileName: string) {
+  const path = `bills/${TODAY_ISO()}/${Date.now()}-${crypto.randomUUID()}-${safeMediaFileName(fileName)}`;
+  const { error } = await supabase.storage.from('hosur-whatsapp-media').upload(path, blob, {
+    cacheControl: '3600',
+    contentType: blob.type || 'image/png',
+    upsert: false,
+  });
+  if (error) throw new Error(`Unable to upload WhatsApp bill media: ${error.message}`);
+  const { data } = supabase.storage.from('hosur-whatsapp-media').getPublicUrl(path);
+  if (!data.publicUrl) throw new Error('Unable to create the WhatsApp bill media URL.');
+  return data.publicUrl;
+}
+
 function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
   const lines = items.map((item, idx) =>
     `${idx + 1}. ${item.itemName} - ${num(item.quantity)} ${item.unit} × ${money(item.unitPrice)} = ${money(item.lineTotal)}`,
@@ -563,7 +834,7 @@ function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
     `Credit Amount: ${money(bill.creditAmount)}`,
     bill.dueDate ? `Due Date: ${toDateLabel(bill.dueDate)}` : '',
     '',
-    `Payment UPI ID: 328969176350835@cnrb`,
+    `Payment UPI ID: ${HOSUR_UPI_ID}`,
     `Scan the attached QR code to pay through any UPI app.`,
     '',
     `Please keep this bill for your records. Thank you.`,
@@ -580,7 +851,7 @@ function buildReminderMessage(ledger: HosurCreditLedger) {
     `Pending Amount: ${money(ledger.balanceAmount)}`,
     `Due Date: ${toDateLabel(ledger.dueDate)}`,
     '',
-    `Payment UPI ID: 328969176350835@cnrb`,
+    `Payment UPI ID: ${HOSUR_UPI_ID}`,
     `Scan the attached QR code to pay through any UPI app.`,
     '',
     `Kindly clear the pending payment at the earliest. Thank you.`,
@@ -733,10 +1004,8 @@ export default function HosurDashboard() {
   const isAdmin = ['admin', 'owner', 'branch_hosur'].includes(userRole);
 
   const {
-    incoming,
     fetchBranchData,
     syncIncomingFromDispatches,
-    confirmIncoming,
     fetchCreditSales,
   } = useBranchStore();
 
@@ -764,8 +1033,39 @@ export default function HosurDashboard() {
   const [reminders, setReminders] = useState<HosurReminder[]>([]);
   const [disputes, setDisputes] = useState<HosurDispute[]>([]);
   const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [hosurCounterOpen, setHosurCounterOpen] = useState(false);
+  const [hosurCounterLoading, setHosurCounterLoading] = useState(true);
+  const [hosurCounterError, setHosurCounterError] = useState('');
 
-  const branchIncoming = incoming[BRANCH] || [];
+  const refreshHosurCounter = useCallback(async () => {
+    setHosurCounterLoading(true);
+    setHosurCounterError('');
+    try {
+      const status = await getHosurCounterStatus();
+      setHosurCounterOpen(status.isOpen);
+      return status.isOpen;
+    } catch (error) {
+      setHosurCounterOpen(false);
+      setHosurCounterError(error instanceof Error ? error.message : 'Hosur counter status could not be loaded.');
+      return false;
+    } finally {
+      setHosurCounterLoading(false);
+    }
+  }, []);
+
+  const assertHosurCounterOpen = useCallback(async () => {
+    const status = await getHosurCounterStatus();
+    setHosurCounterOpen(status.isOpen);
+    setHosurCounterLoading(false);
+    if (!status.isOpen) throw new Error('Hosur cashier counter is closed. Open today’s counter in Daily Closure before confirming any bill.');
+  }, []);
+
+  const handleHosurCounterChange = useCallback((isOpen: boolean) => {
+    setHosurCounterOpen(isOpen);
+    setHosurCounterLoading(false);
+    setHosurCounterError('');
+  }, []);
+
 
   const isAdminRef = useRef(isAdmin);
   useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
@@ -804,7 +1104,7 @@ export default function HosurDashboard() {
         supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
         supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('admin_notifications').select('*').in('recipient_role', [isAdminRef.current ? 'admin' : 'branch_hosur']).order('created_at', { ascending: false }).limit(100),
+        supabase.from('admin_notifications').select('*').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
       ]);
 
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
@@ -857,14 +1157,23 @@ export default function HosurDashboard() {
 
   useEffect(() => {
     void refreshRef.current();
-    const id = window.setInterval(() => void refreshRef.current(), 45_000);
-    return () => window.clearInterval(id);
+    // Manual refresh only: polling caused the whole workspace to visibly refresh while users were editing.
   }, []);
 
   useEffect(() => {
     const nextTab = parseHosurTab(searchParams.get('tab'));
     setTabState((current) => current === nextTab ? current : nextTab);
   }, [searchParams]);
+
+  useEffect(() => {
+    if (tab === 'billing' || tab === 'collection' || tab === 'closure') void refreshHosurCounter();
+  }, [tab, refreshHosurCounter]);
+
+  useEffect(() => {
+    const onFocus = () => { if (tab === 'billing' || tab === 'collection') void refreshHosurCounter(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [tab, refreshHosurCounter]);
 
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
@@ -895,7 +1204,7 @@ export default function HosurDashboard() {
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
     { id: 'newOrder', label: 'New Order', icon: ShoppingCart },
-    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: branchIncoming.filter((i) => !i.confirmed).length + orders.filter((o) => ['pending_packing', 'dispatched'].includes(o.status)).length },
+    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: orders.filter((o) => o.status === 'dispatched').length },
     { id: 'billing', label: 'Billing', icon: Receipt, badge: draftBills.length },
     { id: 'credit', label: 'Credit Ledger', icon: CreditCard, badge: openCredits.length },
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
@@ -932,6 +1241,9 @@ export default function HosurDashboard() {
     messageType,
     body,
     retryLogId,
+    billForMedia,
+    itemsForMedia,
+    qrAmount,
   }: {
     shopId?: string | null;
     shopName: string;
@@ -941,29 +1253,110 @@ export default function HosurDashboard() {
     messageType: HosurWhatsappLog['messageType'];
     body: string;
     retryLogId?: string;
+    billForMedia?: HosurBill | null;
+    itemsForMedia?: HosurBillItem[];
+    qrAmount?: number;
   }) => {
     const normalizedPhone = cleanPhone(phone);
     let status: HosurWhatsappLog['status'] = 'sent';
     let errorMessage: string | null = null;
     try {
-      const shouldAttachPaymentQr = messageType === 'bill' || messageType === 'reminder';
-      const paymentQrUrl = shouldAttachPaymentQr
-        ? new URL('/hosur-payment-qr.jpeg', window.location.origin).toString()
+      const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+      const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
+      if (!supabaseUrl || !anonKey) throw new Error('Supabase URL or publishable key is missing in the deployed app.');
+
+      // Build media in the browser and send the actual bytes to the Edge Function.
+      // The function uploads them to Meta's /media endpoint and sends by media ID,
+      // so neither Vercel preview protection nor a private asset URL can block delivery.
+      let resolvedBill = billForMedia ?? null;
+      let resolvedItems = itemsForMedia ?? [];
+      if (messageType === 'bill' && billId && !resolvedBill) {
+        resolvedBill = bills.find((entry) => entry.id === billId) ?? null;
+        resolvedItems = billItems[billId] ?? [];
+        if (!resolvedBill) {
+          const [{ data: billRow, error: billLookupError }, { data: itemRows, error: itemLookupError }] = await Promise.all([
+            supabase.from('hosur_bills').select('*').eq('id', billId).single(),
+            supabase.from('hosur_bill_items').select('*').eq('bill_id', billId).order('created_at', { ascending: true }),
+          ]);
+          if (billLookupError) throw billLookupError;
+          if (itemLookupError) throw itemLookupError;
+          resolvedBill = mapBill(billRow);
+          resolvedItems = (itemRows ?? []).map(mapBillItem);
+        }
+      }
+
+      const billDocument = messageType === 'bill' && resolvedBill
+        ? await createWhatsappBillDocument(resolvedBill, resolvedItems)
         : null;
-      const { error: fnError } = await supabase.functions.invoke('send-hosur-whatsapp', {
-        body: {
-          phone: normalizedPhone,
-          message: body,
-          shopId,
-          billId,
-          billNo,
-          messageType,
-          mediaUrl: paymentQrUrl,
-          mediaType: shouldAttachPaymentQr ? 'image' : null,
-          fileName: shouldAttachPaymentQr ? 'VRSNB-UPI-Payment-QR.jpeg' : null,
-        },
-      });
-      if (fnError) throw fnError;
+      const qrMedia = messageType === 'bill' || messageType === 'reminder'
+        ? await createWhatsappQrMedia(
+            qrAmount ?? (resolvedBill ? (resolvedBill.creditAmount > 0 ? resolvedBill.creditAmount : resolvedBill.subtotal) : undefined),
+            billNo,
+          )
+        : null;
+
+      // Backward-compatible media URL for the currently deployed function.
+      // The uploaded bill image contains both the complete bill and the QR.
+      let legacyMediaUrl: string | null = null;
+      let legacyFileName: string | null = null;
+      if (messageType === 'bill' && resolvedBill) {
+        const imageBlob = await createWhatsappBillImage(resolvedBill, resolvedItems);
+        legacyFileName = `${safeMediaFileName(resolvedBill.billNo)}-bill-and-qr.png`;
+        legacyMediaUrl = await uploadWhatsappMedia(imageBlob, legacyFileName);
+      } else if (messageType === 'reminder' && qrMedia) {
+        const qrBlob = base64MediaBlob(qrMedia.base64, qrMedia.mimeType);
+        legacyFileName = qrMedia.fileName;
+        legacyMediaUrl = await uploadWhatsappMedia(qrBlob, legacyFileName);
+      }
+
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 60000);
+      let response: Response;
+      try {
+        response = await window.fetch(`${supabaseUrl}/functions/v1/send-hosur-whatsapp`, {
+          method: 'POST',
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            phone: normalizedPhone,
+            message: body,
+            shopId,
+            billId,
+            billNo,
+            messageType,
+            billDocument,
+            qrImage: qrMedia,
+            mediaUrl: legacyMediaUrl,
+            mediaType: legacyMediaUrl ? 'image' : null,
+            fileName: legacyFileName,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+
+      const responseText = await response.text();
+      let fnData: { ok?: boolean; error?: string; messageId?: string | null; details?: unknown; mediaErrors?: string[]; sentAs?: string; fallbackUsed?: boolean; imageError?: string | null; sentParts?: { billDocument?: boolean; qrImage?: boolean; text?: boolean } } = {};
+      if (responseText) {
+        try {
+          fnData = JSON.parse(responseText) as typeof fnData;
+        } catch {
+          throw new Error(`WhatsApp service returned an invalid response (HTTP ${response.status}).`);
+        }
+      }
+      if (!response.ok || !fnData.ok) {
+        throw new Error([fnData.error, ...(fnData.mediaErrors ?? [])].filter(Boolean).join(' | ') || `WhatsApp service returned HTTP ${response.status}.`);
+      }
+      if ((messageType === 'bill' || messageType === 'reminder') && (fnData.fallbackUsed || fnData.sentAs === 'text')) {
+        throw new Error(fnData.imageError || 'The message text was sent, but WhatsApp could not download the bill/QR image. Retry from WhatsApp Logs.');
+      }
+      if (messageType === 'bill' && fnData.sentParts && (!fnData.sentParts.billDocument || !fnData.sentParts.qrImage)) {
+        throw new Error('WhatsApp did not confirm both the bill document and QR image.');
+      }
     } catch (err: any) {
       status = 'failed';
       errorMessage = err?.message || 'WhatsApp Edge Function not configured or sending failed.';
@@ -1054,6 +1447,7 @@ export default function HosurDashboard() {
   };
 
   const confirmBill = async (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => {
+    await assertHosurCounterOpen();
     const total = bill.subtotal;
     let paid = 0;
     let credit = 0;
@@ -1080,7 +1474,7 @@ export default function HosurDashboard() {
       paid_amount: paid,
       credit_amount: credit,
       payment_type: paymentType,
-      payment_mode: draft.paymentMode,
+      payment_mode: paymentType === 'credit' ? null : draft.paymentMode,
       due_date: credit > 0 ? draft.dueDate : null,
       status,
       confirmed_by: userName,
@@ -1123,6 +1517,7 @@ export default function HosurDashboard() {
           bill_no: bill.billNo,
           amount: paid,
           payment_mode: draft.paymentMode,
+          payment_purpose: 'partial_at_billing',
           remarks: 'Hosur partial payment at billing',
           collected_by: userName,
           collected_role: userRole,
@@ -1157,9 +1552,9 @@ export default function HosurDashboard() {
       });
     }
 
-    const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
+    const finalBill = { ...bill, paidAmount: paid, creditAmount: credit, paymentType, paymentMode: paymentType === 'credit' ? null : draft.paymentMode, dueDate: credit > 0 ? draft.dueDate : null, status, confirmedAt: now, confirmedBy: userName } as HosurBill;
     const body = buildBillMessage(finalBill, items);
-    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body });
+    const whatsapp = await sendWhatsapp({ shopId: bill.shopId, shopName: bill.shopName, phone: bill.shopWhatsapp, billId: bill.id, billNo: bill.billNo, messageType: 'bill', body, billForMedia: finalBill, itemsForMedia: items });
     if (whatsapp.status === 'failed') {
       await notifyAdmin('Hosur WhatsApp bill failed', `${bill.billNo} for ${bill.shopName} could not be sent. Retry from WhatsApp Logs.`, bill.id, bill.billNo, { error: whatsapp.errorMessage });
     }
@@ -1223,7 +1618,7 @@ export default function HosurDashboard() {
       const shop = shops.find((s) => s.id === ledger.shopId);
       const reminderNo = reminders.filter((r) => r.ledgerId === ledger.id).length + 1;
       const body = buildReminderMessage(ledger);
-      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body });
+      const whatsapp = await sendWhatsapp({ shopId: ledger.shopId, shopName: ledger.shopName, phone: shop?.whatsappNumber || '', billId: ledger.billId, billNo: ledger.billNo, messageType: 'reminder', body, qrAmount: ledger.balanceAmount });
       const { error: reminderError } = await supabase.from('hosur_payment_reminders').insert({
         credit_sale_id: ledger.id,
         ledger_id: null,
@@ -1241,37 +1636,19 @@ export default function HosurDashboard() {
     }
   };
 
-  const stats = {
-    todayBills: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).length,
-    todayCollection: bills.filter((bill) => bill.confirmedAt?.slice(0, 10) === TODAY_ISO()).reduce((sum, bill) => sum + bill.paidAmount, 0)
-      + payments
-        .filter((p) => p.createdAt.slice(0, 10) === TODAY_ISO() && p.remarks !== 'Hosur partial payment at billing')
-        .reduce((sum, p) => sum + p.amountCollected, 0),
-    pendingCredit: openCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
-    overdue: overdueCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0),
-  };
+
 
   return (
-    <div className="min-h-[calc(100dvh-88px)] bg-slate-50/50">
-      <div className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="flex items-center justify-end gap-3 px-4 py-3 md:px-5 xl:px-6">
-          <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            <span className="hidden sm:inline">Refresh</span>
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2 px-4 pb-3 md:grid-cols-4 md:px-5 xl:px-6">
-          <Metric label="Today Bills" value={stats.todayBills} icon={<Receipt className="size-4" />} tone="emerald" />
-          <Metric label="Today Collection" value={money(stats.todayCollection)} icon={<IndianRupee className="size-4" />} tone="blue" />
-          <Metric label="Pending Credit" value={money(stats.pendingCredit)} icon={<CreditCard className="size-4" />} tone="amber" />
-          <Metric label="Overdue" value={money(stats.overdue)} icon={<AlertTriangle className="size-4" />} tone="red" />
-        </div>
-      </div>
-
-      <div className="min-h-[calc(100dvh-230px)]">
-        <main className="p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className="mb-4 rounded-3xl bg-slate-950 p-3 text-white">
-            <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+    <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
+      <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="lg:hidden min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
+              <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
+            </div>
+            <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
+              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              Refresh
+            </button>
           </div>
 
           {error && <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700"><AlertCircle className="mr-2 inline size-4" />{error}</div>}
@@ -1282,19 +1659,18 @@ export default function HosurDashboard() {
             <div className="space-y-4">
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
-              {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} branchIncoming={branchIncoming} busy={busy} withBusy={withBusy} confirmIncoming={confirmIncoming} createDraftBill={createDraftBill} userName={userName} />}
-              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} />}
+              {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
+              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
-              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} />}
+              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
-              {tab === 'closure' && <DailyClosureTab orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} />}
+              {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} onCounterStatusChange={handleHosurCounterChange} />}
               {tab === 'reports' && <ReportsTab shops={shops} bills={bills} billItems={billItems} credits={credits} logs={whatsappLogs} reminders={reminders} disputes={disputes} />}
               {tab === 'notifications' && <NotificationsTab notifications={notifications} busy={busy} withBusy={withBusy} />}
             </div>
           )}
-        </main>
-      </div>
+      </main>
     </div>
   );
 }
@@ -1323,6 +1699,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
+  const [editingShopId, setEditingShopId] = useState<string | null>(null);
   const [selectedShopId, setSelectedShopId] = useState('');
   const [priceSearch, setPriceSearch] = useState('');
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
@@ -1337,14 +1714,19 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
     if (!cleanPhone(form.whatsappNumber)) throw new Error('WhatsApp number is required.');
-    const { error } = await supabase.from('hosur_shops').insert({
+    const payload = {
       shop_name: form.shopName.trim(),
       whatsapp_number: cleanPhone(form.whatsappNumber),
       address: form.address.trim(),
       discount_percent: Number(form.discountPercent) || 0,
       is_active: true,
-    });
-    if (error) throw error;
+      updated_at: new Date().toISOString(),
+    };
+    const result = editingShopId
+      ? await supabase.from('hosur_shops').update(payload).eq('id', editingShopId)
+      : await supabase.from('hosur_shops').insert(payload);
+    if (result.error) throw result.error;
+    setEditingShopId(null);
     setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   };
 
@@ -1443,11 +1825,13 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
+      </div>
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
           <Card className="space-y-3">
-            <h3 className="font-black">Add Shop</h3>
+            <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
             <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
@@ -1462,10 +1846,11 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 placeholder="e.g. 10 for 10% off"
               />
             </Field>
-            <button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Save Shop</button>
+            <div className="flex gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(saveShop, editingShopId ? 'Shop updated.' : 'Shop saved.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} {editingShopId ? 'Update Shop' : 'Save Shop'}</button>{editingShopId && <button className={softButton} onClick={() => { setEditingShopId(null); setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' }); }}>Cancel</button>}</div>
           </Card>
           <Card className="space-y-2">
             <h3 className="font-black">Shops</h3>
+            <div className="max-h-[420px] space-y-2 overflow-y-auto overscroll-contain pr-1">
             {shops.length === 0 ? <EmptyState icon={<Store className="size-6" />} title="No shops added" subtitle="Add shop details here. You can update the full shop list later." /> : shops.map((shop) => (
               <button key={shop.id} onClick={() => setSelectedShopId(shop.id)} className={cn('w-full rounded-2xl border p-3 text-left transition', selectedShop?.id === shop.id ? 'border-emerald-300 bg-emerald-50' : 'border-border hover:bg-muted/50')}>
                 <div className="flex items-start justify-between gap-2"><p className="font-black">{shop.shopName}</p><Badge tone={shop.isActive ? 'emerald' : 'slate'}>{shop.isActive ? 'active' : 'inactive'}</Badge></div>
@@ -1474,8 +1859,10 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
                 {shop.discountPercent > 0 && (
                   <p className="mt-1 text-xs font-semibold text-emerald-700">{shop.discountPercent}% discount applied to non-custom items</p>
                 )}
+                <span onClick={(e) => { e.stopPropagation(); setEditingShopId(shop.id); setSelectedShopId(shop.id); setForm({ shopName: shop.shopName, whatsappNumber: shop.whatsappNumber, address: shop.address, discountPercent: String(shop.discountPercent || '') }); }} className="mt-2 inline-flex rounded-lg bg-white px-2 py-1 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-200">Edit details</span>
               </button>
             ))}
+            </div>
           </Card>
         </div>
         <Card className="space-y-4">
@@ -1491,10 +1878,13 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
             <input className={inputClass} type="number" value={customItem.unitPrice} onChange={(e) => setCustomItem((prev) => ({ ...prev, unitPrice: e.target.value }))} placeholder="Price" />
             <button className={primaryButton} disabled={!selectedShop || busy} onClick={() => withBusy(addCustomItem, 'Item added to shop list.')}>Add Item</button>
           </div>
-          <div className="overflow-x-auto rounded-2xl border">
+          <div className="max-h-[620px] overflow-auto overscroll-contain rounded-2xl border">
             <table className="min-w-full text-sm">
               <thead className="bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Unit</th><th className="px-3 py-2">Default</th><th className="px-3 py-2">Shop Price</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
               <tbody className="divide-y">
+                {filteredItems.length === 0 && (
+                  <tr><td colSpan={5} className="px-3 py-8 text-center text-sm font-semibold text-muted-foreground">No items assigned to this shop yet. Add a custom item or save a master item price.</td></tr>
+                )}
                 {filteredItems.map((item) => {
                   const custom = selectedShop ? prices.find((p) => p.shopId === selectedShop.id && normalize(p.itemName) === normalize(item.name)) : null;
                   const current = selectedShop ? priceFor(selectedShop.id, item) : item.price;
@@ -1527,22 +1917,10 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   const shop = shops.find((s) => s.id === shopId) ?? shops[0];
 
   useEffect(() => { if (!shopId && shops[0]) setShopId(shops[0].id); }, [shops, shopId]);
+  useEffect(() => { setCategory('All'); setSearch(''); setCart({}); }, [shop?.id]);
 
-  const shopOnlyPrices = prices.filter((p) => p.shopId === shop?.id && p.isActive);
-  const hasShopPriceList = shopOnlyPrices.length > 0;
-  const catalogItems: HosurCatalogItem[] = hasShopPriceList
-    ? shopOnlyPrices.map((p, index) => {
-        const master = masterItemFor(p.itemName);
-        return {
-          barcode: master?.barcode ?? 90_000 + index,
-          name: p.itemName,
-          price: p.unitPrice,
-          uom: p.itemUnit === 'kg' ? 'Kgs' : 'Nos',
-          category: master?.category ?? inferHosurItemCategory(p.itemName),
-          source: (master ? 'master' : 'shop') as 'master' | 'shop',
-        };
-      })
-    : SNB_ITEMS.map((item) => ({ ...item, source: 'master' as const }));
+  const catalogItems = buildHosurCatalogItems(prices, shop?.id);
+  const availableCategories = Array.from(new Set(catalogItems.map((item) => item.category))).sort();
   const filteredItems = catalogItems.filter((item) => {
     if (search.trim()) return normalize(item.name).includes(normalize(search));
     return category === 'All' || item.category === category;
@@ -1573,7 +1951,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
       shop_name: shop.shopName,
       shop_whatsapp: shop.whatsappNumber,
       shop_address: shop.address,
-      status: 'pending_packing',
+      status: 'draft',
       subtotal,
       created_by: userName,
       notes: notes.trim() || null,
@@ -1591,12 +1969,33 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
     }));
     const { error: itemsError } = await supabase.from('hosur_order_items').insert(rows);
     if (itemsError) {
-      // FIX (MD Bug #22): if hosur_order_items insert fails after the hosur_orders row was
-      // created, clean up the orphaned order row so it doesn't appear as a ghost pending order.
       await supabase.from('hosur_orders').delete().eq('id', order.id);
       throw itemsError;
     }
-    await notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName}. Total ${money(subtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal });
+
+    // Route every Hosur shop order through the shared bakery workflow:
+    // Store -> Baker -> Packing -> Hosur Received From Packing.
+    const bakeryItems = cartItems.map((item) => ({
+      itemId: `hosur-${order.id}-${normalize(item.itemName).replace(/\s+/g, '-')}`,
+      itemName: item.itemName,
+      quantity: item.quantity,
+      originalPcs: item.unit === 'pcs' ? item.quantity : undefined,
+      dispatchUnit: item.unit,
+      isCustom: !buildHosurCatalogItems(prices, shop.id).some((catalogItem) => normalize(catalogItem.name) === normalize(item.itemName)),
+    }));
+    const { error: bakeryOrderError } = await supabase.from('bakery_orders').insert({
+      items: bakeryItems,
+      status: 'pending',
+      created_by: userName,
+      target_branch: 'Hosur',
+      notes: `HOSUR_ORDER_ID:${order.id}|${orderNumber}|${shop.shopName}${notes.trim() ? `|${notes.trim()}` : ''}`,
+    });
+    if (bakeryOrderError) {
+      await supabase.from('hosur_order_items').delete().eq('order_id', order.id);
+      await supabase.from('hosur_orders').delete().eq('id', order.id);
+      throw new Error(`Unable to send the order to Store: ${bakeryOrderError.message}`);
+    }
+    await notifyAdmin('New Hosur shop order', `${shop.shopName} order ${orderNumber} created by ${userName} and sent to Store. Total ${money(subtotal)}.`, order.id, orderNumber, { shopId: shop.id, subtotal });
     setCart({});
     setNotes('');
   };
@@ -1651,8 +2050,13 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
             ) : (
               <>
             <div className="flex gap-2 overflow-x-auto pb-1">
-              {['All', ...SNB_CATEGORIES].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
+              {['All', ...availableCategories].map((cat) => <button key={cat} onClick={() => { setCategory(cat); setSearch(''); }} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs font-black', category === cat && !search ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card')}>{cat}</button>)}
             </div>
+            {catalogItems.length === 0 ? (
+              <EmptyState icon={<ShoppingCart className="size-6" />} title="No items assigned to this shop" subtitle="Open Shop Master and add/import this shop's item price list. The order tab will only show items that belong to the selected shop." />
+            ) : filteredItems.length === 0 ? (
+              <EmptyState icon={<Search className="size-6" />} title="No matching items" subtitle="Try another search or category for this shop." />
+            ) : (
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {filteredItems.slice(0, 120).map((item) => {
                 const current = cart[item.name]?.quantity ?? 0;
@@ -1679,6 +2083,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
                 </div>;
               })}
             </div>
+            )}
               </>
             )}
           </Card>
@@ -1695,127 +2100,219 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   );
 }
 
-function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, confirmIncoming, createDraftBill, userName }: {
+function ReceivingTab({ orders, orderItems, busy, withBusy, createDraftBill, userName }: {
   orders: HosurOrder[];
   orderItems: Record<string, HosurOrderItem[]>;
-  branchIncoming: { id: string; itemName: string; quantity: number; unit: 'pcs' | 'kg'; receivedAt: string; dispatchedBy: string; confirmed: boolean }[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  confirmIncoming: (branch: typeof BRANCH, incomingId: string) => Promise<string | null>;
   createDraftBill: (order: HosurOrder, items: HosurOrderItem[]) => Promise<string>;
   userName: string;
 }) {
-  const pendingOrders = orders.filter((o) => ['pending_packing', 'dispatched'].includes(o.status));
   const [receivedQty, setReceivedQty] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<Record<string, string>>({});
-  const [disputeRemarks, setDisputeRemarks] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState('');
+  const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+
+  const pendingOrders = orders
+    .filter((order) => order.status === 'dispatched')
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const query = normalize(search);
+  const visibleOrders = pendingOrders.filter((order) => {
+    if (!query) return true;
+    return normalize(`${order.orderNumber} ${order.shopName} ${(orderItems[order.id] ?? []).map((item) => item.itemName).join(' ')}`).includes(query);
+  });
+  const pendingLines = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id]?.length ?? 0), 0);
+  const expectedKg = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => item.unit === 'kg').reduce((lineSum, item) => lineSum + (item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity), 0), 0);
+  const expectedPcs = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => item.unit === 'pcs').reduce((lineSum, item) => lineSum + (item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity), 0), 0);
+  const liveMismatchCount = pendingOrders.reduce((sum, order) => sum + (orderItems[order.id] ?? []).filter((item) => {
+    const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+    const received = Number(receivedQty[item.id] ?? expected);
+    return Number.isFinite(received) && Math.abs(received - expected) > 0.001;
+  }).length, 0);
 
   const confirmOrder = async (order: HosurOrder) => {
     const items = orderItems[order.id] ?? [];
-    if (items.length === 0) throw new Error('Order items not found.');
-    let hasMismatch = false;
-    for (const item of items) {
-      const qty = Number(receivedQty[item.id] ?? item.quantity);
+    if (items.length === 0) throw new Error('Order items not found. Refresh the page and try again.');
+
+    const normalizedItems = items.map((item) => {
       const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
-      await supabase.from('hosur_order_items').update({ dispatched_quantity: expected, received_quantity: qty }).eq('id', item.id);
-      if (Math.abs(qty - expected) > 0.001) {
+      const received = Number(receivedQty[item.id] ?? expected);
+      if (!Number.isFinite(received) || received < 0) throw new Error(`Enter a valid received quantity for ${item.itemName}.`);
+      return { item, expected, received, variance: Math.round((received - expected) * 1000) / 1000 };
+    });
+
+    let hasMismatch = false;
+    for (const { item, expected, received, variance } of normalizedItems) {
+      const { error: itemError } = await supabase
+        .from('hosur_order_items')
+        .update({ dispatched_quantity: expected, received_quantity: received })
+        .eq('id', item.id);
+      if (itemError) throw itemError;
+
+      if (Math.abs(variance) > 0.001) {
         hasMismatch = true;
-        await supabase.from('hosur_disputes').insert({
+        const { error: disputeError } = await supabase.from('hosur_disputes').insert({
           order_id: order.id,
           order_number: order.orderNumber,
           item_name: item.itemName,
           expected_quantity: expected,
-          received_quantity: qty,
+          received_quantity: received,
           unit: item.unit,
           raised_by: userName,
           status: 'open',
-          admin_remarks: remarks[item.id] || null,
+          admin_remarks: remarks[item.id]?.trim() || `Receiving variance ${variance > 0 ? '+' : ''}${num(variance)} ${item.unit}`,
         });
+        if (disputeError) throw disputeError;
       }
     }
-    await supabase.from('hosur_orders').update({ status: 'received_confirmed', received_at: new Date().toISOString() }).eq('id', order.id);
-    const freshItems = items.map((item) => { const receivedQuantity = Number(receivedQty[item.id] ?? item.quantity); return { ...item, receivedQuantity, dispatchedQuantity: item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity, lineTotal: Math.round(receivedQuantity * item.unitPrice * 100) / 100 }; });
+
+    const { error: orderError } = await supabase
+      .from('hosur_orders')
+      .update({ status: 'received_confirmed', received_at: new Date().toISOString() })
+      .eq('id', order.id);
+    if (orderError) throw orderError;
+
+    const freshItems = normalizedItems.map(({ item, expected, received }) => ({
+      ...item,
+      receivedQuantity: received,
+      dispatchedQuantity: expected,
+      lineTotal: Math.round(received * item.unitPrice * 100) / 100,
+    }));
     await createDraftBill(order, freshItems);
+
     if (hasMismatch) {
-      await notifyAdmin('Hosur receiving mismatch raised', `${order.shopName} order ${order.orderNumber} has received quantity mismatch.`, order.id, order.orderNumber, { orderId: order.id });
+      await notifyAdmin(
+        'Hosur receiving mismatch raised',
+        `${order.shopName} order ${order.orderNumber} has a received quantity variance.`,
+        order.id,
+        order.orderNumber,
+        { orderId: order.id },
+      );
     }
+
+    setReceivedQty((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => delete next[item.id]);
+      return next;
+    });
+    setRemarks((previous) => {
+      const next = { ...previous };
+      items.forEach((item) => delete next[item.id]);
+      return next;
+    });
+    setExpandedOrder(null);
   };
 
   return (
-    <div className="space-y-4">
-      <SectionTitle icon={<PackageCheck className="size-5" />} title="Received From Packing" subtitle="Confirm stock/order receipt. Raise dispute if received quantity is different from dispatched quantity." />
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="space-y-3">
-          <h3 className="font-black">Shop Orders Waiting For Branch Confirmation</h3>
-          {pendingOrders.length === 0 ? <EmptyState icon={<PackageCheck className="size-6" />} title="No pending shop orders" subtitle="Orders created for shops will appear here after packing/dispatch." /> : pendingOrders.map((order) => {
+    <div className="space-y-5">
+      <div className="overflow-hidden rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-5 text-white shadow-xl">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <span className="inline-flex rounded-full bg-emerald-300/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-100">Hosur receiving desk</span>
+            <h2 className="mt-3 font-display text-2xl font-black">Received From Packing</h2>
+            <p className="mt-1 max-w-3xl text-sm text-white/65">Only shop orders completed and dispatched by Packing appear here. Verify every line, record the physical quantity, and create the bill draft after receipt.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[520px]">
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Orders</p><p className="mt-1 text-2xl font-black">{pendingOrders.length}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Item lines</p><p className="mt-1 text-2xl font-black">{pendingLines}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Expected KG</p><p className="mt-1 text-2xl font-black">{num(expectedKg)}</p></div>
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-white/55">Expected Pcs</p><p className="mt-1 text-2xl font-black">{num(expectedPcs)}</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Waiting Confirmation" value={pendingOrders.length} icon={<Clock3 className="size-4" />} tone="amber" />
+        <Metric label="Ready Item Lines" value={pendingLines} icon={<PackageCheck className="size-4" />} tone="blue" />
+        <Metric label="Live Variances" value={liveMismatchCount} icon={<AlertTriangle className="size-4" />} tone={liveMismatchCount ? 'red' : 'emerald'} />
+        <Metric label="Billing Result" value="Draft bill" icon={<Receipt className="size-4" />} tone="emerald" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,.55fr)]">
+        <Card className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><h3 className="font-display text-lg font-black">Dispatches Waiting For Receipt</h3><p className="text-xs text-muted-foreground">Oldest dispatched order is shown first.</p></div>
+            <label className="relative block sm:w-80"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input className={cn(inputClass, 'pl-9')} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search shop, order or item" /></label>
+          </div>
+
+          {visibleOrders.length === 0 ? (
+            <EmptyState icon={<PackageCheck className="size-6" />} title={pendingOrders.length ? 'No matching dispatched orders' : 'No orders waiting for receipt'} subtitle={pendingOrders.length ? 'Clear the search to view the full receiving queue.' : 'A shop order will appear only after Store, Baker and Packing complete the workflow and Packing dispatches it.'} />
+          ) : visibleOrders.map((order) => {
             const items = orderItems[order.id] ?? [];
-            return <div key={order.id} className="rounded-3xl border bg-card p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{order.shopName}</p><p className="text-xs text-muted-foreground">{order.orderNumber} · {toDateTimeLabel(order.createdAt)}</p></div><Badge tone={statusTone(order.status)}>{order.status.replace(/_/g, ' ')}</Badge></div>
-              <div className="mt-3 space-y-2">{items.map((item) => {
-                const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
-                return <div key={item.id} className="rounded-2xl bg-muted/30 p-3">
-                  <div className="grid gap-2 md:grid-cols-[1fr_120px_1fr]"><div><p className="text-sm font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">Expected {num(expected)} {item.unit}</p></div><input className="rounded-xl border px-2 py-2 text-sm" type="number" step={item.unit === 'kg' ? 0.25 : 1} value={receivedQty[item.id] ?? String(expected)} onChange={(e) => setReceivedQty((p) => ({ ...p, [item.id]: e.target.value }))} /><input className="rounded-xl border px-2 py-2 text-sm" value={remarks[item.id] ?? ''} onChange={(e) => setRemarks((p) => ({ ...p, [item.id]: e.target.value }))} placeholder="Mismatch remarks" /></div>
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      className={cn(inputClass, 'flex-1 text-xs')}
-                      value={disputeRemarks[item.id] ?? ''}
-                      onChange={(e) => setDisputeRemarks((p) => ({ ...p, [item.id]: e.target.value }))}
-                      placeholder="Raise dispute — describe the issue (optional)"
-                    />
-                    <button
-                      className="rounded-2xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 hover:bg-amber-100 border border-amber-200"
-                      disabled={busy || !disputeRemarks[item.id]?.trim()}
-                      onClick={() => withBusy(async () => {
-                        const remark = disputeRemarks[item.id]?.trim();
-                        if (!remark) throw new Error('Enter a dispute reason.');
-                        const received = Number(receivedQty[item.id] ?? expected);
-                        const { error } = await supabase.from('hosur_disputes').insert({
-                          order_id: order.id,
-                          order_number: order.orderNumber,
-                          item_name: item.itemName,
-                          expected_quantity: expected,
-                          received_quantity: received,
-                          unit: item.unit,
-                          raised_by: userName,
-                          status: 'open',
-                          admin_remarks: remark,
-                        });
-                        if (error) throw error;
-                        await notifyAdmin(
-                          'Hosur dispute raised',
-                          `${order.shopName} · ${item.itemName} · ${remark}`,
-                          order.id,
-                          order.orderNumber,
-                          { orderId: order.id }
-                        );
-                        setDisputeRemarks((p) => { const n = { ...p }; delete n[item.id]; return n; });
-                      }, 'Dispute raised and sent to Admin.')}
-                    >
-                      <AlertTriangle className="size-3 inline mr-1" />Raise Dispute
-                    </button>
-                  </div>
-                </div>;
-              })}</div>
-              <button className={primaryButton} disabled={busy || items.length === 0 || order.status !== 'dispatched'} title={order.status !== 'dispatched' ? 'Packing must dispatch this order before branch receipt.' : undefined} onClick={() => withBusy(() => confirmOrder(order), 'Order received. Bill draft calculated using shop price list.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Received & Create Bill</button>
-            </div>;
+            const isExpanded = expandedOrder === order.id || visibleOrders.length === 1;
+            const mismatchCount = items.filter((item) => {
+              const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+              const received = Number(receivedQty[item.id] ?? expected);
+              return Number.isFinite(received) && Math.abs(received - expected) > 0.001;
+            }).length;
+            const totalValue = items.reduce((sum, item) => {
+              const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+              const received = Number(receivedQty[item.id] ?? expected);
+              return sum + (Number.isFinite(received) ? received : 0) * item.unitPrice;
+            }, 0);
+
+            return <article key={order.id} className={cn('overflow-hidden rounded-3xl border transition-shadow', isExpanded ? 'border-emerald-300 shadow-md' : 'bg-card hover:shadow-sm')}>
+              <button type="button" className="flex w-full flex-col gap-3 p-4 text-left sm:flex-row sm:items-center sm:justify-between" onClick={() => setExpandedOrder(isExpanded && visibleOrders.length !== 1 ? null : order.id)}>
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-emerald-100 text-emerald-700"><PackageCheck className="size-5" /></span>
+                  <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="truncate font-black">{order.shopName}</p><Badge tone="blue">{order.orderNumber}</Badge>{mismatchCount > 0 && <Badge tone="red">{mismatchCount} variance</Badge>}</div><p className="mt-1 text-xs text-muted-foreground">Dispatched order · {items.length} item lines · Created {toDateTimeLabel(order.createdAt)}</p>{order.notes && <p className="mt-1 line-clamp-1 text-xs font-semibold text-amber-700">Note: {order.notes}</p>}</div>
+                </div>
+                <div className="flex items-center gap-3"><div className="text-right"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Receipt value</p><p className="font-display text-lg font-black">{money(totalValue)}</p></div><ChevronRight className={cn('size-5 text-muted-foreground transition-transform', isExpanded && 'rotate-90')} /></div>
+              </button>
+
+              {isExpanded && <div className="border-t bg-muted/10 p-4">
+                <div className="overflow-x-auto rounded-2xl border bg-card">
+                  <table className="min-w-[760px] w-full text-sm">
+                    <thead className="bg-muted/45 text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3 text-left">Item</th><th className="px-4 py-3 text-right">Dispatched</th><th className="px-4 py-3 text-left">Received</th><th className="px-4 py-3 text-right">Variance</th><th className="px-4 py-3 text-left">Variance / receiving remarks</th></tr></thead>
+                    <tbody className="divide-y">{items.map((item) => {
+                      const expected = item.dispatchedQuantity > 0 ? item.dispatchedQuantity : item.quantity;
+                      const rawReceived = receivedQty[item.id] ?? String(expected);
+                      const received = Number(rawReceived);
+                      const variance = Number.isFinite(received) ? Math.round((received - expected) * 1000) / 1000 : 0;
+                      const hasVariance = Math.abs(variance) > 0.001;
+                      return <tr key={item.id} className={cn(hasVariance && 'bg-amber-50/70')}>
+                        <td className="px-4 py-3"><p className="font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">{money(item.unitPrice)} / {item.unit}</p></td>
+                        <td className="px-4 py-3 text-right font-black">{num(expected)} {item.unit}</td>
+                        <td className="px-4 py-3"><input className="h-10 w-28 rounded-xl border bg-background px-3 text-right font-black" type="number" min="0" step={item.unit === 'kg' ? 0.001 : 1} value={rawReceived} onChange={(event) => setReceivedQty((previous) => ({ ...previous, [item.id]: event.target.value }))} /></td>
+                        <td className={cn('px-4 py-3 text-right font-black', hasVariance ? variance < 0 ? 'text-red-700' : 'text-amber-700' : 'text-emerald-700')}>{hasVariance ? `${variance > 0 ? '+' : ''}${num(variance)} ${item.unit}` : 'Matched'}</td>
+                        <td className="px-4 py-3"><input className="h-10 w-full min-w-64 rounded-xl border bg-background px-3 text-sm" value={remarks[item.id] ?? ''} onChange={(event) => setRemarks((previous) => ({ ...previous, [item.id]: event.target.value }))} placeholder={hasVariance ? 'Reason required for clear audit trail' : 'Optional receiving note'} /></td>
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+                {mismatchCount > 0 && <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800"><AlertTriangle className="mr-2 inline size-4" />Quantity variances will automatically create disputes and notify Admin when this receipt is confirmed.</div>}
+                <div className="mt-4 flex flex-col gap-3 rounded-2xl border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-black">Confirm physical receipt</p><p className="text-xs text-muted-foreground">This moves the order to Billing and creates a draft using the shop price list.</p></div><button className={primaryButton} disabled={busy || items.length === 0} title={items.length === 0 ? 'Order items are required.' : undefined} onClick={() => withBusy(() => confirmOrder(order), mismatchCount ? 'Order received. Variance dispute raised and bill draft created.' : 'Order received and bill draft created.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <BadgeCheck className="size-4" />} Confirm Receipt & Create Bill</button></div>
+              </div>}
+            </article>;
           })}
         </Card>
-        <Card className="space-y-3">
-          <h3 className="font-black">Packing Dispatch Bridge</h3>
-          <p className="text-sm text-muted-foreground">Existing packing dispatch rows from the bakery workflow are shown here. Confirming adds them to Hosur branch stock.</p>
-          {branchIncoming.filter((i) => !i.confirmed).length === 0 ? <EmptyState icon={<PackageCheck className="size-6" />} title="No unconfirmed dispatch rows" /> : branchIncoming.filter((i) => !i.confirmed).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-3"><div><p className="font-black">{item.itemName}</p><p className="text-xs text-muted-foreground">{num(item.quantity)} {item.unit} · {item.dispatchedBy} · {toDateTimeLabel(item.receivedAt)}</p></div><button className={softButton} disabled={busy} onClick={() => withBusy(async () => { const err = await confirmIncoming(BRANCH, item.id); if (err) throw new Error(err); }, 'Incoming stock confirmed.')}>Confirm Stock</button></div>)}
-        </Card>
+
+        <div className="space-y-4 xl:sticky xl:top-28 xl:self-start">
+          <Card className="space-y-3">
+            <div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-emerald-100 text-emerald-700"><CheckCircle2 className="size-5" /></span><div><h3 className="font-black">Receiving Checklist</h3><p className="text-xs text-muted-foreground">Complete before confirmation</p></div></div>
+            {[['Match shop and order number', 'Confirm the package belongs to the selected shop.'], ['Count every item physically', 'Do not copy dispatched quantity without checking.'], ['Record every variance', 'A mismatch automatically becomes an Admin dispute.'], ['Confirm once only', 'Confirmation creates the billing draft immediately.']].map(([title, detail], index) => <div key={title} className="flex gap-3 rounded-2xl bg-muted/30 p-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-emerald-700 text-xs font-black text-white">{index + 1}</span><div><p className="text-sm font-black">{title}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div></div>)}
+          </Card>
+          <Card className="space-y-3">
+            <h3 className="font-black">Queue Summary</h3>
+            <div className="grid grid-cols-2 gap-2"><div className="rounded-2xl bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-700">Waiting</p><p className="mt-1 text-2xl font-black">{pendingOrders.length}</p></div><div className={cn('rounded-2xl p-3', liveMismatchCount ? 'bg-red-50' : 'bg-emerald-50')}><p className={cn('text-[10px] font-black uppercase', liveMismatchCount ? 'text-red-700' : 'text-emerald-700')}>Variances</p><p className="mt-1 text-2xl font-black">{liveMismatchCount}</p></div></div>
+            <p className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs font-semibold text-blue-800">Orders do not enter this screen at creation. They appear only after the Store → Baker → Packing workflow reaches dispatched status.</p>
+          </Card>
+        </div>
       </div>
     </div>
   );
 }
 
-function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
+function BillingTab({ bills, billItems, busy, withBusy, confirmBill, counterOpen, counterLoading, counterError, openCounter }: {
   bills: HosurBill[];
   billItems: Record<string, HosurBillItem[]>;
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   confirmBill: (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => Promise<void>;
+  counterOpen: boolean;
+  counterLoading: boolean;
+  counterError: string;
+  openCounter: () => void;
 }) {
   const draftBills = bills.filter((bill) => bill.status === 'draft');
   const recentBills = bills.filter((bill) => bill.status !== 'draft').slice(0, 25);
@@ -1825,7 +2322,8 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
 
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Review item-wise bill calculation, select payment type, due date, then confirm and send WhatsApp bill." />
+      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Open today’s cashier counter before confirming, printing, or sending any bill." />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Billing Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before billing.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
       {draftBills.length === 0 ? <EmptyState icon={<Receipt className="size-6" />} title="No bill drafts" subtitle="Confirm received shop orders to generate bill drafts automatically." /> : draftBills.map((bill) => {
         const items = billItems[bill.id] ?? [];
         const pType = paymentType[bill.id] ?? 'full';
@@ -1836,15 +2334,15 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
           <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-display text-xl font-black">{bill.shopName}</p><p className="text-sm text-muted-foreground">Bill {bill.billNo} · {toDateTimeLabel(bill.createdAt)}</p></div><Badge tone="amber">Draft</Badge></div>
           <div className="overflow-x-auto rounded-2xl border"><table className="min-w-full text-sm"><thead className="bg-muted text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Qty</th><th className="px-3 py-2">Rate</th><th className="px-3 py-2 text-right">Total</th></tr></thead><tbody className="divide-y">{items.map((item) => <tr key={item.id}><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2">{num(item.quantity)} {item.unit}</td><td className="px-3 py-2">{money(item.unitPrice)}</td><td className="px-3 py-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div>
           <div className="grid gap-3 md:grid-cols-4">
-            {(['full', 'credit', 'partial'] as PaymentType[]).map((type) => <button key={type} className={cn('rounded-2xl border p-3 text-left font-black', pType === type ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'bg-card')} onClick={() => setPaymentType((prev) => ({ ...prev, [bill.id]: type }))}>{type === 'full' ? 'Full Payment' : type === 'credit' ? 'Credit' : 'Partial Payment'}</button>)}
-            <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>
+            {(['full', 'credit', 'partial'] as PaymentType[]).map((type) => <button key={type} className={cn('rounded-2xl border p-3 text-left font-black', pType === type ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'bg-card')} disabled={!counterOpen || counterLoading} onClick={() => setPaymentType((prev) => ({ ...prev, [bill.id]: type }))}>{type === 'full' ? 'Full Payment' : type === 'credit' ? 'Credit' : 'Partial Payment'}</button>)}
+            {pType !== 'credit' && <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>}
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            {pType === 'partial' && <Field label="Paid amount"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paidAmount: e.target.value } }))} placeholder="Enter paid amount" /></Field>}
-            {(pType === 'credit' || pType === 'partial') && <Field label="Due date mandatory"><input className={inputClass} type="date" min={TODAY_ISO()} value={d.dueDate} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), dueDate: e.target.value } }))} /></Field>}
+            {pType === 'partial' && <Field label="Paid amount"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paidAmount: e.target.value } }))} placeholder="Enter paid amount" /></Field>}
+            {(pType === 'credit' || pType === 'partial') && <Field label="Due date mandatory"><input className={inputClass} type="date" min={TODAY_ISO()} value={d.dueDate} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), dueDate: e.target.value } }))} /></Field>}
             <div className="rounded-2xl bg-slate-900 p-3 text-white"><p className="text-xs font-black uppercase text-white/60">Bill Total</p><p className="font-display text-3xl font-black">{money(bill.subtotal)}</p><p className="mt-1 text-xs">Paid {money(paid)} · Credit {money(credit)}</p></div>
           </div>
-          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, printed, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm Bill & Send WhatsApp</button></div>
+          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, printed, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm Bill & Send WhatsApp</button></div>
         </Card>;
       })}
       <Card className="space-y-3"><h3 className="font-black">Recent Bills</h3>{recentBills.length === 0 ? <p className="text-sm text-muted-foreground">No confirmed bills yet.</p> : recentBills.map((bill) => <div key={bill.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3"><div><p className="font-black">{bill.billNo} · {bill.shopName}</p><p className="text-xs text-muted-foreground">Paid {money(bill.paidAmount)} · Credit {money(bill.creditAmount)} · {toDateTimeLabel(bill.confirmedAt)}</p></div><div className="flex items-center gap-2"><Badge tone={statusTone(bill.status)}>{bill.status.replace(/_/g, ' ')}</Badge><button className={softButton} onClick={() => printBill(bill, billItems[bill.id] ?? [], true)}><Printer className="size-4" /> Duplicate Bill</button></div></div>)}</Card>
@@ -1852,32 +2350,87 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
   );
 }
 
+
+function downloadWorkbook(fileName: string, sheets: { name: string; rows: Record<string, string | number | null>[] }[]) {
+  const escapeXml = (value: unknown) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+  const worksheetXml = sheets.map(({ name, rows }) => {
+    const safeRows = rows.length ? rows : [{ Message: 'No records available' }];
+    const headers = Array.from(new Set(safeRows.flatMap((row) => Object.keys(row))));
+    const headerCells = headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join('');
+    const dataRows = safeRows.map((row) => {
+      const cells = headers.map((header) => {
+        const value = row[header];
+        const isNumber = typeof value === 'number' && Number.isFinite(value);
+        return `<Cell><Data ss:Type="${isNumber ? 'Number' : 'String'}">${escapeXml(value)}</Data></Cell>`;
+      }).join('');
+      return `<Row>${cells}</Row>`;
+    }).join('');
+    return `<Worksheet ss:Name="${escapeXml(name.slice(0, 31))}"><Table><Row>${headerCells}</Row>${dataRows}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions></Worksheet>`;
+  }).join('');
+
+  const xml = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Borders/><Font/><Interior/><NumberFormat/><Protection/></Style><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#D1FAE5" ss:Pattern="Solid"/></Style></Styles>${worksheetXml}</Workbook>`;
+  const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName.replace(/\.xlsx$/i, '.xls');
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printDocument(title: string, subtitle: string, body: string) {
+  const popup = window.open('', '_blank', 'width=1100,height=780');
+  if (!popup) return;
+  popup.document.write(`<!doctype html><html><head><title>${title}</title><style>
+    @page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;background:#fff;font-size:11px}.wrap{padding:18px}.head{display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #0f766e;padding-bottom:12px;margin-bottom:14px}.brand{font-size:11px;font-weight:800;letter-spacing:.16em;color:#0f766e;text-transform:uppercase}h1{font-size:24px;margin:5px 0 0}.muted{color:#64748b}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.kpi{border:1px solid #dbe4ea;border-radius:10px;padding:10px}.kpi b{display:block;font-size:17px;margin-top:4px}.section{margin-top:14px}.section h2{font-size:13px;margin:0 0 7px;background:#ecfdf5;color:#065f46;padding:7px 9px;border-radius:7px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #dbe4ea;padding:6px 7px;text-align:left}th{background:#f1f5f9;font-size:9px;text-transform:uppercase}.right{text-align:right}.sign{margin-top:30px;display:grid;grid-template-columns:repeat(3,1fr);gap:40px}.line{border-top:1px solid #334155;padding-top:6px;text-align:center}.footer{margin-top:14px;text-align:center;color:#64748b;font-size:9px}@media print{button{display:none}.wrap{padding:0}}
+  </style></head><body><div class="wrap"><div class="head"><div><div class="brand">Cafe Aadvikam · Hosur Branch</div><h1>${title}</h1><div class="muted">${subtitle}</div></div><div class="muted">Generated ${new Date().toLocaleString('en-IN')}</div></div>${body}<div class="footer">System generated Hosur branch report</div></div><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}</script></body></html>`);
+  popup.document.close();
+}
+
 function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLedger[]; payments: HosurCreditPayment[]; shops: HosurShop[] }) {
   const open = credits.filter((c) => c.status !== 'cleared' && c.balanceAmount > 0);
   const total = open.reduce((s, c) => s + c.balanceAmount, 0);
+  const exportExcel = () => downloadWorkbook(`hosur-credit-ledger-${TODAY_ISO()}.xls`, [
+    { name: 'Credit Ledger', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status, 'Credit Type': c.creditType })) },
+    { name: 'Payment History', rows: payments.map((p) => ({ Shop: shops.find((s) => s.id === p.shopId)?.shopName ?? '', Amount: p.amountCollected, Mode: p.paymentMode, Purpose: p.payment_purpose ?? '', Remarks: p.remarks ?? '', 'Collected By': p.collectedBy, Date: toDateTimeLabel(p.createdAt) })) },
+  ]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Track shop-wise credit, due dates, overdue amounts, and payment history." />
+      <SectionTitle icon={<CreditCard className="size-5" />} title="Credit Ledger" subtitle="Track shop-wise credit, due dates, overdue amounts, and payment history." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       <div className="grid gap-3 md:grid-cols-3"><Metric label="Open Credits" value={open.length} icon={<CreditCard className="size-4" />} tone="amber" /><Metric label="Pending Amount" value={money(total)} icon={<IndianRupee className="size-4" />} tone="red" /><Metric label="Payments Recorded" value={payments.length} icon={<WalletCards className="size-4" />} tone="emerald" /></div>
       <Card className="space-y-2">{credits.length === 0 ? <EmptyState icon={<CreditCard className="size-6" />} title="No credit records" /> : credits.map((credit) => <div key={credit.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Due {toDateLabel(credit.dueDate)} · WhatsApp {shops.find((s) => s.id === credit.shopId)?.whatsappNumber ?? '—'}</p></div><Badge tone={statusTone(credit.status)}>{credit.status}</Badge></div><div className="mt-3 grid gap-2 text-sm md:grid-cols-3"><div className="rounded-xl bg-muted p-2">Opening <b>{money(credit.openingAmount)}</b></div><div className="rounded-xl bg-muted p-2">Paid <b>{money(credit.paidAmount)}</b></div><div className="rounded-xl bg-red-50 p-2 text-red-700">Balance <b>{money(credit.balanceAmount)}</b></div></div></div>)}</Card>
     </div>
   );
 }
 
-function PaymentCollectionTab({ credits, busy, withBusy, collectCredit }: {
+function PaymentCollectionTab({ credits, busy, withBusy, collectCredit, counterOpen, counterLoading, counterError, openCounter }: {
   credits: HosurCreditLedger[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   collectCredit: (ledger: HosurCreditLedger, draft: PaymentDraft) => Promise<void>;
+  counterOpen: boolean;
+  counterLoading: boolean;
+  counterError: string;
+  openCounter: () => void;
 }) {
   const [draft, setDraft] = useState<Record<string, PaymentDraft>>({});
   const getDraft = (id: string) => draft[id] ?? EMPTY_PAYMENT;
+  const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xls`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Hosur Branch and Admin can clear credit. Partial credit settlement is supported." />
+      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Open today’s cashier counter before recording any cash, UPI, card, or bank collection." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Collection Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before recording a collection.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
       {credits.length === 0 ? <EmptyState icon={<WalletCards className="size-6" />} title="No pending credit to collect" /> : credits.map((credit) => {
         const d = getDraft(credit.id);
-        return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
+        return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
       })}
     </div>
   );
@@ -1913,133 +2466,262 @@ function ReminderHistoryTab({ reminders, credits, busy, withBusy, runDueReminder
   );
 }
 
-function DailyClosureTab({ orders, bills, credits, payments, disputes, logs }: {
+function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments, disputes, logs, onCounterStatusChange }: {
+  actorId: string;
+  actorName: string;
   orders: HosurOrder[];
   bills: HosurBill[];
   credits: HosurCreditLedger[];
   payments: HosurCreditPayment[];
   disputes: HosurDispute[];
   logs: HosurWhatsappLog[];
+  onCounterStatusChange?: (isOpen: boolean) => void;
 }) {
   const [date, setDate] = useState(TODAY_ISO());
+  const [openingCash, setOpeningCash] = useState('0');
+  const [countedCash, setCountedCash] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [closedBy, setClosedBy] = useState(actorName);
+  const [saving, setSaving] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [counterOpened, setCounterOpened] = useState(false);
+  const [statusError, setStatusError] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
 
-  const dayBills = bills.filter((b) => (b.confirmedAt ?? b.createdAt).slice(0, 10) === date);
-  const dayOrders = orders.filter((o) => o.createdAt.slice(0, 10) === date);
-  const dayPayments = payments.filter((p) => p.createdAt.slice(0, 10) === date);
-  const dayDisputes = disputes.filter((d) => d.createdAt.slice(0, 10) === date);
-  const dayLogs = logs.filter((l) => l.createdAt.slice(0, 10) === date);
+  const dayBills = bills.filter((b) => businessDate(b.confirmedAt ?? b.createdAt) === date && !['draft', 'cancelled'].includes(b.status));
+  const dayOrders = orders.filter((o) => businessDate(o.createdAt) === date);
+  // Partial money received at billing is already included in bill.paidAmount. Excluding
+  // it here prevents the same collection being counted twice in closure.
+  const dayPayments = payments.filter((p) => businessDate(p.createdAt) === date && p.payment_purpose !== 'partial_at_billing');
+  const dayDisputes = disputes.filter((d) => businessDate(d.createdAt) === date);
+  const dayLogs = logs.filter((l) => businessDate(l.createdAt) === date);
+  const dayCredits = credits.filter((c) => businessDate(c.createdAt) === date);
 
-  const fullPayments = dayBills.filter((b) => b.paymentType === 'full').reduce((s, b) => s + b.paidAmount, 0);
-  const creditBills = dayBills.filter((b) => b.paymentType === 'credit').reduce((s, b) => s + b.creditAmount, 0);
-  const partialPaid = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.paidAmount, 0);
-  const partialCredit = dayBills.filter((b) => b.paymentType === 'partial').reduce((s, b) => s + b.creditAmount, 0);
-  const clearedCredit = dayPayments.filter((p) =>
-    p.payment_purpose === 'credit_collection'
-  ).reduce((s, p) => s + p.amountCollected, 0);
+  const billByMode = (mode: PaymentMode) => dayBills.filter((b) => b.paymentMode === mode).reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const collectionByMode = (mode: PaymentMode) => dayPayments.filter((p) => p.paymentMode === mode).reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const cashBills = billByMode('cash');
+  const upiBills = billByMode('upi');
+  const cardBills = billByMode('card');
+  const bankBills = billByMode('bank');
+  const mixedBills = billByMode('mixed');
+  const cashCollections = collectionByMode('cash');
+  const upiCollections = collectionByMode('upi');
+  const cardCollections = collectionByMode('card');
+  const bankCollections = collectionByMode('bank');
+  const mixedCollections = collectionByMode('mixed');
+  const totalSales = dayBills.reduce((sum, bill) => sum + bill.subtotal, 0);
+  const totalCredit = dayBills.reduce((sum, bill) => sum + bill.creditAmount, 0);
+  const billCollections = dayBills.reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const laterCreditCollections = dayPayments.reduce((sum, payment) => sum + payment.amountCollected, 0);
+  const totalCollected = billCollections + laterCreditCollections;
+  const expectedCash = Number(openingCash || 0) + cashBills + cashCollections;
+  const difference = Math.round((Number(countedCash || 0) - expectedCash) * 100) / 100;
+  const cashMatches = countedCash.trim() !== '' && difference === 0;
+  const whatsappSent = dayLogs.filter((log) => log.status === 'sent').length;
+  const whatsappFailed = dayLogs.filter((log) => log.status === 'failed').length;
 
-  const totalCollection = fullPayments + partialPaid + clearedCredit;
-  const totalCredit = creditBills + partialCredit;
+  const loadStatus = useCallback(async () => {
+    setLoadingStatus(true);
+    setStatusError('');
+    setStatusMessage('');
+    setSaved(false);
+    setCounterOpened(false);
+    setOpeningCash('0');
+    setCountedCash('');
+    setRemarks('');
+    setClosedBy(actorName);
 
-  const waSent = dayLogs.filter((l) => l.status === 'sent').length;
-  const waFailed = dayLogs.filter((l) => l.status === 'failed').length;
+    if (!actorId) {
+      setLoadingStatus(false);
+      setStatusError('Your staff session is missing. Exit and sign in again.');
+      return;
+    }
 
-  return (
-    <div className="space-y-5 print:bg-white">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    const { data: statusData, error: statusLoadError } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
+    setLoadingStatus(false);
+    if (statusLoadError) {
+      setStatusError(`Counter status could not be loaded: ${statusLoadError.message}. Billing is locked until the status can be verified.`);
+      return;
+    }
+
+    const status = statusData as {
+      session?: { status?: string; opening_cash?: number; opened_by?: string; closed_by?: string } | null;
+      closure?: Record<string, unknown> | null;
+    } | null;
+    const closure = status?.closure as {
+      opening_cash?: number;
+      counted_cash?: number;
+      remarks?: string;
+      closed_by?: string;
+      status?: string;
+    } | null;
+    const currentSession = status?.session ?? null;
+    const isOpen = currentSession?.status === 'open';
+    const isClosed = currentSession?.status === 'closed' && closure?.status !== 'reopened';
+
+    setOpeningCash(String(currentSession?.opening_cash ?? closure?.opening_cash ?? 0));
+    setCountedCash(isClosed && closure?.counted_cash != null ? String(closure.counted_cash) : '');
+    setRemarks(closure?.remarks ?? '');
+    setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
+    setSaved(isClosed);
+    setCounterOpened(isOpen);
+    if (date === TODAY_ISO()) onCounterStatusChange?.(isOpen);
+  }, [actorId, actorName, date, onCounterStatusChange]);
+
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  const openCounter = async () => {
+    setStatusError('');
+    setStatusMessage('');
+    if (!actorId) return setStatusError('Your staff session is missing. Exit and sign in again.');
+    const opening = Number(openingCash || 0);
+    if (!Number.isFinite(opening) || opening < 0) return setStatusError('Enter a valid opening cash amount. Use 0 when there is no opening float.');
+    setSaving(true);
+    const { error } = await supabase.rpc('open_hosur_counter_secure', {
+      p_business_date: date,
+      p_opening_cash: opening,
+    });
+    setSaving(false);
+    if (error) return setStatusError(error.message);
+    setCounterOpened(true);
+    setClosedBy(actorName);
+    onCounterStatusChange?.(true);
+    await loadStatus();
+    setStatusMessage(saved ? 'Counter reopened. Hosur billing is unlocked again for today.' : 'Counter opened. Hosur billing is now unlocked for today.');
+  };
+
+  const saveClosure = async () => {
+    setStatusError('');
+    setStatusMessage('');
+    if (!actorId) return setStatusError('Your staff session is missing. Exit and sign in again.');
+    const counted = Number(countedCash);
+    if (!countedCash.trim() || !Number.isFinite(counted) || counted < 0) return setStatusError('Enter the physical counted closing cash before closing the day.');
+    const opening = Number(openingCash || 0);
+    if (!Number.isFinite(opening) || opening < 0) return setStatusError('Opening cash must be zero or more.');
+    if (!counterOpened) return setStatusError('Open today’s Hosur counter before closing the day.');
+    if (difference !== 0) return setStatusError(`Cash cannot be closed with a difference. Resolve ${money(Math.abs(difference))} ${difference < 0 ? 'shortage' : 'excess'} so counted cash exactly matches expected cash.`);
+
+    setSaving(true);
+    try {
+      const { error } = await supabase.rpc('close_hosur_counter_secure', {
+        p_business_date: date,
+        p_counted_cash: counted,
+        p_remarks: remarks,
+        p_cash_sales: cashBills,
+        p_cash_collections: cashCollections,
+        p_upi_total: upiBills + upiCollections,
+        p_card_total: cardBills + cardCollections,
+        p_bank_total: bankBills + bankCollections,
+        p_mixed_total: mixedBills + mixedCollections,
+        p_gross_sales: totalSales,
+        p_credit_given: totalCredit,
+        p_total_collection: totalCollected,
+        p_expected_cash: expectedCash,
+        p_bills_count: dayBills.length,
+        p_orders_count: dayOrders.length,
+        p_disputes_count: dayDisputes.length,
+        p_whatsapp_failed: whatsappFailed,
+      });
+      if (error) throw error;
+
+      setSaved(true);
+      setCounterOpened(false);
+      setClosedBy(actorName);
+      onCounterStatusChange?.(false);
+      await loadStatus();
+      setStatusMessage('Daily closure saved with exact cash reconciliation. Billing is locked; use Reopen Counter to continue billing on the same business date.');
+    } catch (error: any) {
+      setStatusError(error?.message ?? 'Daily closure could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened — billing locked'}`, `
+    <div class="grid"><div class="kpi">Opening Cash<b>${money(Number(openingCash || 0))}</b></div><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Total Collection<b>${money(totalCollected)}</b></div><div class="kpi">Credit Given<b>${money(totalCredit)}</b></div></div>
+    <div class="section"><h2>Cash Reconciliation</h2><table><tbody><tr><td>Opening cash</td><td class="right">${money(Number(openingCash || 0))}</td><td>Cash sales</td><td class="right">${money(cashBills)}</td></tr><tr><td>Credit collections in cash</td><td class="right">${money(cashCollections)}</td><td>Expected cash</td><td class="right">${money(expectedCash)}</td></tr><tr><td>Counted closing cash</td><td class="right">${money(Number(countedCash || 0))}</td><td>Difference</td><td class="right">${money(difference)}</td></tr></tbody></table></div>
+    <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills + upiCollections)}</td><td class="right">${money(cardBills + cardCollections)}</td><td class="right">${money(bankBills + bankCollections)}</td><td class="right">${money(mixedBills + mixedCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
+    <div class="section"><h2>Activity</h2><table><thead><tr><th>Orders</th><th>Bills</th><th>Credit Bills</th><th>Credit Payments</th><th>Disputes</th><th>WhatsApp Sent / Failed</th></tr></thead><tbody><tr><td>${dayOrders.length}</td><td>${dayBills.length}</td><td>${dayCredits.length}</td><td>${dayPayments.length}</td><td>${dayDisputes.length}</td><td>${whatsappSent} / ${whatsappFailed}</td></tr></tbody></table></div>
+    <div class="section"><h2>Remarks</h2><div>${remarks || 'No remarks'}</div></div><div class="sign"><div class="line">Cashier Signature</div><div class="line">Branch In-Charge</div><div class="line">Accounts Verification</div></div>`);
+
+  const paymentRows: Array<[string, number]> = [
+    ['Cash', cashBills + cashCollections],
+    ['UPI', upiBills + upiCollections],
+    ['Card', cardBills + cardCollections],
+    ['Bank', bankBills + bankCollections],
+    ['Mixed', mixedBills + mixedCollections],
+  ];
+
+  return <div className="space-y-5">
+    <div className="rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-950 via-emerald-900 to-slate-950 p-5 text-white shadow-xl">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="font-display text-xl font-black text-foreground">Daily Closure</h2>
-          <p className="text-sm text-muted-foreground">Handover summary for Hosur Branch</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
-          <button className={softButton} onClick={() => window.print()}>
-            <Printer className="size-4" /> Print
-          </button>
-        </div>
-      </div>
-
-      {/* Top KPI row */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Orders Placed" value={dayOrders.length} icon={<ShoppingCart className="size-4" />} tone="blue" />
-        <Metric label="Bills Raised" value={dayBills.length} icon={<Receipt className="size-4" />} tone="emerald" />
-        <Metric label="Cash Collected" value={money(totalCollection)} icon={<IndianRupee className="size-4" />} tone="emerald" />
-        <Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
-      </div>
-
-      {/* Payment Breakdown */}
-      <div className="rounded-2xl border bg-card p-4 space-y-3">
-        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Payment Breakdown</h3>
-        <div className="grid gap-2 md:grid-cols-3">
-          {[
-            { label: 'Full Payments', value: money(fullPayments), color: 'text-emerald-700 bg-emerald-50' },
-            { label: 'Partial — Paid Now', value: money(partialPaid), color: 'text-blue-700 bg-blue-50' },
-            { label: 'Credit Cleared Today', value: money(clearedCredit), color: 'text-teal-700 bg-teal-50' },
-            { label: 'Full Credit Bills', value: money(creditBills), color: 'text-red-700 bg-red-50' },
-            { label: 'Partial — Credit Balance', value: money(partialCredit), color: 'text-orange-700 bg-orange-50' },
-          ].map(({ label, value, color }) => (
-            <div key={label} className={cn('rounded-2xl p-3', color)}>
-              <p className="text-xs font-bold uppercase opacity-70">{label}</p>
-              <p className="mt-1 font-display text-xl font-black">{value}</p>
-            </div>
-          ))}
-          <div className="rounded-2xl p-3 bg-slate-900 text-white">
-            <p className="text-xs font-bold uppercase opacity-70">Total Collected</p>
-            <p className="mt-1 font-display text-xl font-black">{money(totalCollection)}</p>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-200">Hosur counter control</span>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black text-white/80">Counter opening mandatory for billing</span>
           </div>
+          <h2 className="font-display text-2xl font-black">Daily Closure & Cash Reconciliation</h2>
+          <p className="mt-1 max-w-3xl text-sm text-white/65">Open today’s counter before billing. At closure, physical counted cash must exactly match expected cash; shortages or excess cash cannot be finalized.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <input type="date" className="h-11 rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-bold text-white [color-scheme:dark]" value={date} onChange={(event) => setDate(event.target.value)} />
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" onClick={() => void loadStatus()} disabled={loadingStatus}><RefreshCw className={cn('size-4', loadingStatus && 'animate-spin')} /> Reload</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-xs font-black text-emerald-950 hover:bg-emerald-50" onClick={printSummary}><Printer className="size-4" /> Print Summary</button>
         </div>
       </div>
-
-      {/* Activity Summary */}
-      <div className="rounded-2xl border bg-card p-4 space-y-3">
-        <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Activity Summary</h3>
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          {[
-            { label: 'Disputes Raised', value: dayDisputes.length, tone: dayDisputes.length > 0 ? 'text-amber-700' : 'text-foreground' },
-            { label: 'WhatsApp Sent', value: waSent, tone: 'text-emerald-700' },
-            { label: 'WhatsApp Failed', value: waFailed, tone: waFailed > 0 ? 'text-red-700' : 'text-foreground' },
-            { label: 'Payments Received', value: dayPayments.length, tone: 'text-blue-700' },
-          ].map(({ label, value, tone }) => (
-            <div key={label} className="rounded-2xl border bg-muted/30 p-3">
-              <p className="text-xs text-muted-foreground font-semibold">{label}</p>
-              <p className={cn('mt-1 font-display text-2xl font-black', tone)}>{value}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Bill List */}
-      {dayBills.length > 0 && (
-        <div className="rounded-2xl border bg-card p-4 space-y-3">
-          <h3 className="font-black text-sm uppercase tracking-wide text-muted-foreground">Bills for {toDateLabel(date)}</h3>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2">Bill No</th>
-                  <th className="px-3 py-2">Shop</th>
-                  <th className="px-3 py-2">Amount</th>
-                  <th className="px-3 py-2">Type</th>
-                  <th className="px-3 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {dayBills.map((b) => (
-                  <tr key={b.id} className="bg-card">
-                    <td className="px-3 py-2 font-semibold">{b.billNo}</td>
-                    <td className="px-3 py-2">{b.shopName}</td>
-                    <td className="px-3 py-2 font-black">{money(b.subtotal)}</td>
-                    <td className="px-3 py-2 capitalize">{b.paymentType ?? '—'}</td>
-                    <td className="px-3 py-2"><Badge tone={statusTone(b.status)}>{b.status}</Badge></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
-  );
+
+    {statusError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{statusError}</div>}
+    {statusMessage && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700"><CheckCircle2 className="mr-2 inline size-4" />{statusMessage}</div>}
+
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <Metric label="Gross Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald"/>
+      <Metric label="Total Collected" value={money(totalCollected)} icon={<WalletCards className="size-4" />} tone="blue"/>
+      <Metric label="Credit Given" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="amber"/>
+      <Metric label="Expected Cash" value={money(expectedCash)} icon={<WalletCards className="size-4" />} tone="slate"/>
+      <Metric label="Cash Difference" value={money(difference)} icon={<AlertTriangle className="size-4" />} tone={difference === 0 ? 'emerald' : 'red'}/>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
+      <Card className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h3 className="font-display text-lg font-black">Counter & Physical Cash</h3><p className="text-xs text-muted-foreground">Counter opening is mandatory. Exact physical cash reconciliation is required before closure.</p></div>
+          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed — Reopen Available' : counterOpened ? 'Open' : 'Counter Closed — Billing Locked'}</span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Opening cash"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field>
+          <Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={saved || !counterOpened} onChange={(event)=>setCountedCash(event.target.value)} placeholder="Enter physical cash" /></Field>
+          <Field label="Responsible staff"><input className={inputClass} value={closedBy} readOnly /></Field>
+          <Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field>
+        </div>
+        <Field label="Closure remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} placeholder="Cash variance, pending dispatch, failed WhatsApp or handover notes" /></Field>
+        {counterOpened && countedCash.trim() && difference !== 0 && <div className={cn('rounded-xl border px-3 py-2 text-sm font-bold', difference < 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700')}><AlertTriangle className="mr-2 inline size-4" />{difference < 0 ? `Cash shortage: ${money(Math.abs(difference))}` : `Cash excess: ${money(difference)}`}. Resolve the difference before closure.</div>}
+        <div className="flex flex-wrap gap-2">
+          <button className={softButton} disabled={saving || counterOpened || date !== TODAY_ISO()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}{saved ? 'Reopen Counter' : 'Open Counter'}</button>
+          <button className={primaryButton} disabled={saving || saved || !counterOpened || !cashMatches} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Close Day & Save</button>
+        </div>
+      </Card>
+
+      <Card className="space-y-3">
+        <div><h3 className="font-display text-lg font-black">Reconciliation</h3><p className="text-xs text-muted-foreground">What should physically remain in the drawer.</p></div>
+        {[['Opening Cash',Number(openingCash||0)],['Cash Bill Collection',cashBills],['Cash Credit Collection',cashCollections],['Expected Closing Cash',expectedCash],['Physical Count',Number(countedCash||0)],['Difference',difference]].map(([label,value])=><div key={String(label)} className="flex items-center justify-between rounded-xl border bg-muted/25 px-3 py-2.5 text-sm"><span className="text-muted-foreground">{label}</span><b className={String(label)==='Difference' && Number(value)!==0 ? 'text-red-600' : ''}>{money(Number(value))}</b></div>)}
+      </Card>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
+      <Card>
+        <div className="mb-3 flex items-center justify-between"><div><h3 className="font-black">Payment Breakdown</h3><p className="text-xs text-muted-foreground">Bill collections plus later credit collections</p></div><WalletCards className="size-5 text-emerald-600" /></div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{paymentRows.map(([label,value])=><div key={label} className="rounded-2xl border p-3"><p className="text-xs font-bold text-muted-foreground">{label}</p><p className="mt-1 text-lg font-black">{money(value)}</p></div>)}</div>
+      </Card>
+      <Card>
+        <div className="mb-3"><h3 className="font-black">Operational Activity</h3><p className="text-xs text-muted-foreground">Complete day-end checklist</p></div>
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          {[['Orders created',dayOrders.length],['Bills completed',dayBills.length],['Credit bills',dayCredits.length],['Credit payments',dayPayments.length],['Disputes',dayDisputes.length],['WhatsApp sent',whatsappSent],['WhatsApp failed',whatsappFailed],['Open credit',money(totalCredit)]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 font-black">{value}</p></div>)}
+        </div>
+      </Card>
+    </div>
+  </div>;
 }
 
 function ReportsTab({ shops, bills, billItems, credits, logs, reminders, disputes }: {
@@ -2051,295 +2733,167 @@ function ReportsTab({ shops, bills, billItems, credits, logs, reminders, dispute
   reminders: HosurReminder[];
   disputes: HosurDispute[];
 }) {
+  type ReportTab = 'sales' | 'items' | 'credit' | 'whatsapp' | 'disputes';
   const [from, setFrom] = useState(TODAY_ISO().slice(0, 8) + '01');
   const [to, setTo] = useState(TODAY_ISO());
-  const [reportTab, setReportTab] = useState<'sales' | 'credit' | 'items' | 'whatsapp' | 'disputes'>('sales');
+  const [reportTab, setReportTab] = useState<ReportTab>('sales');
+  const [search, setSearch] = useState('');
 
-  const inRange = (date: string) => date.slice(0, 10) >= from && date.slice(0, 10) <= to;
-  const rangeBills = bills.filter((b) => inRange(b.confirmedAt ?? b.createdAt));
-
-  const shopSales = shops
-    .map((s) => ({
-      shop: s.shopName,
-      bills: rangeBills.filter((b) => b.shopId === s.id).length,
-      total: rangeBills.filter((b) => b.shopId === s.id).reduce((sum, b) => sum + b.subtotal, 0),
-      credit: credits.filter((c) => c.shopId === s.id && c.balanceAmount > 0).reduce((sum, c) => sum + c.balanceAmount, 0),
-    }))
-    .filter((r) => r.total > 0 || r.credit > 0)
-    .sort((a, b) => b.total - a.total);
-
-  const itemMap = new Map<string, { qty: number; total: number }>();
-  rangeBills.forEach((bill) => (billItems[bill.id] ?? []).forEach((item) => {
-    const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0 };
-    row.qty += item.quantity;
-    row.total += item.lineTotal;
-    itemMap.set(item.itemName, row);
-  }));
-  const itemSales = Array.from(itemMap.entries())
-    .map(([item, row]) => ({ item, ...row }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 60);
-
-  const openCredits = credits.filter((c) => c.balanceAmount > 0).sort((a, b) => b.balanceAmount - a.balanceAmount);
-  const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
-  const rangeLogs = logs.filter((l) => inRange(l.createdAt));
-
-  const totalSales = shopSales.reduce((s, r) => s + r.total, 0);
-  const totalCredit = openCredits.reduce((s, c) => s + c.balanceAmount, 0);
-
-  const exportCsv = () => {
-    const lines = [
-      ['Report', 'Name', 'Amount/Count'],
-      ...shopSales.map((r) => ['Shop Sales', r.shop, String(r.total)]),
-      ...itemSales.map((r) => ['Item Sales', r.item, String(r.total)]),
-      ...openCredits.map((c) => ['Open Credit', c.shopName, String(c.balanceAmount)]),
-    ];
-    const blob = new Blob([lines.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `hosur-reports-${from}-to-${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const setPreset = (preset: 'today' | '7d' | 'month' | '30d') => {
+    const end = TODAY_ISO();
+    const date = new Date(`${end}T00:00:00+05:30`);
+    if (preset === 'today') setFrom(end);
+    if (preset === 'month') setFrom(end.slice(0, 8) + '01');
+    if (preset === '7d' || preset === '30d') {
+      date.setDate(date.getDate() - (preset === '7d' ? 6 : 29));
+      setFrom(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date));
+    }
+    setTo(end);
   };
 
-  const reportTabs = [
-    { id: 'sales', label: '🏪 Shop Sales' },
-    { id: 'items', label: '📦 Item Sales' },
-    { id: 'credit', label: '💳 Credit Due' },
-    { id: 'whatsapp', label: '💬 WhatsApp' },
-    { id: 'disputes', label: '⚠️ Disputes' },
-  ] as const;
+  const validRange = from <= to;
+  const inRange = (value: string) => {
+    const date = businessDate(value);
+    return validRange && date >= from && date <= to;
+  };
+  const rangeBills = bills.filter((b) => !['draft', 'cancelled'].includes(b.status) && inRange(b.confirmedAt ?? b.createdAt));
+  const rangeLogs = logs.filter((l) => inRange(l.createdAt));
+  const rangeReminders = reminders.filter((r) => inRange(r.createdAt));
+  const rangeDisputes = disputes.filter((d) => inRange(d.createdAt));
+  const openCredits = credits.filter((c) => c.balanceAmount > 0).sort((a, b) => b.balanceAmount - a.balanceAmount);
+  const overdueCredits = openCredits.filter((c) => Boolean(c.dueDate) && daysBetween(c.dueDate!) > 0);
 
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+  const shopSales = shops.map((shop) => {
+    const shopBills = rangeBills.filter((bill) => bill.shopId === shop.id);
+    return {
+      shopId: shop.id,
+      shop: shop.shopName,
+      bills: shopBills.length,
+      billed: shopBills.reduce((sum, bill) => sum + bill.subtotal, 0),
+      collected: shopBills.reduce((sum, bill) => sum + bill.paidAmount, 0),
+      creditRaised: shopBills.reduce((sum, bill) => sum + bill.creditAmount, 0),
+      openCredit: openCredits.filter((credit) => credit.shopId === shop.id).reduce((sum, credit) => sum + credit.balanceAmount, 0),
+    };
+  }).filter((row) => row.bills > 0 || row.openCredit > 0).sort((a, b) => b.billed - a.billed);
+
+  const itemMap = new Map<string, { qty: number; total: number; bills: Set<string> }>();
+  rangeBills.forEach((bill) => (billItems[bill.id] ?? []).forEach((item) => {
+    const row = itemMap.get(item.itemName) ?? { qty: 0, total: 0, bills: new Set<string>() };
+    row.qty += item.quantity;
+    row.total += item.lineTotal;
+    row.bills.add(bill.id);
+    itemMap.set(item.itemName, row);
+  }));
+  const itemSales = Array.from(itemMap.entries()).map(([item, row]) => ({ item, qty: row.qty, total: row.total, bills: row.bills.size })).sort((a, b) => b.total - a.total);
+
+  const totalSales = rangeBills.reduce((sum, bill) => sum + bill.subtotal, 0);
+  const totalCollected = rangeBills.reduce((sum, bill) => sum + bill.paidAmount, 0);
+  const creditRaised = rangeBills.reduce((sum, bill) => sum + bill.creditAmount, 0);
+  const totalOpenCredit = openCredits.reduce((sum, credit) => sum + credit.balanceAmount, 0);
+  const averageBill = rangeBills.length ? totalSales / rangeBills.length : 0;
+  const collectionRate = totalSales > 0 ? (totalCollected / totalSales) * 100 : 0;
+  const sentLogs = rangeLogs.filter((log) => log.status === 'sent').length;
+  const failedLogs = rangeLogs.filter((log) => log.status === 'failed').length;
+  const whatsappSuccessRate = rangeLogs.length ? (sentLogs / rangeLogs.length) * 100 : 0;
+
+  const paymentMix = (['cash', 'upi', 'card', 'bank', 'mixed'] as PaymentMode[]).map((mode) => ({
+    mode,
+    amount: rangeBills.filter((bill) => bill.paymentMode === mode).reduce((sum, bill) => sum + bill.paidAmount, 0),
+  }));
+  const maxPayment = Math.max(1, ...paymentMix.map((row) => row.amount));
+  const maxShopSales = Math.max(1, ...shopSales.map((row) => row.billed));
+  const maxItemSales = Math.max(1, ...itemSales.map((row) => row.total));
+  const query = search.trim().toLowerCase();
+  const visibleShops = shopSales.filter((row) => !query || row.shop.toLowerCase().includes(query));
+  const visibleItems = itemSales.filter((row) => !query || row.item.toLowerCase().includes(query));
+  const visibleCredits = openCredits.filter((row) => !query || `${row.shopName} ${row.billNo}`.toLowerCase().includes(query));
+
+  const exportExcel = () => downloadWorkbook(`hosur-management-report-${from}-to-${to}.xls`, [
+    { name: 'Shop Performance', rows: shopSales.map((r) => ({ Shop: r.shop, Bills: r.bills, Billed: r.billed, Collected: r.collected, 'Credit Raised': r.creditRaised, 'Open Credit': r.openCredit })) },
+    { name: 'Item Performance', rows: itemSales.map((r) => ({ Item: r.item, Quantity: r.qty, Bills: r.bills, Amount: r.total })) },
+    { name: 'Open Credit', rows: openCredits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Due Date': c.dueDate ?? '', Balance: c.balanceAmount, Overdue: c.dueDate && daysBetween(c.dueDate) > 0 ? 'Yes' : 'No', Status: c.status })) },
+    { name: 'WhatsApp', rows: rangeLogs.map((l) => ({ Shop: l.shopName, Bill: l.billNo ?? '', Type: l.messageType, Status: l.status, Date: toDateTimeLabel(l.createdAt), Error: l.errorMessage ?? '' })) },
+    { name: 'Disputes', rows: rangeDisputes.map((d) => ({ Order: d.orderNumber ?? '', Item: d.itemName, Expected: d.expectedQuantity, Received: d.receivedQuantity, Unit: d.unit, Status: d.status })) },
+  ]);
+
+  const printReport = () => printDocument('Hosur Management Report', `${toDateLabel(from)} to ${toDateLabel(to)}`, `
+    <div class="grid"><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Collected<b>${money(totalCollected)}</b></div><div class="kpi">Open Credit<b>${money(totalOpenCredit)}</b></div><div class="kpi">Average Bill<b>${money(averageBill)}</b></div></div>
+    <div class="section"><h2>Shop Performance</h2><table><thead><tr><th>Shop</th><th>Bills</th><th class="right">Billed</th><th class="right">Collected</th><th class="right">Open Credit</th></tr></thead><tbody>${shopSales.map((r)=>`<tr><td>${r.shop}</td><td>${r.bills}</td><td class="right">${money(r.billed)}</td><td class="right">${money(r.collected)}</td><td class="right">${money(r.openCredit)}</td></tr>`).join('') || '<tr><td colspan="5">No sales</td></tr>'}</tbody></table></div>
+    <div class="section"><h2>Top Items</h2><table><thead><tr><th>Item</th><th class="right">Quantity</th><th class="right">Amount</th></tr></thead><tbody>${itemSales.slice(0,30).map((r)=>`<tr><td>${r.item}</td><td class="right">${num(r.qty)}</td><td class="right">${money(r.total)}</td></tr>`).join('') || '<tr><td colspan="3">No item sales</td></tr>'}</tbody></table></div>`);
+
+  const reportTabs: Array<{ id: ReportTab; label: string; icon: React.ReactNode; badge?: number }> = [
+    { id: 'sales', label: 'Sales & Shops', icon: <TrendingUp className="size-4" /> },
+    { id: 'items', label: 'Item Performance', icon: <PackageCheck className="size-4" /> },
+    { id: 'credit', label: 'Credit Control', icon: <CreditCard className="size-4" />, badge: overdueCredits.length },
+    { id: 'whatsapp', label: 'WhatsApp Delivery', icon: <MessageCircle className="size-4" />, badge: failedLogs },
+    { id: 'disputes', label: 'Disputes', icon: <AlertTriangle className="size-4" />, badge: rangeDisputes.filter((d) => !['resolved', 'cleared'].includes(d.status)).length },
+  ];
+
+  return <div className="space-y-5">
+    <section className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-900 text-white shadow-xl">
+      <div className="grid gap-5 p-5 lg:grid-cols-[1fr_auto] lg:items-end">
         <div>
-          <h2 className="font-display text-xl font-black">Reports</h2>
-          <p className="text-sm text-muted-foreground">Shop-wise sales, credit, items, WhatsApp & disputes</p>
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300"><BarChart3 className="size-4" /> Hosur business intelligence</div>
+          <h2 className="font-display text-3xl font-black">Management Reports</h2>
+          <p className="mt-1 max-w-2xl text-sm text-white/60">Sales, collections, credit exposure, item movement, WhatsApp delivery and operational exceptions in one readable workspace.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          <span className="self-center text-muted-foreground text-sm">to</span>
-          <input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          <button className={softButton} onClick={exportCsv}><Download className="size-4" /> CSV</button>
-          <button className={softButton} onClick={() => window.print()}><Printer className="size-4" /> Print</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 text-xs font-black hover:bg-white/15" onClick={exportExcel}><FileSpreadsheet className="size-4" /> Export Excel</button>
+          <button className="inline-flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-xs font-black text-slate-950 hover:bg-emerald-50" onClick={printReport}><Printer className="size-4" /> Print Report</button>
         </div>
       </div>
-
-      {/* Summary KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Total Sales" value={money(totalSales)} icon={<IndianRupee className="size-4" />} tone="emerald" />
-        <Metric label="Bills Count" value={rangeBills.length} icon={<Receipt className="size-4" />} tone="blue" />
-        <Metric label="Open Credit" value={money(totalCredit)} icon={<CreditCard className="size-4" />} tone="red" />
-        <Metric label="Shops Served" value={shopSales.length} icon={<Store className="size-4" />} tone="slate" />
+      <div className="grid border-t border-white/10 sm:grid-cols-2 xl:grid-cols-4">
+        {[['Gross Sales',money(totalSales)],['Collected',money(totalCollected)],['Open Credit',money(totalOpenCredit)],['Average Bill',money(averageBill)]].map(([label,value])=><div key={label} className="border-white/10 p-4 sm:border-r last:border-r-0"><p className="text-[10px] font-black uppercase tracking-wider text-white/45">{label}</p><p className="mt-1 text-2xl font-black">{value}</p></div>)}
       </div>
+    </section>
 
-      {/* Sub-tab pills */}
-      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-        {reportTabs.map((t) => (
-          <button key={t.id} onClick={() => setReportTab(t.id)}
-            className={cn('shrink-0 rounded-full border px-4 py-1.5 text-xs font-black whitespace-nowrap transition',
-              reportTab === t.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'bg-card hover:bg-muted'
-            )}>
-            {t.label}
-          </button>
-        ))}
+    <Card className="space-y-3">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[['today','Today'],['7d','Last 7 Days'],['month','This Month'],['30d','Last 30 Days']].map(([id,label])=><button key={id} className="rounded-xl border bg-background px-3 py-2 text-xs font-black hover:border-emerald-400 hover:text-emerald-700" onClick={() => setPreset(id as 'today'|'7d'|'month'|'30d')}>{label}</button>)}
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Field label="From"><input className={inputClass} type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
+          <Field label="To"><input className={inputClass} type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
+          <Field label="Search"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"/><input className={cn(inputClass,'pl-9')} value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Shop, item or bill" /></div></Field>
+        </div>
       </div>
+      {!validRange && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">The From date must be before or equal to the To date.</p>}
+    </Card>
 
-      {/* Shop Sales */}
-      {reportTab === 'sales' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Shop-wise Sales — {toDateLabel(from)} to {toDateLabel(to)}</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Shop</th>
-                  <th className="px-4 py-2 text-right">Bills</th>
-                  <th className="px-4 py-2 text-right">Sales</th>
-                  <th className="px-4 py-2 text-right">Credit Pending</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {shopSales.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No sales in this period</td></tr>
-                  : shopSales.map((r) => (
-                    <tr key={r.shop} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{r.shop}</td>
-                      <td className="px-4 py-2 text-right">{r.bills}</td>
-                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
-                      <td className="px-4 py-2 text-right font-semibold text-red-600">{r.credit > 0 ? money(r.credit) : '—'}</td>
-                    </tr>
-                  ))}
-              </tbody>
-              {shopSales.length > 0 && (
-                <tfoot className="bg-muted/60 font-black text-sm">
-                  <tr>
-                    <td className="px-4 py-2">Total</td>
-                    <td className="px-4 py-2 text-right">{rangeBills.length}</td>
-                    <td className="px-4 py-2 text-right text-emerald-700">{money(totalSales)}</td>
-                    <td className="px-4 py-2 text-right text-red-600">{money(totalCredit)}</td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Item Sales */}
-      {reportTab === 'items' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Item-wise Sales — Top {itemSales.length} items</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">#</th>
-                  <th className="px-4 py-2">Item</th>
-                  <th className="px-4 py-2 text-right">Qty</th>
-                  <th className="px-4 py-2 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {itemSales.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={4}>No items in this period</td></tr>
-                  : itemSales.map((r, i) => (
-                    <tr key={r.item} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
-                      <td className="px-4 py-2 font-semibold">{r.item}</td>
-                      <td className="px-4 py-2 text-right">{num(r.qty)}</td>
-                      <td className="px-4 py-2 text-right font-black text-emerald-700">{money(r.total)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Credit Due */}
-      {reportTab === 'credit' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Open Credit Dues (all time)</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Shop</th>
-                  <th className="px-4 py-2">Bill No</th>
-                  <th className="px-4 py-2">Due Date</th>
-                  <th className="px-4 py-2 text-right">Balance</th>
-                  <th className="px-4 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {openCredits.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No open credit dues</td></tr>
-                  : openCredits.map((c) => (
-                    <tr key={c.id} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{c.shopName}</td>
-                      <td className="px-4 py-2">{c.billNo}</td>
-                      <td className="px-4 py-2">{toDateLabel(c.dueDate)}</td>
-                      <td className="px-4 py-2 text-right font-black text-red-600">{money(c.balanceAmount)}</td>
-                      <td className="px-4 py-2"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* WhatsApp */}
-      {reportTab === 'whatsapp' && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-2xl border bg-card overflow-hidden">
-            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">WhatsApp Log</h3></div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                  <tr><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Count</th></tr>
-                </thead>
-                <tbody className="divide-y">
-                  {(['sent', 'failed', 'queued'] as const).map((s) => (
-                    <tr key={s} className="bg-card">
-                      <td className="px-4 py-2 capitalize font-semibold">{s}</td>
-                      <td className="px-4 py-2 text-right font-black">{rangeLogs.filter((l) => l.status === s).length}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="rounded-2xl border bg-card overflow-hidden">
-            <div className="px-4 py-3 bg-muted/40 border-b"><h3 className="font-black text-sm">Reminder History</h3></div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                  <tr><th className="px-4 py-2">Shop</th><th className="px-4 py-2 text-right">Pending</th><th className="px-4 py-2">Status</th></tr>
-                </thead>
-                <tbody className="divide-y">
-                  {reminders.filter((r) => inRange(r.createdAt)).length === 0
-                    ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={3}>No reminders in this period</td></tr>
-                    : reminders.filter((r) => inRange(r.createdAt)).map((r) => (
-                      <tr key={r.id} className="bg-card">
-                        <td className="px-4 py-2 font-semibold">{r.shopName}</td>
-                        <td className="px-4 py-2 text-right">{money(r.pendingAmount)}</td>
-                        <td className="px-4 py-2"><Badge tone={statusTone(r.status)}>{r.status}</Badge></td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Disputes */}
-      {reportTab === 'disputes' && (
-        <div className="rounded-2xl border bg-card overflow-hidden">
-          <div className="px-4 py-3 bg-muted/40 border-b">
-            <h3 className="font-black text-sm">Disputes — {toDateLabel(from)} to {toDateLabel(to)}</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-muted text-left text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2">Order</th>
-                  <th className="px-4 py-2">Item</th>
-                  <th className="px-4 py-2 text-right">Expected</th>
-                  <th className="px-4 py-2 text-right">Received</th>
-                  <th className="px-4 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rangeDisputes.length === 0
-                  ? <tr><td className="px-4 py-6 text-center text-muted-foreground" colSpan={5}>No disputes in this period</td></tr>
-                  : rangeDisputes.map((d) => (
-                    <tr key={d.id} className="bg-card hover:bg-muted/20">
-                      <td className="px-4 py-2 font-semibold">{d.orderNumber ?? '—'}</td>
-                      <td className="px-4 py-2">{d.itemName}</td>
-                      <td className="px-4 py-2 text-right">{num(d.expectedQuantity)} {d.unit}</td>
-                      <td className="px-4 py-2 text-right">{num(d.receivedQuantity)} {d.unit}</td>
-                      <td className="px-4 py-2"><Badge tone={statusTone(d.status)}>{d.status}</Badge></td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-emerald-100 p-2 text-emerald-700"><Percent className="size-4"/></span><span className="text-xs font-black text-emerald-700">{collectionRate.toFixed(1)}%</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Collection rate</p><p className="mt-1 text-sm font-bold">{money(totalCollected)} of {money(totalSales)}</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-blue-100 p-2 text-blue-700"><Receipt className="size-4"/></span><span className="text-xs font-black text-blue-700">{rangeBills.length}</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Completed bills</p><p className="mt-1 text-sm font-bold">{shopSales.length} shops served</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-amber-100 p-2 text-amber-700"><Clock3 className="size-4"/></span><span className="text-xs font-black text-red-600">{overdueCredits.length}</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">Overdue credits</p><p className="mt-1 text-sm font-bold">{money(overdueCredits.reduce((sum,c)=>sum+c.balanceAmount,0))}</p></div>
+      <div className="rounded-2xl border bg-card p-4"><div className="flex items-center justify-between"><span className="rounded-xl bg-violet-100 p-2 text-violet-700"><MessageCircle className="size-4"/></span><span className="text-xs font-black text-violet-700">{whatsappSuccessRate.toFixed(0)}%</span></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-muted-foreground">WhatsApp success</p><p className="mt-1 text-sm font-bold">{sentLogs} sent · {failedLogs} failed</p></div>
     </div>
-  );
+
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
+      <Card>
+        <div className="mb-4"><h3 className="font-display text-lg font-black">Payment Mix</h3><p className="text-xs text-muted-foreground">Collected at billing, excluding pure credit bills</p></div>
+        <div className="space-y-3">{paymentMix.map((row)=><div key={row.mode}><div className="mb-1 flex items-center justify-between text-sm"><span className="font-bold capitalize">{row.mode}</span><span className="font-black">{money(row.amount)}</span></div><div className="h-2.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-600" style={{width:`${Math.max(0,(row.amount/maxPayment)*100)}%`}} /></div></div>)}</div>
+      </Card>
+      <Card>
+        <div className="mb-4"><h3 className="font-display text-lg font-black">Period Snapshot</h3><p className="text-xs text-muted-foreground">Financial and operational health</p></div>
+        <div className="grid grid-cols-2 gap-2">{[['Credit raised',money(creditRaised)],['Open credit',money(totalOpenCredit)],['Reminders',rangeReminders.length],['Disputes',rangeDisputes.length],['WhatsApp sent',sentLogs],['WhatsApp failed',failedLogs]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 font-black">{value}</p></div>)}</div>
+      </Card>
+    </div>
+
+    <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">{reportTabs.map((tab)=><button key={tab.id} onClick={()=>setReportTab(tab.id)} className={cn('inline-flex shrink-0 items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-black transition',reportTab===tab.id?'border-emerald-700 bg-emerald-700 text-white shadow-md':'bg-card hover:border-emerald-300 hover:text-emerald-700')}>{tab.icon}{tab.label}{Boolean(tab.badge) && <span className={cn('rounded-full px-2 py-0.5 text-[10px]',reportTab===tab.id?'bg-white/20':'bg-red-100 text-red-700')}>{tab.badge}</span>}</button>)}</div>
+
+    {reportTab === 'sales' && <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
+      <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Shop Performance</h3><p className="text-xs text-muted-foreground">Billed, collected and current outstanding balance</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Shop</th><th className="px-4 py-3 text-right">Bills</th><th className="px-4 py-3 text-right">Billed</th><th className="px-4 py-3 text-right">Collected</th><th className="px-4 py-3 text-right">Open Credit</th></tr></thead><tbody className="divide-y">{visibleShops.length?visibleShops.map((row)=><tr key={row.shopId} className="hover:bg-muted/20"><td className="px-4 py-3"><p className="font-black">{row.shop}</p><div className="mt-1 h-1.5 w-32 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-600" style={{width:`${(row.billed/maxShopSales)*100}%`}}/></div></td><td className="px-4 py-3 text-right">{row.bills}</td><td className="px-4 py-3 text-right font-black text-emerald-700">{money(row.billed)}</td><td className="px-4 py-3 text-right font-bold">{money(row.collected)}</td><td className="px-4 py-3 text-right font-black text-red-600">{row.openCredit?money(row.openCredit):'—'}</td></tr>):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No matching shop activity.</td></tr>}</tbody></table></div></div>
+      <Card><h3 className="font-black">Top Shops</h3><p className="mb-3 text-xs text-muted-foreground">Highest billed value in selected period</p><div className="space-y-2">{shopSales.slice(0,8).map((row,index)=><div key={row.shopId} className="flex items-center gap-3 rounded-xl border p-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-100 text-xs font-black text-emerald-700">{index+1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{row.shop}</p><p className="text-[10px] text-muted-foreground">{row.bills} bills</p></div><p className="text-sm font-black">{money(row.billed)}</p></div>)}{!shopSales.length&&<p className="py-8 text-center text-sm text-muted-foreground">No sales in this period.</p>}</div></Card>
+    </div>}
+
+    {reportTab === 'items' && <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Item Performance</h3><p className="text-xs text-muted-foreground">Quantity, bill reach and revenue contribution</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Rank</th><th className="px-4 py-3">Item</th><th className="px-4 py-3 text-right">Bills</th><th className="px-4 py-3 text-right">Quantity</th><th className="px-4 py-3 text-right">Amount</th></tr></thead><tbody className="divide-y">{visibleItems.length?visibleItems.map((row,index)=><tr key={row.item} className="hover:bg-muted/20"><td className="px-4 py-3 text-muted-foreground">#{index+1}</td><td className="px-4 py-3"><p className="font-black">{row.item}</p><div className="mt-1 h-1.5 w-40 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-blue-600" style={{width:`${(row.total/maxItemSales)*100}%`}}/></div></td><td className="px-4 py-3 text-right">{row.bills}</td><td className="px-4 py-3 text-right font-bold">{num(row.qty)}</td><td className="px-4 py-3 text-right font-black text-emerald-700">{money(row.total)}</td></tr>):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No matching item activity.</td></tr>}</tbody></table></div></div>}
+
+    {reportTab === 'credit' && <div className="space-y-4"><div className="grid gap-3 md:grid-cols-3"><Metric label="Open Accounts" value={openCredits.length} icon={<CreditCard className="size-4"/>} tone="amber"/><Metric label="Outstanding" value={money(totalOpenCredit)} icon={<IndianRupee className="size-4"/>} tone="red"/><Metric label="Overdue" value={money(overdueCredits.reduce((sum,c)=>sum+c.balanceAmount,0))} icon={<Clock3 className="size-4"/>} tone="red"/></div><div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Credit Control</h3><p className="text-xs text-muted-foreground">Prioritized by outstanding balance</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Shop / Bill</th><th className="px-4 py-3">Due Date</th><th className="px-4 py-3 text-right">Balance</th><th className="px-4 py-3">Age</th><th className="px-4 py-3">Status</th></tr></thead><tbody className="divide-y">{visibleCredits.length?visibleCredits.map((credit)=>{const overdue=Boolean(credit.dueDate)&&daysBetween(credit.dueDate!)>0;return <tr key={credit.id} className="hover:bg-muted/20"><td className="px-4 py-3"><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">{credit.billNo}</p></td><td className="px-4 py-3">{toDateLabel(credit.dueDate)}</td><td className="px-4 py-3 text-right font-black text-red-600">{money(credit.balanceAmount)}</td><td className="px-4 py-3">{credit.dueDate ? (overdue ? `${daysBetween(credit.dueDate)} days overdue` : 'Within due date') : 'No due date'}</td><td className="px-4 py-3"><Badge tone={overdue?'red':statusTone(credit.status)}>{overdue?'overdue':credit.status}</Badge></td></tr>}):<tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No open credit dues.</td></tr>}</tbody></table></div></div></div>}
+
+    {reportTab === 'whatsapp' && <div className="grid gap-4 xl:grid-cols-[.75fr_1.25fr]"><div className="space-y-4"><Card><h3 className="font-black">Delivery Health</h3><div className="mt-3 grid grid-cols-2 gap-2">{[['Sent',sentLogs],['Failed',failedLogs],['Queued',rangeLogs.filter(l=>l.status==='queued').length],['Success',`${whatsappSuccessRate.toFixed(0)}%`]].map(([label,value])=><div key={String(label)} className="rounded-xl bg-muted/35 p-3"><p className="text-[10px] font-black uppercase text-muted-foreground">{label}</p><p className="mt-1 text-xl font-black">{value}</p></div>)}</div></Card><Card><h3 className="font-black">Reminder Activity</h3><p className="mt-1 text-xs text-muted-foreground">{rangeReminders.length} reminder attempts in the selected period.</p><p className="mt-3 text-2xl font-black">{money(rangeReminders.reduce((sum,r)=>sum+r.pendingAmount,0))}</p><p className="text-xs text-muted-foreground">Pending amount covered by reminders</p></Card></div><div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Message Log</h3><p className="text-xs text-muted-foreground">Errors are shown directly for faster correction</p></div><div className="max-h-[560px] overflow-auto divide-y">{rangeLogs.length?rangeLogs.map((log)=><div key={log.id} className="p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-black">{log.shopName}</p><p className="text-xs text-muted-foreground">{log.billNo||log.messageType} · {toDateTimeLabel(log.createdAt)}</p></div><Badge tone={statusTone(log.status)}>{log.status}</Badge></div>{log.errorMessage&&<p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{log.errorMessage}</p>}</div>):<p className="p-10 text-center text-sm text-muted-foreground">No WhatsApp activity in this period.</p>}</div></div></div>}
+
+    {reportTab === 'disputes' && <div className="overflow-hidden rounded-2xl border bg-card"><div className="border-b bg-muted/30 px-4 py-3"><h3 className="font-black">Receiving Disputes</h3><p className="text-xs text-muted-foreground">Expected versus physically received quantity</p></div><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-muted/50 text-left text-[10px] font-black uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Item</th><th className="px-4 py-3 text-right">Expected</th><th className="px-4 py-3 text-right">Received</th><th className="px-4 py-3 text-right">Variance</th><th className="px-4 py-3">Status</th></tr></thead><tbody className="divide-y">{rangeDisputes.length?rangeDisputes.map((dispute)=><tr key={dispute.id} className="hover:bg-muted/20"><td className="px-4 py-3 font-black">{dispute.orderNumber??'—'}</td><td className="px-4 py-3">{dispute.itemName}</td><td className="px-4 py-3 text-right">{num(dispute.expectedQuantity)} {dispute.unit}</td><td className="px-4 py-3 text-right">{num(dispute.receivedQuantity)} {dispute.unit}</td><td className="px-4 py-3 text-right font-black text-red-600">{num(dispute.receivedQuantity-dispute.expectedQuantity)} {dispute.unit}</td><td className="px-4 py-3"><Badge tone={statusTone(dispute.status)}>{dispute.status}</Badge></td></tr>):<tr><td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">No disputes in this period.</td></tr>}</tbody></table></div></div>}
+  </div>;
 }
 
 function NotificationsTab({ notifications, busy, withBusy }: {
