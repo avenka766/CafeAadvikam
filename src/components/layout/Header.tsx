@@ -108,7 +108,7 @@ export default function Header() {
             </div>
           )}
           <button
-            onClick={() => { logout(); navigate('/'); }}
+            onClick={() => { logout(); navigate('/login', { replace: true }); }}
             className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
             style={{ background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.12)' }}
             aria-label="Logout"

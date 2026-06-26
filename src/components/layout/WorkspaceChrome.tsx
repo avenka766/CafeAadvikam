@@ -42,7 +42,7 @@ interface NavItem {
   label: string;
   path: string;
   icon: React.ReactNode;
-  group: 'Main' | 'Operations' | 'Reports' | 'Admin';
+  group: 'Main' | 'Operations' | 'Sales' | 'Stock' | 'Reports' | 'Admin';
 }
 
 interface PageMeta {
@@ -288,7 +288,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
     || (currentUser?.role === 'kitchen' && /^\/order-history/.test(location.pathname));
   const items = useMemo(() => navForRole(currentUser?.role), [currentUser?.role]);
   const groups = useMemo(() => {
-    const names: NavItem['group'][] = ['Main', 'Operations', 'Reports', 'Admin'];
+    const names: NavItem['group'][] = ['Main', 'Operations', 'Sales', 'Stock', 'Reports', 'Admin'];
     return names.map((name) => ({ name, items: items.filter((item) => item.group === name) })).filter((group) => group.items.length > 0);
   }, [items]);
 
