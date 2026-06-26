@@ -26,11 +26,17 @@ Deno.serve(async (req) => {
     const { data: order, error: orderError } = await supabase.from('public_orders').select('*').eq('id', publicOrderId).eq('razorpay_order_id', razorpay_order_id).single();
     if (orderError || !order) throw new Error('Order record not found.');
 
+    if (order.status === 'paid') {
+      if (order.payment_id && order.payment_id !== razorpay_payment_id) throw new Error('Order is already linked to a different payment.');
+      return new Response(JSON.stringify({ success: true, orderNumber: order.order_number, duplicate: true }), { headers: { ...cors, 'Content-Type': 'application/json' } });
+    }
+
     const now = new Date().toISOString();
-    const { error: updateError } = await supabase.from('public_orders').update({
+    const { data: updated, error: updateError } = await supabase.from('public_orders').update({
       status: 'paid', payment_id: razorpay_payment_id, payment_signature: razorpay_signature, paid_at: now, updated_at: now,
-    }).eq('id', publicOrderId);
+    }).eq('id', publicOrderId).eq('status', 'payment_pending').select('id').maybeSingle();
     if (updateError) throw updateError;
+    if (!updated) throw new Error('Order payment state changed. Refresh before retrying.');
 
     await supabase.from('admin_notifications').insert({
       recipient_role: 'admin',
@@ -40,7 +46,7 @@ Deno.serve(async (req) => {
       ref_id: order.id,
       ref_label: order.order_number,
       is_read: false,
-      metadata: { source: 'landing_page', payment_id: razorpay_payment_id },
+      metadata: { source: 'landing_page_verify', payment_id: razorpay_payment_id },
     });
 
     return new Response(JSON.stringify({ success: true, orderNumber: order.order_number }), { headers: { ...cors, 'Content-Type': 'application/json' } });
