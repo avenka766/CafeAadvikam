@@ -150,6 +150,7 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
   const [sel, setSel] = useState('all');
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<CustomerCartLine[]>([]);
+  const [cartOpen, setCartOpen] = useState(false);
   const [customer, setCustomer] = useState({ name: '', phone: '', address: '', locationPin: '', note: '' });
   const [paying, setPaying] = useState(false);
   const [paymentError, setPaymentError] = useState('');
@@ -175,37 +176,23 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
     venue: 'bakery',
   })), []);
   const allItems = useMemo(() => [...cafeItems, ...bakeryItems], [cafeItems, bakeryItems]);
-  const categories = useMemo(() => {
-    const current = venue === 'cafe' ? cafeItems : bakeryItems;
-    return Array.from(new Set(current.map((i) => i.category)));
-  }, [venue, cafeItems, bakeryItems]);
+  const categories = useMemo(() => Array.from(new Set((venue === 'cafe' ? cafeItems : bakeryItems).map((i) => i.category))), [venue, cafeItems, bakeryItems]);
   const displayItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return allItems.filter((item) => {
-      const venueMatch = item.venue === venue;
-      const catMatch = sel === 'all' || item.category === sel;
-      const qMatch = !q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q);
-      return venueMatch && catMatch && qMatch;
-    });
+    return allItems.filter((item) => item.venue === venue && (sel === 'all' || item.category === sel) && (!q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q)));
   }, [allItems, venue, sel, query]);
   const total = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
   const totalQty = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart]);
-  const whatsappText = useMemo(() => buildWhatsappText(customer, cart, total), [customer, cart, total]);
 
   useEffect(() => { setVenue(activeVenue); setSel('all'); }, [activeVenue]);
   useEffect(() => { setSel('all'); setQuery(''); }, [venue]);
   useScrollLock();
 
-  const addItem = (item: CustomerOrderItem) => {
-    setCart((prev) => {
-      const existing = prev.find((line) => line.key === item.key);
-      if (existing) return prev.map((line) => line.key === item.key ? { ...line, qty: line.qty + 1 } : line);
-      return [...prev, { ...item, qty: 1 }];
-    });
-  };
-  const changeQty = (key: string, delta: number) => {
-    setCart((prev) => prev.map((line) => line.key === key ? { ...line, qty: line.qty + delta } : line).filter((line) => line.qty > 0));
-  };
+  const addItem = (item: CustomerOrderItem) => setCart((prev) => {
+    const existing = prev.find((line) => line.key === item.key);
+    return existing ? prev.map((line) => line.key === item.key ? { ...line, qty: line.qty + 1 } : line) : [...prev, { ...item, qty: 1 }];
+  });
+  const changeQty = (key: string, delta: number) => setCart((prev) => prev.map((line) => line.key === key ? { ...line, qty: line.qty + delta } : line).filter((line) => line.qty > 0));
 
   const payWithRazorpay = async () => {
     setPaymentError('');
@@ -248,9 +235,7 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
         notes: { public_order_id: data.publicOrderId },
         theme: { color: '#d97706' },
         handler: async (response: any) => {
-          const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', {
-            body: { ...response, publicOrderId: data.publicOrderId },
-          });
+          const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', { body: { ...response, publicOrderId: data.publicOrderId } });
           if (verifyError || !verified?.success) {
             setPaymentError(verifyError?.message || verified?.error || 'Payment verification failed. Contact the cafe with your payment ID.');
             setPaying(false);
@@ -271,123 +256,115 @@ function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue:
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-[95] flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:p-4" onClick={onClose}>
-      <div
-        className="relative flex h-[96dvh] w-full max-w-7xl flex-col overflow-hidden rounded-t-3xl bg-[#fffaf2] shadow-2xl sm:h-[92vh] sm:rounded-[2rem]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 bg-white px-4 py-3 sm:px-6">
-          <div className="min-w-0">
-            <p className="text-[10px] font-black uppercase tracking-[0.24em] text-orange-700">Customer ordering</p>
-            <h2 className="truncate font-display text-xl font-black text-stone-950 sm:text-2xl">Cafe + VRSNB Bakery cart</h2>
+  const cartPanel = (
+    <div className="flex h-full min-h-0 flex-col bg-white">
+      <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 px-4 py-3">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-700">Your cart</p>
+          <h3 className="text-lg font-black text-stone-950">{totalQty} items · {formatCurrency(total)}</h3>
+        </div>
+        <button onClick={() => setCartOpen(false)} className="grid size-10 place-items-center rounded-full bg-stone-100 lg:hidden" aria-label="Close cart"><X className="size-5" /></button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {!cart.length ? (
+          <div className="grid min-h-44 place-items-center rounded-3xl border border-dashed border-orange-900/20 bg-[#fff7ea] p-6 text-center text-sm font-semibold text-stone-500">Choose a category and add items first.</div>
+        ) : (
+          <div className="space-y-3">
+            {cart.map((item) => (
+              <div key={item.key} className="rounded-2xl border border-orange-900/10 bg-[#fffaf2] p-3">
+                <div className="flex justify-between gap-3">
+                  <div><p className="text-sm font-black text-stone-950">{item.name}</p><p className="text-[11px] font-bold text-stone-500">{item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'} · {formatCurrency(item.price)}</p></div>
+                  <button onClick={() => changeQty(item.key, -item.qty)} className="text-stone-400" aria-label={`Remove ${item.name}`}><Trash2 className="size-4" /></button>
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2 rounded-full bg-white p-1">
+                    <button onClick={() => changeQty(item.key, -1)} className="grid size-8 place-items-center rounded-full bg-stone-100"><Minus className="size-4" /></button>
+                    <span className="w-8 text-center text-sm font-black">{item.qty}</span>
+                    <button onClick={() => changeQty(item.key, 1)} className="grid size-8 place-items-center rounded-full bg-stone-950 text-white"><Plus className="size-4" /></button>
+                  </div>
+                  <p className="font-black text-orange-700">{formatCurrency(item.price * item.qty)}</p>
+                </div>
+              </div>
+            ))}
           </div>
-          <button onClick={onClose} aria-label="Close menu" className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600 active:scale-95">
-            <X className="size-5" />
-          </button>
+        )}
+        <div className="mt-5 space-y-3 border-t border-orange-900/10 pt-5">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-stone-500">Customer details</p>
+          <input required value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+          <input required inputMode="numeric" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+          <textarea required value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address *" className="min-h-20 w-full resize-none rounded-2xl border border-orange-900/10 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+          <input required value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="PIN / Google Maps link *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+          <textarea value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Order notes (optional)" className="min-h-16 w-full resize-none rounded-2xl border border-orange-900/10 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+        </div>
+      </div>
+      <div className="shrink-0 space-y-3 border-t border-orange-900/10 bg-[#fff7ea] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <div className="flex items-center justify-between rounded-2xl bg-white p-3 font-black text-stone-950"><span>Total</span><span>{formatCurrency(total)}</span></div>
+        {paymentError && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{paymentError}</p>}
+        <button type="button" onClick={() => void payWithRazorpay()} disabled={paying || !cart.length} className={cn('inline-flex w-full items-center justify-center gap-2 rounded-2xl px-3 py-3.5 text-sm font-black transition active:scale-[.98]', cart.length && !paying ? 'bg-amber-300 text-stone-950 shadow-lg shadow-amber-500/20' : 'cursor-not-allowed bg-stone-200 text-stone-400')}>
+          <CreditCard className={cn('size-4', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : 'Pay with Razorpay'}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[95] bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative mx-auto flex h-[100dvh] w-full max-w-7xl flex-col overflow-hidden bg-[#fffaf2] shadow-2xl sm:my-4 sm:h-[calc(100dvh-2rem)] sm:rounded-[2rem]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 bg-white px-4 py-3">
+          <div className="min-w-0"><p className="text-[10px] font-black uppercase tracking-[0.24em] text-orange-700">Customer ordering</p><h2 className="truncate font-display text-xl font-black text-stone-950">Place order</h2></div>
+          <button onClick={onClose} aria-label="Close menu" className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600"><X className="size-5" /></button>
         </div>
 
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_390px]">
           <section className="flex min-h-0 flex-col border-r border-orange-900/10">
             <div className="shrink-0 space-y-3 border-b border-orange-900/10 bg-[#fff7ea] p-3 sm:p-4">
-              <div className="grid grid-cols-2 rounded-2xl bg-stone-950 p-1 text-sm font-black text-white shadow-xl">
+              <div className="grid grid-cols-2 rounded-2xl bg-stone-950 p-1 text-sm font-black text-white">
                 <button onClick={() => setVenue('cafe')} className={cn('rounded-xl px-3 py-3 transition', venue === 'cafe' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>Cafe food</button>
                 <button onClick={() => setVenue('bakery')} className={cn('rounded-xl px-3 py-3 transition', venue === 'bakery' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>VRSNB bakery</button>
               </div>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search dosa, coffee, bun, cake..." className="h-11 w-full rounded-2xl border border-orange-900/10 bg-white pl-10 pr-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => setSel('all')} className={cn('rounded-full px-3 py-2 text-xs font-black', sel === 'all' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>All</button>
-                {categories.map((cat) => (
-                  <button key={cat} onClick={() => setSel(cat)} className={cn('rounded-full px-3 py-2 text-xs font-black', sel === cat ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>
-                    {cat}
-                  </button>
-                ))}
+              <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search items" className="h-11 w-full rounded-2xl border border-orange-900/10 bg-white pl-10 pr-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" /></div>
+              <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <button onClick={() => setSel('all')} className={cn('shrink-0 rounded-full px-3 py-2 text-xs font-black', sel === 'all' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>All</button>
+                {categories.map((cat) => <button key={cat} onClick={() => setSel(cat)} className={cn('shrink-0 rounded-full px-3 py-2 text-xs font-black', sel === cat ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>{cat}</button>)}
               </div>
             </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-24 sm:p-4 sm:pb-24 lg:pb-4">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {displayItems.map((item) => (
-                  <article key={item.key} className="flex min-h-[132px] flex-col justify-between rounded-3xl border border-orange-900/10 bg-white p-3 shadow-sm">
-                    <div className="flex gap-3">
-                      {item.image ? <img src={item.image} alt="" className="size-16 rounded-2xl object-cover" /> : <div className="grid size-16 shrink-0 place-items-center rounded-2xl bg-amber-50 text-2xl">{item.venue === 'bakery' ? '🥐' : '🍽️'}</div>}
-                      <div className="min-w-0 flex-1">
-                        <p className="line-clamp-2 text-sm font-black leading-tight text-stone-950">{item.name}</p>
-                        <p className="mt-1 text-[11px] font-bold text-stone-500">{item.category} · {item.unit}</p>
-                        <p className="mt-2 text-lg font-black text-orange-700">{formatCurrency(item.price)}</p>
-                      </div>
+                  <article key={item.key} className="flex min-h-[180px] flex-col justify-between rounded-2xl border border-orange-900/10 bg-white p-3 shadow-sm sm:min-h-[150px] sm:rounded-3xl">
+                    <div>
+                      {item.image ? <img src={item.image} alt="" className="mb-2 h-24 w-full rounded-xl object-cover sm:h-28" /> : <div className="mb-2 grid h-20 w-full place-items-center rounded-xl bg-amber-50 text-2xl">{item.venue === 'bakery' ? '🥐' : '🍽️'}</div>}
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-stone-950">{item.name}</p>
+                      <p className="mt-1 text-[10px] font-bold text-stone-500">{item.unit}</p>
+                      <p className="mt-1 text-base font-black text-orange-700">{formatCurrency(item.price)}</p>
                     </div>
-                    <button onClick={() => addItem(item)} className="mt-3 inline-flex items-center justify-center gap-2 rounded-2xl bg-stone-950 px-4 py-2.5 text-sm font-black text-white active:scale-95">
-                      <Plus className="size-4" /> Add
-                    </button>
+                    <button onClick={() => addItem(item)} className="mt-2 inline-flex items-center justify-center gap-1 rounded-xl bg-stone-950 px-3 py-2.5 text-xs font-black text-white"><Plus className="size-4" /> Add</button>
                   </article>
                 ))}
               </div>
+              {!displayItems.length && <div className="py-16 text-center text-sm font-semibold text-stone-500">No items found in this category.</div>}
             </div>
           </section>
-
-          <aside className="flex min-h-[45dvh] flex-col bg-white lg:min-h-0">
-            <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 p-4">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-700">Combined cart</p>
-                <h3 className="text-xl font-black text-stone-950">{totalQty} items · {formatCurrency(total)}</h3>
-              </div>
-              <ShoppingCart className="size-7 text-orange-700" />
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              {!cart.length ? (
-                <div className="grid h-full min-h-40 place-items-center rounded-3xl border border-dashed border-orange-900/20 bg-[#fff7ea] p-6 text-center text-sm font-semibold text-stone-500">
-                  Add cafe food and VRSNB bakery items in the same cart.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {cart.map((item) => (
-                    <div key={item.key} className="rounded-2xl border border-orange-900/10 bg-[#fffaf2] p-3">
-                      <div className="flex justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-black text-stone-950">{item.name}</p>
-                          <p className="text-[11px] font-bold text-stone-500">{item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'} · {formatCurrency(item.price)}</p>
-                        </div>
-                        <button onClick={() => changeQty(item.key, -item.qty)} className="text-stone-400"><Trash2 className="size-4" /></button>
-                      </div>
-                      <div className="mt-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2 rounded-full bg-white p-1">
-                          <button onClick={() => changeQty(item.key, -1)} className="grid size-8 place-items-center rounded-full bg-stone-100"><Minus className="size-4" /></button>
-                          <span className="w-8 text-center text-sm font-black">{item.qty}</span>
-                          <button onClick={() => changeQty(item.key, 1)} className="grid size-8 place-items-center rounded-full bg-stone-950 text-white"><Plus className="size-4" /></button>
-                        </div>
-                        <p className="font-black text-orange-700">{formatCurrency(item.price * item.qty)}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="shrink-0 space-y-3 border-t border-orange-900/10 bg-[#fff7ea] p-4">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <input required value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name *" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-                <input required inputMode="numeric" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile *" className="h-10 rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-              </div>
-              <input required value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address *" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-              <input required value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="PIN / Google Maps link *" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-              <input value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Order notes (optional)" className="h-10 w-full rounded-xl border border-orange-900/10 px-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-              <div className="flex items-center justify-between rounded-2xl bg-white p-3 font-black text-stone-950">
-                <span>Total</span><span>{formatCurrency(total)}</span>
-              </div>
-              {paymentError && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{paymentError}</p>}
-              <button type="button" onClick={() => void payWithRazorpay()} disabled={paying || !cart.length} className={cn('inline-flex w-full items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black transition active:scale-[.98]', cart.length && !paying ? 'bg-amber-300 text-stone-950 shadow-lg shadow-amber-500/20' : 'cursor-not-allowed bg-stone-200 text-stone-400')}>
-                <CreditCard className={cn('size-4', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : 'Pay securely with Razorpay'}
-              </button>
-            </div>
-          </aside>
+          <aside className="hidden min-h-0 lg:block">{cartPanel}</aside>
         </div>
+
+        <button onClick={() => setCartOpen(true)} className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-4 right-4 z-[110] flex items-center justify-between rounded-2xl bg-stone-950 px-4 py-3.5 text-white shadow-2xl lg:hidden">
+          <span className="flex items-center gap-2 text-sm font-black"><ShoppingCart className="size-5 text-amber-300" /> View cart ({totalQty})</span><span className="font-black text-amber-300">{formatCurrency(total)}</span>
+        </button>
+
+        <AnimatePresence>
+          {cartOpen && (
+            <>
+              <motion.button aria-label="Close cart" onClick={() => setCartOpen(false)} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[115] bg-black/55 lg:hidden" />
+              <motion.aside initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} className="fixed inset-y-0 right-0 z-[120] w-[min(92vw,430px)] shadow-2xl lg:hidden">{cartPanel}</motion.aside>
+            </>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
 }
+
 
 function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
@@ -432,24 +409,40 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
 
       <AnimatePresence>
         {open && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] bg-stone-950/96 p-6 text-white md:hidden">
-            <button onClick={() => setOpen(false)} className="ml-auto grid h-11 w-11 place-items-center rounded-full bg-white/10">
-              <X />
-            </button>
-            <div className="mt-14 grid gap-5 text-4xl font-black">
-              {navItems.map(([label, href]) => (
-                <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="text-left">
-                  {label}
-                </button>
-              ))}
-              <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="text-left text-amber-200">
-                Place Order
-              </button>
-              <button onClick={() => navigate('/login')} className="text-left text-amber-200">
-                Login
-              </button>
-            </div>
-          </motion.div>
+          <>
+            <motion.button
+              aria-label="Close navigation"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setOpen(false)}
+              className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm md:hidden"
+            />
+            <motion.aside
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 30 }}
+              className="fixed inset-y-0 right-0 z-[61] flex w-[min(86vw,360px)] flex-col bg-[#130d08] p-5 text-white shadow-2xl md:hidden"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-3">
+                  <img src={cafeLogo} alt="Cafe Aadvikam" className="size-11 rounded-full bg-white object-contain p-1" />
+                  <div><p className="font-display text-lg font-black">Cafe Aadvikam</p><p className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-100/70">Cafe · Bakery</p></div>
+                </div>
+                <button onClick={() => setOpen(false)} className="grid size-10 place-items-center rounded-full bg-white/10"><X className="size-5" /></button>
+              </div>
+              <nav className="mt-5 flex flex-col gap-2">
+                {navItems.map(([label, href]) => (
+                  <button key={label} onClick={() => { setOpen(false); setTimeout(() => scrollToId(href), 100); }} className="rounded-2xl px-4 py-3 text-left text-base font-black transition active:bg-white/10">{label}</button>
+                ))}
+              </nav>
+              <div className="mt-auto space-y-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+                <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="w-full rounded-2xl bg-amber-300 px-4 py-3.5 text-sm font-black text-stone-950">Place Order</button>
+                <button onClick={() => { setOpen(false); navigate('/login'); }} className="w-full rounded-2xl border border-white/15 bg-white/10 px-4 py-3.5 text-sm font-black">Login</button>
+              </div>
+            </motion.aside>
+          </>
         )}
       </AnimatePresence>
     </>
