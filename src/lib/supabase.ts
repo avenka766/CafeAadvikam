@@ -13,9 +13,21 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 const sessionAwareFetch: typeof fetch = async (input, init = {}) => {
   const headers = new Headers(init.headers ?? {});
-  const token = typeof window !== 'undefined' ? getAppSessionToken() : null;
-  if (token) headers.set('x-cafe-session', token);
-  headers.set('x-client-app', 'cafe-aadvikam-web');
+  const requestUrl = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+  const isEdgeFunctionRequest = requestUrl.includes('/functions/v1/');
+
+  // Edge Functions have their own CORS contract. Do not attach the app-only
+  // session headers there, otherwise the browser can stop after OPTIONS and
+  // never issue the POST request. PostgREST/RPC requests still receive them.
+  if (!isEdgeFunctionRequest) {
+    const token = typeof window !== 'undefined' ? getAppSessionToken() : null;
+    if (token) headers.set('x-cafe-session', token);
+    headers.set('x-client-app', 'cafe-aadvikam-web');
+  }
   try {
     const response = await fetch(input, { ...init, headers });
     if (typeof window !== 'undefined') {
