@@ -12,24 +12,15 @@ import {
   Leaf,
   MapPin,
   Menu as MenuIcon,
-  Minus,
+  MessageCircle,
   Phone,
-  Plus,
-  Search,
-  ShoppingCart,
-  Trash2,
-  CreditCard,
   Sparkles,
-  UtensilsCrossed,
   Users,
   X,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
-import { useMenuStore } from '@/stores/menuStore';
 import { getRoleDefaultPath } from '@/lib/routing';
-import { MENU_CATEGORIES } from '@/constants/config';
-import { cn, formatCurrency } from '@/lib/utils';
-import { useScrollLock } from '@/hooks/useScrollLock';
+import { cn } from '@/lib/utils';
 import heroMeal from '@/assets/hero-bg.jpg';
 import cafeLogo from '@/assets/cafe-logo.png';
 import snbLogo from '@/assets/snb-logo.png';
@@ -49,8 +40,6 @@ import filterCoffeeImg from '@/assets/foods/filter-coffee.jpg';
 import paneerImg from '@/assets/foods/paneer-butter-masala.jpg';
 import limeSodaImg from '@/assets/foods/fresh-lime-soda.jpg';
 import ChatBot from '@/components/features/ChatBot';
-import { VRSNB_CATEGORIES, VRSNB_ITEMS } from '@/branch/vrsnbItems';
-import { supabase } from '@/lib/supabase';
 
 const CAFE = {
   address: '109 Bagalur Main Road, Berikai 635105',
@@ -112,260 +101,6 @@ function scrollToId(id: string) {
   document.querySelector(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-type CustomerVenue = 'cafe' | 'bakery';
-
-type CustomerOrderItem = {
-  key: string;
-  name: string;
-  price: number;
-  unit: string;
-  category: string;
-  venue: CustomerVenue;
-  image?: string;
-};
-
-type CustomerCartLine = CustomerOrderItem & { qty: number };
-
-function buildWhatsappText(customer: { name: string; phone: string; address: string; locationPin: string; note: string }, cart: CustomerCartLine[], total: number) {
-  const lines = cart.map((item, idx) => `${idx + 1}. ${item.name} (${item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'}) x ${item.qty} = ₹${item.price * item.qty}`);
-  return [
-    'New customer order - Cafe Aadvikam / VRSNB Bakery',
-    '',
-    ...lines,
-    '',
-    `Total: ₹${total}`,
-    '',
-    `Customer: ${customer.name || 'Not provided'}`,
-    `Phone: ${customer.phone || 'Not provided'}`,
-    `Payment: Razorpay`,
-    `Address: ${customer.address || 'Not provided'}`,
-    `Location pin: ${customer.locationPin || 'Not provided'}`,
-    customer.note ? `Delivery notes: ${customer.note}` : '',
-  ].filter(Boolean).join('\n');
-}
-
-function MenuPopup({ onClose, activeVenue }: { onClose: () => void; activeVenue: CustomerVenue }) {
-  const { items } = useMenuStore();
-  const [venue, setVenue] = useState<CustomerVenue>(activeVenue);
-  const [sel, setSel] = useState('all');
-  const [query, setQuery] = useState('');
-  const [cart, setCart] = useState<CustomerCartLine[]>([]);
-  const [cartOpen, setCartOpen] = useState(false);
-  const [customer, setCustomer] = useState({ name: '', phone: '', address: '', locationPin: '', note: '' });
-  const [paying, setPaying] = useState(false);
-  const [paymentError, setPaymentError] = useState('');
-  const enabled = useMemo(() => items.filter((i) => i.enabled), [items]);
-  const cafeItems = useMemo<CustomerOrderItem[]>(() => enabled.map((item) => {
-    const cat = MENU_CATEGORIES.find((c) => c.id === item.category);
-    return {
-      key: `cafe-${item.id}`,
-      name: item.name,
-      price: item.price,
-      unit: item.timing || 'Plate',
-      category: cat?.name || item.category,
-      venue: 'cafe',
-      image: item.imageUrl,
-    };
-  }), [enabled]);
-  const bakeryItems = useMemo<CustomerOrderItem[]>(() => VRSNB_ITEMS.map((item) => ({
-    key: `bakery-${item.barcode}`,
-    name: item.name,
-    price: item.price,
-    unit: item.uom,
-    category: item.category,
-    venue: 'bakery',
-  })), []);
-  const allItems = useMemo(() => [...cafeItems, ...bakeryItems], [cafeItems, bakeryItems]);
-  const categories = useMemo(() => Array.from(new Set((venue === 'cafe' ? cafeItems : bakeryItems).map((i) => i.category))), [venue, cafeItems, bakeryItems]);
-  const displayItems = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return allItems.filter((item) => item.venue === venue && (sel === 'all' || item.category === sel) && (!q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q)));
-  }, [allItems, venue, sel, query]);
-  const total = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
-  const totalQty = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart]);
-
-  useEffect(() => { setVenue(activeVenue); setSel('all'); }, [activeVenue]);
-  useEffect(() => { setSel('all'); setQuery(''); }, [venue]);
-  useScrollLock();
-
-  const addItem = (item: CustomerOrderItem) => setCart((prev) => {
-    const existing = prev.find((line) => line.key === item.key);
-    return existing ? prev.map((line) => line.key === item.key ? { ...line, qty: line.qty + 1 } : line) : [...prev, { ...item, qty: 1 }];
-  });
-  const changeQty = (key: string, delta: number) => setCart((prev) => prev.map((line) => line.key === key ? { ...line, qty: line.qty + delta } : line).filter((line) => line.qty > 0));
-
-  const payWithRazorpay = async () => {
-    setPaymentError('');
-    if (!cart.length) { setPaymentError('Add at least one item.'); return; }
-    if (!customer.name.trim() || !customer.phone.trim() || !customer.address.trim() || !customer.locationPin.trim()) {
-      setPaymentError('Name, mobile, address and PIN are mandatory.');
-      return;
-    }
-    if (!/^\d{10}$/.test(customer.phone.replace(/\D/g, ''))) {
-      setPaymentError('Enter a valid 10-digit mobile number.');
-      return;
-    }
-    setPaying(true);
-    try {
-      if (!(window as any).Razorpay) {
-        await new Promise<void>((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-          script.onload = () => resolve();
-          script.onerror = () => reject(new Error('Unable to load Razorpay checkout.'));
-          document.head.appendChild(script);
-        });
-      }
-      const payload = {
-        amount: Math.round(total * 100),
-        customer,
-        items: cart.map(({ key, name, price, unit, category, venue, qty }) => ({ key, name, price, unit, category, venue, qty })),
-        notes: { source: 'landing_page' },
-      };
-      const { data, error } = await supabase.functions.invoke('create-razorpay-order', { body: payload });
-      if (error || !data?.orderId || !data?.keyId) throw new Error(error?.message || data?.error || 'Unable to start payment.');
-      const razorpay = new (window as any).Razorpay({
-        key: data.keyId,
-        amount: data.amount,
-        currency: 'INR',
-        name: 'Cafe Aadvikam',
-        description: 'Customer order payment',
-        order_id: data.orderId,
-        prefill: { name: customer.name, contact: customer.phone },
-        notes: { public_order_id: data.publicOrderId },
-        theme: { color: '#d97706' },
-        handler: async (response: any) => {
-          const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', { body: { ...response, publicOrderId: data.publicOrderId } });
-          if (verifyError || !verified?.success) {
-            setPaymentError(verifyError?.message || verified?.error || 'Payment verification failed. Contact the cafe with your payment ID.');
-            setPaying(false);
-            return;
-          }
-          setCart([]);
-          setCustomer({ name: '', phone: '', address: '', locationPin: '', note: '' });
-          setPaying(false);
-          alert(`Payment successful. Order ${verified.orderNumber || ''} has been sent to Admin.`);
-          onClose();
-        },
-        modal: { ondismiss: () => setPaying(false) },
-      });
-      razorpay.open();
-    } catch (err) {
-      setPaymentError(err instanceof Error ? err.message : 'Payment could not be started.');
-      setPaying(false);
-    }
-  };
-
-  const cartPanel = (
-    <div className="flex h-full min-h-0 flex-col bg-white">
-      <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 px-4 py-3">
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-700">Your cart</p>
-          <h3 className="text-lg font-black text-stone-950">{totalQty} items · {formatCurrency(total)}</h3>
-        </div>
-        <button onClick={() => setCartOpen(false)} className="grid size-10 place-items-center rounded-full bg-stone-100 lg:hidden" aria-label="Close cart"><X className="size-5" /></button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {!cart.length ? (
-          <div className="grid min-h-44 place-items-center rounded-3xl border border-dashed border-orange-900/20 bg-[#fff7ea] p-6 text-center text-sm font-semibold text-stone-500">Choose a category and add items first.</div>
-        ) : (
-          <div className="space-y-3">
-            {cart.map((item) => (
-              <div key={item.key} className="rounded-2xl border border-orange-900/10 bg-[#fffaf2] p-3">
-                <div className="flex justify-between gap-3">
-                  <div><p className="text-sm font-black text-stone-950">{item.name}</p><p className="text-[11px] font-bold text-stone-500">{item.venue === 'bakery' ? 'VRSNB Bakery' : 'Cafe'} · {formatCurrency(item.price)}</p></div>
-                  <button onClick={() => changeQty(item.key, -item.qty)} className="text-stone-400" aria-label={`Remove ${item.name}`}><Trash2 className="size-4" /></button>
-                </div>
-                <div className="mt-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2 rounded-full bg-white p-1">
-                    <button onClick={() => changeQty(item.key, -1)} className="grid size-8 place-items-center rounded-full bg-stone-100"><Minus className="size-4" /></button>
-                    <span className="w-8 text-center text-sm font-black">{item.qty}</span>
-                    <button onClick={() => changeQty(item.key, 1)} className="grid size-8 place-items-center rounded-full bg-stone-950 text-white"><Plus className="size-4" /></button>
-                  </div>
-                  <p className="font-black text-orange-700">{formatCurrency(item.price * item.qty)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="mt-5 space-y-3 border-t border-orange-900/10 pt-5">
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-stone-500">Customer details</p>
-          <input required value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} placeholder="Name *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-          <input required inputMode="numeric" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} placeholder="Mobile *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-          <textarea required value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} placeholder="Address *" className="min-h-20 w-full resize-none rounded-2xl border border-orange-900/10 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-          <input required value={customer.locationPin} onChange={(e) => setCustomer({ ...customer, locationPin: e.target.value })} placeholder="PIN / Google Maps link *" className="h-12 w-full rounded-2xl border border-orange-900/10 px-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-          <textarea value={customer.note} onChange={(e) => setCustomer({ ...customer, note: e.target.value })} placeholder="Order notes (optional)" className="min-h-16 w-full resize-none rounded-2xl border border-orange-900/10 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
-        </div>
-      </div>
-      <div className="shrink-0 space-y-3 border-t border-orange-900/10 bg-[#fff7ea] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-        <div className="flex items-center justify-between rounded-2xl bg-white p-3 font-black text-stone-950"><span>Total</span><span>{formatCurrency(total)}</span></div>
-        {paymentError && <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{paymentError}</p>}
-        <button type="button" onClick={() => void payWithRazorpay()} disabled={paying || !cart.length} className={cn('inline-flex w-full items-center justify-center gap-2 rounded-2xl px-3 py-3.5 text-sm font-black transition active:scale-[.98]', cart.length && !paying ? 'bg-amber-300 text-stone-950 shadow-lg shadow-amber-500/20' : 'cursor-not-allowed bg-stone-200 text-stone-400')}>
-          <CreditCard className={cn('size-4', paying && 'animate-pulse')} /> {paying ? 'Opening secure payment…' : 'Pay with Razorpay'}
-        </button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-[95] bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative mx-auto flex h-[100dvh] w-full max-w-7xl flex-col overflow-hidden bg-[#fffaf2] shadow-2xl sm:my-4 sm:h-[calc(100dvh-2rem)] sm:rounded-[2rem]" onClick={(e) => e.stopPropagation()}>
-        <div className="flex shrink-0 items-center justify-between border-b border-orange-900/10 bg-white px-4 py-3">
-          <div className="min-w-0"><p className="text-[10px] font-black uppercase tracking-[0.24em] text-orange-700">Customer ordering</p><h2 className="truncate font-display text-xl font-black text-stone-950">Place order</h2></div>
-          <button onClick={onClose} aria-label="Close menu" className="grid size-10 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600"><X className="size-5" /></button>
-        </div>
-
-        <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_390px]">
-          <section className="flex min-h-0 flex-col border-r border-orange-900/10">
-            <div className="shrink-0 space-y-3 border-b border-orange-900/10 bg-[#fff7ea] p-3 sm:p-4">
-              <div className="grid grid-cols-2 rounded-2xl bg-stone-950 p-1 text-sm font-black text-white">
-                <button onClick={() => setVenue('cafe')} className={cn('rounded-xl px-3 py-3 transition', venue === 'cafe' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>Cafe food</button>
-                <button onClick={() => setVenue('bakery')} className={cn('rounded-xl px-3 py-3 transition', venue === 'bakery' ? 'bg-amber-300 text-stone-950' : 'text-white/65')}>VRSNB bakery</button>
-              </div>
-              <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search items" className="h-11 w-full rounded-2xl border border-orange-900/10 bg-white pl-10 pr-4 text-sm font-semibold outline-none focus:ring-2 focus:ring-amber-300" /></div>
-              <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <button onClick={() => setSel('all')} className={cn('shrink-0 rounded-full px-3 py-2 text-xs font-black', sel === 'all' ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>All</button>
-                {categories.map((cat) => <button key={cat} onClick={() => setSel(cat)} className={cn('shrink-0 rounded-full px-3 py-2 text-xs font-black', sel === cat ? 'bg-stone-950 text-white' : 'bg-white text-stone-700')}>{cat}</button>)}
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-24 sm:p-4 sm:pb-24 lg:pb-4">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {displayItems.map((item) => (
-                  <article key={item.key} className="flex min-h-[180px] flex-col justify-between rounded-2xl border border-orange-900/10 bg-white p-3 shadow-sm sm:min-h-[150px] sm:rounded-3xl">
-                    <div>
-                      {item.image ? <img src={item.image} alt="" className="mb-2 h-24 w-full rounded-xl object-cover sm:h-28" /> : <div className="mb-2 grid h-20 w-full place-items-center rounded-xl bg-amber-50 text-2xl">{item.venue === 'bakery' ? '🥐' : '🍽️'}</div>}
-                      <p className="line-clamp-2 text-sm font-black leading-tight text-stone-950">{item.name}</p>
-                      <p className="mt-1 text-[10px] font-bold text-stone-500">{item.unit}</p>
-                      <p className="mt-1 text-base font-black text-orange-700">{formatCurrency(item.price)}</p>
-                    </div>
-                    <button onClick={() => addItem(item)} className="mt-2 inline-flex items-center justify-center gap-1 rounded-xl bg-stone-950 px-3 py-2.5 text-xs font-black text-white"><Plus className="size-4" /> Add</button>
-                  </article>
-                ))}
-              </div>
-              {!displayItems.length && <div className="py-16 text-center text-sm font-semibold text-stone-500">No items found in this category.</div>}
-            </div>
-          </section>
-          <aside className="hidden min-h-0 lg:block">{cartPanel}</aside>
-        </div>
-
-        <button onClick={() => setCartOpen(true)} className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-4 right-4 z-[110] flex items-center justify-between rounded-2xl bg-stone-950 px-4 py-3.5 text-white shadow-2xl lg:hidden">
-          <span className="flex items-center gap-2 text-sm font-black"><ShoppingCart className="size-5 text-amber-300" /> View cart ({totalQty})</span><span className="font-black text-amber-300">{formatCurrency(total)}</span>
-        </button>
-
-        <AnimatePresence>
-          {cartOpen && (
-            <>
-              <motion.button aria-label="Close cart" onClick={() => setCartOpen(false)} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[115] bg-black/55 lg:hidden" />
-              <motion.aside initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 28, stiffness: 320 }} className="fixed inset-y-0 right-0 z-[120] w-[min(92vw,430px)] shadow-2xl lg:hidden">{cartPanel}</motion.aside>
-            </>
-          )}
-        </AnimatePresence>
-      </div>
-    </div>
-  );
-}
-
-
 function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
@@ -392,6 +127,9 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
           <div className="hidden items-center gap-2 md:flex">
             <button onClick={onMenuOpen} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
               Place Order
+            </button>
+            <button onClick={() => navigate('/order/track')} className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/20">
+              Track Order
             </button>
             <button onClick={() => scrollToId('#party-hall')} className="inline-flex items-center gap-2 rounded-full bg-amber-300 px-5 py-2 text-sm font-black text-stone-950 shadow-lg shadow-amber-500/20 transition hover:scale-105">
               <CalendarCheck className="h-4 w-4" /> Book Party Hall
@@ -439,6 +177,7 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
               </nav>
               <div className="mt-auto space-y-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
                 <button onClick={() => { setOpen(false); setTimeout(onMenuOpen, 120); }} className="w-full rounded-2xl bg-amber-300 px-4 py-3.5 text-sm font-black text-stone-950">Place Order</button>
+                <button onClick={() => { setOpen(false); navigate('/order/track'); }} className="w-full rounded-2xl border border-white/15 bg-white/10 px-4 py-3.5 text-sm font-black">Track Order</button>
                 <button onClick={() => { setOpen(false); navigate('/login'); }} className="w-full rounded-2xl border border-white/15 bg-white/10 px-4 py-3.5 text-sm font-black">Login</button>
               </div>
             </motion.aside>
@@ -446,43 +185,6 @@ function FloatingNav({ onMenuOpen }: { onMenuOpen: () => void }) {
         )}
       </AnimatePresence>
     </>
-  );
-}
-
-function VenueToggle({ active, onChange }: { active: 'cafe' | 'bakery'; onChange: (v: 'cafe' | 'bakery') => void }) {
-  return (
-    <div
-      className="fixed right-3 z-50 flex flex-col gap-1.5 overflow-hidden rounded-2xl p-1.5 shadow-2xl"
-      style={{
-        top: '88px',
-        background: 'rgba(15,6,2,0.85)',
-        backdropFilter: 'blur(16px)',
-        border: '1px solid rgba(180,120,40,0.3)',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,215,0,0.08)',
-      }}
-    >
-      <motion.div className="pointer-events-none absolute inset-x-1.5 h-[58px] rounded-xl bg-white/10" animate={{ y: active === 'cafe' ? 0 : 66 }} transition={{ type: 'spring', stiffness: 420, damping: 28 }} />
-      <motion.div className="pointer-events-none absolute -right-1 top-1 text-amber-300" animate={{ rotate: active === 'cafe' ? 0 : 180, scale: [1, 1.25, 1] }} transition={{ rotate: { duration: .35 }, scale: { duration: .45 } }}><Sparkles className="size-4" /></motion.div>
-      <button
-        onClick={() => onChange('cafe')}
-        aria-label="Switch to Cafe Aadvikam"
-        className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
-        style={active === 'cafe' ? { background: 'linear-gradient(135deg,#E07A3A,#C84B0A)', boxShadow: '0 4px 16px rgba(200,75,10,0.55)' } : { background: 'rgba(255,255,255,0.05)' }}
-      >
-        <UtensilsCrossed className={cn('size-4 transition-all', active === 'cafe' ? 'text-white' : 'text-white/40')} />
-        <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'cafe' ? 'text-white' : 'text-white/35')}>Cafe</span>
-      </button>
-      <div className="mx-1.5 h-px bg-amber-300/15" />
-      <button
-        onClick={() => onChange('bakery')}
-        aria-label="Switch to VRSNB Bakery"
-        className="relative flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2.5 py-2.5 transition-all duration-300 active:scale-90"
-        style={active === 'bakery' ? { background: 'linear-gradient(135deg,#b8860b,#8B5E04)', boxShadow: '0 4px 16px rgba(180,140,0,0.5)' } : { background: 'rgba(255,255,255,0.05)' }}
-      >
-        <img src={snbLogo} alt="SNB" className={cn('size-6 object-contain transition-all', active === 'bakery' ? 'opacity-100 drop-shadow-[0_0_6px_rgba(255,215,0,0.9)]' : 'opacity-30')} />
-        <span className={cn('text-[9px] font-body font-bold leading-none tracking-wide transition-all', active === 'bakery' ? 'text-white' : 'text-white/35')}>Bakery</span>
-      </button>
-    </div>
   );
 }
 
@@ -930,12 +632,9 @@ function BakeryLanding({ onMenuOpen }: { onMenuOpen: () => void }) {
 export default function Landing() {
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
-  const { loadMenu } = useMenuStore();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [activeVenue, setActiveVenue] = useState<'cafe' | 'bakery'>('cafe');
+  const [activeVenue] = useState<'cafe' | 'bakery'>('cafe');
   const progressSections = useMemo(() => ['#hero', '#leaf', '#bakery', '#signature', '#party-hall', '#visit'], []);
 
-  useEffect(() => { loadMenu(); }, [loadMenu]);
   useEffect(() => {
     if (currentUser) navigate(getRoleDefaultPath(currentUser.role), { replace: true });
   }, [currentUser, navigate]);
@@ -944,11 +643,9 @@ export default function Landing() {
 
   return (
     <main className="min-h-screen scroll-smooth bg-stone-950 font-body antialiased">
-      <FloatingNav onMenuOpen={() => setMenuOpen(true)} />
-      <VenueToggle active={activeVenue} onChange={setActiveVenue} />
-      {menuOpen && <MenuPopup activeVenue={activeVenue} onClose={() => setMenuOpen(false)} />}
+      <FloatingNav onMenuOpen={() => navigate('/order')} />
       {activeVenue === 'bakery' ? (
-        <BakeryLanding onMenuOpen={() => setMenuOpen(true)} />
+        <BakeryLanding onMenuOpen={() => navigate('/order')} />
       ) : (
         <>
           <div className="fixed right-4 top-1/2 z-40 hidden -translate-y-1/2 flex-col gap-3 lg:flex">
@@ -962,7 +659,7 @@ export default function Landing() {
           <BakeryScene />
           <SignatureScene />
           <PartyHallScene />
-          <VisitScene onMenuOpen={() => setMenuOpen(true)} />
+          <VisitScene onMenuOpen={() => navigate('/order')} />
         </>
       )}
           <ChatBot />

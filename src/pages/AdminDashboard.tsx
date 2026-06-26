@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -51,7 +51,17 @@ type ClosureRow = {
 };
 
 // CHANGE 3: Removed 'stock-alerts' nav item
-type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{name:string;qty:number;price:number;venue:string}>; created_at: string };
+type PublicOrder = { id: string; order_number: string; customer_name: string; customer_phone: string; customer_address: string; location_pin: string; notes: string | null; amount: number; status: string; payment_id: string | null; items: Array<{name:string;qty:number;price:number;venue:string;unit?:string}>; created_at: string };
+
+const PUBLIC_ORDER_STATUS_OPTIONS = [
+  { value: 'paid', label: 'Payment received' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'preparing', label: 'Preparing' },
+  { value: 'ready', label: 'Ready' },
+  { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'cancelled', label: 'Cancelled' },
+] as const;
 
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
   { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
@@ -209,6 +219,7 @@ function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
   const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
+  const [publicOrderUpdating, setPublicOrderUpdating] = useState<string | null>(null);
   const [fromDate, setFromDate] = useState(lastWeekInput());
   const [toDate, setToDate] = useState(todayInput());
   const [closureDate, setClosureDate] = useState(todayInput());
@@ -234,21 +245,38 @@ function AdminDashboard() {
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
   useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
-  useEffect(() => {
-    const loadPublicOrders = async () => {
-      setPublicOrdersLoading(true);
-      const { data, error } = await supabase.rpc('list_public_orders_secure', {
-        p_limit: 250,
-        p_offset: 0,
-        p_include_full_contact: true,
-        p_purpose: 'order_fulfilment',
-      });
-      if (error) throw error;
-      setPublicOrders((data ?? []) as PublicOrder[]);
+  const loadPublicOrders = useCallback(async () => {
+    setPublicOrdersLoading(true);
+    const { data, error } = await supabase.rpc('list_public_orders_secure', {
+      p_limit: 250,
+      p_offset: 0,
+      p_include_full_contact: true,
+      p_purpose: 'order_fulfilment',
+    });
+    if (error) {
       setPublicOrdersLoading(false);
-    };
-    void loadPublicOrders();
+      throw error;
+    }
+    setPublicOrders(((data ?? []) as PublicOrder[]).filter((order) => !['payment_pending', 'payment_failed'].includes(order.status)));
+    setPublicOrdersLoading(false);
   }, []);
+
+  const updatePublicOrderStatus = useCallback(async (orderId: string, status: string) => {
+    setPublicOrderUpdating(orderId);
+    const { error } = await supabase.rpc('update_public_order_status_secure', {
+      p_order_id: orderId,
+      p_status: status,
+    });
+    if (error) {
+      setPublicOrderUpdating(null);
+      alert(error.message || 'Unable to update online order status.');
+      return;
+    }
+    await loadPublicOrders();
+    setPublicOrderUpdating(null);
+  }, [loadPublicOrders]);
+
+  useEffect(() => { void loadPublicOrders(); }, [loadPublicOrders]);
   useEffect(() => {
     if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
       setActiveTab(requestedTab);
@@ -1457,7 +1485,18 @@ function AdminDashboard() {
           <p className="mt-2 text-sm text-slate-700">{order.customer_address}</p><p className="text-xs text-slate-500">PIN: {order.location_pin}</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">{(order.items || []).map((item, idx) => <div key={idx} className="rounded-xl bg-slate-50 px-3 py-2 text-xs"><span className="font-black">{item.name}</span> × {item.qty}<span className="float-right font-bold">{formatCurrency(item.price * item.qty)}</span></div>)}</div>
           {order.notes && <p className="mt-2 text-xs text-slate-600">Note: {order.notes}</p>}
-          <p className="mt-2 text-[10px] font-bold text-slate-400">Payment ID: {order.payment_id || '—'}</p>
+          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Customer tracking status</p><p className="mt-1 text-xs font-bold text-slate-700">Changing this updates the customer tracking page immediately.</p></div>
+            <select
+              value={order.status}
+              disabled={publicOrderUpdating === order.id}
+              onChange={(event) => void updatePublicOrderStatus(order.id, event.target.value)}
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-800 outline-none disabled:opacity-50"
+            >
+              {PUBLIC_ORDER_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </div>
+          <p className="mt-2 text-[10px] font-bold text-slate-400">Payment ID: {order.payment_id || '—'} · Tax included: 3%</p>
         </article>)}</div>
       )}
     </Panel>
