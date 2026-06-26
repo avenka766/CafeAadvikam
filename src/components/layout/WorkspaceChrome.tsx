@@ -207,13 +207,14 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Shop Master', path: '/branch/hosur?tab=shops', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'New Order', path: '/branch/hosur?tab=newOrder', icon: <ShoppingCart className="size-4" />, group: 'Main' },
-        { label: 'Receiving', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Received From Packing', path: '/branch/hosur?tab=receiving', icon: <Package className="size-4" />, group: 'Main' },
         { label: 'Billing', path: '/branch/hosur?tab=billing', icon: <Receipt className="size-4" />, group: 'Main' },
-        { label: 'Credit', path: '/branch/hosur?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
-        { label: 'Collection', path: '/branch/hosur?tab=collection', icon: <WalletCards className="size-4" />, group: 'Reports' },
-        { label: 'Disputes', path: '/branch/hosur?tab=disputes', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Credit Ledger', path: '/branch/hosur?tab=credit', icon: <CreditCard className="size-4" />, group: 'Operations' },
+        { label: 'Payment Collection', path: '/branch/hosur?tab=collection', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'WhatsApp Logs', path: '/branch/hosur?tab=whatsapp', icon: <QrCode className="size-4" />, group: 'Operations' },
+        { label: 'Reminder History', path: '/branch/hosur?tab=reminders', icon: <Bell className="size-4" />, group: 'Operations' },
         { label: 'Daily Closure', path: '/branch/hosur?tab=closure', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
-        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Reports', path: '/branch/hosur?tab=reports', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Notifications', path: '/branch/hosur?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
     case 'admin_vrsnb':
