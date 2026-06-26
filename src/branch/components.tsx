@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // src/branch/components.tsx
 import { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
