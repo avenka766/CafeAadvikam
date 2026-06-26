@@ -46,6 +46,22 @@ import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 const BRANCH = 'Hosur' as const;
 const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
+type HosurCounterStatus = { isOpen: boolean; isClosed: boolean; openingCash: number };
+
+async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterStatus> {
+  const { data, error } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
+  if (error) throw error;
+  const status = data as {
+    session?: { status?: string; opening_cash?: number } | null;
+    closure?: Record<string, unknown> | null;
+  } | null;
+  return {
+    isOpen: status?.session?.status === 'open' && !status?.closure,
+    isClosed: Boolean(status?.closure) || status?.session?.status === 'closed',
+    openingCash: Number(status?.session?.opening_cash ?? 0),
+  };
+}
+
 const money = (value: number | null | undefined) =>
   `₹${Number(value ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -765,6 +781,38 @@ export default function HosurDashboard() {
   const [reminders, setReminders] = useState<HosurReminder[]>([]);
   const [disputes, setDisputes] = useState<HosurDispute[]>([]);
   const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [hosurCounterOpen, setHosurCounterOpen] = useState(false);
+  const [hosurCounterLoading, setHosurCounterLoading] = useState(true);
+  const [hosurCounterError, setHosurCounterError] = useState('');
+
+  const refreshHosurCounter = useCallback(async () => {
+    setHosurCounterLoading(true);
+    setHosurCounterError('');
+    try {
+      const status = await getHosurCounterStatus();
+      setHosurCounterOpen(status.isOpen);
+      return status.isOpen;
+    } catch (error) {
+      setHosurCounterOpen(false);
+      setHosurCounterError(error instanceof Error ? error.message : 'Hosur counter status could not be loaded.');
+      return false;
+    } finally {
+      setHosurCounterLoading(false);
+    }
+  }, []);
+
+  const assertHosurCounterOpen = useCallback(async () => {
+    const status = await getHosurCounterStatus();
+    setHosurCounterOpen(status.isOpen);
+    setHosurCounterLoading(false);
+    if (!status.isOpen) throw new Error('Hosur cashier counter is closed. Open today’s counter in Daily Closure before confirming any bill.');
+  }, []);
+
+  const handleHosurCounterChange = useCallback((isOpen: boolean) => {
+    setHosurCounterOpen(isOpen);
+    setHosurCounterLoading(false);
+    setHosurCounterError('');
+  }, []);
 
   const branchIncoming = incoming[BRANCH] || [];
 
@@ -865,6 +913,16 @@ export default function HosurDashboard() {
     const nextTab = parseHosurTab(searchParams.get('tab'));
     setTabState((current) => current === nextTab ? current : nextTab);
   }, [searchParams]);
+
+  useEffect(() => {
+    if (tab === 'billing' || tab === 'collection' || tab === 'closure') void refreshHosurCounter();
+  }, [tab, refreshHosurCounter]);
+
+  useEffect(() => {
+    const onFocus = () => { if (tab === 'billing' || tab === 'collection') void refreshHosurCounter(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [tab, refreshHosurCounter]);
 
   const setTab = (nextTab: HosurTab) => {
     setTabState(nextTab);
@@ -1072,6 +1130,7 @@ export default function HosurDashboard() {
   };
 
   const confirmBill = async (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => {
+    await assertHosurCounterOpen();
     const total = bill.subtotal;
     let paid = 0;
     let credit = 0;
@@ -1284,12 +1343,12 @@ export default function HosurDashboard() {
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} branchIncoming={branchIncoming} busy={busy} withBusy={withBusy} confirmIncoming={confirmIncoming} createDraftBill={createDraftBill} userName={userName} />}
-              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} />}
+              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
-              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} />}
+              {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
               {tab === 'reminders' && <ReminderHistoryTab reminders={reminders} credits={openCredits} busy={busy} withBusy={withBusy} runDueReminders={runDueReminders} />}
-              {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} />}
+              {tab === 'closure' && <DailyClosureTab actorId={currentUser?.id ?? ''} actorName={currentUser?.displayName || currentUser?.username || 'Hosur Staff'} orders={orders} bills={bills} credits={credits} payments={payments} disputes={disputes} logs={whatsappLogs} onCounterStatusChange={handleHosurCounterChange} />}
               {tab === 'reports' && <ReportsTab shops={shops} bills={bills} billItems={billItems} credits={credits} logs={whatsappLogs} reminders={reminders} disputes={disputes} />}
               {tab === 'notifications' && <NotificationsTab notifications={notifications} busy={busy} withBusy={withBusy} />}
             </div>
@@ -1839,12 +1898,16 @@ function ReceivingTab({ orders, orderItems, branchIncoming, busy, withBusy, conf
   );
 }
 
-function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
+function BillingTab({ bills, billItems, busy, withBusy, confirmBill, counterOpen, counterLoading, counterError, openCounter }: {
   bills: HosurBill[];
   billItems: Record<string, HosurBillItem[]>;
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   confirmBill: (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => Promise<void>;
+  counterOpen: boolean;
+  counterLoading: boolean;
+  counterError: string;
+  openCounter: () => void;
 }) {
   const draftBills = bills.filter((bill) => bill.status === 'draft');
   const recentBills = bills.filter((bill) => bill.status !== 'draft').slice(0, 25);
@@ -1854,7 +1917,8 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
 
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Review item-wise bill calculation, select payment type, due date, then confirm and send WhatsApp bill." />
+      <SectionTitle icon={<Receipt className="size-5" />} title="Billing" subtitle="Open today’s cashier counter before confirming, printing, or sending any bill." />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Billing Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before billing.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
       {draftBills.length === 0 ? <EmptyState icon={<Receipt className="size-6" />} title="No bill drafts" subtitle="Confirm received shop orders to generate bill drafts automatically." /> : draftBills.map((bill) => {
         const items = billItems[bill.id] ?? [];
         const pType = paymentType[bill.id] ?? 'full';
@@ -1865,15 +1929,15 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill }: {
           <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-display text-xl font-black">{bill.shopName}</p><p className="text-sm text-muted-foreground">Bill {bill.billNo} · {toDateTimeLabel(bill.createdAt)}</p></div><Badge tone="amber">Draft</Badge></div>
           <div className="overflow-x-auto rounded-2xl border"><table className="min-w-full text-sm"><thead className="bg-muted text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Qty</th><th className="px-3 py-2">Rate</th><th className="px-3 py-2 text-right">Total</th></tr></thead><tbody className="divide-y">{items.map((item) => <tr key={item.id}><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2">{num(item.quantity)} {item.unit}</td><td className="px-3 py-2">{money(item.unitPrice)}</td><td className="px-3 py-2 text-right font-black">{money(item.lineTotal)}</td></tr>)}</tbody></table></div>
           <div className="grid gap-3 md:grid-cols-4">
-            {(['full', 'credit', 'partial'] as PaymentType[]).map((type) => <button key={type} className={cn('rounded-2xl border p-3 text-left font-black', pType === type ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'bg-card')} onClick={() => setPaymentType((prev) => ({ ...prev, [bill.id]: type }))}>{type === 'full' ? 'Full Payment' : type === 'credit' ? 'Credit' : 'Partial Payment'}</button>)}
-            {pType !== 'credit' && <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>}
+            {(['full', 'credit', 'partial'] as PaymentType[]).map((type) => <button key={type} className={cn('rounded-2xl border p-3 text-left font-black', pType === type ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'bg-card')} disabled={!counterOpen || counterLoading} onClick={() => setPaymentType((prev) => ({ ...prev, [bill.id]: type }))}>{type === 'full' ? 'Full Payment' : type === 'credit' ? 'Credit' : 'Partial Payment'}</button>)}
+            {pType !== 'credit' && <Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field>}
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            {pType === 'partial' && <Field label="Paid amount"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paidAmount: e.target.value } }))} placeholder="Enter paid amount" /></Field>}
-            {(pType === 'credit' || pType === 'partial') && <Field label="Due date mandatory"><input className={inputClass} type="date" min={TODAY_ISO()} value={d.dueDate} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), dueDate: e.target.value } }))} /></Field>}
+            {pType === 'partial' && <Field label="Paid amount"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), paidAmount: e.target.value } }))} placeholder="Enter paid amount" /></Field>}
+            {(pType === 'credit' || pType === 'partial') && <Field label="Due date mandatory"><input className={inputClass} type="date" min={TODAY_ISO()} value={d.dueDate} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), dueDate: e.target.value } }))} /></Field>}
             <div className="rounded-2xl bg-slate-900 p-3 text-white"><p className="text-xs font-black uppercase text-white/60">Bill Total</p><p className="font-display text-3xl font-black">{money(bill.subtotal)}</p><p className="mt-1 text-xs">Paid {money(paid)} · Credit {money(credit)}</p></div>
           </div>
-          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, printed, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm Bill & Send WhatsApp</button></div>
+          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, printed, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm Bill & Send WhatsApp</button></div>
         </Card>;
       })}
       <Card className="space-y-3"><h3 className="font-black">Recent Bills</h3>{recentBills.length === 0 ? <p className="text-sm text-muted-foreground">No confirmed bills yet.</p> : recentBills.map((bill) => <div key={bill.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3"><div><p className="font-black">{bill.billNo} · {bill.shopName}</p><p className="text-xs text-muted-foreground">Paid {money(bill.paidAmount)} · Credit {money(bill.creditAmount)} · {toDateTimeLabel(bill.confirmedAt)}</p></div><div className="flex items-center gap-2"><Badge tone={statusTone(bill.status)}>{bill.status.replace(/_/g, ' ')}</Badge><button className={softButton} onClick={() => printBill(bill, billItems[bill.id] ?? [], true)}><Printer className="size-4" /> Duplicate Bill</button></div></div>)}</Card>
@@ -1942,21 +2006,26 @@ function CreditLedgerTab({ credits, payments, shops }: { credits: HosurCreditLed
   );
 }
 
-function PaymentCollectionTab({ credits, busy, withBusy, collectCredit }: {
+function PaymentCollectionTab({ credits, busy, withBusy, collectCredit, counterOpen, counterLoading, counterError, openCounter }: {
   credits: HosurCreditLedger[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   collectCredit: (ledger: HosurCreditLedger, draft: PaymentDraft) => Promise<void>;
+  counterOpen: boolean;
+  counterLoading: boolean;
+  counterError: string;
+  openCounter: () => void;
 }) {
   const [draft, setDraft] = useState<Record<string, PaymentDraft>>({});
   const getDraft = (id: string) => draft[id] ?? EMPTY_PAYMENT;
   const exportExcel = () => downloadWorkbook(`hosur-payment-collection-${TODAY_ISO()}.xls`, [{ name: 'Pending Collection', rows: credits.map((c) => ({ Shop: c.shopName, Bill: c.billNo, 'Opening Amount': c.openingAmount, 'Paid Amount': c.paidAmount, 'Balance Amount': c.balanceAmount, 'Due Date': c.dueDate ?? '', Status: c.status })) }]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Hosur Branch and Admin can clear credit. Partial credit settlement is supported." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
+      <SectionTitle icon={<WalletCards className="size-5" />} title="Payment Collection" subtitle="Open today’s cashier counter before recording any cash, UPI, card, or bank collection." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
+      {!counterOpen && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black">Collection Counter Locked</p><p className="mt-1 text-sm font-semibold">{counterLoading ? 'Checking today’s counter status…' : counterError || 'Open today’s Hosur counter in Daily Closure before recording a collection.'}</p></div><button type="button" className={primaryButton} onClick={openCounter} disabled={counterLoading}><ShieldCheck className="size-4" /> Open Counter</button></div></div>}
       {credits.length === 0 ? <EmptyState icon={<WalletCards className="size-6" />} title="No pending credit to collect" /> : credits.map((credit) => {
         const d = getDraft(credit.id);
-        return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
+        return <Card key={credit.id} className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{credit.shopName}</p><p className="text-xs text-muted-foreground">Bill {credit.billNo} · Balance {money(credit.balanceAmount)} · Due {toDateLabel(credit.dueDate)}</p></div><Badge tone={credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'red' : 'amber'}>{credit.dueDate && daysBetween(credit.dueDate) > 0 ? 'overdue' : 'pending'}</Badge></div><div className="grid gap-3 md:grid-cols-4"><Field label="Amount collected"><input className={inputClass} type="number" value={d.paidAmount} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paidAmount: e.target.value } }))} placeholder="Amount" /></Field><Field label="Payment mode"><select className={inputClass} value={d.paymentMode} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), paymentMode: e.target.value as PaymentMode } }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option><option value="mixed">Mixed</option></select></Field><Field label="Remarks"><input className={inputClass} value={d.remarks} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((p) => ({ ...p, [credit.id]: { ...getDraft(credit.id), remarks: e.target.value } }))} placeholder="Optional" /></Field><div className="flex items-end"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => collectCredit(credit, d), 'Credit payment recorded.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Collect</button></div></div></Card>;
       })}
     </div>
   );
@@ -1992,7 +2061,7 @@ function ReminderHistoryTab({ reminders, credits, busy, withBusy, runDueReminder
   );
 }
 
-function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments, disputes, logs }: {
+function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments, disputes, logs, onCounterStatusChange }: {
   actorId: string;
   actorName: string;
   orders: HosurOrder[];
@@ -2001,6 +2070,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
   payments: HosurCreditPayment[];
   disputes: HosurDispute[];
   logs: HosurWhatsappLog[];
+  onCounterStatusChange?: (isOpen: boolean) => void;
 }) {
   const [date, setDate] = useState(TODAY_ISO());
   const [openingCash, setOpeningCash] = useState('0');
@@ -2041,7 +2111,8 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
   const laterCreditCollections = dayPayments.reduce((sum, payment) => sum + payment.amountCollected, 0);
   const totalCollected = billCollections + laterCreditCollections;
   const expectedCash = Number(openingCash || 0) + cashBills + cashCollections;
-  const difference = Number(countedCash || 0) - expectedCash;
+  const difference = Math.round((Number(countedCash || 0) - expectedCash) * 100) / 100;
+  const cashMatches = countedCash.trim() !== '' && difference === 0;
   const whatsappSent = dayLogs.filter((log) => log.status === 'sent').length;
   const whatsappFailed = dayLogs.filter((log) => log.status === 'failed').length;
 
@@ -2065,7 +2136,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     const { data: statusData, error: statusLoadError } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
     setLoadingStatus(false);
     if (statusLoadError) {
-      setStatusError(`Counter status could not be loaded: ${statusLoadError.message}. Billing remains available.`);
+      setStatusError(`Counter status could not be loaded: ${statusLoadError.message}. Billing is locked until the status can be verified.`);
       return;
     }
 
@@ -2086,8 +2157,10 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     setRemarks(closure?.remarks ?? '');
     setClosedBy(closure?.closed_by ?? currentSession?.opened_by ?? actorName);
     setSaved(Boolean(closure));
-    setCounterOpened(currentSession?.status === 'open' && !closure);
-  }, [actorId, actorName, date]);
+    const isOpen = currentSession?.status === 'open' && !closure;
+    setCounterOpened(isOpen);
+    if (date === TODAY_ISO()) onCounterStatusChange?.(isOpen);
+  }, [actorId, actorName, date, onCounterStatusChange]);
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
 
@@ -2106,8 +2179,9 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     if (error) return setStatusError(error.message);
     setCounterOpened(true);
     setClosedBy(actorName);
-    setStatusMessage('Counter opened. Billing was already available and remains available.');
+    onCounterStatusChange?.(true);
     await loadStatus();
+    setStatusMessage('Counter opened. Hosur billing is now unlocked for today.');
   };
 
   const saveClosure = async () => {
@@ -2118,20 +2192,11 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     if (!countedCash.trim() || !Number.isFinite(counted) || counted < 0) return setStatusError('Enter the physical counted closing cash before closing the day.');
     const opening = Number(openingCash || 0);
     if (!Number.isFinite(opening) || opening < 0) return setStatusError('Opening cash must be zero or more.');
+    if (!counterOpened) return setStatusError('Open today’s Hosur counter before closing the day.');
+    if (difference !== 0) return setStatusError(`Cash cannot be closed with a difference. Resolve ${money(Math.abs(difference))} ${difference < 0 ? 'shortage' : 'excess'} so counted cash exactly matches expected cash.`);
 
     setSaving(true);
     try {
-      // Opening a counter is optional for billing. If the cashier skipped it, create
-      // the session automatically at closure so the day can still be reconciled.
-      if (!counterOpened) {
-        const { error: openError } = await supabase.rpc('open_hosur_counter_secure', {
-          p_business_date: date,
-          p_opening_cash: opening,
-        });
-        const alreadyOpen = /already|open|duplicate|exists/i.test(openError?.message ?? '');
-        if (openError && !alreadyOpen) throw openError;
-      }
-
       const { error } = await supabase.rpc('close_hosur_counter_secure', {
         p_business_date: date,
         p_counted_cash: counted,
@@ -2156,8 +2221,9 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
       setSaved(true);
       setCounterOpened(false);
       setClosedBy(actorName);
-      setStatusMessage('Daily closure saved and the counter is closed.');
+      onCounterStatusChange?.(false);
       await loadStatus();
+      setStatusMessage('Daily closure saved with exact cash reconciliation. Billing is locked until the next counter is opened.');
     } catch (error: any) {
       setStatusError(error?.message ?? 'Daily closure could not be saved.');
     } finally {
@@ -2165,7 +2231,7 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     }
   };
 
-  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened (billing allowed)'}`, `
+  const printSummary = () => printDocument('Hosur Daily Closure', `Business date: ${toDateLabel(date)} · Status: ${saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened — billing locked'}`, `
     <div class="grid"><div class="kpi">Opening Cash<b>${money(Number(openingCash || 0))}</b></div><div class="kpi">Gross Sales<b>${money(totalSales)}</b></div><div class="kpi">Total Collection<b>${money(totalCollected)}</b></div><div class="kpi">Credit Given<b>${money(totalCredit)}</b></div></div>
     <div class="section"><h2>Cash Reconciliation</h2><table><tbody><tr><td>Opening cash</td><td class="right">${money(Number(openingCash || 0))}</td><td>Cash sales</td><td class="right">${money(cashBills)}</td></tr><tr><td>Credit collections in cash</td><td class="right">${money(cashCollections)}</td><td>Expected cash</td><td class="right">${money(expectedCash)}</td></tr><tr><td>Counted closing cash</td><td class="right">${money(Number(countedCash || 0))}</td><td>Difference</td><td class="right">${money(difference)}</td></tr></tbody></table></div>
     <div class="section"><h2>Payment Summary</h2><table><thead><tr><th>Cash</th><th>UPI</th><th>Card</th><th>Bank</th><th>Mixed</th><th>Credit</th></tr></thead><tbody><tr><td class="right">${money(cashBills + cashCollections)}</td><td class="right">${money(upiBills + upiCollections)}</td><td class="right">${money(cardBills + cardCollections)}</td><td class="right">${money(bankBills + bankCollections)}</td><td class="right">${money(mixedBills + mixedCollections)}</td><td class="right">${money(totalCredit)}</td></tr></tbody></table></div>
@@ -2186,10 +2252,10 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-200">Hosur counter control</span>
-            <span className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black text-white/80">Billing never requires counter opening</span>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black text-white/80">Counter opening mandatory for billing</span>
           </div>
           <h2 className="font-display text-2xl font-black">Daily Closure & Cash Reconciliation</h2>
-          <p className="mt-1 max-w-3xl text-sm text-white/65">Opening the counter is optional. Staff can create bills at any time; when closing the day, the system automatically creates a session if one was not opened.</p>
+          <p className="mt-1 max-w-3xl text-sm text-white/65">Open today’s counter before billing. At closure, physical counted cash must exactly match expected cash; shortages or excess cash cannot be finalized.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <input type="date" className="h-11 rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-bold text-white [color-scheme:dark]" value={date} onChange={(event) => setDate(event.target.value)} />
@@ -2213,19 +2279,20 @@ function DailyClosureTab({ actorId, actorName, orders, bills, credits, payments,
     <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
       <Card className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h3 className="font-display text-lg font-black">Counter & Physical Cash</h3><p className="text-xs text-muted-foreground">Opening is optional. Closing cash is required for reconciliation.</p></div>
-          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed' : counterOpened ? 'Open' : 'Not opened — billing allowed'}</span>
+          <div><h3 className="font-display text-lg font-black">Counter & Physical Cash</h3><p className="text-xs text-muted-foreground">Counter opening is mandatory. Exact physical cash reconciliation is required before closure.</p></div>
+          <span className={cn('inline-flex items-center rounded-full px-3 py-1.5 text-xs font-black', saved ? 'bg-slate-100 text-slate-700' : counterOpened ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>{saved ? 'Closed' : counterOpened ? 'Open' : 'Counter Closed — Billing Locked'}</span>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Opening cash (optional)"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field>
-          <Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={saved} onChange={(event)=>setCountedCash(event.target.value)} placeholder="Enter physical cash" /></Field>
+          <Field label="Opening cash"><input className={inputClass} type="number" min="0" value={openingCash} disabled={counterOpened || saved} onChange={(event)=>setOpeningCash(event.target.value)} /></Field>
+          <Field label="Counted closing cash"><input className={inputClass} type="number" min="0" value={countedCash} disabled={saved || !counterOpened} onChange={(event)=>setCountedCash(event.target.value)} placeholder="Enter physical cash" /></Field>
           <Field label="Responsible staff"><input className={inputClass} value={closedBy} readOnly /></Field>
           <Field label="Difference"><div className={cn(inputClass,'flex items-center font-black', difference===0?'text-emerald-700':'text-red-700')}>{money(difference)}</div></Field>
         </div>
         <Field label="Closure remarks"><textarea className={cn(inputClass,'min-h-24')} value={remarks} disabled={saved} onChange={(event)=>setRemarks(event.target.value)} placeholder="Cash variance, pending dispatch, failed WhatsApp or handover notes" /></Field>
+        {counterOpened && countedCash.trim() && difference !== 0 && <div className={cn('rounded-xl border px-3 py-2 text-sm font-bold', difference < 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700')}><AlertTriangle className="mr-2 inline size-4" />{difference < 0 ? `Cash shortage: ${money(Math.abs(difference))}` : `Cash excess: ${money(difference)}`}. Resolve the difference before closure.</div>}
         <div className="flex flex-wrap gap-2">
-          <button className={softButton} disabled={saving || saved || counterOpened} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter (Optional)</button>
-          <button className={primaryButton} disabled={saving || saved} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Close Day & Save</button>
+          <button className={softButton} disabled={saving || saved || counterOpened || date !== TODAY_ISO()} onClick={() => void openCounter()}>{saving?<Loader2 className="size-4 animate-spin"/>:<CheckCircle2 className="size-4"/>}Open Counter</button>
+          <button className={primaryButton} disabled={saving || saved || !counterOpened || !cashMatches} onClick={() => void saveClosure()}>{saving?<Loader2 className="size-4 animate-spin"/>:<ShieldCheck className="size-4"/>}Close Day & Save</button>
         </div>
       </Card>
 
