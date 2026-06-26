@@ -40,9 +40,8 @@ export default function Header() {
   };
 
   const isPublic = ['/', '/login', '/menu', '/digital-menu'].includes(location.pathname);
-  const isQROrder = location.pathname === '/order';
-  const isTracking = location.pathname === '/order/track';
-  if (isQROrder || isTracking) return null;
+  const isCustomerOrder = ['/order', '/order/track', '/cafe-order', '/cafe-order/track'].includes(location.pathname);
+  if (isCustomerOrder) return null;
 
   // N-12: venue-aware brand name — differentiate VRSNB vs SNB routes
   const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');

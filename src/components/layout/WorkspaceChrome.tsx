@@ -29,6 +29,7 @@ import {
   Sparkles,
   ShieldCheck,
   Store,
+  Smartphone,
   Menu,
   X,
 } from 'lucide-react';
@@ -92,25 +93,26 @@ const DEFAULT_META: PageMeta = {
 function navForRole(role?: string): NavItem[] {
   switch (role) {
     case 'admin':
-      // CHANGE 2: Removed Billing, Orders, Daily Closure, Bakery Store, Packing, Recipes
       return [
+        { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
-        { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
-        { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Reports' },
-        { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Reports' },
-        { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
-        { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
-        { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
-        { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <AlertTriangle className="size-4" />, group: 'Reports' },
-        { label: 'Waste & Loss', path: '/admin-dashboard?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
+        { label: 'Items', path: '/admin-dashboard?tab=items', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure', path: '/admin-dashboard?tab=daily-closure', icon: <WalletCards className="size-4" />, group: 'Operations' },
+        { label: 'Credit Pending', path: '/admin-dashboard?tab=credits', icon: <CreditCard className="size-4" />, group: 'Operations' },
+        { label: 'Advance Orders', path: '/admin-dashboard?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Operations' },
+        { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
+        { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
+        { label: 'Waste & Loss', path: '/admin-dashboard?tab=waste', icon: <Trash2 className="size-4" />, group: 'Stock' },
+        { label: 'Invoices', path: '/admin-dashboard?tab=invoices', icon: <Receipt className="size-4" />, group: 'Reports' },
         { label: 'Audit Logs', path: '/admin-dashboard?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
-        { label: 'Items', path: '/bakery/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
-        { label: 'Attendance', path: '/attendance-salary', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
-        { label: 'Staff', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
-        { label: 'Invoices', path: '/admin/invoices', icon: <FileText className="size-4" />, group: 'Reports' },
-        { label: 'QR Menu', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
+        { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
+        { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <FileText className="size-4" />, group: 'Reports' },
+        { label: 'Attendance & Payroll', path: '/admin-dashboard?tab=attendance', icon: <CalendarCheck className="size-4" />, group: 'Admin' },
+        { label: 'Menu Management', path: '/menu-management', icon: <UtensilsCrossed className="size-4" />, group: 'Admin' },
+        { label: 'Staff Management', path: '/staff-management', icon: <Users className="size-4" />, group: 'Admin' },
+        { label: 'QR Table Codes', path: '/qr-menu', icon: <QrCode className="size-4" />, group: 'Admin' },
       ];
     case 'owner':
       return [
