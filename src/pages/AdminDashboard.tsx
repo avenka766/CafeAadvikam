@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
@@ -210,6 +210,7 @@ const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 function AdminDashboard() {
   const { currentUser } = useAuthStore();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
@@ -277,6 +278,9 @@ function AdminDashboard() {
   }, [loadPublicOrders]);
 
   useEffect(() => { void loadPublicOrders(); }, [loadPublicOrders]);
+  useEffect(() => {
+    if (requestedTab === 'items') navigate('/bakery/items', { replace: true });
+  }, [navigate, requestedTab]);
   useEffect(() => {
     if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
       setActiveTab(requestedTab);
