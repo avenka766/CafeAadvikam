@@ -245,7 +245,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
   });
   const reprint = (bill: BranchBillRecord) => {
     markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
-    printCounterBill(bill, true);
+    void printCounterBill(bill, true);
   };
   return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill or salesperson'} className="pl-9"/></div>}>
     {ledgerMessage && <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">{ledgerMessage}</p>}
@@ -621,7 +621,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       biller: currentUser?.displayName || 'Staff',
     });
     updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
-    printCounterBill(finalBill, false);
+    void printCounterBill(finalBill, false);
     setCollectingId(null);
   };
 
@@ -752,7 +752,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
       // process_branch_return is atomic and already restores branch stock.
       // Do not update stock a second time in the browser.
       await fetchBranchData(branch);
-      printCounterBill({
+      void printCounterBill({
       id: ret.id,
       branch,
       billNo: ret.returnNo,
