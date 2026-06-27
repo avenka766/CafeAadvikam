@@ -767,7 +767,7 @@ export default function BranchBillingProTab({
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name));
                 const disabled = stock <= 0;
