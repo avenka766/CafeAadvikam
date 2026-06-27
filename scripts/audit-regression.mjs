@@ -54,6 +54,15 @@ const packageJson = packageJsonText ? JSON.parse(packageJsonText) : null;
 const authStore = read('src/stores/authStore.ts') ?? '';
 const branchBilling = read('src/branch/tabs/BranchBillingProTab.tsx') ?? '';
 const hosurDashboard = read('src/pages/HosurDashboard.tsx') ?? '';
+const branchBusinessModules = read('src/branch/tabs/BranchBusinessModules.tsx') ?? '';
+const adminSnb = read('src/pages/AdminSNBDashboard.tsx') ?? '';
+const adminVrsnb = read('src/pages/AdminVRSNBDashboard.tsx') ?? '';
+const bakeryOrderPage = read('src/pages/BakeryOrderPage.tsx') ?? '';
+const branchCatalogStore = read('src/stores/branchCatalogStore.ts') ?? '';
+const recipeStore = read('src/bakery/recipeStore.ts') ?? '';
+const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
+const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
+const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch_catalog_and_live_recipes.sql') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
 const sourceText = sourceFiles
@@ -86,8 +95,55 @@ check(
 
 check(
   'Branch checkout uses the atomic checkout RPC',
-  branchBilling.includes("supabase.rpc('complete_branch_checkout'"),
-  'Branch billing must use complete_branch_checkout so stock, payment and audit writes remain atomic.',
+  branchBilling.includes("supabase.rpc('complete_branch_checkout_canonical'")
+    || branchBilling.includes("supabase.rpc('complete_branch_checkout'"),
+  'Branch billing must use an atomic checkout RPC so stock, payment and audit writes remain atomic.',
+);
+
+
+
+check(
+  'Branch operational screens use the live catalogue',
+  branchBilling.includes('useBranchCatalogStore')
+    && branchBusinessModules.includes('useOperationalCatalog')
+    && adminSnb.includes('useBranchCatalogStore')
+    && adminVrsnb.includes('useBranchCatalogStore')
+    && bakeryOrderPage.includes('useBranchCatalogStore'),
+  'Billing, advance orders, quotations, Admin quotations and customer ordering must use branch_items rather than static arrays.',
+);
+
+check(
+  'Branch catalogue supports persistence and realtime refresh',
+  branchCatalogStore.includes("from('branch_items')")
+    && branchCatalogStore.includes("rpc('create_branch_item'")
+    && branchCatalogStore.includes("rpc('update_branch_item'")
+    && branchCatalogStore.includes("postgres_changes"),
+  'New items and price changes must persist and refresh across open branch screens.',
+);
+
+check(
+  'Public payment amount is resolved server-side',
+  razorpayFunction.includes("from('branch_items')")
+    && razorpayFunction.includes(".in('barcode'")
+    && !/Number\(raw\.price/.test(razorpayFunction),
+  'The Razorpay function must ignore browser-submitted prices and resolve authorised prices from branch_items.',
+);
+
+check(
+  'Store production uses the live recipe store',
+  storeDashboard.includes('useRecipeStore')
+    && storeDashboard.includes('calculateMaterials')
+    && recipeStore.includes("from('bakery_recipes')")
+    && recipeStore.includes('postgres_changes'),
+  'Recipe Management, production requirements and stock deductions must share bakery_recipes.',
+);
+
+check(
+  'Unified branch catalogue migration is present',
+  unifiedMigration.includes('create table if not exists public.branch_items')
+    && unifiedMigration.includes('create or replace function public.complete_branch_checkout_canonical')
+    && unifiedMigration.includes('create or replace function public.canonicalize_branch_sale_items'),
+  'The database migration must install the persistent catalogue and canonical atomic checkout functions.',
 );
 
 check(
