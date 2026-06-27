@@ -4159,7 +4159,6 @@ function StockAuditTab({
   const downloadAudit = () => {
     const rows = reports.flatMap((report) =>
       sortedLines(report).map((line) => {
-        const price = linePrice(line.itemName);
         const differenceValue = lineValue(line);
         return {
           "Report No": report.reportNo,
@@ -4173,7 +4172,6 @@ function StockAuditTab({
           "System Qty": line.systemQty,
           "Physical Qty": line.physicalQty,
           Difference: line.difference,
-          "Unit Price": price,
           "Difference Value": differenceValue,
           "Absolute Difference Value": Math.abs(differenceValue),
           Status: line.difference > 0 ? "Short" : line.difference < 0 ? "Excess" : "Matched",
@@ -4285,13 +4283,12 @@ function StockAuditTab({
               <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
             </div>
             <div className="overflow-x-auto rounded-3xl border border-slate-200">
-              <table className="w-full min-w-[1250px] text-sm">
+              <table className="w-full min-w-[1100px] text-sm">
                 <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Item</th>
                     <th className="px-4 py-3 text-right">System Qty</th>
                     <th className="px-4 py-3">Physical Qty</th>
-                    <th className="px-4 py-3 text-right">Unit Price</th>
                     <th className="px-4 py-3 text-right">
                       <button type="button" onClick={() => toggleSort("difference")} className="ml-auto flex items-center gap-1" title="Sort by stock difference">
                         Difference
@@ -4314,7 +4311,6 @@ function StockAuditTab({
                     const draft = physicalDrafts[key] ?? String(line.physicalQty);
                     const parsedDraft = Number(draft);
                     const changed = draft.trim() !== "" && Number.isFinite(parsedDraft) && Math.abs(parsedDraft - Number(line.physicalQty || 0)) >= 0.0001;
-                    const price = linePrice(line.itemName);
                     const differenceValue = lineValue(line);
                     const unit = String(line.unit || "").toLowerCase();
                     const step = unit === "pcs" || unit.includes("nos") ? "1" : "0.001";
@@ -4351,7 +4347,6 @@ function StockAuditTab({
                             <span className="font-black tabular-nums">{line.physicalQty} {line.unit}</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right font-black tabular-nums">{money(price)}</td>
                         <td className="px-4 py-3 text-right">
                           <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
                             {line.difference > 0 ? `+${line.difference}` : line.difference}
