@@ -3263,7 +3263,8 @@
     min-height: 100dvh;
     overflow: hidden;
     padding-top: var(--staff-header-h);
-    padding-bottom: 0;
+    padding-bottom: var(--branch-nav-reserved-h, 0px);
+    transition: padding-bottom 200ms ease-out;
   }
 
   .workspace-branch-billing .branch-billing-content-frame {
