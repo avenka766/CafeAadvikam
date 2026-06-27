@@ -279,6 +279,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
+  const isBillingFullscreen = /^\/branch\/(snb|vrsnb)/.test(location.pathname) && (!location.search || !location.search.includes('tab=') || location.search.includes('tab=billing'));
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
     || /^\/(daily-closure|order-history)/.test(location.pathname)
@@ -382,7 +383,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </>
       )}
 
-      <aside className="workspace-sidebar hidden md:flex">
+      <aside className={isBillingFullscreen ? "hidden" : "workspace-sidebar hidden md:flex"}>
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
           <div>
@@ -407,7 +408,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </div>
       </aside>
 
-      <div className="workspace-main-shell">
+      <div className={isBillingFullscreen ? "flex min-h-[100dvh] w-full flex-col" : "workspace-main-shell"}>
         {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
