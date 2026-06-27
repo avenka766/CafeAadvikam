@@ -343,14 +343,14 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
             aria-label="Open dashboard menu"
             aria-expanded={mobileNavOpen}
             onClick={() => setMobileNavOpen(true)}
-            className="workspace-mobile-menu-button md:hidden"
+            className={cn("workspace-mobile-menu-button", isBranchBillingRoute ? "hidden" : "md:hidden")}
           >
             <Menu className="size-5" />
             <span>Menu</span>
           </button>
 
           {mobileNavOpen && (
-            <div className="workspace-mobile-nav-layer md:hidden" role="dialog" aria-modal="true" aria-label="Dashboard navigation">
+            <div className={cn("workspace-mobile-nav-layer", isBranchBillingRoute ? "hidden" : "md:hidden")} role="dialog" aria-modal="true" aria-label="Dashboard navigation">
               <button type="button" className="workspace-mobile-nav-backdrop" aria-label="Close dashboard menu" onClick={() => setMobileNavOpen(false)} />
               <aside className="workspace-mobile-drawer">
                 <div className="workspace-mobile-drawer-head">
