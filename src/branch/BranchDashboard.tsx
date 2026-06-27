@@ -288,10 +288,12 @@ export default function BranchDashboard({ branch }: Props) {
   }
 
   return (
-    <div className="branch-command-screen min-h-0 bg-transparent pt-0" style={{ minHeight: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
-      <div className="grid min-h-0 gap-4 px-3 py-3 md:px-5">
-        <main className="min-w-0 min-h-0 overflow-visible rounded-[2rem] border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50">
-          <div className={cn('min-h-0 px-3 py-3 md:px-4', tab !== 'bill' && 'max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>
+    <div
+      className={cn('branch-command-screen min-h-0 bg-transparent pt-0', tab === 'bill' ? 'h-full overflow-hidden' : 'min-h-[calc(100dvh-var(--header-h,3.5rem))]')}
+    >
+      <div className={cn('grid min-h-0', tab === 'bill' ? 'h-full p-1.5' : 'gap-4 px-3 py-3 md:px-5')}>
+        <main className={cn('min-w-0 min-h-0 border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'h-full overflow-hidden rounded-[1.45rem]' : 'overflow-visible rounded-[2rem]')}>
+          <div className={cn(tab === 'bill' ? 'h-full min-h-0 p-1.5' : 'min-h-0 px-3 py-3 md:px-4 max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}

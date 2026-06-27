@@ -11,7 +11,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore, type StockItem } from '../branchStore';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
-import { BRANCH_LABELS, type Branch } from '../types';
+import { type Branch } from '../types';
 import { SNB_CATEGORIES, SNB_ITEMS, type SnbItem } from '../snbItems';
 import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '../vrsnbItems';
 import {
@@ -171,6 +171,8 @@ export default function BranchBillingProTab({
   const selectRef = useRef<HTMLSelectElement>(null);
   const cashTenderedRef = useRef<HTMLInputElement>(null);
   const cartRef = useRef<HTMLDivElement>(null);
+  const itemsGridRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const { categories, items } = useMemo(() => itemCatalog(branch), [branch]);
   const [category, setCategory] = useState<string>('All');
@@ -195,7 +197,7 @@ export default function BranchBillingProTab({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showHold, setShowHold] = useState(false);
   const [qtyPopupItem, setQtyPopupItem] = useState<BillingItem | null>(null);
-  const [qtyPopupValue, setQtyPopupValue] = useState('1');
+  const [qtyPopupValue, setQtyPopupValue] = useState('');
   const [showQtyPopup, setShowQtyPopup] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [dropdownIndex, setDropdownIndex] = useState(0);
@@ -228,13 +230,17 @@ export default function BranchBillingProTab({
 
   useEffect(() => setSelectedIndex(0), [category, query]);
   useEffect(() => setDropdownIndex(0), [query, category]);
+  useEffect(() => {
+    itemRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selectedIndex, visibleItems]);
 
   const todayKey = businessDate();
   const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey && record.active !== false);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
-    setQtyPopupValue(unitOf(item) === 'kg' ? '0.25' : '1');
+    setQtyPopupValue('');
+    setError('');
     setShowQtyPopup(true);
   };
 
@@ -270,7 +276,7 @@ export default function BranchBillingProTab({
     }
   }, [paymentMode, total]);
 
-  const addItem = useCallback((item: BillingItem, amount = unitOf(item) === 'kg' ? 0.25 : 1) => {
+  const addItem = useCallback((item: BillingItem, amount = 1) => {
     setError('');
     if (!isCounterOpen()) {
       setError('Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.');
@@ -294,6 +300,31 @@ export default function BranchBillingProTab({
       return [toBillItem(item, amount), ...current];
     });
   }, [branchStock, stockMap, isCounterOpen]);
+
+  const submitQtyPopup = useCallback(() => {
+    if (!qtyPopupItem) return;
+    const unit = unitOf(qtyPopupItem);
+    const amount = normalizeQtyInput(qtyPopupValue, unit);
+    if (amount <= 0) {
+      setError(`Enter a valid ${unit === 'kg' ? 'weight' : 'quantity'} for ${qtyPopupItem.name}.`);
+      return;
+    }
+    if (!isCounterOpen()) {
+      setError('Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.');
+      setShowQtyPopup(false);
+      setShowCounterClosedAlert(true);
+      return;
+    }
+    const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name));
+    if (amount > available) {
+      setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
+      return;
+    }
+    addItem(qtyPopupItem, amount);
+    setShowQtyPopup(false);
+    setQtyPopupItem(null);
+    setQtyPopupValue('');
+  }, [addItem, branchStock, isCounterOpen, qtyPopupItem, qtyPopupValue, stockMap]);
 
   const reduceItem = (itemName: string) => setCart((current) => current.flatMap((c) => {
     if (c.itemName !== itemName) return [c];
@@ -494,6 +525,16 @@ export default function BranchBillingProTab({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (showQtyPopup || showHold || showShortcuts || showCounterClosedAlert) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowShortcuts(false);
+          setShowHold(false);
+          setShowQtyPopup(false);
+          setShowCounterClosedAlert(false);
+        }
+        return;
+      }
       if (e.key === 'F1') { e.preventDefault(); selectRef.current?.focus(); }
       if (e.key === 'F2') { e.preventDefault(); searchRef.current?.focus(); }
       if (e.key === 'F3') { e.preventDefault(); selectPaymentModeRef.current('cash'); }
@@ -510,14 +551,19 @@ export default function BranchBillingProTab({
         const selectedCartItem = cart[0] ? items.find((item) => item.name === cart[0].itemName) : visibleItems[selectedIndex];
         if (selectedCartItem) openQtyPopup(selectedCartItem);
       }
-      if (e.key === 'Escape') { setShowShortcuts(false); setShowHold(false); setShowQtyPopup(false); }
-      if (e.key === 'ArrowRight') { setSelectedIndex((i) => Math.min(i + 1, visibleItems.length - 1)); }
-      if (e.key === 'ArrowLeft') { setSelectedIndex((i) => Math.max(i - 1, 0)); }
-      if (e.key === 'Enter' && document.activeElement !== searchRef.current && visibleItems[selectedIndex]) { e.preventDefault(); openQtyPopup(visibleItems[selectedIndex]); }
+      const target = e.target as HTMLElement | null;
+      const isEditing = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'));
+      if (isEditing) return;
+      const columns = Math.max(1, itemsGridRef.current ? getComputedStyle(itemsGridRef.current).gridTemplateColumns.split(' ').length : 1);
+      if (e.key === 'ArrowRight') { e.preventDefault(); setSelectedIndex((i) => Math.min(i + 1, visibleItems.length - 1)); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); setSelectedIndex((i) => Math.max(i - 1, 0)); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIndex((i) => Math.min(i + columns, visibleItems.length - 1)); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIndex((i) => Math.max(i - columns, 0)); }
+      if (e.key === 'Enter' && visibleItems[selectedIndex]) { e.preventDefault(); openQtyPopup(visibleItems[selectedIndex]); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, holdBill, items, selectedIndex, total, visibleItems]);
+  }, [cart, holdBill, items, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
 
   if (!billingAllowed) {
     return (
@@ -538,8 +584,8 @@ export default function BranchBillingProTab({
   }
 
   return (
-    <div className="branch-billmaxo min-h-[680px] overflow-visible rounded-[2rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70 md:h-[calc(100dvh-var(--header-h,4rem)-7rem)] md:overflow-hidden">
-      <div className="grid min-h-[680px] grid-cols-1 md:h-full md:min-h-0 md:grid-cols-[minmax(330px,390px)_minmax(0,1fr)] xl:grid-cols-[minmax(430px,540px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(480px,580px)_minmax(0,1fr)]">
+    <div className="branch-billmaxo h-full min-h-0 overflow-hidden rounded-[1.35rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70">
+      <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] xl:grid-cols-[minmax(330px,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(350px,410px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="hidden">
             <div className="flex items-center justify-between gap-3">
@@ -557,16 +603,16 @@ export default function BranchBillingProTab({
           </div>
 
           {requiresSalesperson ? (
-            <div className="space-y-3 border-b border-slate-200 p-4">
+            <div className="space-y-1.5 border-b border-slate-200 px-3 py-2">
               <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Salesperson <span className="text-red-500">*</span></label>
-              <select ref={selectRef} value={salesperson} onChange={(e) => setSalesperson(e.target.value)} className="h-12 w-full rounded-2xl border-2 border-slate-200 bg-slate-50 px-4 text-base font-black text-slate-900 focus:border-amber-400 focus:outline-none">
+              <select ref={selectRef} value={salesperson} onChange={(e) => setSalesperson(e.target.value)} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900 focus:border-amber-400 focus:outline-none">
                 <option value="">Select salesperson before billing</option>
                 {branchPeople.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
-              {isAdmin && <p className="text-xs font-semibold text-slate-500">Admin can add/edit salesperson names in Salesperson Report.</p>}
+              {isAdmin && <p className="text-[10px] font-semibold text-slate-500">Admin can manage names in Salesperson Report.</p>}
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
               <div>
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">Cashier</p>
                 <p className="mt-0.5 text-base font-black text-slate-950">{userName}</p>
@@ -576,11 +622,11 @@ export default function BranchBillingProTab({
           )}
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
-              <button onClick={clear} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
+              <button onClick={clear} className="rounded-lg bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
               {cart.length === 0 ? (
                 <div className="flex min-h-28 items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
                   <div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-black text-slate-600">Cart is empty</p><p className="text-xs text-slate-400">Select items from the right.</p></div>
@@ -608,27 +654,13 @@ export default function BranchBillingProTab({
                           aria-label={`Quantity for ${i.itemName}`}
                         />
                         <span className="rounded-lg bg-slate-950 px-2 py-1 text-center text-[11px] font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
-                        <button onClick={() => { const catalogItem = items.find((it) => it.name === i.itemName); if (catalogItem) addItem(catalogItem); }} className="size-7 rounded-lg bg-amber-400 font-black text-slate-950 flex items-center justify-center"><Plus className="size-3"/></button>
+                        <button onClick={() => {
+                          const catalogItem = items.find((it) => it.name === i.itemName);
+                          if (!catalogItem) return;
+                          if (unitOf(catalogItem) === 'kg') openQtyPopup(catalogItem);
+                          else addItem(catalogItem, 1);
+                        }} className="size-7 rounded-lg bg-amber-400 font-black text-slate-950 flex items-center justify-center"><Plus className="size-3"/></button>
                       </div>
-                      {i.unit === 'kg' && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {[
-                            ['100g', '100g'],
-                            ['250g', '250g'],
-                            ['500g', '500g'],
-                            ['1kg', '1'],
-                          ].map(([label, value]) => (
-                            <button
-                              key={label}
-                              type="button"
-                              onClick={() => setCartQuantity(i.itemName, value)}
-                              className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600 hover:bg-amber-100 hover:text-amber-800"
-                            >
-                              {label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -688,21 +720,19 @@ export default function BranchBillingProTab({
           </div>
         </aside>
 
-        <main className="flex min-h-[640px] flex-col bg-slate-100 md:min-h-0">
-          <div className="border-b border-slate-200 bg-white p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div><h1 className="text-3xl font-black tracking-tight text-slate-950">{BRANCH_LABELS[branch]} Fast Billing</h1></div>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative grid h-9 w-[156px] grid-cols-2 rounded-xl border border-slate-200 bg-slate-100 p-0.5 shadow-inner" aria-label="Billing input mode">
+        <main className="flex min-h-0 flex-col bg-slate-100">
+          <div className="shrink-0 border-b border-slate-200 bg-white px-2.5 py-2">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <div className="relative grid h-8 w-[142px] grid-cols-2 rounded-lg border border-slate-200 bg-slate-100 p-0.5 shadow-inner" aria-label="Billing input mode">
                   <span className={cn('pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-[9px] shadow-sm transition-all duration-300 ease-out', billingInputMode === 'manual' ? 'translate-x-0 bg-slate-950' : 'translate-x-full bg-orange-500 shadow-orange-200')} />
                   <button type="button" onClick={() => { setBillingInputMode('manual'); setQuery(''); setShowDropdown(false); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'manual' ? 'text-white' : 'text-slate-500')}><Keyboard className="size-3"/>Manual</button>
                   <button type="button" onClick={() => { setBillingInputMode('barcode'); setQuery(''); setShowDropdown(false); setTimeout(() => searchRef.current?.focus(), 0); }} className={cn('relative z-10 inline-flex items-center justify-center gap-1 rounded-lg text-[11px] font-black transition-colors duration-300 active:scale-95', billingInputMode === 'barcode' ? 'text-white' : 'text-slate-500')}><ScanBarcode className="size-3"/>Barcode</button>
                 </div>
-                <button onClick={()=>setShowHold(true)} className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white"><PauseCircle className="mr-2 inline size-4"/>Recall Hold ({branchHolds.length})</button><button onClick={()=>setShowShortcuts(true)} className="rounded-2xl bg-amber-400 px-4 py-3 text-sm font-black text-slate-950"><HelpCircle className="mr-2 inline size-4"/>Shortcuts</button>
-              </div>
+                <button onClick={()=>setShowHold(true)} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-black text-white"><PauseCircle className="mr-1 inline size-3.5"/>Recall ({branchHolds.length})</button>
+                <button onClick={()=>setShowShortcuts(true)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950"><HelpCircle className="mr-1 inline size-3.5"/>Shortcuts</button>
             </div>
-            <div className="mt-3 flex items-center gap-3 rounded-3xl border-2 border-slate-200 bg-slate-50 px-4 py-2 focus-within:border-amber-400">
-              <Search className="size-6 text-slate-400"/>
+            <div className="mt-1.5 flex items-center gap-2 rounded-xl border-2 border-slate-200 bg-slate-50 px-3 py-0.5 focus-within:border-amber-400">
+              <Search className="size-4 text-slate-400"/>
               <div className="relative flex-1">
                 <input
                   ref={searchRef}
@@ -716,7 +746,7 @@ export default function BranchBillingProTab({
                       const exactBarcodeItem = items.find((item) => String(item.barcode) === scannedBarcode);
                       if (exactBarcodeItem) {
                         e.preventDefault();
-                        addItem(exactBarcodeItem);
+                        openQtyPopup(exactBarcodeItem);
                         setShowDropdown(false);
                         setQuery('');
                         return;
@@ -729,8 +759,22 @@ export default function BranchBillingProTab({
                       }
                     }
                     if (!showDropdown) return;
-                    if (e.key === 'ArrowDown') { e.preventDefault(); setDropdownIndex((i) => Math.min(i + 1, Math.min(visibleItems.length - 1, 9))); }
-                    if (e.key === 'ArrowUp') { e.preventDefault(); setDropdownIndex((i) => Math.max(i - 1, 0)); }
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setDropdownIndex((i) => {
+                        const next = Math.min(i + 1, Math.min(visibleItems.length - 1, 9));
+                        setSelectedIndex(next);
+                        return next;
+                      });
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setDropdownIndex((i) => {
+                        const next = Math.max(i - 1, 0);
+                        setSelectedIndex(next);
+                        return next;
+                      });
+                    }
                     if (e.key === 'Enter') {
                       const item = visibleItems[dropdownIndex];
                       if (item) { e.preventDefault(); openQtyPopup(item); setShowDropdown(false); setQuery(''); }
@@ -738,7 +782,7 @@ export default function BranchBillingProTab({
                     if (e.key === 'Escape') setShowDropdown(false);
                   }}
                   placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F2 - search item name or barcode'}
-                  className="h-12 w-full bg-transparent text-xl font-black outline-none placeholder:text-slate-400"
+                  className="h-9 w-full bg-transparent text-base font-black outline-none placeholder:text-slate-400"
                 />
                 {showDropdown && visibleItems.length > 0 && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
@@ -748,7 +792,7 @@ export default function BranchBillingProTab({
                         <div
                           key={item.barcode}
                           onMouseDown={() => { openQtyPopup(item); setShowDropdown(false); setQuery(''); }}
-                          className={cn('flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-50' : 'hover:bg-slate-50', st <= 0 && 'opacity-50')}
+                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && 'opacity-50')}
                         >
                           <span>{item.name}</span>
                           <span className="text-xs text-slate-500">{money(item.price)} - {st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
@@ -758,16 +802,16 @@ export default function BranchBillingProTab({
                   </div>
                 )}
               </div>
-              <span className="rounded-xl bg-white px-3 py-1 text-xs font-black text-slate-500">{visibleItems.length} items</span>
+              <span className="rounded-lg bg-white px-2 py-1 text-[10px] font-black text-slate-500">{visibleItems.length}</span>
             </div>
           </div>
-          <div className="border-b border-slate-200 bg-white/80 p-3">
-            <div className="flex flex-wrap gap-2">
-              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-xl px-3.5 py-2 text-xs font-black transition', category === c ? 'bg-slate-950 text-white shadow-lg' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-1.5 text-[10px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
+          <div className="shrink-0 border-b border-slate-200 bg-white/80 px-2.5 py-1.5">
+            <div className="flex flex-wrap gap-1.5">
+              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-lg px-2.5 py-1.5 text-[11px] font-black leading-none transition', category === c ? 'bg-slate-950 text-white shadow-md' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-1 text-[9px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+            <div ref={itemsGridRef} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name));
                 const disabled = stock <= 0;
@@ -775,18 +819,21 @@ export default function BranchBillingProTab({
                 return (
                   <div
                     key={item.barcode}
+                    ref={(node) => { itemRefs.current[idx] = node; }}
                     role="button"
                     tabIndex={disabled ? -1 : 0}
                     aria-disabled={disabled}
+                    aria-selected={idx === selectedIndex}
                     onClick={() => !disabled && openQtyPopup(item)}
+                    onMouseEnter={() => setSelectedIndex(idx)}
                     onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) openQtyPopup(item); }}
-                    className={cn('group rounded-2xl border-2 bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
+                    className={cn('group rounded-xl border-2 bg-white p-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-orange-500 bg-amber-50 ring-4 ring-amber-300 shadow-lg' : 'border-slate-200', inCart && idx !== selectedIndex && 'border-emerald-400 bg-emerald-50')}
                   >
                     <div className="flex items-start justify-between gap-1">
                       <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{idx + 1}</span>
                     </div>
-                    <div className="mt-2 flex items-end justify-between gap-1">
+                    <div className="mt-1.5 flex items-end justify-between gap-1">
                       <div>
                         <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
                         <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
@@ -832,10 +879,7 @@ export default function BranchBillingProTab({
           stockMap={stockMap}
           onValue={setQtyPopupValue}
           onClose={() => setShowQtyPopup(false)}
-          onAdd={() => {
-            addItem(qtyPopupItem, normalizeQtyInput(qtyPopupValue, unitOf(qtyPopupItem)));
-            setShowQtyPopup(false);
-          }}
+          onAdd={submitQtyPopup}
         />
       )}
       {showCounterClosedAlert && (
@@ -865,34 +909,50 @@ function QuantityPopup({
   onAdd: () => void;
   onClose: () => void;
 }) {
+  const [attempted, setAttempted] = useState(false);
+  const unit = unitOf(item);
+  const available = Number(stockAvailable(branchStock, stockMap, item.name));
+  const entered = normalizeQtyInput(value, unit);
+  const validationMessage = entered <= 0
+    ? `Enter a valid ${unit === 'kg' ? 'weight' : 'quantity'}.`
+    : entered > available
+      ? `Only ${formatQty(available, unit)} is available.`
+      : '';
+  const submit = () => {
+    setAttempted(true);
+    if (!validationMessage) onAdd();
+  };
+
   return (
-    <Modal onClose={onClose} title={`Add ${item.name}`}>
+    <Modal onClose={onClose} title={`Add ${item.name}`} stopGlobalKeys>
       <div className="space-y-4">
         <p className="text-sm font-bold text-slate-500">
-          Stock: {formatQty(Number(stockAvailable(branchStock, stockMap, item.name)), unitOf(item))} · Price: {money(item.price)}/{unitOf(item)}
+          Stock: {formatQty(available, unit)} · Price: {money(item.price)}/{unit}
         </p>
-        {unitOf(item) === 'kg' && (
-          <div className="flex flex-wrap gap-2">
-            {([['100g','100g'],['250g','250g'],['500g','500g'],['1kg','1'],['2kg','2']] as const).map(([label, val]) => (
-              <button key={label} onClick={() => onValue(val)} className={cn('rounded-xl px-3 py-2 text-sm font-black', value === val ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-700')}>
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
         <input
           autoFocus
           type="text"
           inputMode="decimal"
           value={value}
-          onChange={(e) => onValue(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onAdd(); }}
+          onChange={(e) => { setAttempted(false); onValue(e.target.value); }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              submit();
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              onClose();
+            }
+          }}
           className="h-14 w-full rounded-2xl border-2 border-slate-200 px-4 text-2xl font-black outline-none focus:border-amber-400"
-          placeholder={unitOf(item) === 'kg' ? 'e.g. 0.5 or 500g' : 'Quantity'}
+          placeholder={unit === 'kg' ? 'Enter weight (e.g. 0.5 or 500g)' : 'Enter quantity'}
         />
+        {attempted && validationMessage && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{validationMessage}</p>}
         <div className="grid grid-cols-2 gap-3">
           <button onClick={onClose} className="rounded-2xl bg-slate-100 py-3 font-black text-slate-700">Cancel (Esc)</button>
-          <button onClick={onAdd} className="rounded-2xl bg-orange-500 py-3 font-black text-white shadow-lg shadow-orange-200">Add to Cart (Enter)</button>
+          <button onClick={submit} className="rounded-2xl bg-orange-500 py-3 font-black text-white shadow-lg shadow-orange-200">Add to Cart (Enter)</button>
         </div>
       </div>
     </Modal>
@@ -916,9 +976,12 @@ function CounterClosedAlert({ onOpenClosure, onClose }: { onOpenClosure: () => v
 
 function ShoppingCartIcon() { return <ClipboardList className="size-5 text-amber-500" />; }
 
-function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function Modal({ title, children, onClose, stopGlobalKeys = false }: { title: string; children: ReactNode; onClose: () => void; stopGlobalKeys?: boolean }) {
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+      onKeyDown={stopGlobalKeys ? (event) => event.stopPropagation() : undefined}
+    >
       <div className="max-h-[85dvh] w-full max-w-3xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b p-5"><h3 className="text-2xl font-black text-slate-950">{title}</h3><button onClick={onClose} className="rounded-2xl bg-slate-100 p-3"><XCircle className="size-5"/></button></div>
         <div className="max-h-[70dvh] overflow-y-auto p-5">{children}</div>

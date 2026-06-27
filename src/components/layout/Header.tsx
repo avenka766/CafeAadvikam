@@ -46,6 +46,7 @@ export default function Header() {
   // N-12: venue-aware brand name — differentiate VRSNB vs SNB routes
   const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');
   const isSnbRoute = location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/branch/snb') || location.pathname.startsWith('/bakery');
+  const isBranchCounterRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
   const isBakeryRoute = isVrsnbRoute || isSnbRoute;
   const headerName = isVrsnbRoute ? 'VRSNB' : (activeVenue === 'bakery' || isSnbRoute) ? 'SNB Bakery' : CAFE_CONFIG.name;
 
@@ -75,38 +76,42 @@ export default function Header() {
   const roleColor = ROLE_COLORS[currentUser?.role || ''] || 'bg-primary/15 text-primary border-primary/20';
 
   return (
-    <header className="app-header fixed top-0 left-0 right-0 lg:left-[288px] z-[70] text-white border-b border-white/10"
+    <header className={cn(
+      'app-header fixed top-0 left-0 right-0 z-[70] text-white border-b border-white/10',
+      isBranchCounterRoute ? 'branch-counter-header lg:left-0' : 'lg:left-[288px]',
+    )}
       style={{
         background: 'linear-gradient(135deg, rgba(28,16,8,0.96), rgba(14,57,46,0.96))',
         backdropFilter: 'blur(22px)',
         WebkitBackdropFilter: 'blur(22px)',
         boxShadow: '0 12px 40px rgba(30,18,6,0.18)',
       }}>
-      <div className="flex items-center justify-between px-4 sm:px-6 h-14">
+      <div className={cn('flex items-center justify-between', isBranchCounterRoute ? 'h-11 px-3 sm:px-4' : 'h-14 px-4 sm:px-6')}>
         {/* Left — logo + name */}
-        <div className="flex items-center gap-2.5">
-          <img src={cafeLogo} alt="logo" className="size-8 rounded-xl object-cover border border-white/20" />
+        <div className={cn('flex items-center', isBranchCounterRoute ? 'gap-2' : 'gap-2.5')}>
+          <img src={cafeLogo} alt="logo" className={cn('rounded-xl object-cover border border-white/20', isBranchCounterRoute ? 'size-7' : 'size-8')} />
           <div className="leading-none">
-            <p className="font-display text-base font-semibold text-white/95">{headerName}</p>
-            <p className="text-[10px] font-body text-white/50 uppercase tracking-[0.22em]">{isBakeryRoute ? 'Bakery operations' : 'Cafe operations'}</p>
+            <p className={cn('font-display font-semibold text-white/95', isBranchCounterRoute ? 'text-sm' : 'text-base')}>{headerName}</p>
+            {!isBranchCounterRoute && <p className="text-[10px] font-body text-white/50 uppercase tracking-[0.22em]">{isBakeryRoute ? 'Bakery operations' : 'Cafe operations'}</p>}
           </div>
         </div>
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
-          <div className="hidden sm:flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70">
+          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] text-[11px] font-bold text-white/70', isBranchCounterRoute ? 'lg:flex px-2.5 py-1' : 'sm:flex px-3 py-1.5')}>
             <Wifi className="size-3.5 text-emerald-300" /> Online
           </div>
-          <div className="hidden md:flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70">
+          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70', isBranchCounterRoute ? 'xl:flex' : 'md:flex')}>
             <ShieldCheck className="size-3.5 text-amber-300" /> Role secured
           </div>
           {currentUser && (
             <div className="flex flex-col items-end">
-              <span className="text-xs font-body font-semibold text-white/90 leading-none">
+              <span className={cn('font-body font-semibold text-white/90 leading-none', isBranchCounterRoute ? 'text-[11px]' : 'text-xs')}>
                 {currentUser.displayName || currentUser.username}
               </span>
               <span className={cn(
-                'text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full border mt-0.5 uppercase tracking-wide',
+                'font-body font-bold px-1.5 py-0.5 rounded-full border mt-0.5 uppercase tracking-wide',
+                isBranchCounterRoute ? 'text-[8px]' : 'text-[9px]',
                 roleColor
               )}>
                 {ROLE_LABELS[currentUser.role] || currentUser.role.replace(/_/g, ' ')}
@@ -115,7 +120,7 @@ export default function Header() {
           )}
           <button
             onClick={handleLogout}
-            className="size-9 rounded-xl flex items-center justify-center active:scale-90 transition-all"
+            className={cn('rounded-xl flex items-center justify-center active:scale-90 transition-all', isBranchCounterRoute ? 'size-8' : 'size-9')}
             style={{ background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.12)' }}
             aria-label="Exit dashboard"
             title="Exit dashboard"

@@ -335,7 +335,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   ));
 
   return (
-    <div className="workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]">
+    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isBranchBillingRoute && 'workspace-branch-billing')}>
       {items.length > 0 && !isBranchBillingRoute && (
         <>
           <button
@@ -409,7 +409,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </div>
       </aside>
 
-      <div className={isBranchBillingRoute ? "flex min-h-[100dvh] w-full flex-col pb-[5.25rem]" : "workspace-main-shell"}>
+      <div className={isBranchBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
         {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
@@ -432,7 +432,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </section>
         )}
 
-        <div className="workspace-content-frame">
+        <div className={cn('workspace-content-frame', isBranchBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
           {children}
         </div>
       </div>
