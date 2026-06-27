@@ -1251,14 +1251,18 @@ function PhysicalStockCalculator({
   itemName,
   unit,
   baseQuantity,
+  hasConfirmedCount,
   onCancel,
   onDone,
+  onReset,
 }: {
   itemName: string;
   unit: string;
   baseQuantity: number;
+  hasConfirmedCount: boolean;
   onCancel: () => void;
   onDone: (quantity: number) => void;
+  onReset: () => void;
 }) {
   const isKg = unit.toLowerCase().includes("kg");
   const [accumulator, setAccumulator] = useState(baseQuantity);
@@ -1266,6 +1270,7 @@ function PhysicalStockCalculator({
   const [currentInput, setCurrentInput] = useState("");
   const [steps, setSteps] = useState<Array<{ operator: StockCalculatorOperator; value: number }>>([]);
   const [error, setError] = useState("");
+  const [confirmingZero, setConfirmingZero] = useState(false);
 
   const currentNumber = currentInput === "" || currentInput === "." ? 0 : Number(currentInput);
   const preview = useMemo(() => {
@@ -1323,6 +1328,7 @@ function PhysicalStockCalculator({
     setCurrentInput("");
     setSteps([]);
     setError("");
+    setConfirmingZero(false);
   }, [baseQuantity]);
 
   const finishCalculation = useCallback(() => {
@@ -1338,6 +1344,10 @@ function PhysicalStockCalculator({
       if (!isKg && !Number.isInteger(result)) {
         throw new Error("Piece items must have a whole-number quantity.");
       }
+      if (result === 0) {
+        setConfirmingZero(true);
+        return;
+      }
       onDone(result);
     } catch (calculationError) {
       setError(calculationError instanceof Error ? calculationError.message : "Invalid calculation.");
@@ -1346,6 +1356,17 @@ function PhysicalStockCalculator({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (confirmingZero) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onDone(0);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          setConfirmingZero(false);
+        }
+        return;
+      }
+
       if (/^[0-9]$/.test(event.key)) {
         event.preventDefault();
         appendDigit(event.key);
@@ -1369,7 +1390,7 @@ function PhysicalStockCalculator({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [appendDigit, chooseOperator, finishCalculation, onCancel]);
+  }, [appendDigit, chooseOperator, confirmingZero, finishCalculation, onCancel, onDone]);
 
   const calculatorButtons: Array<string | StockCalculatorOperator> = [
     "7", "8", "9", "/",
@@ -1393,7 +1414,9 @@ function PhysicalStockCalculator({
           <div className="min-w-0">
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-600">SNB Physical Stock</p>
             <h3 id="physical-stock-calculator-title" className="truncate text-lg font-black text-slate-900">{itemName}</h3>
-            <p className="text-xs font-bold text-slate-500">Current physical: {formatStockQuantity(baseQuantity)} {unit}</p>
+            <p className="text-xs font-bold text-slate-500">
+              Current physical: {hasConfirmedCount ? `${formatStockQuantity(baseQuantity)} ${unit}` : "Not counted"}
+            </p>
           </div>
           <button
             type="button"
@@ -1412,51 +1435,93 @@ function PhysicalStockCalculator({
             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{unit}</p>
           </div>
 
-          {error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700">{error}</div>
-          )}
-
-          <div className="grid grid-cols-4 gap-2">
-            {calculatorButtons.map((button) => {
-              const isOperator = ["+", "-", "*", "/"].includes(button);
-              const isBackspace = button === "backspace";
-              const isDecimalDisabled = button === "." && !isKg;
-              return (
+          {confirmingZero ? (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 size-5 shrink-0 text-red-600" />
+                  <div>
+                    <p className="text-sm font-black text-red-800">Confirm physical stock as zero?</p>
+                    <p className="mt-1 text-xs font-bold leading-relaxed text-red-700">
+                      Use Confirm Zero only when the item was physically checked and no stock was found. To clear this count and start again, choose Reset as Uncounted.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onReset}
+                className="h-11 w-full rounded-2xl border border-amber-200 bg-amber-50 text-xs font-black text-amber-800 hover:bg-amber-100"
+              >
+                Reset as Uncounted
+              </button>
+              <div className="grid grid-cols-2 gap-2">
                 <button
-                  key={button}
                   type="button"
-                  disabled={isDecimalDisabled}
-                  onClick={() => {
-                    if (isBackspace) {
-                      setCurrentInput((previous) => previous.slice(0, -1));
-                      setError("");
-                    } else if (isOperator) {
-                      chooseOperator(button as StockCalculatorOperator);
-                    } else {
-                      appendDigit(button);
-                    }
-                  }}
-                  className={cn(
-                    "h-12 rounded-2xl text-lg font-black transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-30",
-                    isOperator
-                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
-                      : isBackspace
-                        ? "bg-red-50 text-red-700 hover:bg-red-100"
-                        : "bg-slate-100 text-slate-900 hover:bg-slate-200",
-                  )}
-                  aria-label={isBackspace ? "Backspace" : undefined}
+                  onClick={() => setConfirmingZero(false)}
+                  className="h-11 rounded-2xl border border-slate-200 bg-white text-xs font-black text-slate-700 hover:bg-slate-50"
                 >
-                  {isBackspace ? "⌫" : isOperator ? calculatorOperatorLabel[button as StockCalculatorOperator] : button}
+                  Go Back
                 </button>
-              );
-            })}
-          </div>
+                <button
+                  type="button"
+                  onClick={() => onDone(0)}
+                  className="h-11 rounded-2xl bg-red-600 text-xs font-black text-white shadow-lg shadow-red-200 hover:bg-red-700"
+                >
+                  Confirm Zero
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700">{error}</div>
+              )}
 
-          <div className="grid grid-cols-[1fr_1fr_1.35fr] gap-2 pt-1">
-            <button type="button" onClick={clearCalculator} className="h-11 rounded-2xl border border-slate-200 bg-white text-xs font-black text-slate-700 hover:bg-slate-50">Clear</button>
-            <button type="button" onClick={onCancel} className="h-11 rounded-2xl border border-slate-200 bg-white text-xs font-black text-slate-700 hover:bg-slate-50">Cancel</button>
-            <button type="button" onClick={finishCalculation} className="h-11 rounded-2xl bg-emerald-600 text-sm font-black text-white shadow-lg shadow-emerald-200 hover:bg-emerald-700">Done</button>
-          </div>
+              <div className="grid grid-cols-4 gap-2">
+                {calculatorButtons.map((button) => {
+                  const isOperator = ["+", "-", "*", "/"].includes(button);
+                  const isBackspace = button === "backspace";
+                  const isDecimalDisabled = button === "." && !isKg;
+                  return (
+                    <button
+                      key={button}
+                      type="button"
+                      disabled={isDecimalDisabled}
+                      onClick={() => {
+                        if (isBackspace) {
+                          setCurrentInput((previous) => previous.slice(0, -1));
+                          setError("");
+                        } else if (isOperator) {
+                          chooseOperator(button as StockCalculatorOperator);
+                        } else {
+                          appendDigit(button);
+                        }
+                      }}
+                      className={cn(
+                        "h-12 rounded-2xl text-lg font-black transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-30",
+                        isOperator
+                          ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                          : isBackspace
+                            ? "bg-red-50 text-red-700 hover:bg-red-100"
+                            : "bg-slate-100 text-slate-900 hover:bg-slate-200",
+                      )}
+                      aria-label={isBackspace ? "Backspace" : undefined}
+                    >
+                      {isBackspace ? "⌫" : isOperator ? calculatorOperatorLabel[button as StockCalculatorOperator] : button}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button type="button" onClick={clearCalculator} className="h-11 rounded-2xl border border-slate-200 bg-white text-xs font-black text-slate-700 hover:bg-slate-50">Clear Entry</button>
+                <button type="button" onClick={onReset} className="h-11 rounded-2xl border border-red-200 bg-red-50 text-xs font-black text-red-700 hover:bg-red-100">Reset Count</button>
+                <button type="button" onClick={onCancel} className="h-11 rounded-2xl border border-slate-200 bg-white text-xs font-black text-slate-700 hover:bg-slate-50">Cancel</button>
+                <button type="button" onClick={finishCalculation} className="h-11 rounded-2xl bg-emerald-600 text-sm font-black text-white shadow-lg shadow-emerald-200 hover:bg-emerald-700">Done</button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1474,9 +1539,11 @@ function StockCountPanel({
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
   const [counts, setCounts] = useState<Record<string, string>>({});
+  const [countedItems, setCountedItems] = useState<Record<string, boolean>>({});
   const touchedCounts = useRef<Record<string, boolean>>({});
   const [calculatorRow, setCalculatorRow] = useState<{ itemName: string; unit: string } | null>(null);
   const [notice, setNotice] = useState("");
+  const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
   const [submitting, setSubmitting] = useState(false);
 
   const rows = useMemo(() => {
@@ -1506,11 +1573,23 @@ function StockCountPanel({
   }, [branch, rows]);
 
   const differenceCount = rows.filter((row) => {
+    if (branch === "SNB" && !countedItems[row.itemName]) return false;
     const physical = Number(counts[row.itemName] || 0);
     return Math.abs(row.systemQty - physical) > 0.0001;
   }).length;
 
   const submit = async () => {
+    if (branch === "SNB") {
+      const uncountedRows = rows.filter((row) => !countedItems[row.itemName]);
+      if (uncountedRows.length > 0) {
+        setNoticeTone("error");
+        setNotice(
+          `${uncountedRows.length} item${uncountedRows.length === 1 ? " is" : "s are"} still uncounted. Count each item or explicitly confirm zero before sending to SNB Admin.`,
+        );
+        return;
+      }
+    }
+
     setSubmitting(true);
     setNotice("");
     try {
@@ -1528,8 +1607,10 @@ function StockCountPanel({
           };
         }),
       });
+      setNoticeTone("success");
       setNotice(`${report.reportNo} sent to ${branch} Admin for confirmation.`);
     } catch (error) {
+      setNoticeTone("error");
       setNotice(error instanceof Error ? error.message : "Could not save the stock count report.");
     } finally {
       setSubmitting(false);
@@ -1563,7 +1644,14 @@ function StockCountPanel({
           </button>
         </div>
         {notice && (
-          <div className="mt-3 rounded-2xl bg-emerald-50 px-4 py-2 text-sm font-body font-black text-emerald-700">
+          <div
+            className={cn(
+              "mt-3 rounded-2xl px-4 py-2 text-sm font-body font-black",
+              noticeTone === "success"
+                ? "bg-emerald-50 text-emerald-700"
+                : "border border-red-200 bg-red-50 text-red-700",
+            )}
+          >
             {notice}
           </div>
         )}
@@ -1594,8 +1682,11 @@ function StockCountPanel({
             </div>
             <div className="max-h-[65vh] overflow-y-auto divide-y divide-border/60">
               {rows.map((row) => {
+                const hasConfirmedCount = branch !== "SNB" || Boolean(countedItems[row.itemName]);
                 const physical = Number(counts[row.itemName] || 0);
-                const diff = Math.round((row.systemQty - physical) * 1000) / 1000;
+                const diff = hasConfirmedCount
+                  ? Math.round((row.systemQty - physical) * 1000) / 1000
+                  : null;
                 return (
                   <div
                     key={row.itemName}
@@ -1610,10 +1701,18 @@ function StockCountPanel({
                       <button
                         type="button"
                         onClick={() => setCalculatorRow({ itemName: row.itemName, unit: row.unit })}
-                        className="flex h-10 items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-3 text-sm font-black tabular-nums text-amber-900 transition hover:border-amber-300 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                        className={cn(
+                          "flex h-10 items-center justify-between rounded-2xl border px-3 text-sm font-black tabular-nums transition focus:outline-none focus:ring-2 focus:ring-amber-200",
+                          hasConfirmedCount
+                            ? "border-amber-200 bg-amber-50 text-amber-900 hover:border-amber-300 hover:bg-amber-100"
+                            : "border-dashed border-slate-300 bg-slate-50 text-slate-600 hover:border-amber-300 hover:bg-amber-50",
+                        )}
                         aria-label={`Enter physical stock for ${row.itemName}`}
                       >
-                        <span>{formatStockQuantity(physical)}</span>
+                        <span className="leading-tight">
+                          <span className="block">{formatStockQuantity(physical)}</span>
+                          {!hasConfirmedCount && <span className="block text-[9px] font-black uppercase tracking-wide text-slate-400">Uncounted</span>}
+                        </span>
                         <span className="text-base leading-none text-amber-600">＋</span>
                       </button>
                     ) : (
@@ -1632,14 +1731,16 @@ function StockCountPanel({
                     <span
                       className={cn(
                         "rounded-full px-2 py-1 text-center text-xs font-black tabular-nums",
-                        diff === 0
+                        diff === null
+                          ? "bg-slate-100 text-[10px] text-slate-500"
+                          : diff === 0
                           ? "bg-emerald-100 text-emerald-700"
                           : diff > 0
                             ? "bg-red-100 text-red-700"
                             : "bg-blue-100 text-blue-700",
                       )}
                     >
-                      {diff}
+                      {diff === null ? "Not counted" : diff}
                     </span>
                   </div>
                 );
@@ -1654,14 +1755,35 @@ function StockCountPanel({
           key={calculatorRow.itemName}
           itemName={calculatorRow.itemName}
           unit={calculatorRow.unit}
-          baseQuantity={Math.max(0, Number(counts[calculatorRow.itemName] || 0))}
+          baseQuantity={countedItems[calculatorRow.itemName]
+            ? Math.max(0, Number(counts[calculatorRow.itemName] || 0))
+            : 0}
+          hasConfirmedCount={Boolean(countedItems[calculatorRow.itemName])}
           onCancel={() => setCalculatorRow(null)}
           onDone={(quantity) => {
             touchedCounts.current[calculatorRow.itemName] = true;
+            setCountedItems((previous) => ({
+              ...previous,
+              [calculatorRow.itemName]: true,
+            }));
             setCounts((previous) => ({
               ...previous,
               [calculatorRow.itemName]: formatStockQuantity(quantity),
             }));
+            setNotice("");
+            setCalculatorRow(null);
+          }}
+          onReset={() => {
+            touchedCounts.current[calculatorRow.itemName] = false;
+            setCountedItems((previous) => ({
+              ...previous,
+              [calculatorRow.itemName]: false,
+            }));
+            setCounts((previous) => ({
+              ...previous,
+              [calculatorRow.itemName]: "0",
+            }));
+            setNotice("");
             setCalculatorRow(null);
           }}
         />
