@@ -19,7 +19,7 @@ import {
   type PurchaseRecord,
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
-import { SNB_ITEMS } from "@/branch/snbItems";
+import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printHtml } from "@/branch/printUtils";
 import { downloadExcel } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
@@ -223,6 +223,11 @@ function fmtDateTime(iso: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function useSNBCatalog() {
+  const catalogue = useBranchCatalogStore((state) => state.items.SNB);
+  return useMemo(() => catalogue.filter((item) => item.active), [catalogue]);
 }
 
 function normal(name: string) {
@@ -431,6 +436,8 @@ function PaymentSplitCard({
 
 export default function AdminSNBDashboard() {
   const { currentUser } = useAuthStore();
+  const catalogItems = useSNBCatalog();
+  const { loadCatalog, subscribe } = useBranchCatalogStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const { stock, sales, creditSales: dbCreditSales, creditPayments: dbCreditPayments, fetchBranchData, fetchCreditPayments, manualUpdateStock } = useBranchStore();
   const {
@@ -471,16 +478,21 @@ export default function AdminSNBDashboard() {
   }, [requestedTab, tab]);
 
   useEffect(() => {
+    void loadCatalog('SNB');
+    return subscribe('SNB');
+  }, [loadCatalog, subscribe]);
+
+  useEffect(() => {
     fetchBranchData(BRANCH);
     fetchCreditPayments(BRANCH);
   }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = useMemo(() => {
-    const catalogueNames = new Set(SNB_ITEMS.map((item) => normal(item.name)));
+    const catalogueNames = new Set(catalogItems.map((item) => normal(item.name)));
     return dedupeStockRows(stock[BRANCH] || []).filter((item) =>
       catalogueNames.has(normal(item.itemName)),
     );
-  }, [stock]);
+  }, [stock, catalogItems]);
   const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
   const branchBills = useMemo(
     () =>
@@ -1557,6 +1569,7 @@ function SalesReturnsTab(props: any) {
 }
 
 function StockTab(props: any) {
+  const catalogItems = useSNBCatalog();
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -1631,7 +1644,7 @@ function StockTab(props: any) {
               </span>,
               s.minThreshold ?? 10,
               s.unit ?? "-",
-              SNB_ITEMS.find((i) => i.name === s.itemName)?.category ?? "-",
+              catalogItems.find((i) => i.name === s.itemName)?.category ?? "-",
               BRANCH,
             ])}
             empty="No low stock items found."
@@ -1800,10 +1813,11 @@ function printWasteLog(entry: any, branchLabel: string) {
 }
 
 function WasteLogsTab({ userName }: { userName: string }) {
+  const catalogItems = useSNBCatalog();
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
   const { stock, manualUpdateStock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
-  const [form, setForm] = useState({ itemName: SNB_ITEMS[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
+  const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
     "Verify standard quantity in box or Kgs or Pcs before transfer",
     "Cross-check all box or Kgs or Pcs before transfer-out and sync",
@@ -1834,7 +1848,12 @@ function WasteLogsTab({ userName }: { userName: string }) {
       setValidationError("Complete every checklist item before saving.");
       return;
     }
-    const currentRow = (stock[BRANCH] || []).find((s) => s.itemName === form.itemName);
+    const catalogItem = catalogItems.find((item) => normal(item.name) === normal(form.itemName));
+    const currentRow = (stock[BRANCH] || []).find((stockItem) =>
+      catalogItem?.barcode != null && stockItem.itemBarcode != null
+        ? stockItem.itemBarcode === catalogItem.barcode
+        : normal(stockItem.itemName) === normal(form.itemName),
+    );
     const currentQty = Number(currentRow?.quantity || 0);
     if (qty > currentQty) {
       setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
@@ -1844,7 +1863,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
     // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
     // this branch's inventory, so deduct it from current stock immediately.
     const newQty = currentQty - qty;
-    await manualUpdateStock(BRANCH, form.itemName, newQty, userName);
+    await manualUpdateStock(BRANCH, currentRow?.itemName || form.itemName, newQty, userName, catalogItem?.barcode);
     // Print the waste log along with its checklist in one go.
     printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
     setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
@@ -1857,7 +1876,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel title={`${subTab} Entry`} icon={<Trash2 className="size-4" />}>
           <div className="space-y-3">
-            <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{SNB_ITEMS.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
+            <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Quantity"><input type="number" className={inputCls} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></Field>
               <Field label="Unit"><select className={inputCls} value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
@@ -1885,14 +1904,15 @@ function WasteLogsTab({ userName }: { userName: string }) {
 }
 
 function QuotationsTab({ userName }: { userName: string }) {
+  const catalogItems = useSNBCatalog();
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
   const [mode, setMode] = useState<"list" | "custom">("list");
-  const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: SNB_ITEMS[0]?.name || "", customName: "", qty: "1", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
+  const [form, setForm] = useState({ customerName: "", companyName: "", mobile: "", gstNumber: "", itemName: catalogItems[0]?.name || "", customName: "", qty: "1", rate: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
   const [lines, setLines] = useState<any[]>([]);
   const rows = quotations.filter((q) => q.branch === BRANCH);
   const addLine = () => {
     const qty = Number(form.qty);
-    const item = SNB_ITEMS.find((i) => i.name === form.itemName);
+    const item = catalogItems.find((i) => i.name === form.itemName);
     const name = mode === "custom" ? form.customName.trim() : form.itemName;
     const rate = mode === "custom" ? Number(form.rate) : Number(item?.price || form.rate);
     if (!name || !qty || !rate) return;
@@ -1903,7 +1923,7 @@ function QuotationsTab({ userName }: { userName: string }) {
   const total = Math.max(0, subtotal + Number(form.deliveryCharges || 0) + Number(form.packingCharges || 0) + Number(form.extraCharges || 0) - Number(form.discount || 0));
   const save = () => {
     if (!form.customerName.trim() || !form.mobile.trim() || lines.length === 0) return;
-    addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !SNB_ITEMS.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
+    addQuotation({ branch: BRANCH, customerName: form.customerName, companyName: form.companyName, mobile: form.mobile, gstNumber: form.gstNumber, items: lines, customItems: lines.filter((l) => !catalogItems.some((i) => i.name === l.itemName)), subtotal, deliveryCharges: Number(form.deliveryCharges || 0), packingCharges: Number(form.packingCharges || 0), extraCharges: Number(form.extraCharges || 0), discount: Number(form.discount || 0), total, salesperson: userName });
     setLines([]);
     setForm({ ...form, customerName: "", companyName: "", mobile: "", gstNumber: "", deliveryCharges: "0", packingCharges: "0", extraCharges: "0", discount: "0" });
   };
@@ -1920,7 +1940,7 @@ function QuotationsTab({ userName }: { userName: string }) {
             <Field label="GST Number"><input className={inputCls} value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} /></Field>
           </div>
           <div className="flex gap-2">{(["list", "custom"] as const).map((x) => <button key={x} onClick={() => setMode(x)} className={cn(btnCls, mode === x ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-700")}>{x === "list" ? "Item List" : "Custom Item"}</button>)}</div>
-          {mode === "list" ? <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{SNB_ITEMS.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field> : <Field label="Custom Item"><input className={inputCls} value={form.customName} onChange={(e) => setForm({ ...form, customName: e.target.value })} /></Field>}
+          {mode === "list" ? <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field> : <Field label="Custom Item"><input className={inputCls} value={form.customName} onChange={(e) => setForm({ ...form, customName: e.target.value })} /></Field>}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Qty"><input type="number" className={inputCls} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /></Field>
             <Field label="Rate"><input type="number" className={inputCls} value={form.rate} placeholder={mode === "list" ? "Auto from item" : ""} onChange={(e) => setForm({ ...form, rate: e.target.value })} /></Field>
@@ -2160,11 +2180,12 @@ function CashierClosureTab(props: any) {
 }
 
 function PurchaseOrdersTab({ userName }: { userName: string }) {
+  const catalogItems = useSNBCatalog();
   const { purchaseOrders, addPurchaseOrder, updatePoStatus } =
     useBranchOpsStore();
   const [form, setForm] = useState({
     supplier: "",
-    itemName: SNB_ITEMS[0]?.name || "",
+    itemName: catalogItems[0]?.name || "",
     quantity: "",
     expectedRate: "",
     expectedDeliveryDate: dateInput(),
@@ -2231,7 +2252,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
               value={form.itemName}
               onChange={(e) => setForm({ ...form, itemName: e.target.value })}
             >
-              {SNB_ITEMS.map((item) => (
+              {catalogItems.map((item) => (
                 <option key={item.name}>{item.name}</option>
               ))}
             </select>
@@ -2402,6 +2423,7 @@ function PurchaseInvoicesTab({
   fetchBranchData: any;
   setNotice: (v: string) => void;
 }) {
+  const catalogItems = useSNBCatalog();
   const {
     purchases,
     suppliers,
@@ -2412,7 +2434,7 @@ function PurchaseInvoicesTab({
   const [form, setForm] = useState({
     supplier: "",
     invoiceNo: "",
-    itemName: SNB_ITEMS[0]?.name || "",
+    itemName: catalogItems[0]?.name || "",
     quantity: "",
     unit: "pcs",
     rate: "",
@@ -2423,7 +2445,7 @@ function PurchaseInvoicesTab({
   });
   const [itemSearch, setItemSearch] = useState("");
   const [lines, setLines] = useState<Array<{ itemName: string; quantity: number; unit: any; cost: number; tax: number; discount: number; total: number }>>([]);
-  const filteredItems = SNB_ITEMS.filter((item) => item.name.toLowerCase().includes(itemSearch.toLowerCase()));
+  const filteredItems = catalogItems.filter((item) => item.name.toLowerCase().includes(itemSearch.toLowerCase()));
   const supplierForItem = (itemName: string) =>
     suppliers.find(
       (s) =>
@@ -2492,8 +2514,11 @@ function PurchaseInvoicesTab({
       ? p.items
       : [{ itemName: p.itemName, quantity: p.quantity }];
     for (const line of syncLines) {
-      const existing = branchStock.find(
-        (s) => normal(s.itemName) === normal(line.itemName),
+      const catalogItem = catalogItems.find((item) => normal(item.name) === normal(line.itemName));
+      const existing = branchStock.find((stockItem) =>
+        catalogItem?.barcode != null && stockItem.itemBarcode != null
+          ? stockItem.itemBarcode === catalogItem.barcode
+          : normal(stockItem.itemName) === normal(line.itemName),
       );
       const currentQty = Number(existing?.quantity ?? 0);
       const err = await manualUpdateStock(
@@ -2501,6 +2526,7 @@ function PurchaseInvoicesTab({
         existing?.itemName || line.itemName,
         currentQty + Number(line.quantity),
         userName,
+        catalogItem?.barcode,
       );
       if (err) {
         setNotice(err);
@@ -4014,10 +4040,11 @@ function StockAuditTab({
 }: {
   userName: string;
   branchStock: Array<{ itemName: string; price: number | null }>;
-  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
+  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
   fetchBranchData: (branch: Branch) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
+  const catalogItems = useSNBCatalog();
   const { stockCountReports, updateStockCountPhysicalQty, confirmStockCountReport } = useBranchOpsStore();
   const [savingId, setSavingId] = useState("");
   const [savingLine, setSavingLine] = useState("");
@@ -4033,7 +4060,7 @@ function StockAuditTab({
 
   const itemMeta = useMemo(() => {
     const map = new Map<string, { price: number; category: string }>();
-    SNB_ITEMS.forEach((item) => {
+    catalogItems.forEach((item) => {
       map.set(normal(item.name), { price: Number(item.price || 0), category: String(item.category || "-") });
     });
     branchStock.forEach((item) => {
@@ -4043,7 +4070,7 @@ function StockAuditTab({
       map.set(key, { ...current, price: Number.isFinite(livePrice) && livePrice > 0 ? livePrice : current.price });
     });
     return map;
-  }, [branchStock]);
+  }, [branchStock, catalogItems]);
 
   const linePrice = (itemName: string) => itemMeta.get(normal(itemName))?.price ?? 0;
   const lineValue = (line: { itemName: string; difference: number }) =>
@@ -4172,7 +4199,8 @@ function StockAuditTab({
           return;
         }
         for (const line of report.lines) {
-          const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName);
+          const catalogItem = catalogItems.find((item) => normal(item.name) === normal(line.itemName));
+          const error = await manualUpdateStock(BRANCH, line.itemName, line.physicalQty, userName, catalogItem?.barcode);
           if (error) {
             setNotice(
               `${report.reportNo} stopped at ${line.itemName}: ${error}. Re-check Stock Audit before confirming again.`,

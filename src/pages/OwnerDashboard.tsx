@@ -1818,7 +1818,7 @@ function OwnerDailyClosureTab() {
 // ── Owner Alerts Tab ─────────────────────────────────────────────────────────
 function OwnerAlertsTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
-  const { creditSales, fetchBranchData } = useBranchStore();
+  const { creditSales, fetchBranchData, fetchStockMismatches } = useBranchStore();
   const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
   const { invoices, load } = useInvoiceStore();
   const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
@@ -1826,7 +1826,7 @@ function OwnerAlertsTab() {
 
   useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
-  useEffect(() => { void fetchStockMismatches(); }, []);
+  useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
   useEffect(() => { load(); }, [load]);
 
   const alerts: OwnerAlert[] = useMemo(() => {

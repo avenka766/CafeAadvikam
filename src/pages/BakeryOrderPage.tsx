@@ -18,7 +18,7 @@ import {
   Truck,
   X,
 } from 'lucide-react';
-import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '@/branch/vrsnbItems';
+import { catalogCategories, useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { cn, formatCurrency } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import snbLogo from '@/assets/snb-logo.png';
@@ -28,7 +28,7 @@ const CART_STORAGE_KEY = 'vrsnb-customer-order-v2';
 const PHONE_STORAGE_KEY = 'vrsnb-customer-phone';
 const TAX_RATE = 0.03;
 
-type CartLine = VrsnbItem & { quantity: number };
+type CartLine = BranchCatalogItem & { quantity: number };
 type CheckoutForm = {
   name: string;
   phone: string;
@@ -72,7 +72,7 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-function quantityStep(item: VrsnbItem) {
+function quantityStep(item: BranchCatalogItem) {
   return item.uom === 'Kgs' ? 0.25 : 1;
 }
 
@@ -123,6 +123,22 @@ export default function QROrderPage() {
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState('');
   const [addedNotice, setAddedNotice] = useState('');
+  const { items: catalogByBranch, loadCatalog, subscribe } = useBranchCatalogStore();
+  const catalogItems = useMemo(() => catalogByBranch.VRSNB.filter((item) => item.active), [catalogByBranch]);
+  const categories = useMemo(() => catalogCategories(catalogItems), [catalogItems]);
+
+  useEffect(() => {
+    void loadCatalog('VRSNB');
+    return subscribe('VRSNB');
+  }, [loadCatalog, subscribe]);
+
+  useEffect(() => {
+    if (!catalogItems.length) return;
+    setCart((current) => current.flatMap((line) => {
+      const latest = catalogItems.find((item) => item.barcode === line.barcode);
+      return latest ? [{ ...latest, quantity: line.quantity }] : [];
+    }));
+  }, [catalogItems]);
 
   useEffect(() => {
     localStorage.setItem(CART_STORAGE_KEY, JSON.stringify({ cart, customer } satisfies StoredOrderDraft));
@@ -136,11 +152,11 @@ export default function QROrderPage() {
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return VRSNB_ITEMS.filter((item) => (
+    return catalogItems.filter((item) => (
       (selectedCategory === 'all' || item.category === selectedCategory)
       && (!q || item.name.toLowerCase().includes(q) || item.category.toLowerCase().includes(q) || String(item.barcode).includes(q))
     ));
-  }, [search, selectedCategory]);
+  }, [catalogItems, search, selectedCategory]);
 
   const subtotal = useMemo(() => roundMoney(cart.reduce((sum, line) => sum + line.price * line.quantity, 0)), [cart]);
   const taxAmount = useMemo(() => roundMoney(subtotal * TAX_RATE), [subtotal]);
@@ -149,7 +165,7 @@ export default function QROrderPage() {
 
   const getQuantity = (barcode: number) => cart.find((line) => line.barcode === barcode)?.quantity || 0;
 
-  const setQuantity = (item: VrsnbItem, next: number) => {
+  const setQuantity = (item: BranchCatalogItem, next: number) => {
     const safeNext = Math.max(0, Math.round(next * 100) / 100);
     setCart((current) => {
       if (safeNext <= 0) return current.filter((line) => line.barcode !== item.barcode);
@@ -160,7 +176,7 @@ export default function QROrderPage() {
     });
   };
 
-  const addItem = (item: VrsnbItem) => {
+  const addItem = (item: BranchCatalogItem) => {
     setQuantity(item, getQuantity(item.barcode) + quantityStep(item));
     setAddedNotice(`${item.name} added to cart`);
   };
@@ -196,15 +212,7 @@ export default function QROrderPage() {
     try {
       await ensureRazorpayLoaded();
       const phone = customer.phone.replace(/\D/g, '');
-      const items = cart.map((line) => ({
-        barcode: line.barcode,
-        name: line.name,
-        price: line.price,
-        unit: line.uom,
-        category: line.category,
-        venue: 'bakery',
-        qty: line.quantity,
-      }));
+      const items = cart.map((line) => ({ barcode: line.barcode, qty: line.quantity }));
       const { data, error: createError } = await supabase.functions.invoke('create-razorpay-order', {
         body: {
           customer: { ...customer, phone },
@@ -327,13 +335,13 @@ export default function QROrderPage() {
                 <span className="sr-only">Choose category</span>
                 <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} className="h-12 w-full rounded-2xl border border-stone-200 bg-white px-4 text-sm font-black outline-none focus:border-amber-500">
                   <option value="all">All categories</option>
-                  {VRSNB_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+                  {categories.map((category) => <option key={category} value={category}>{category}</option>)}
                 </select>
               </label>
 
               <div className="hidden flex-wrap gap-2 md:flex">
                 <button type="button" onClick={() => setSelectedCategory('all')} className={cn('rounded-full px-4 py-2 text-xs font-black transition', selectedCategory === 'all' ? 'bg-stone-950 text-white' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>All products</button>
-                {VRSNB_CATEGORIES.map((category) => (
+                {categories.map((category) => (
                   <button key={category} type="button" onClick={() => setSelectedCategory(category)} className={cn('rounded-full px-3 py-2 text-xs font-black transition', selectedCategory === category ? 'bg-amber-400 text-stone-950' : 'border border-stone-200 bg-white text-stone-700 hover:border-amber-400')}>
                     {CATEGORY_EMOJI[category] || '•'} {category}
                   </button>
