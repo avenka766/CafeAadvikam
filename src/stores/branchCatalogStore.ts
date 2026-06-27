@@ -279,17 +279,47 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
     return null;
   },
 
-  subscribe: (branch) => {
-    const channel = supabase
-      .channel(`branch-catalog-${branch}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'branch_items', filter: `branch=eq.${branch}` },
-        () => { void get().loadCatalog(branch, true); },
-      )
-      .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  },
+  subscribe: (() => {
+    // Singleton channels per branch — Supabase Realtime throws if you call
+    // .on() on a channel that has already been subscribed. Multiple hook
+    // instances (e.g. StockTab mounts ManualStockUpdate which also calls
+    // useOperationalBranchCatalog) must share one channel rather than each
+    // creating their own.
+    const channels  = new Map<CatalogBranch, ReturnType<typeof supabase.channel>>();
+    const refCounts = new Map<CatalogBranch, number>();
+
+    return (branch: CatalogBranch) => {
+      const count = (refCounts.get(branch) ?? 0) + 1;
+      refCounts.set(branch, count);
+
+      if (!channels.has(branch)) {
+        const ch = supabase
+          .channel(`branch-catalog-${branch}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'branch_items', filter: `branch=eq.${branch}` },
+            () => { void get().loadCatalog(branch, true); },
+          )
+          .subscribe();
+        channels.set(branch, ch);
+      }
+
+      // Return an unsubscribe/cleanup function — only tear down the channel
+      // when the last subscriber unmounts.
+      return () => {
+        const remaining = (refCounts.get(branch) ?? 1) - 1;
+        refCounts.set(branch, remaining);
+        if (remaining <= 0) {
+          const ch = channels.get(branch);
+          if (ch) {
+            void supabase.removeChannel(ch);
+            channels.delete(branch);
+          }
+          refCounts.delete(branch);
+        }
+      };
+    };
+  })(),
 
   getItem: (branch, barcode) => get().items[branch].find((entry) => entry.barcode === barcode),
   getActiveItems: (branch) => get().items[branch].filter((entry) => entry.active),
