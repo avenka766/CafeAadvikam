@@ -412,11 +412,16 @@ export default function BottomNav() {
   // N-03 / U-03: admin has 8 items — use scrollable nav instead of compressing flex-1
   const useScrollableNav = navItems.length > 5;
 
+  const isBranchBillingRole = currentUser.role === 'branch_snb' || currentUser.role === 'branch_vrsnb';
+
   return (
     <>
       {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
-        className="app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] md:hidden"
+        className={cn(
+          "app-bottom-nav fixed bottom-0 left-0 right-0 z-[65]",
+          isBranchBillingRole ? "block" : "md:hidden",
+        )}
         data-safe-bottom
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
