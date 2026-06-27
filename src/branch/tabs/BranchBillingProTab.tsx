@@ -763,7 +763,7 @@ export default function BranchBillingProTab({
           </div>
           <div className="border-b border-slate-200 bg-white/80 p-3">
             <div className="flex flex-wrap gap-2">
-              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-lg px-2 py-1 text-[10px] font-black transition', category === c ? 'bg-slate-950 text-white shadow-lg' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-2 text-[9px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
+              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-xl px-3.5 py-2 text-xs font-black transition', category === c ? 'bg-slate-950 text-white shadow-lg' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-1.5 text-[10px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
