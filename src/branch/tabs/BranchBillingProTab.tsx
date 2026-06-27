@@ -4,7 +4,7 @@ import { printCounterBill } from '../printUtils';
 import {
   AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee, Lock,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
-  Trash2, WalletCards, XCircle, Plus, Minus, ClipboardList, ScanBarcode, Keyboard,
+  Trash2, WalletCards, XCircle, ClipboardList, ScanBarcode, Keyboard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -178,6 +178,7 @@ export default function BranchBillingProTab({
   const [category, setCategory] = useState<string>('All');
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<BranchBillItem[]>([]);
+  const [cartQuantityDrafts, setCartQuantityDrafts] = useState<Record<string, string>>({});
   const [salesperson, setSalesperson] = useState('');
   const [paymentMode, setPaymentMode] = useState<PayMode>('cash');
   const [cashTendered, setCashTendered] = useState('');
@@ -276,7 +277,7 @@ export default function BranchBillingProTab({
     }
   }, [paymentMode, total]);
 
-  const addItem = useCallback((item: BillingItem, amount = 1) => {
+  const setItemQuantity = useCallback((item: BillingItem, amount = 1) => {
     setError('');
     if (!isCounterOpen()) {
       setError('Counter is not opened. Please open the counter in Cashier Closure, then Counter Open before billing.');
@@ -291,13 +292,19 @@ export default function BranchBillingProTab({
     }
     setCart((current) => {
       const existing = current.find((c) => c.itemName === item.name);
-      const newQty = Number(((existing?.quantity || 0) + amount).toFixed(3));
-      if (newQty > available) {
+      const finalQty = Number(amount.toFixed(3));
+      if (finalQty > available) {
         setError(`Only ${available} ${unit} available for ${item.name}.`);
         return current;
       }
-      if (existing) return current.map((c) => c.itemName === item.name ? recalcLine(c, newQty) : c);
+      if (existing) return current.map((c) => c.itemName === item.name ? recalcLine(c, finalQty) : c);
       return [toBillItem(item, amount), ...current];
+    });
+    setCartQuantityDrafts((current) => {
+      if (!(item.name in current)) return current;
+      const next = { ...current };
+      delete next[item.name];
+      return next;
     });
   }, [branchStock, stockMap, isCounterOpen]);
 
@@ -320,36 +327,61 @@ export default function BranchBillingProTab({
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
     }
-    addItem(qtyPopupItem, amount);
+    setItemQuantity(qtyPopupItem, amount);
     setShowQtyPopup(false);
     setQtyPopupItem(null);
     setQtyPopupValue('');
-  }, [addItem, branchStock, isCounterOpen, qtyPopupItem, qtyPopupValue, stockMap]);
+  }, [branchStock, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
 
-  const reduceItem = (itemName: string) => setCart((current) => current.flatMap((c) => {
-    if (c.itemName !== itemName) return [c];
-    const delta = c.unit === 'kg' ? 0.25 : 1;
-    const next = Number((c.quantity - delta).toFixed(3));
-    return next > 0 ? [recalcLine(c, next)] : [];
-  }));
-
-  const setCartQuantity = (itemName: string, rawValue: string) => {
+  const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');
-    setCart((current) => current.flatMap((c) => {
-      if (c.itemName !== itemName) return [c];
-      const nextQty = normalizeQtyInput(rawValue, c.unit);
-      if (nextQty <= 0) return [];
-      const available = Number(stockAvailable(branchStock, stockMap, c.itemName));
-      if (nextQty > available) {
-        setError(`Only ${formatQty(available, c.unit)} available for ${c.itemName}.`);
-        return [c];
-      }
-      return [recalcLine(c, nextQty)];
+    setCartQuantityDrafts((current) => ({
+      ...current,
+      [item.itemName]: item.unit === 'kg'
+        ? parseFloat(item.quantity.toFixed(3)).toString()
+        : String(item.quantity),
     }));
   };
 
+  const updateCartQuantityDraft = (itemName: string, rawValue: string) => {
+    setCartQuantityDrafts((current) => ({ ...current, [itemName]: rawValue }));
+  };
+
+  const clearCartQuantityDraft = (itemName: string) => {
+    setCartQuantityDrafts((current) => {
+      if (!(itemName in current)) return current;
+      const next = { ...current };
+      delete next[itemName];
+      return next;
+    });
+  };
+
+  const commitCartQuantity = (itemName: string) => {
+    setError('');
+    const item = cart.find((line) => line.itemName === itemName);
+    const rawValue = cartQuantityDrafts[itemName];
+    if (!item || rawValue === undefined) return;
+
+    const nextQty = normalizeQtyInput(rawValue, item.unit);
+    if (nextQty <= 0) {
+      setError(`Enter a valid quantity for ${item.itemName}. The item was kept in the cart; use the red remove button to delete it.`);
+      clearCartQuantityDraft(itemName);
+      return;
+    }
+
+    const available = Number(stockAvailable(branchStock, stockMap, item.itemName));
+    if (nextQty > available) {
+      setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
+      clearCartQuantityDraft(itemName);
+      return;
+    }
+
+    setCart((current) => current.map((line) => line.itemName === itemName ? recalcLine(line, nextQty) : line));
+    clearCartQuantityDraft(itemName);
+  };
+
   const clear = useCallback(() => {
-    setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
+    setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount(''); setError(''); setLastBill(null);
   }, []);
 
   const holdBill = useCallback(() => {
@@ -364,6 +396,7 @@ export default function BranchBillingProTab({
     const h = branchHolds.find((x) => x.id === id);
     if (!h) return;
     setCart(h.items);
+    setCartQuantityDrafts({});
     if (requiresSalesperson) setSalesperson(h.salesperson);
     removeHold(id);
     setShowHold(false);
@@ -507,7 +540,7 @@ export default function BranchBillingProTab({
       });
       await printCounterBill(saved, false);
       setLastBill(saved);
-      setCart([]); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
+      setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       await fetchBranchData(branch);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
@@ -641,25 +674,40 @@ export default function BranchBillingProTab({
                           <p className="text-xs text-slate-500">{formatQty(i.quantity, i.unit)} × {money(i.price)}</p>
                         </div>
                         <p className="shrink-0 text-sm font-black text-slate-950">{money(i.lineTotal)}</p>
-                        <button onClick={() => setCart((c) => c.filter((x) => x.itemName !== i.itemName))} className="shrink-0 rounded-lg bg-red-50 p-1 text-red-500 hover:bg-red-100"><XCircle className="size-4"/></button>
+                        <button
+                          onClick={() => {
+                            setCart((c) => c.filter((x) => x.itemName !== i.itemName));
+                            clearCartQuantityDraft(i.itemName);
+                          }}
+                          className="shrink-0 rounded-lg bg-red-50 p-1 text-red-500 hover:bg-red-100"
+                          aria-label={`Remove ${i.itemName} from cart`}
+                        >
+                          <XCircle className="size-4"/>
+                        </button>
                       </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        <button onClick={() => reduceItem(i.itemName)} className="size-7 rounded-lg bg-slate-100 font-black text-slate-700 flex items-center justify-center"><Minus className="size-3"/></button>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">Edit quantity</span>
                         <input
-                          value={i.unit === 'kg' ? parseFloat(i.quantity.toFixed(3)).toString() : String(i.quantity)}
-                          onChange={(e) => setCartQuantity(i.itemName, e.target.value)}
+                          value={cartQuantityDrafts[i.itemName] ?? (i.unit === 'kg' ? parseFloat(i.quantity.toFixed(3)).toString() : String(i.quantity))}
+                          onFocus={(e) => {
+                            const input = e.currentTarget;
+                            startCartQuantityEdit(i);
+                            requestAnimationFrame(() => input.select());
+                          }}
+                          onChange={(e) => updateCartQuantityDraft(i.itemName, e.target.value)}
+                          onBlur={() => commitCartQuantity(i.itemName)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              e.currentTarget.blur();
+                            }
+                          }}
                           inputMode="decimal"
                           placeholder={i.unit === 'kg' ? '100g / 0.1' : '1'}
-                          className="h-8 w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-xs font-black tabular-nums text-slate-950 outline-none focus:border-amber-400 focus:bg-white"
+                          className="h-8 min-w-24 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-xs font-black tabular-nums text-slate-950 outline-none focus:border-amber-400 focus:bg-white"
                           aria-label={`Quantity for ${i.itemName}`}
                         />
                         <span className="rounded-lg bg-slate-950 px-2 py-1 text-center text-[11px] font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
-                        <button onClick={() => {
-                          const catalogItem = items.find((it) => it.name === i.itemName);
-                          if (!catalogItem) return;
-                          if (unitOf(catalogItem) === 'kg') openQtyPopup(catalogItem);
-                          else addItem(catalogItem, 1);
-                        }} className="size-7 rounded-lg bg-amber-400 font-black text-slate-950 flex items-center justify-center"><Plus className="size-3"/></button>
                       </div>
                     </div>
                   ))}
@@ -833,32 +881,9 @@ export default function BranchBillingProTab({
                       <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{idx + 1}</span>
                     </div>
-                    <div className="mt-1.5 flex items-end justify-between gap-1">
-                      <div>
-                        <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
-                        <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {inCart && (
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); reduceItem(item.name); }}
-                            className="inline-flex size-7 items-center justify-center rounded-xl bg-slate-200 text-slate-700 shadow-sm"
-                            aria-label={`Remove ${item.name}`}
-                          >
-                            <Minus className="size-3.5" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={(e) => { e.stopPropagation(); openQtyPopup(item); }}
-                          className={cn('inline-flex size-7 items-center justify-center rounded-xl text-lg font-black shadow-sm disabled:opacity-40', disabled ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 text-white shadow-orange-200')}
-                          aria-label={`Add ${item.name}`}
-                        >
-                          <Plus className="size-3.5" />
-                        </button>
-                      </div>
+                    <div className="mt-1.5">
+                      <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
+                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                     </div>
                     {inCart && <div className="mt-2 rounded-xl bg-emerald-600 px-2 py-1 text-center text-[10px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
@@ -875,6 +900,7 @@ export default function BranchBillingProTab({
         <QuantityPopup
           item={qtyPopupItem}
           value={qtyPopupValue}
+          existingQuantity={cart.find((line) => line.itemName === qtyPopupItem.name)?.quantity}
           branchStock={branchStock}
           stockMap={stockMap}
           onValue={setQtyPopupValue}
@@ -895,6 +921,7 @@ export default function BranchBillingProTab({
 function QuantityPopup({
   item,
   value,
+  existingQuantity,
   branchStock,
   stockMap,
   onValue,
@@ -903,6 +930,7 @@ function QuantityPopup({
 }: {
   item: BillingItem;
   value: string;
+  existingQuantity?: number;
   branchStock: StockItem[];
   stockMap: Map<string, number>;
   onValue: (value: string) => void;
@@ -911,6 +939,7 @@ function QuantityPopup({
 }) {
   const [attempted, setAttempted] = useState(false);
   const unit = unitOf(item);
+  const isEditingExisting = existingQuantity !== undefined;
   const available = Number(stockAvailable(branchStock, stockMap, item.name));
   const entered = normalizeQtyInput(value, unit);
   const validationMessage = entered <= 0
@@ -924,11 +953,16 @@ function QuantityPopup({
   };
 
   return (
-    <Modal onClose={onClose} title={`Add ${item.name}`} stopGlobalKeys>
+    <Modal onClose={onClose} title={`${isEditingExisting ? 'Set' : 'Add'} ${item.name}`} stopGlobalKeys>
       <div className="space-y-4">
         <p className="text-sm font-bold text-slate-500">
           Stock: {formatQty(available, unit)} · Price: {money(item.price)}/{unit}
         </p>
+        {isEditingExisting && (
+          <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
+            Current cart quantity: {formatQty(existingQuantity, unit)}. The new quantity will replace it, not be added to it.
+          </p>
+        )}
         <input
           autoFocus
           type="text"
@@ -952,7 +986,7 @@ function QuantityPopup({
         {attempted && validationMessage && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{validationMessage}</p>}
         <div className="grid grid-cols-2 gap-3">
           <button onClick={onClose} className="rounded-2xl bg-slate-100 py-3 font-black text-slate-700">Cancel (Esc)</button>
-          <button onClick={submit} className="rounded-2xl bg-orange-500 py-3 font-black text-white shadow-lg shadow-orange-200">Add to Cart (Enter)</button>
+          <button onClick={submit} className="rounded-2xl bg-orange-500 py-3 font-black text-white shadow-lg shadow-orange-200">{isEditingExisting ? 'Update Quantity' : 'Add to Cart'} (Enter)</button>
         </div>
       </div>
     </Modal>
