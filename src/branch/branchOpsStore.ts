@@ -435,6 +435,9 @@ export interface BranchStockCountLine {
   systemQty: number;
   physicalQty: number;
   difference: number;
+  originalPhysicalQty?: number;
+  editedBy?: string;
+  editedAt?: string;
 }
 
 export interface BranchStockCountReport {
@@ -647,6 +650,12 @@ interface BranchOpsState {
   submitStockCountReport: (
     report: Omit<BranchStockCountReport, "id" | "reportNo" | "status" | "createdAt" | "updatedAt">,
   ) => Promise<BranchStockCountReport>;
+  updateStockCountPhysicalQty: (
+    reportId: string,
+    itemName: string,
+    physicalQty: number,
+    updatedBy: string,
+  ) => Promise<string | null>;
   confirmStockCountReport: (
     reportId: string,
     confirmedBy: string,
@@ -2283,6 +2292,75 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           throw new Error(`Could not save stock count report: ${saveError.message}`);
         }
         return newReport;
+      },
+      updateStockCountPhysicalQty: async (reportId, itemName, physicalQty, updatedBy) => {
+        const report = get().stockCountReports.find((row) => row.id === reportId);
+        if (!report) return "Stock count report was not found.";
+        if (report.status !== "Pending Admin Review") {
+          return `${report.reportNo} is already ${report.status} and cannot be edited.`;
+        }
+        const line = report.lines.find((row) => row.itemName === itemName);
+        if (!line) return `${itemName} was not found in ${report.reportNo}.`;
+
+        const quantity = Math.round(Number(physicalQty) * 1000) / 1000;
+        if (!Number.isFinite(quantity) || quantity < 0) {
+          return "Physical stock must be a valid number greater than or equal to zero.";
+        }
+        const normalizedUnit = String(line.unit || "").toLowerCase();
+        if ((normalizedUnit === "pcs" || normalizedUnit.includes("nos")) && !Number.isInteger(quantity)) {
+          return "Piece items must use a whole-number physical quantity.";
+        }
+        if (Math.abs(quantity - Number(line.physicalQty || 0)) < 0.0001) return null;
+
+        const now = new Date().toISOString();
+        const previousQty = Number(line.physicalQty || 0);
+        const updatedLines = report.lines.map((row) => {
+          if (row.itemName !== itemName) return row;
+          return {
+            ...row,
+            physicalQty: quantity,
+            difference: Math.round((Number(row.systemQty || 0) - quantity) * 1000) / 1000,
+            originalPhysicalQty: row.originalPhysicalQty ?? previousQty,
+            editedBy: updatedBy,
+            editedAt: now,
+          };
+        });
+        const updatedReport: BranchStockCountReport = {
+          ...report,
+          lines: updatedLines,
+          updatedAt: now,
+        };
+
+        const { error } = await supabase
+          .from("branch_stock_count_reports")
+          .update({ lines: updatedLines, updated_at: now })
+          .eq("id", report.id);
+        if (error) return `Could not save the physical stock correction: ${error.message}`;
+
+        const auditRecord = audit(
+          report.branch,
+          updatedBy,
+          "Stock Count Physical Qty Edited",
+          `${report.reportNo} · ${itemName}: ${previousQty}`,
+          `${report.reportNo} · ${itemName}: ${quantity}`,
+        );
+        set((state) => ({
+          stockCountReports: state.stockCountReports.map((row) =>
+            row.id === report.id ? updatedReport : row,
+          ),
+          auditLogs: [auditRecord, ...state.auditLogs].slice(0, 1000),
+        }));
+        mirrorOperationRecord(report.branch, "stock_count_report", report.id, updatedReport, {
+          recordNo: report.reportNo,
+          status: report.status,
+          actor: updatedBy,
+        });
+        mirrorOperationRecord(report.branch, "audit_log", auditRecord.id, auditRecord, {
+          recordNo: report.reportNo,
+          status: "Physical stock edited",
+          actor: updatedBy,
+        });
+        return null;
       },
       confirmStockCountReport: (reportId, confirmedBy) => {
         const report = get().stockCountReports.find((r) => r.id === reportId);
