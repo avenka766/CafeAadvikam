@@ -780,15 +780,15 @@ export default function BranchBillingProTab({
                     aria-disabled={disabled}
                     onClick={() => !disabled && openQtyPopup(item)}
                     onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) openQtyPopup(item); }}
-                    className={cn('group rounded-2xl border-2 bg-white p-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
+                    className={cn('group rounded-2xl border-2 bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-amber-400 ring-4 ring-amber-100' : 'border-slate-200', inCart && 'border-emerald-400 bg-emerald-50')}
                   >
                     <div className="flex items-start justify-between gap-1">
-                      <p className="line-clamp-2 text-xs font-black leading-tight text-slate-950">{item.name}</p>
+                      <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{idx + 1}</span>
                     </div>
                     <div className="mt-2 flex items-end justify-between gap-1">
                       <div>
-                        <p className="text-sm font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
+                        <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
                         <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                       </div>
                       <div className="flex items-center gap-1">
