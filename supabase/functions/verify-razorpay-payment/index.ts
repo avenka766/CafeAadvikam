@@ -13,10 +13,11 @@ Deno.serve(async (req) => {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, publicOrderId } = await req.json();
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !publicOrderId) throw new Error('Missing payment verification fields.');
 
+    const keyId = Deno.env.get('RAZORPAY_KEY_ID');
     const secret = Deno.env.get('RAZORPAY_KEY_SECRET');
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    if (!secret || !supabaseUrl || !serviceKey) throw new Error('Payment service is not configured.');
+    if (!keyId || !secret || !supabaseUrl || !serviceKey) throw new Error('Payment service is not configured.');
 
     const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     const expected = hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${razorpay_order_id}|${razorpay_payment_id}`)));
@@ -30,6 +31,18 @@ Deno.serve(async (req) => {
       if (order.payment_id && order.payment_id !== razorpay_payment_id) throw new Error('Order is already linked to a different payment.');
       return new Response(JSON.stringify({ success: true, orderNumber: order.order_number, duplicate: true }), { headers: { ...cors, 'Content-Type': 'application/json' } });
     }
+
+    // A valid checkout signature links the IDs but does not by itself prove that the
+    // expected amount was captured. Resolve the payment from Razorpay before marking paid.
+    const paymentResponse = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpay_payment_id)}`, {
+      headers: { Authorization: `Basic ${btoa(`${keyId}:${secret}`)}` },
+    });
+    const payment = await paymentResponse.json();
+    if (!paymentResponse.ok) throw new Error(payment?.error?.description || 'Unable to verify the payment with Razorpay.');
+    const expectedPaise = Math.round(Number(order.amount) * 100);
+    if (payment.order_id !== razorpay_order_id) throw new Error('Payment belongs to a different Razorpay order.');
+    if (payment.currency !== 'INR' || Number(payment.amount) !== expectedPaise) throw new Error('Captured payment amount does not match the order total.');
+    if (payment.status !== 'captured') throw new Error('Payment has not been captured yet. Please wait for confirmation.');
 
     const now = new Date().toISOString();
     const { data: updated, error: updateError } = await supabase.from('public_orders').update({
@@ -46,7 +59,7 @@ Deno.serve(async (req) => {
       ref_id: order.id,
       ref_label: order.order_number,
       is_read: false,
-      metadata: { source: 'landing_page_verify', payment_id: razorpay_payment_id },
+      metadata: { source: 'landing_page_verify', payment_id: razorpay_payment_id, amount_paise: payment.amount, currency: payment.currency },
     });
 
     return new Response(JSON.stringify({ success: true, orderNumber: order.order_number }), { headers: { ...cors, 'Content-Type': 'application/json' } });
