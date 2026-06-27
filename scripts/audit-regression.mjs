@@ -63,6 +63,7 @@ const recipeStore = read('src/bakery/recipeStore.ts') ?? '';
 const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
 const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
 const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch_catalog_and_live_recipes.sql') ?? '';
+const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
 const sourceText = sourceFiles
@@ -119,6 +120,25 @@ check(
     && branchCatalogStore.includes("rpc('update_branch_item'")
     && branchCatalogStore.includes("postgres_changes"),
   'New items and price changes must persist and refresh across open branch screens.',
+);
+
+
+check(
+  'Branch stock linking is canonical and duplicate-safe',
+  branchCatalogStore.includes("rpc('ensure_branch_stock_link'")
+    && !branchCatalogStore.includes(".from('branch_stock').insert")
+    && !branchCatalogStore.includes(".from('branch_stock')")
+    && stockLinkRepairMigration.includes('branch_stock_branch_barcode_unique')
+    && stockLinkRepairMigration.includes('ensure_branch_stock_link'),
+  'Admin item changes must use the database stock-link RPC and enforce one stock row per branch/barcode.',
+);
+
+check(
+  'Item-name normalization lowercases before stripping characters',
+  !unifiedMigration.includes('lower(regexp_replace')
+    && unifiedMigration.includes("regexp_replace(lower(")
+    && stockLinkRepairMigration.includes("normalize_branch_item_name"),
+  'Never strip [^a-z0-9] before lowercasing; uppercase item names would collapse to an empty key.',
 );
 
 check(
