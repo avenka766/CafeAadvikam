@@ -17,11 +17,12 @@ create table if not exists public.branch_items (
   primary key (branch, barcode)
 );
 
-create unique index if not exists branch_items_name_unique
-  on public.branch_items (
-    branch,
-    lower(regexp_replace(name, '[^a-z0-9]+', '', 'g'))
-  );
+-- Drop any previous name index before seeding and merging legacy overrides.
+-- The index is recreated only after all names have reached their final values. This
+-- avoids transient collisions when one barcode takes a name that another barcode
+-- releases later in the same legacy merge.
+drop index if exists public.branch_items_name_unique;
+
 create index if not exists branch_items_active_idx on public.branch_items(branch, active, category);
 
 insert into public.branch_items (branch, barcode, name, price, uom, category, active, updated_by)
@@ -421,22 +422,111 @@ values
 ('VRSNB', 2197, 'Kollu mysore pak', 800, 'Kgs', 'SPL SWEETS', true, 'system-seed'),
 ('VRSNB', 2198, 'Pacha payir mysore pak', 800, 'Kgs', 'SPL SWEETS', true, 'system-seed'),
 ('VRSNB', 2199, 'Pista mysore pak', 800, 'Kgs', 'SPL SWEETS', true, 'system-seed')
-on conflict (branch, barcode) do nothing;
+on conflict do nothing;
 
+-- Merge legacy Admin overrides while the normalized-name index is absent.
+-- DISTINCT ON protects against historical duplicate override rows for the same barcode.
 do $$
 begin
   if to_regclass('public.branch_item_prices') is not null then
     execute $sql$
+      with latest_prices as (
+        select distinct on (branch, barcode)
+          branch,
+          barcode,
+          nullif(btrim(name), '') as name,
+          price,
+          updated_at,
+          updated_by
+        from public.branch_item_prices
+        where branch in ('SNB', 'VRSNB')
+        order by branch, barcode, updated_at desc nulls last
+      )
       update public.branch_items bi
-      set name = p.name,
-          price = p.price,
-          updated_at = coalesce(p.updated_at, now()),
-          updated_by = coalesce(p.updated_by, '')
-      from public.branch_item_prices p
+      set name = coalesce(p.name, bi.name),
+          price = case when p.price is not null and p.price > 0 then p.price else bi.price end,
+          updated_at = coalesce(p.updated_at, bi.updated_at, now()),
+          updated_by = coalesce(p.updated_by, bi.updated_by, '')
+      from latest_prices p
       where p.branch = bi.branch and p.barcode = bi.barcode
     $sql$;
   end if;
 end $$;
+
+-- Record and resolve only genuine final duplicate names. In normal migrations this
+-- section changes nothing; it exists to keep older production data from blocking
+-- deployment. Duplicate rows retain their barcode identity and receive a visible
+-- barcode suffix rather than being deleted or merged silently.
+create table if not exists public.branch_item_name_migration_conflicts (
+  branch text not null,
+  barcode bigint not null,
+  requested_name text not null,
+  resolved_name text not null,
+  detected_at timestamptz not null default now(),
+  primary key (branch, barcode)
+);
+
+-- Names made entirely of punctuation would otherwise normalize to an empty key.
+update public.branch_items
+set name = 'Item ' || barcode::text,
+    updated_at = now(),
+    updated_by = case
+      when nullif(updated_by, '') is null then 'migration-name-normalization'
+      else updated_by || '; migration-name-normalization'
+    end
+where regexp_replace(lower(name), '[^a-z0-9]+', '', 'g') = '';
+
+with duplicate_names as (
+  select
+    branch,
+    barcode,
+    name,
+    row_number() over (
+      partition by branch, regexp_replace(lower(name), '[^a-z0-9]+', '', 'g')
+      order by
+        case when updated_by = 'system-seed' then 1 else 0 end,
+        updated_at desc nulls last,
+        barcode
+    ) as duplicate_rank,
+    count(*) over (
+      partition by branch, regexp_replace(lower(name), '[^a-z0-9]+', '', 'g')
+    ) as duplicate_count
+  from public.branch_items
+), conflicts as (
+  select
+    branch,
+    barcode,
+    name as requested_name,
+    name || ' [' || barcode::text || ']' as resolved_name
+  from duplicate_names
+  where duplicate_count > 1 and duplicate_rank > 1
+), recorded as (
+  insert into public.branch_item_name_migration_conflicts(
+    branch, barcode, requested_name, resolved_name, detected_at
+  )
+  select branch, barcode, requested_name, resolved_name, now()
+  from conflicts
+  on conflict (branch, barcode) do update
+  set requested_name = excluded.requested_name,
+      resolved_name = excluded.resolved_name,
+      detected_at = excluded.detected_at
+  returning branch, barcode, resolved_name
+)
+update public.branch_items bi
+set name = r.resolved_name,
+    updated_at = now(),
+    updated_by = case
+      when nullif(bi.updated_by, '') is null then 'migration-name-conflict'
+      else bi.updated_by || '; migration-name-conflict'
+    end
+from recorded r
+where bi.branch = r.branch and bi.barcode = r.barcode;
+
+create unique index branch_items_name_unique
+  on public.branch_items (
+    branch,
+    regexp_replace(lower(name), '[^a-z0-9]+', '', 'g')
+  );
 
 create table if not exists public.branch_item_changes (
   id uuid primary key default gen_random_uuid(),
@@ -465,40 +555,40 @@ set item_barcode = bi.barcode
 from public.branch_items bi
 where bs.branch = bi.branch
   and bs.item_barcode is null
-  and lower(regexp_replace(bs.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(bs.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 update public.branch_thresholds bt
 set item_barcode = bi.barcode
 from public.branch_items bi
 where bt.branch = bi.branch
   and bt.item_barcode is null
-  and lower(regexp_replace(bt.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(bt.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 update public.branch_sales bs
 set item_barcode = bi.barcode
 from public.branch_items bi
 where (bs.branch = bi.branch or (bs.branch = 'Hosur' and bi.branch = 'SNB'))
   and bs.item_barcode is null
-  and lower(regexp_replace(bs.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(bs.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 update public.branch_incoming incoming
 set item_barcode = bi.barcode
 from public.branch_items bi
 where (incoming.branch = bi.branch or (incoming.branch = 'Hosur' and bi.branch = 'SNB'))
   and incoming.item_barcode is null
-  and lower(regexp_replace(incoming.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(incoming.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 update public.branch_stock_mismatches mismatch
 set item_barcode = bi.barcode
 from public.branch_items bi
 where (mismatch.branch = bi.branch or (mismatch.branch = 'Hosur' and bi.branch = 'SNB'))
   and mismatch.item_barcode is null
-  and lower(regexp_replace(mismatch.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(mismatch.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 -- Hosur uses the SNB catalogue but keeps independent stock rows.
 update public.branch_stock bs
@@ -506,16 +596,16 @@ set item_barcode = bi.barcode
 from public.branch_items bi
 where bs.branch = 'Hosur' and bi.branch = 'SNB'
   and bs.item_barcode is null
-  and lower(regexp_replace(bs.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(bs.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 update public.branch_thresholds bt
 set item_barcode = bi.barcode
 from public.branch_items bi
 where bt.branch = 'Hosur' and bi.branch = 'SNB'
   and bt.item_barcode is null
-  and lower(regexp_replace(bt.item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(bi.name, '[^a-z0-9]+', '', 'g'));
+  and regexp_replace(lower(bt.item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(bi.name), '[^a-z0-9]+', '', 'g');
 
 create index if not exists branch_stock_barcode_idx on public.branch_stock(branch, item_barcode);
 create index if not exists branch_sales_barcode_idx on public.branch_sales(branch, item_barcode);
@@ -623,8 +713,8 @@ begin
   where branch = p_branch
     and (item_barcode = p_barcode or (
       item_barcode is null and
-      lower(regexp_replace(item_name, '[^a-z0-9]+', '', 'g'))
-        = lower(regexp_replace(v_old.name, '[^a-z0-9]+', '', 'g'))
+      regexp_replace(lower(item_name), '[^a-z0-9]+', '', 'g')
+        = regexp_replace(lower(v_old.name), '[^a-z0-9]+', '', 'g')
     ));
 
   update public.branch_thresholds
@@ -633,8 +723,8 @@ begin
   where branch = p_branch
     and (item_barcode = p_barcode or (
       item_barcode is null and
-      lower(regexp_replace(item_name, '[^a-z0-9]+', '', 'g'))
-        = lower(regexp_replace(v_old.name, '[^a-z0-9]+', '', 'g'))
+      regexp_replace(lower(item_name), '[^a-z0-9]+', '', 'g')
+        = regexp_replace(lower(v_old.name), '[^a-z0-9]+', '', 'g')
     ));
 
   return v_new;
@@ -665,8 +755,8 @@ begin
   update public.branch_stock
   set item_barcode = p_barcode, item_name = v_item.name
   where branch = p_branch and item_barcode is null
-    and lower(regexp_replace(item_name, '[^a-z0-9]+', '', 'g'))
-      = lower(regexp_replace(v_item.name, '[^a-z0-9]+', '', 'g'));
+    and regexp_replace(lower(item_name), '[^a-z0-9]+', '', 'g')
+      = regexp_replace(lower(v_item.name), '[^a-z0-9]+', '', 'g');
 
   update public.branch_stock
   set quantity = round((quantity - p_qty)::numeric, 3),
@@ -753,8 +843,8 @@ begin
   if v_barcode is null then
     select barcode into v_barcode from public.branch_items
     where branch = v_catalog_branch
-      and lower(regexp_replace(name, '[^a-z0-9]+', '', 'g'))
-        = lower(regexp_replace(v_incoming.item_name, '[^a-z0-9]+', '', 'g'))
+      and regexp_replace(lower(name), '[^a-z0-9]+', '', 'g')
+        = regexp_replace(lower(v_incoming.item_name), '[^a-z0-9]+', '', 'g')
     limit 1;
   end if;
   if v_barcode is null then raise exception 'Incoming item is not linked to the branch catalogue'; end if;
