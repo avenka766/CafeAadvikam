@@ -20,8 +20,7 @@ import {
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
-import { SNB_ITEMS } from '../snbItems';
-import { VRSNB_ITEMS } from '../vrsnbItems';
+import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { printCounterBill, printHtml, printBranchCashierClosure } from '../printUtils';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void };
@@ -115,8 +114,19 @@ function Kpi({ label, value, icon, tone = 'slate' }: { label: string; value: str
   return <div className={cn('rounded-[1.7rem] p-5 shadow-sm', styles[tone])}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.18em] opacity-70">{label}</p>{icon}</div><p className="mt-3 text-3xl font-black tabular-nums">{value}</p></div>;
 }
 
-function catalog(branch: Branch) { return branch === 'VRSNB' ? VRSNB_ITEMS : SNB_ITEMS; }
-function stockQty(stock: StockItem[], item: string) { return Number(stock.find((s) => s.itemName.toLowerCase() === item.toLowerCase())?.quantity ?? 0); }
+function useOperationalCatalog(branch: Branch) {
+  const { items, loadCatalog, subscribe } = useBranchCatalogStore();
+  const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : 'SNB';
+  useEffect(() => {
+    void loadCatalog(catalogBranch);
+    return subscribe(catalogBranch);
+  }, [catalogBranch, loadCatalog, subscribe]);
+  return items[catalogBranch].filter((item) => item.active);
+}
+function stockQty(stock: StockItem[], item: string, barcode?: number) {
+  return Number((barcode != null ? stock.find((row) => row.itemBarcode === barcode) : undefined)?.quantity
+    ?? stock.find((row) => row.itemName.toLowerCase() === item.toLowerCase())?.quantity ?? 0);
+}
 function today(d: string) { return new Date(d).toDateString() === new Date().toDateString(); }
 function month(d: string) { const x = new Date(d), n = new Date(); return x.getFullYear() === n.getFullYear() && x.getMonth() === n.getMonth(); }
 function printAdvanceSalesOrder(payload: {
@@ -371,7 +381,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
-  const items = catalog(branch);
+  const items = useOperationalCatalog(branch);
   const people = isVRSNB ? [] : salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
   const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
   const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
@@ -411,7 +421,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const qty = Number(storePick.quantity || 0);
     if (!item || qty <= 0) { setError('Select item and quantity.'); return; }
     const unit: 'pcs' | 'kg' = item.uom === 'Kgs' ? 'kg' : 'pcs';
-    const line: BranchBillItem = { itemName:item.name, quantity:qty, unit, price:item.price, tax:0, discount:0, lineTotal:qty * item.price };
+    const line: BranchBillItem = { barcode:item.barcode, itemName:item.name, quantity:qty, unit, price:item.price, tax:0, discount:0, lineTotal:qty * item.price };
     setStoreLines((lines)=>[...lines, line]);
     setStorePick((f)=>({...f, quantity:'1'}));
     setError('');
@@ -452,30 +462,30 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     return '';
   };
   const deductStoreLinesAtomically = async (lines: BranchBillItem[]) => {
-    const deducted: Array<{ itemName: string; quantity: number }> = [];
+    const deducted: BranchBillItem[] = [];
     for (const line of lines) {
-      const { data, error } = await supabase.rpc('decrement_branch_stock_strict', {
-        p_branch: branch,
-        p_item_name: line.itemName,
-        p_qty: line.quantity,
+      if (!line.barcode) return `${line.itemName} is not linked to the live catalogue.`;
+      let result = await supabase.rpc('decrement_branch_stock_by_barcode_strict', {
+        p_branch: branch, p_barcode: line.barcode, p_qty: line.quantity,
       });
-      if (error || data === null) {
+      if (result.error && /decrement_branch_stock_by_barcode_strict|does not exist|schema cache|could not find/i.test(result.error.message ?? '')) {
+        result = await supabase.rpc('decrement_branch_stock_strict', { p_branch: branch, p_item_name: line.itemName, p_qty: line.quantity });
+      }
+      if (result.error || result.data === null) {
         for (const item of deducted) {
-          await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: item.itemName, p_qty: item.quantity });
+          if (item.barcode) await supabase.rpc('increment_branch_stock_by_barcode', { p_branch: branch, p_barcode: item.barcode, p_qty: item.quantity });
         }
         await fetchBranchData(branch);
-        return error?.message || `Insufficient stock for ${line.itemName}`;
+        return result.error?.message || `Insufficient stock for ${line.itemName}`;
       }
-      deducted.push({ itemName: line.itemName, quantity: line.quantity });
+      deducted.push(line);
     }
     return '';
   };
   const restoreStoreLines = async (lines: BranchBillItem[]) => {
-    await Promise.all(lines.map((line) => supabase.rpc('increment_branch_stock', {
-      p_branch: branch,
-      p_item_name: line.itemName,
-      p_qty: line.quantity,
-    })));
+    await Promise.all(lines.map((line) => line.barcode
+      ? supabase.rpc('increment_branch_stock_by_barcode', { p_branch: branch, p_barcode: line.barcode, p_qty: line.quantity })
+      : supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: line.itemName, p_qty: line.quantity })));
     await fetchBranchData(branch);
   };
   const sendToStoreDashboard = async (order: CakeAdvanceOrder, lines: BranchBillItem[]) => {
@@ -638,7 +648,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
         {mode === 'store' && <>
           <div className="grid grid-cols-[1fr_110px] gap-2"><Field label="Item"><Select value={storePick.itemName} onChange={(e)=>setStorePick({...storePick,itemName:e.target.value})}>{items.map((i)=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Qty"><Input type="number" min="0" value={storePick.quantity} onChange={(e)=>setStorePick({...storePick,quantity:e.target.value})}/></Field></div>
           <SoftButton onClick={addStoreLine}><Plus className="size-4"/>Add Item</SoftButton>
-          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
+          <div className="max-h-52 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">{storeLines.length === 0 ? <p className="p-3 text-sm font-bold text-slate-500">No items selected.</p> : storeLines.map((line, idx)=>{ const avail = stockQty(branchStock, line.itemName, line.barcode); return <div key={`${line.itemName}-${idx}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold"><span>{line.itemName} - {line.quantity} {line.unit}{avail < line.quantity && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">Low stock ({avail} in stock)</span>}</span><span>{money(line.lineTotal)}</span><button onClick={()=>removeStoreLine(idx)} className="rounded-lg bg-red-50 p-2 text-red-600"><XCircle className="size-4"/></button></div>; })}</div>
           <div className="rounded-2xl bg-emerald-50 p-3 font-black text-emerald-800">Order Value: {money(storeValue)}</div>
           {/* Fully Paid toggle */}
           <div className="flex items-center gap-3 rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100">
@@ -711,22 +721,22 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     </Section>
   </div>;
 }
-function makeLine(itemName: string, qty: number, price: number): BranchBillItem { return { itemName, quantity: qty, unit: 'pcs', price, tax: 0, discount: 0, lineTotal: qty * price }; }
+function makeLine(item: BranchCatalogItem, qty: number): BranchBillItem { return { barcode: item.barcode, itemName: item.name, quantity: qty, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', price: item.price, tax: 0, discount: 0, lineTotal: qty * item.price }; }
 
 export function QuotationTab({ branch, branchStock, onOpenTab }: ModuleProps) {
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
-  const items = catalog(branch);
+  const items = useOperationalCatalog(branch);
   const [itemName, setItemName] = useState(items[0]?.name || '');
   const [qty, setQty] = useState('1');
   const [customerName, setCustomerName] = useState('');
   const [mobile, setMobile] = useState('');
   const [salesperson, setSalesperson] = useState(currentUser?.displayName || 'Staff');
   const [lines, setLines] = useState<BranchBillItem[]>([]);
-  const add = () => { const item = items.find((i)=>i.name===itemName); if (!item) return; setLines((l)=>[...l, makeLine(item.name, Number(qty||1), item.price)]); };
+  const add = () => { const item = items.find((i)=>i.name===itemName); if (!item) return; setLines((l)=>[...l, makeLine(item, Number(qty||1))]); };
   const save = () => { if (!customerName || lines.length===0) return; const q = addQuotation({ branch, customerName, mobile, items: lines, total: lines.reduce((s,i)=>s+i.lineTotal,0), salesperson }); printHtml(q.quoteNo, `<div class="stamp">QUOTATION</div><h2>${q.quoteNo}</h2><p>${customerName} ${mobile}</p><table>${lines.map(i=>`<tr><td>${i.itemName}</td><td>${i.quantity}</td><td class="right">₹${i.lineTotal}</td></tr>`).join('')}</table><h2>Total: ₹${q.total}</h2>`); setLines([]); setCustomerName(''); setMobile(''); };
   const convert = (id: string) => { updateQuotationStatus(id, 'Converted', currentUser?.displayName || 'Staff'); onOpenTab?.('bill'); };
-  return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Create Quotation" icon={<FileText className="size-5"/>}><div className="space-y-3"><Field label="Customer"><Input value={customerName} onChange={(e)=>setCustomerName(e.target.value)}/></Field><Field label="Mobile"><Input value={mobile} onChange={(e)=>setMobile(e.target.value)}/></Field><Field label="Salesperson"><Input value={salesperson} onChange={(e)=>setSalesperson(e.target.value)}/></Field><div className="grid grid-cols-[1fr_90px] gap-2"><Select value={itemName} onChange={(e)=>setItemName(e.target.value)}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select><Input type="number" value={qty} onChange={(e)=>setQty(e.target.value)}/></div><SoftButton onClick={add}><Plus className="size-4"/>Add Item</SoftButton><div className="space-y-2">{lines.map((l,i)=><div key={`${l.itemName}-${i}`} className="flex justify-between rounded-xl bg-slate-50 p-3 text-sm font-bold"><span>{l.itemName} × {l.quantity}</span><span>{money(l.lineTotal)}</span></div>)}</div><PrimaryButton onClick={save}><Printer className="size-4"/>Print / Share Quotation</PrimaryButton></div></Section><Section title="Open Quotations" icon={<FileClock className="size-5"/>}><div className="space-y-3">{quotations.filter(q=>q.branch===branch).map(q=><div key={q.id} className="rounded-3xl border p-4"><div className="flex justify-between gap-3"><div><p className="font-black">{q.quoteNo} · {q.customerName}</p><p className="text-sm text-slate-500">{q.items.length} items · {money(q.total)} · {q.status}</p></div><SoftButton onClick={()=>convert(q.id)} disabled={q.status!=='Open'}>Convert to Bill</SoftButton></div>{q.items.some(i=>stockQty(branchStock,i.itemName)<i.quantity) && <p className="mt-2 text-sm font-bold text-amber-600"><AlertTriangle className="inline size-4"/> Stock validation required before billing.</p>}</div>)}</div></Section></div>;
+  return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Create Quotation" icon={<FileText className="size-5"/>}><div className="space-y-3"><Field label="Customer"><Input value={customerName} onChange={(e)=>setCustomerName(e.target.value)}/></Field><Field label="Mobile"><Input value={mobile} onChange={(e)=>setMobile(e.target.value)}/></Field><Field label="Salesperson"><Input value={salesperson} onChange={(e)=>setSalesperson(e.target.value)}/></Field><div className="grid grid-cols-[1fr_90px] gap-2"><Select value={itemName} onChange={(e)=>setItemName(e.target.value)}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select><Input type="number" value={qty} onChange={(e)=>setQty(e.target.value)}/></div><SoftButton onClick={add}><Plus className="size-4"/>Add Item</SoftButton><div className="space-y-2">{lines.map((l,i)=><div key={`${l.itemName}-${i}`} className="flex justify-between rounded-xl bg-slate-50 p-3 text-sm font-bold"><span>{l.itemName} × {l.quantity}</span><span>{money(l.lineTotal)}</span></div>)}</div><PrimaryButton onClick={save}><Printer className="size-4"/>Print / Share Quotation</PrimaryButton></div></Section><Section title="Open Quotations" icon={<FileClock className="size-5"/>}><div className="space-y-3">{quotations.filter(q=>q.branch===branch).map(q=><div key={q.id} className="rounded-3xl border p-4"><div className="flex justify-between gap-3"><div><p className="font-black">{q.quoteNo} · {q.customerName}</p><p className="text-sm text-slate-500">{q.items.length} items · {money(q.total)} · {q.status}</p></div><SoftButton onClick={()=>convert(q.id)} disabled={q.status!=='Open'}>Convert to Bill</SoftButton></div>{q.items.some(i=>stockQty(branchStock,i.itemName,i.barcode)<i.quantity) && <p className="mt-2 text-sm font-bold text-amber-600"><AlertTriangle className="inline size-4"/> Stock validation required before billing.</p>}</div>)}</div></Section></div>;
 }
 
 export function ReturnsTab({ branch, branchStock }: ModuleProps) {
@@ -787,8 +797,8 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
 
 export function PurchaseTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore(); const { addPurchase } = useBranchOpsStore(); const { manualUpdateStock, fetchBranchData } = useBranchStore();
-  const items = catalog(branch); const [f,setF] = useState({supplier:'',invoiceNo:'',itemName:items[0]?.name||'',quantity:'',cost:'',tax:'0'});
-  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.displayName||'Staff'}); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName)+qty,currentUser?.displayName||'Staff'); await fetchBranchData(branch); setF({...f,quantity:'',cost:'',tax:'0'}); };
+  const items = useOperationalCatalog(branch); const [f,setF] = useState({supplier:'',invoiceNo:'',itemName:items[0]?.name||'',quantity:'',cost:'',tax:'0'});
+  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.displayName||'Staff'}); const selectedItem = items.find((item) => item.name === f.itemName); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName,selectedItem?.barcode)+qty,currentUser?.displayName||'Staff',selectedItem?.barcode); await fetchBranchData(branch); setF({...f,quantity:'',cost:'',tax:'0'}); };
   return <Section title="Purchase Entry" icon={<Truck className="size-5"/>}><div className="grid gap-4 lg:grid-cols-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Supplier Invoice"><Input value={f.invoiceNo} onChange={(e)=>setF({...f,invoiceNo:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Cost"><Input type="number" value={f.cost} onChange={(e)=>setF({...f,cost:e.target.value})}/></Field><Field label="Tax"><Input type="number" value={f.tax} onChange={(e)=>setF({...f,tax:e.target.value})}/></Field></div><div className="mt-4 flex items-center justify-between rounded-3xl bg-slate-50 p-4"><p className="text-lg font-black">Total: {money(Number(f.quantity||0)*Number(f.cost||0)+Number(f.tax||0))}</p><PrimaryButton onClick={save}><Package className="size-4"/>Save Purchase & Update Stock</PrimaryButton></div></Section>;
 }
 
@@ -818,7 +828,7 @@ export function BankTab({ branch }: ModuleProps) {
 }
 
 export function PurchaseOrderTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { purchaseOrders, addPurchaseOrder, updatePoStatus } = useBranchOpsStore(); const items=catalog(branch); const [f,setF]=useState({supplier:'',itemName:items[0]?.name||'',quantity:'',expectedRate:'',expectedDeliveryDate:'',remarks:''}); const user=currentUser?.displayName||'Staff';
+  const { currentUser } = useAuthStore(); const { purchaseOrders, addPurchaseOrder, updatePoStatus } = useBranchOpsStore(); const items=useOperationalCatalog(branch); const [f,setF]=useState({supplier:'',itemName:items[0]?.name||'',quantity:'',expectedRate:'',expectedDeliveryDate:'',remarks:''}); const user=currentUser?.displayName||'Staff';
   const create=()=>{ const qty=Number(f.quantity), rate=Number(f.expectedRate); if(!f.supplier||!qty||!rate) return; addPurchaseOrder({branch,supplier:f.supplier,itemName:f.itemName,quantity:qty,expectedRate:rate,totalAmount:qty*rate,expectedDeliveryDate:f.expectedDeliveryDate,remarks:f.remarks,createdBy:user}); };
   const rows=purchaseOrders.filter(p=>p.branch===branch); return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Create Purchase Order" icon={<ClipboardCheck className="size-5"/>}><div className="space-y-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><div className="grid grid-cols-2 gap-2"><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Expected Rate"><Input type="number" value={f.expectedRate} onChange={(e)=>setF({...f,expectedRate:e.target.value})}/></Field></div><Field label="Expected Delivery"><Input type="date" value={f.expectedDeliveryDate} onChange={(e)=>setF({...f,expectedDeliveryDate:e.target.value})}/></Field><Field label="Remarks"><Textarea value={f.remarks} onChange={(e)=>setF({...f,remarks:e.target.value})}/></Field><PrimaryButton onClick={create}>Create PO</PrimaryButton></div></Section><Section title="PO Workflow" icon={<Truck className="size-5"/>}><div className="space-y-3">{rows.map((p:PurchaseOrderRecord)=><div key={p.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-black">{p.poNo} · {p.supplier}</p><p className="text-sm text-slate-500">{p.itemName} · {p.quantity} × {money(p.expectedRate)} · {money(p.totalAmount)}</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black">{p.status}</span></div><div className="mt-3 flex flex-wrap gap-2">{(['Approved','Rejected','Ordered','Received','Closed'] as const).map(s=><SoftButton key={s} onClick={()=>updatePoStatus(p.id,s,user)}>{s}</SoftButton>)}</div></div>)}</div></Section></div>;
 }

@@ -12,8 +12,7 @@ import { useBranchStore, type StockItem } from '../branchStore';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { type Branch } from '../types';
-import { SNB_CATEGORIES, SNB_ITEMS, type SnbItem } from '../snbItems';
-import { VRSNB_CATEGORIES, VRSNB_ITEMS, type VrsnbItem } from '../vrsnbItems';
+import { catalogCategories, useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import {
   money, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
@@ -72,11 +71,6 @@ const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
   credit: 'F7',
 };
 
-function itemCatalog(branch: Branch): { categories: string[]; items: BillingItem[] } {
-  if (branch === 'VRSNB') return { categories: VRSNB_CATEGORIES, items: VRSNB_ITEMS as VrsnbItem[] };
-  return { categories: SNB_CATEGORIES, items: SNB_ITEMS as SnbItem[] };
-}
-
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
   return item.uom === 'Kgs' ? 'kg' : 'pcs';
 }
@@ -85,14 +79,15 @@ function normalizeItemName(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function stockFor(stock: StockItem[], itemName: string) {
+function stockFor(stock: StockItem[], itemName: string, barcode?: number) {
   const normalized = normalizeItemName(itemName);
-  const found = stock.find((s) => normalizeItemName(s.itemName) === normalized);
+  const found = stock.find((s) => barcode != null && s.itemBarcode === barcode) ?? stock.find((s) => normalizeItemName(s.itemName) === normalized);
   return Number(found?.quantity ?? 0);
 }
 
-function stockAvailable(stock: StockItem[], map: Map<string, number>, itemName: string) {
-  return map.get(normalizeItemName(itemName))
+function stockAvailable(stock: StockItem[], map: Map<string, number>, itemName: string, barcode?: number) {
+  return (barcode != null ? stock.find((s) => s.itemBarcode === barcode)?.quantity : undefined)
+    ?? map.get(normalizeItemName(itemName))
     ?? stock.find((s) => s.itemName.toLowerCase().trim() === itemName.toLowerCase().trim())?.quantity
     ?? 0;
 }
@@ -135,6 +130,7 @@ function toBillItem(item: BillingItem, qty: number): BranchBillItem {
   const subtotal = item.price * qty;
   const tax = subtotal * TAX_RATE;
   return {
+    barcode: item.barcode,
     itemName: item.name,
     quantity: Number(qty.toFixed(3)),
     unit: unitOf(item),
@@ -166,6 +162,7 @@ export default function BranchBillingProTab({
   const userName = currentUser?.displayName || currentUser?.username || 'Branch Staff';
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
   const isVRSNB = branch === 'VRSNB';
+  const catalogBranch = isVRSNB ? 'VRSNB' : 'SNB';
   const requiresSalesperson = !isVRSNB;
   const searchRef = useRef<HTMLInputElement>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
@@ -174,7 +171,9 @@ export default function BranchBillingProTab({
   const itemsGridRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
-  const { categories, items } = useMemo(() => itemCatalog(branch), [branch]);
+  const { items: catalogByBranch, loadCatalog, subscribe } = useBranchCatalogStore();
+  const items = useMemo(() => catalogByBranch[catalogBranch].filter((item) => item.active), [catalogBranch, catalogByBranch]);
+  const categories = useMemo(() => catalogCategories(items), [items]);
   const [category, setCategory] = useState<string>('All');
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<BranchBillItem[]>([]);
@@ -204,6 +203,11 @@ export default function BranchBillingProTab({
   const [dropdownIndex, setDropdownIndex] = useState(0);
   const [showCounterClosedAlert, setShowCounterClosedAlert] = useState(false);
   const [billingInputMode, setBillingInputMode] = useState<'manual' | 'barcode'>('manual');
+
+  useEffect(() => {
+    void loadCatalog(catalogBranch);
+    return subscribe(catalogBranch);
+  }, [catalogBranch, loadCatalog, subscribe]);
 
   const branchPeople = useMemo(() => {
     if (isVRSNB) return [];
@@ -285,19 +289,19 @@ export default function BranchBillingProTab({
       return;
     }
     const unit = unitOf(item);
-    const available = Number(stockAvailable(branchStock, stockMap, item.name));
+    const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
     if (available <= 0) {
       setError(`${item.name} is out of stock and cannot be billed.`);
       return;
     }
     setCart((current) => {
-      const existing = current.find((c) => c.itemName === item.name);
+      const existing = current.find((c) => c.barcode === item.barcode || c.itemName === item.name);
       const finalQty = Number(amount.toFixed(3));
       if (finalQty > available) {
         setError(`Only ${available} ${unit} available for ${item.name}.`);
         return current;
       }
-      if (existing) return current.map((c) => c.itemName === item.name ? recalcLine(c, finalQty) : c);
+      if (existing) return current.map((c) => (c.barcode === item.barcode || c.itemName === item.name) ? recalcLine({ ...c, barcode: item.barcode, itemName: item.name, price: item.price }, finalQty) : c);
       return [toBillItem(item, amount), ...current];
     });
     setCartQuantityDrafts((current) => {
@@ -322,7 +326,7 @@ export default function BranchBillingProTab({
       setShowCounterClosedAlert(true);
       return;
     }
-    const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name));
+    const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name, qtyPopupItem.barcode));
     if (amount > available) {
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
@@ -369,7 +373,7 @@ export default function BranchBillingProTab({
       return;
     }
 
-    const available = Number(stockAvailable(branchStock, stockMap, item.itemName));
+    const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
     if (nextQty > available) {
       setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
       clearCartQuantityDraft(itemName);
@@ -410,7 +414,7 @@ export default function BranchBillingProTab({
     if (requiresSalesperson && !salesperson) return 'Salesperson selection is mandatory before billing.';
     if (!cart.length) return 'Cart is empty.';
     for (const item of cart) {
-      const available = Number(stockAvailable(branchStock, stockMap, item.itemName));
+      const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
       if (available <= 0) return `${item.itemName} is out of stock.`;
       if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
     }
@@ -481,6 +485,27 @@ export default function BranchBillingProTab({
       if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
         throw new Error('Split payment must exactly match the bill total.');
       }
+      const { data: canonicalData, error: canonicalError } = await supabase.rpc('canonicalize_branch_sale_items', {
+        p_branch: branch,
+        p_items: cart.map((item) => ({ barcode: item.barcode, quantity: item.quantity, discount: item.discount || 0, tax: item.tax || 0 })),
+      });
+      if (canonicalError) {
+        const missing = /canonicalize_branch_sale_items|could not find the function|does not exist|schema cache/i.test(canonicalError.message ?? '');
+        throw new Error(missing ? 'The unified branch catalogue migration is not installed. Billing is blocked to prevent stale prices.' : canonicalError.message);
+      }
+      const canonicalItems = (canonicalData ?? []) as BranchBillItem[];
+      const canonicalSubtotal = roundMoney(canonicalItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
+      const canonicalTax = roundMoney(canonicalItems.reduce((sum, item) => sum + Number(item.tax || 0), 0));
+      const canonicalTotal = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - discountValue));
+      const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
+        const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
+        return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
+      });
+      if (catalogueChanged || canonicalTotal !== roundMoney(total)) {
+        setCart(canonicalItems);
+        throw new Error('An item name or price changed in Admin. The cart has been refreshed with the current catalogue; please review and collect payment again.');
+      }
+
       const paymentRows =
         paymentMode === 'credit'
           ? (creditPaid > 0 ? [{ mode: creditPaidMode, amount: creditPaid, remarks: creditRemarks.trim() || 'Credit upfront collection' }] : [])
@@ -492,17 +517,9 @@ export default function BranchBillingProTab({
               ].filter((row) => row.amount > 0)
             : [{ mode: paymentMode, amount: total }];
 
-      const { data, error: rpcError } = await supabase.rpc('complete_branch_checkout', {
+      const { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', {
         p_branch: branch,
-        p_items: cart.map((item) => ({
-          itemName: item.itemName,
-          quantity: item.quantity,
-          unit: item.unit,
-          price: item.price,
-          discount: item.discount || 0,
-          tax: item.tax || 0,
-          lineTotal: item.lineTotal,
-        })),
+        p_items: canonicalItems,
         p_payments: paymentRows,
         p_customer_name: paymentMode === 'credit' ? creditCustomerName.trim() : null,
         p_customer_phone: paymentMode === 'credit' ? creditCustomerMobile.trim() : null,
@@ -516,8 +533,8 @@ export default function BranchBillingProTab({
         p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
       });
       if (rpcError) {
-        const missingRpc = /complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
-        throw new Error(missingRpc ? 'Atomic checkout is not installed in Supabase. Run the 20260614_branch_atomic_checkout_rpc.sql migration first.' : rpcError.message);
+        const missingRpc = /complete_branch_checkout_canonical|complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
+        throw new Error(missingRpc ? 'Canonical atomic checkout is not installed in Supabase. Run all pending migrations before billing.' : rpcError.message);
       }
       const result = data as CheckoutRpcResult;
       if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
@@ -526,7 +543,7 @@ export default function BranchBillingProTab({
       // for an existing bill with the same billNo first, the write is idempotent.
       const existingBill = bills.find(b => b.billNo === result.billNo);
       const saved = existingBill ?? addBill({
-        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: cart, subtotal, discount: discountValue, tax, total,
+        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: canonicalItems, subtotal: canonicalSubtotal, discount: discountValue, tax: canonicalTax, total: canonicalTotal,
         tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,
@@ -835,7 +852,7 @@ export default function BranchBillingProTab({
                 {showDropdown && visibleItems.length > 0 && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                     {visibleItems.slice(0, 10).map((item, idx) => {
-                      const st = Number(stockAvailable(branchStock, stockMap, item.name));
+                      const st = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
                       return (
                         <div
                           key={item.barcode}
@@ -861,9 +878,9 @@ export default function BranchBillingProTab({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
             <div ref={itemsGridRef} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {visibleItems.map((item, idx) => {
-                const stock = Number(stockAvailable(branchStock, stockMap, item.name));
+                const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
                 const disabled = stock <= 0;
-                const inCart = cart.find((c)=>c.itemName===item.name);
+                const inCart = cart.find((c)=>c.barcode===item.barcode || c.itemName===item.name);
                 return (
                   <div
                     key={item.barcode}
@@ -900,7 +917,7 @@ export default function BranchBillingProTab({
         <QuantityPopup
           item={qtyPopupItem}
           value={qtyPopupValue}
-          existingQuantity={cart.find((line) => line.itemName === qtyPopupItem.name)?.quantity}
+          existingQuantity={cart.find((line) => line.barcode === qtyPopupItem.barcode || line.itemName === qtyPopupItem.name)?.quantity}
           branchStock={branchStock}
           stockMap={stockMap}
           onValue={setQtyPopupValue}
@@ -940,7 +957,7 @@ function QuantityPopup({
   const [attempted, setAttempted] = useState(false);
   const unit = unitOf(item);
   const isEditingExisting = existingQuantity !== undefined;
-  const available = Number(stockAvailable(branchStock, stockMap, item.name));
+  const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
   const entered = normalizeQtyInput(value, unit);
   const validationMessage = entered <= 0
     ? `Enter a valid ${unit === 'kg' ? 'weight' : 'quantity'}.`
