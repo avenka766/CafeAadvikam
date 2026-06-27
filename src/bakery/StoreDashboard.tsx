@@ -12,8 +12,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
-import { calculateMaterials } from './recipeDefinitions';
-import { resolveRecipeKey } from './itemMatcher';
+import { useRecipeStore } from './recipeStore';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
 import {
@@ -38,10 +37,8 @@ const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'supp
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 function matForItem(item: BakeryOrder['items'][number]) {
-  const key = resolveRecipeKey(item.itemId, item.itemName);
-  if (!key) return [];
-  const unit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
-  return calculateMaterials(key, item.quantity, unit);
+  const unit = item.dispatchUnit === 'pcs' && item.weightGrams == null ? 'pcs' : 'kg';
+  return useRecipeStore.getState().calculateMaterials(item.itemId, item.itemName, item.quantity, unit);
 }
 
 // ─── Rounding helper — rounds raw material quantities to nearest 0.05 ─────────
@@ -1527,12 +1524,16 @@ function StoreDailyClosureTab() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function StoreDashboard() {
   const [searchParams] = useSearchParams();
+  const recipes = useRecipeStore((state) => state.recipes);
+  const { loadRecipes, subscribe: subscribeRecipes } = useRecipeStore();
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
   const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
 
   useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded, loadInvoices]);
+  useEffect(() => { void loadRecipes(); return subscribeRecipes(); }, [loadRecipes, subscribeRecipes]);
+  void recipes;
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';

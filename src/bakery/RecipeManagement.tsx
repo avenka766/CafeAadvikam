@@ -6,10 +6,8 @@ import {
   ChefHat, Plus, Trash2, Pencil, Check, X, Loader2,
   Search, ChevronDown, ChevronUp, Scale, Hash, Package, Info, BookOpen,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useBakeryItemsStore } from './bakeryItemsStore';
-import { RECIPE_DEFINITIONS } from './recipeDefinitions';
-import type { RecipeDefinition } from './recipeDefinitions';
+import { useRecipeStore } from './recipeStore';
 import { cn } from '@/lib/utils';
 import EmptyState from '@/components/ui/EmptyState';
 import { useNotificationStore } from './notificationStore';
@@ -20,14 +18,15 @@ interface Material { material: string; qty: number; unit: string }
 interface RecipeRow {
   itemId: string;
   outputQty: number | null;
-  outputUnit: 'kg' | 'pcs' | 'loaf' | null;
+  outputUnit: 'kg' | 'pcs' | 'loaf' | 'L' | null;
   materials: Material[];
   source: 'db' | 'excel' | 'none';
 }
 
-const OUTPUT_UNITS = ['kg', 'pcs', 'loaf'] as const;
+const OUTPUT_UNITS = ['kg', 'L', 'pcs', 'loaf'] as const;
 const UNIT_ICONS: Record<string, ReactNode> = {
   kg:   <Scale   className="size-3.5" />,
+  L:    <Scale   className="size-3.5" />,
   pcs:  <Hash    className="size-3.5" />,
   loaf: <Package className="size-3.5" />,
 };
@@ -95,7 +94,7 @@ function RecipeEditor({
   saving: boolean;
 }) {
   const [outputQty,   setOutputQty]   = useState<string>(initial.outputQty ? String(initial.outputQty) : '');
-  const [outputUnit,  setOutputUnit]  = useState<'kg'|'pcs'|'loaf'>(initial.outputUnit ?? 'kg');
+  const [outputUnit,  setOutputUnit]  = useState<'kg'|'L'|'pcs'|'loaf'>(initial.outputUnit ?? 'kg');
   const [materials,   setMaterials]   = useState<Material[]>(
     initial.materials.length > 0 ? [...initial.materials] : [{ material: '', qty: 0, unit: 'kg' }]
   );
@@ -247,7 +246,7 @@ function ItemRecipeRow({
 
 
 function StoreItemsPanel({ onOpenRecipes }: { onOpenRecipes: () => void }) {
-  const { items, loading, loadAllItems, addItem, updateItem } = useBakeryItemsStore();
+  const { items, loading, loadAllItems, addItem, updateItem, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const { pushStoreItemChange } = useNotificationStore();
   const currentUser = useAuthStore(s => s.currentUser);
   const [search, setSearch] = useState('');
@@ -262,7 +261,7 @@ function StoreItemsPanel({ onOpenRecipes }: { onOpenRecipes: () => void }) {
   const [editCategory, setEditCategory] = useState<string>(CATEGORIES[0]);
   const [editIcon, setEditIcon] = useState(DEFAULT_ICONS[CATEGORIES[0]]);
 
-  useEffect(() => { loadAllItems(); }, [loadAllItems]);
+  useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -424,8 +423,6 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   const [search, setSearch]   = useState('');
   const [catFilter, setCatFilter] = useState<string>('All');
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [dbRecipes, setDbRecipes] = useState<Record<string, RecipeRow>>({});
-  const [loading, setLoading]     = useState(true);
   const [saving,  setSaving]      = useState(false);
   const [toast,   setToast]       = useState('');
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -433,46 +430,27 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   const [storeSection, setStoreSection] = useState<'items' | 'recipes'>('items');
 
   // Load live bakery items from Supabase (so newly added items appear here)
-  const { items: bakeryItems, loadAllItems } = useBakeryItemsStore();
+  const { items: bakeryItems, loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const { pushRecipeChange } = useNotificationStore();
   const currentUser = useAuthStore(s => s.currentUser);
-  useEffect(() => { loadAllItems(); }, [loadAllItems]);
+  useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
 
-  // Load DB overrides
+  const { recipes, loading, loadRecipes, saveRecipe, subscribe: subscribeRecipes, getRecipe: getLiveRecipe } = useRecipeStore();
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const { data } = await supabase.from('bakery_recipes').select('*');
-        if (data) {
-          const map: Record<string, RecipeRow> = {};
-          for (const row of data) {
-            map[row.item_id] = {
-              itemId:     row.item_id,
-              outputQty:  row.output_qty,
-              outputUnit: row.output_unit,
-              materials:  row.materials ?? [],
-              source:     'db',
-            };
-          }
-          setDbRecipes(map);
-        }
-      } catch { /* table may not exist yet — graceful fallback */ }
-      setLoading(false);
-    })();
-  }, []);
+    void loadRecipes();
+    return subscribeRecipes();
+  }, [loadRecipes, subscribeRecipes]);
 
-  // Merge: DB overrides > Excel defaults
   const getRecipe = (itemId: string): RecipeRow | null => {
-    if (dbRecipes[itemId]) return dbRecipes[itemId];
-    const def = RECIPE_DEFINITIONS[itemId];
-    if (!def) return null;
+    const item = bakeryItems.find((entry) => entry.id === itemId);
+    const recipe = getLiveRecipe(itemId, item?.name);
+    if (!recipe) return null;
     return {
       itemId,
-      outputQty:  def.outputQty,
-      outputUnit: def.outputUnit as 'kg'|'pcs'|'loaf'|null,
-      materials:  def.materials.map(m => ({ material: m.material, qty: m.qty, unit: m.unit })),
-      source:     'excel',
+      outputQty: recipe.outputQty,
+      outputUnit: recipe.outputUnit,
+      materials: recipe.materials.map((material) => ({ ...material })),
+      source: recipe.source === 'database' ? 'db' : 'excel',
     };
   };
 
@@ -487,41 +465,29 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   const handleSave = async (itemId: string, data: Omit<RecipeRow,'itemId'|'source'>) => {
     setSaving(true);
     try {
-      const item = bakeryItems.find(b => b.id === itemId)!;
-      const wasDbRecipe = Boolean(dbRecipes[itemId]);
-      const payload = {
-        item_id:     itemId,
-        item_name:   item.name,
-        output_qty:  data.outputQty,
-        output_unit: data.outputUnit,
-        materials:   data.materials,
-      };
-      // Upsert into bakery_recipes table
-      const { error } = await supabase
-        .from('bakery_recipes')
-        .upsert(payload, { onConflict: 'item_id' });
-
-      if (error) throw error;
-      setDbRecipes(prev => ({
-        ...prev,
-        [itemId]: { itemId, ...data, source: 'db' },
-      }));
+      const item = bakeryItems.find((entry) => entry.id === itemId);
+      if (!item) throw new Error('Item not found. Refresh the item list and try again.');
+      const wasDbRecipe = recipes[itemId]?.source === 'database';
+      const changedBy = currentUser?.displayName || currentUser?.username || 'Store user';
+      const error = await saveRecipe(itemId, item.name, data, changedBy);
+      if (error) throw new Error(error);
       setEditingId(null);
       await pushRecipeChange({
         action: wasDbRecipe ? 'updated' : 'created',
         itemId,
         itemName: item.name,
         ingredientCount: data.materials.length,
-        changedBy: currentUser?.displayName || currentUser?.username || 'Store user',
+        changedBy,
       });
-      setToast('Recipe saved and admin notified!');
+      setToast('Recipe saved, Store calculations updated, and admin notified!');
       setTimeout(() => setToast(''), 2500);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to save';
       setToast(`Error: ${message}`);
       setTimeout(() => setToast(''), 4000);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const editingItem = editingId ? bakeryItems.find(b => b.id === editingId) : null;
