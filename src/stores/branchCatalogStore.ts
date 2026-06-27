@@ -53,31 +53,19 @@ function isMissingTable(message?: string) {
 }
 
 async function ensureStockLink(item: BranchCatalogItem) {
-  const unit = item.uom === 'Kgs' ? 'kg' : 'pcs';
-  const { data: existing, error: readError } = await supabase
-    .from('branch_stock')
-    .select('id')
-    .eq('branch', item.branch)
-    .eq('item_barcode', item.barcode)
-    .maybeSingle();
-  if (readError) return readError.message;
-  if (existing) {
-    const { error } = await supabase
-      .from('branch_stock')
-      .update({ item_name: item.name, unit })
-      .eq('branch', item.branch)
-      .eq('item_barcode', item.barcode);
-    return error?.message ?? null;
-  }
-  const { error } = await supabase.from('branch_stock').insert({
-    branch: item.branch,
-    item_name: item.name,
-    item_barcode: item.barcode,
-    quantity: 0,
-    unit,
-    min_threshold: item.uom === 'Kgs' ? 2 : 10,
+  const { error } = await supabase.rpc('ensure_branch_stock_link', {
+    p_branch: item.branch,
+    p_barcode: item.barcode,
+    p_legacy_name: item.name,
   });
-  return error?.message ?? null;
+  if (!error) return null;
+
+  const missingRpc = /ensure_branch_stock_link|could not find the function|does not exist|schema cache/i
+    .test(error.message ?? '');
+  if (missingRpc) {
+    return 'Install the latest branch stock-link repair migration before adding or editing items.';
+  }
+  return error.message;
 }
 
 function mergeLegacyOverrides(branch: CatalogBranch, rows: Array<Record<string, unknown>> | null | undefined) {
