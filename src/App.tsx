@@ -10,6 +10,7 @@ import OfflineBanner from '@/components/layout/OfflineBanner';
 import DataHealthBanner from '@/components/layout/DataHealthBanner';
 import WorkspaceChrome from '@/components/layout/WorkspaceChrome';
 import { getRoleDefaultPath } from '@/lib/routing';
+import { useMenuStore } from '@/stores/menuStore';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 const MenuPage = lazy(() => import('@/pages/MenuPage'));
@@ -63,6 +64,16 @@ const AdminAlertsPage = lazy(() => import('@/pages/AdminAlertsPage'));
 // TODO: Export full schema from live Supabase and reconcile with supabase/migrations/.
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+
+function LiveMenuSync() {
+  const { loadMenu, subscribe } = useMenuStore();
+  useEffect(() => {
+    void loadMenu();
+    return subscribe();
+  }, [loadMenu, subscribe]);
+  return null;
+}
 
 function AppRoutes() {
   const location = useLocation();
@@ -162,6 +173,7 @@ export default function App() {
       <OfflineBanner />
       <DataHealthBanner />
       <BrowserRouter>
+        <LiveMenuSync />
         <AppRoutes />
       </BrowserRouter>
     </ErrorBoundary>

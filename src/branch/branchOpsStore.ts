@@ -22,6 +22,7 @@ type StoreOrderStatus =
   | "Delivered";
 
 export interface BranchBillItem {
+  barcode?: number;
   itemName: string;
   quantity: number;
   unit: "pcs" | "kg";

@@ -3,12 +3,28 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
 import { BAKERY_ITEMS } from '@/bakery/types';
-import { SNB_ITEMS } from './snbItems';
-import { VRSNB_ITEMS } from './vrsnbItems';
+import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-const decrementBranchStockStrict = async (branch: Branch, itemName: string, qty: number) => {
+const isMissingRpcError = (message: string) =>
+  /could not find the function|function .* does not exist|schema cache/i.test(message);
+
+const decrementBranchStockStrict = async (
+  branch: Branch,
+  itemName: string,
+  qty: number,
+  itemBarcode?: number,
+) => {
+  if (itemBarcode != null) {
+    const barcodeResult = await supabase.rpc('decrement_branch_stock_by_barcode_strict', {
+      p_branch: branch,
+      p_barcode: itemBarcode,
+      p_qty: qty,
+    });
+    if (!barcodeResult.error || !isMissingRpcError(barcodeResult.error.message ?? '')) return barcodeResult;
+  }
+
   const strictResult = await supabase.rpc('decrement_branch_stock_strict', {
     p_branch: branch,
     p_item_name: itemName,
@@ -16,12 +32,30 @@ const decrementBranchStockStrict = async (branch: Branch, itemName: string, qty:
   });
 
   if (!strictResult.error) return strictResult;
-
-  const message = strictResult.error.message ?? '';
-  const missingStrictRpc = /could not find the function|function .* does not exist/i.test(message);
-  if (!missingStrictRpc) return strictResult;
+  if (!isMissingRpcError(strictResult.error.message ?? '')) return strictResult;
 
   return supabase.rpc('decrement_branch_stock', {
+    p_branch: branch,
+    p_item_name: itemName,
+    p_qty: qty,
+  });
+};
+
+const incrementBranchStock = async (
+  branch: Branch,
+  itemName: string,
+  qty: number,
+  itemBarcode?: number,
+) => {
+  if (itemBarcode != null) {
+    const barcodeResult = await supabase.rpc('increment_branch_stock_by_barcode', {
+      p_branch: branch,
+      p_barcode: itemBarcode,
+      p_qty: qty,
+    });
+    if (!barcodeResult.error || !isMissingRpcError(barcodeResult.error.message ?? '')) return barcodeResult;
+  }
+  return supabase.rpc('increment_branch_stock', {
     p_branch: branch,
     p_item_name: itemName,
     p_qty: qty,
@@ -36,6 +70,7 @@ const defaultMinThreshold = (unit?: string) => {
 };
 
 export interface StockItem {
+  itemBarcode?: number;
   itemName: string;
   quantity: number;
   /** Unit in which quantity is stored — 'pcs' for piece items, 'kg' for weight items. */
@@ -46,6 +81,7 @@ export interface StockItem {
 
 export interface SaleRecord {
   id: string;
+  itemBarcode?: number;
   itemName: string;
   quantitySold: number;
   soldAt: string;
@@ -57,6 +93,7 @@ export interface SaleRecord {
 }
 
 export interface BranchAdvanceItem {
+  barcode?: number;
   itemName: string;
   quantity: number;
   sellUnit: 'kg' | 'pcs';
@@ -85,6 +122,7 @@ export interface BranchAdvanceOrder {
 
 export interface IncomingStock {
   id: string;
+  itemBarcode?: number;
   itemName: string;
   quantity: number;
   /** Unit in which quantity is expressed — 'pcs' or 'kg'. Defaults to 'kg' for legacy rows. */
@@ -100,6 +138,7 @@ export interface IncomingStock {
 
 export interface StockMismatch {
   id:        string;
+  itemBarcode?: number;
   itemName:  string;
   branch:    Branch;
   soldQty:   number;
@@ -110,6 +149,7 @@ export interface StockMismatch {
 
 // ── Credit Sale ───────────────────────────────────────────────────────────────
 export interface CreditSaleItem {
+  barcode?: number;
   itemName: string;
   quantity: number;
   sellUnit: 'kg' | 'pcs';
@@ -167,7 +207,7 @@ interface BranchState {
   lastSyncedAt:    Record<Branch, number | null>;
   fetchBranchData: (branch: Branch) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
-  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number) => Promise<string | null>;
+  recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number, itemBarcode?: number) => Promise<string | null>;
   recordSnbSale: (
     branch: Branch,
     itemName: string,
@@ -176,6 +216,7 @@ interface BranchState {
     paymentMethod: string,
     unitPrice: number,
     billNo?: string,
+    itemBarcode?: number,
   ) => Promise<{ error: string | null; mismatch: boolean }>;
   recordAdvanceOrder: (branch: Branch, order: Omit<BranchAdvanceOrder, 'id' | 'createdAt' | 'fullyPaidAt' | 'balanceMethod' | 'status'>) => Promise<string | null>;
   collectAdvanceBalance: (branch: Branch, orderId: string, balanceMethod: string) => Promise<string | null>;
@@ -183,7 +224,7 @@ interface BranchState {
   syncIncomingFromDispatches: (branch: Branch, force?: boolean) => Promise<void>;
   confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
   confirmAllIncoming: (branch: Branch) => Promise<string | null>;
-  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
+  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
   fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
@@ -242,6 +283,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+      const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
+      if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
+      const catalogItems = catalogBranch ? useBranchCatalogStore.getState().items[catalogBranch] : [];
+
       const [
         { data: stockData },
         { data: salesData },
@@ -272,6 +317,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       (priceData || []).forEach((d) => {
         priceMap[d.name] = d.price != null ? Number(d.price) : null;
       });
+      catalogItems.forEach((item) => { priceMap[item.name] = item.price; });
+      const priceByBarcode = new Map(catalogItems.map((item) => [item.barcode, item.price]));
 
       set((s) => {
         const stock         = { ...s.stock };
@@ -282,16 +329,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const creditSales   = { ...s.creditSales };
 
         stock[branch] = (stockData || []).map((d) => ({
+          itemBarcode:  d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:     d.item_name,
           quantity:     d.quantity,
           // Persist the unit stored in DB so pcs items always display as pcs
           unit:         (d.unit === 'pcs' ? 'pcs' : d.unit === 'kg' ? 'kg' : undefined) as 'pcs' | 'kg' | undefined,
           minThreshold: d.min_threshold ?? 10,
-          price:        priceMap[d.item_name] ?? null,
+          price:        d.item_barcode != null ? (priceByBarcode.get(Number(d.item_barcode)) ?? priceMap[d.item_name] ?? null) : (priceMap[d.item_name] ?? null),
         }));
 
         sales[branch] = (salesData || []).map((d) => ({
           id:            d.id,
+          itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:      d.item_name,
           quantitySold:  d.quantity_sold,
           soldAt:        d.sold_at,
@@ -304,6 +353,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
         incoming[branch] = (incomingData || []).map((d) => ({
           id:            d.id,
+          itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:      d.item_name,
           quantity:      Number(d.quantity),
           unit:          (d.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg',
@@ -374,11 +424,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   // B1 FIX: atomic stock decrement via stored procedure.
   // The strict RPC blocks missing, insufficient, or negative stock billing.
-  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice) => {
+  recordSale: async (branch, itemName, qty, soldBy, paymentMethod, billNo, unitPrice, itemBarcode) => {
     const now = new Date().toISOString();
     const requestedStockName = normalizeStockName(itemName);
-    const localStock = get().stock[branch].find((s) => normalizeStockName(s.itemName) === requestedStockName) ?? null;
+    const localStock = get().stock[branch].find((stockItem) =>
+      itemBarcode != null && stockItem.itemBarcode != null
+        ? stockItem.itemBarcode === itemBarcode
+        : normalizeStockName(stockItem.itemName) === requestedStockName,
+    ) ?? null;
     const stockItemName = localStock?.itemName ?? itemName;
+    const resolvedBarcode = itemBarcode ?? localStock?.itemBarcode;
     const availableQty = Number(localStock?.quantity ?? 0);
 
     if (!localStock) {
@@ -394,7 +449,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Resolve unit price: caller may pass it directly; otherwise look up from stock price map
     const resolvedPrice = unitPrice ?? localStock?.price ?? 0;
 
-    const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty);
+    const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty, resolvedBarcode);
     if (rpcErr) {
       console.error('[recordSale] stock RPC error:', rpcErr.message);
       return `Failed to update stock for ${itemName}: ${rpcErr.message}`;
@@ -410,6 +465,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .insert({
         branch,
         item_name:      itemName,
+        item_barcode:   resolvedBarcode ?? null,
         quantity_sold:  qty,
         sold_at:        now,
         sold_by:        soldBy,
@@ -427,13 +483,14 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (newQty < 0) {
       const actualShortage = Math.abs(newQty);
       await supabase.from('branch_stock_mismatches').insert({
-        branch, item_name: itemName, sold_qty: qty,
+        branch, item_name: itemName, item_barcode: resolvedBarcode ?? null, sold_qty: qty,
         shortage: actualShortage, sold_at: now, sold_by: soldBy,
       }).select().single();
     }
 
     const newSale: SaleRecord = {
       id:            saleData.id,
+      itemBarcode:   saleData.item_barcode != null ? Number(saleData.item_barcode) : resolvedBarcode,
       itemName:      saleData.item_name,
       quantitySold:  saleData.quantity_sold,
       soldAt:        saleData.sold_at,
@@ -447,8 +504,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      stock[branch] = stock[branch].map((si) =>
-        normalizeStockName(si.itemName) === requestedStockName ? { ...si, quantity: newQty } : si,
+      stock[branch] = stock[branch].map((stockItem) =>
+        resolvedBarcode != null && stockItem.itemBarcode != null
+          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty } : stockItem
+          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty } : stockItem,
       );
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
@@ -490,7 +549,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     for (const item of order.items) {
       if (item.isCustom) continue;
       const requestedStockName = normalizeStockName(item.itemName);
-      const currentStock = get().stock[branch].find((s) => normalizeStockName(s.itemName) === requestedStockName) ?? null;
+      const currentStock = get().stock[branch].find((stockItem) =>
+        item.barcode != null && stockItem.itemBarcode != null
+          ? stockItem.itemBarcode === item.barcode
+          : normalizeStockName(stockItem.itemName) === requestedStockName,
+      ) ?? null;
       const availableQty = Number(currentStock?.quantity ?? 0);
       if (!currentStock) return `${item.itemName} has no stock entry and cannot be billed. Add stock before creating the advance order.`;
       if (availableQty <= 0) return `${item.itemName} is out of stock and cannot be billed.`;
@@ -541,6 +604,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const advanceSalesRows = order.items.map(item => ({
       branch,
       item_name:      item.itemName ?? 'Custom item',
+      item_barcode:   item.barcode ?? null,
       quantity_sold:  item.quantity ?? 0,
       sold_at:        now,
       sold_by:        order.soldBy,
@@ -578,19 +642,19 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Now: deduct all stock first, then mark completed atomically.
 
     // B3 FIX: each item uses the atomic RPC decrement instead of reading stale local state.
-    const decremented: Array<{ itemName: string; qty: number }> = [];
+    const decremented: Array<{ itemName: string; qty: number; barcode?: number }> = [];
 
     for (const item of order.items) {
       if (item.isCustom) continue;
 
       // Atomic stock decrement via RPC
-      const { data: newQtyRpc, error: stockRpcErr } = await decrementBranchStockStrict(branch, item.itemName, item.quantity);
+      const { data: newQtyRpc, error: stockRpcErr } = await decrementBranchStockStrict(branch, item.itemName, item.quantity, item.barcode);
 
       if (stockRpcErr) {
         // Hard DB error: roll back and surface to operator
         const msg = `Failed to deduct stock for "${item.itemName}": ${stockRpcErr.message}`;
         for (const d of decremented) {
-          await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
+          await incrementBranchStock(branch, d.itemName, d.qty, d.barcode);
         }
         await get().fetchBranchData(branch);
         return msg;
@@ -598,13 +662,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
       if (newQtyRpc === null) {
         for (const d of decremented) {
-          await supabase.rpc('increment_branch_stock', { p_branch: branch, p_item_name: d.itemName, p_qty: d.qty });
+          await incrementBranchStock(branch, d.itemName, d.qty, d.barcode);
         }
         await get().fetchBranchData(branch);
         return `Insufficient stock for "${item.itemName}". Refresh stock and try again before completing this advance order.`;
       }
 
-      decremented.push({ itemName: item.itemName, qty: item.quantity });
+      decremented.push({ itemName: item.itemName, qty: item.quantity, barcode: item.barcode });
 
       // FIX (MD Bug #1): removed duplicate branch_sales insert here.
       // recordAdvanceOrder() already wrote a branch_sales row with payment_method='advance:<method>'
@@ -619,9 +683,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
       .eq('id', orderId);
     if (updateErr) {
-      // Stock was deducted but order status update failed — surface this so operator can retry
+      // Restore every successful deduction so a status-write failure cannot corrupt inventory.
+      for (const deducted of decremented) {
+        await incrementBranchStock(branch, deducted.itemName, deducted.qty, deducted.barcode);
+      }
       await get().fetchBranchData(branch);
-      return `Stock deducted but failed to mark order complete: ${updateErr.message}. Please refresh and verify.`;
+      return `Failed to mark order complete: ${updateErr.message}. Stock changes were rolled back.`;
     }
 
     // B3 FIX: refresh from DB after all mutations instead of computing from stale local state
@@ -642,17 +709,23 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   updateThreshold: async (branch, itemName, threshold) => {
-    const { error: t1 } = await supabase.from('branch_thresholds').upsert({ branch, item_name: itemName, threshold });
+    const stockItem = get().stock[branch].find((item) => normalizeStockName(item.itemName) === normalizeStockName(itemName));
+    const itemBarcode = stockItem?.itemBarcode;
+    const thresholdPayload = { branch, item_name: stockItem?.itemName ?? itemName, item_barcode: itemBarcode ?? null, threshold };
+    const { error: t1 } = await supabase.from('branch_thresholds').upsert(thresholdPayload, { onConflict: 'branch,item_name' });
     if (t1) { console.error('[updateThreshold] thresholds upsert failed:', t1.message); return; }
-    const { error: t2 } = await supabase.from('branch_stock').update({ min_threshold: threshold })
-      .eq('branch', branch).eq('item_name', itemName);
+    let stockUpdate = supabase.from('branch_stock').update({ min_threshold: threshold }).eq('branch', branch);
+    stockUpdate = itemBarcode != null ? stockUpdate.eq('item_barcode', itemBarcode) : stockUpdate.eq('item_name', itemName);
+    const { error: t2 } = await stockUpdate;
     if (t2) console.error('[updateThreshold] stock update failed:', t2.message);
     set((s) => {
       const thresholds = { ...s.thresholds };
-      thresholds[branch] = { ...thresholds[branch], [itemName]: threshold };
+      thresholds[branch] = { ...thresholds[branch], [stockItem?.itemName ?? itemName]: threshold };
       const stock = { ...s.stock };
-      stock[branch] = stock[branch].map((si) =>
-        si.itemName === itemName ? { ...si, minThreshold: threshold } : si,
+      stock[branch] = stock[branch].map((item) =>
+        itemBarcode != null && item.itemBarcode != null
+          ? item.itemBarcode === itemBarcode ? { ...item, minThreshold: threshold } : item
+          : normalizeStockName(item.itemName) === normalizeStockName(itemName) ? { ...item, minThreshold: threshold } : item,
       );
       return { thresholds, stock };
     });
@@ -664,6 +737,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const now = Date.now();
     if (!force && lastSyncedAt[branch] && now - lastSyncedAt[branch]! < 10 * 1000) return;
     set((s) => ({ lastSyncedAt: { ...s.lastSyncedAt, [branch]: now } }));
+    const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
+    if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
+    const catalogItems = catalogBranch ? useBranchCatalogStore.getState().getActiveItems(catalogBranch) : [];
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -690,13 +766,13 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     );
 
     const newEntries: {
-      dispatch_id: string; item_name: string; quantity: number; unit: string;
+      dispatch_id: string; item_name: string; item_barcode: number | null; quantity: number; unit: string;
       received_at: string; dispatched_by: string; branch: Branch;
     }[] = [];
 
     for (const order of orders) {
       const log = (order.dispatch_log || []) as {
-        id: string; itemName: string; quantity: number; unit?: string;
+        id: string; itemName: string; itemBarcode?: number; barcode?: number; quantity: number; unit?: string;
         branch: Branch; dispatchedAt: string; dispatchedBy: string;
       }[];
       log
@@ -705,6 +781,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           newEntries.push({
             dispatch_id:   e.id,
             item_name:     e.itemName,
+            item_barcode:  e.itemBarcode ?? e.barcode ?? catalogItems.find((item) => normalizeStockName(item.name) === normalizeStockName(e.itemName))?.barcode ?? null,
             quantity:      e.quantity,
             unit:          e.unit ?? 'kg',
             received_at:   e.dispatchedAt,
@@ -746,9 +823,15 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (inc.disputed) return 'This incoming stock is disputed and must be reviewed before confirmation.';
 
     // Try atomic RPC first (deployed via migration)
-    const { error: rpcErr } = await supabase.rpc('confirm_incoming_stock', {
+    let canonicalConfirm = await supabase.rpc('confirm_incoming_stock_canonical', {
       p_incoming_id: incomingId, p_branch: branch,
     });
+    if (canonicalConfirm.error && isMissingRpcError(canonicalConfirm.error.message ?? '')) {
+      canonicalConfirm = await supabase.rpc('confirm_incoming_stock', {
+        p_incoming_id: incomingId, p_branch: branch,
+      });
+    }
+    const { error: rpcErr } = canonicalConfirm;
     if (!rpcErr) {
       await get().fetchBranchData(branch);
       return null;
@@ -758,35 +841,36 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // Re-read the incoming record to guard against a retry where stock was already
     // added but the mark-confirmed step failed. If confirmed=true in DB we skip stock add.
     const { data: freshInc } = await supabase
-      .from('branch_incoming').select('confirmed, disputed').eq('id', incomingId).single();
+      .from('branch_incoming').select('confirmed, disputed, item_barcode').eq('id', incomingId).single();
     const alreadyConfirmedInDb = freshInc?.confirmed === true;
     if (freshInc?.disputed === true) return 'This incoming stock is disputed and must be reviewed before confirmation.';
 
     if (!alreadyConfirmedInDb) {
-      const { data: existing } = await supabase
-        .from('branch_stock').select('quantity')
-        .eq('branch', branch).eq('item_name', inc.itemName).single();
+      const resolvedBarcode = inc.itemBarcode ?? (freshInc?.item_barcode != null ? Number(freshInc.item_barcode) : undefined);
+      let existingQuery = supabase.from('branch_stock').select('quantity,item_barcode').eq('branch', branch);
+      existingQuery = resolvedBarcode != null ? existingQuery.eq('item_barcode', resolvedBarcode) : existingQuery.eq('item_name', inc.itemName);
+      const { data: existing } = await existingQuery.maybeSingle();
 
       if (existing) {
         // FIX (MD Bug #14): replace non-atomic read-quantity-then-write with a server-side
         // atomic increment RPC to prevent lost updates when two devices confirm stock
         // for different items of the same order at nearly the same instant. If the atomic
         // RPC is unavailable, fall back to the read-modify-write (same risk as before).
-        const { error: rpcErr } = await supabase.rpc('increment_branch_stock', {
-          p_branch: branch, p_item_name: inc.itemName, p_qty: inc.quantity,
-        });
+        const { error: rpcErr } = await incrementBranchStock(branch, inc.itemName, inc.quantity, resolvedBarcode);
         if (rpcErr) {
           // Atomic RPC not available — fall back to non-atomic path with a warning
           console.warn('[confirmIncoming] increment_branch_stock RPC unavailable, using non-atomic fallback:', rpcErr.message);
           const newQty = Math.round((existing.quantity + inc.quantity) * 1000) / 1000;
-          const { error: stockErr } = await supabase.from('branch_stock')
-            .update({ quantity: newQty, unit: inc.unit })
-            .eq('branch', branch).eq('item_name', inc.itemName);
+          let fallbackUpdate = supabase.from('branch_stock')
+            .update({ quantity: newQty, unit: inc.unit, item_name: inc.itemName, item_barcode: resolvedBarcode ?? existing.item_barcode ?? null })
+            .eq('branch', branch);
+          fallbackUpdate = resolvedBarcode != null ? fallbackUpdate.eq('item_barcode', resolvedBarcode) : fallbackUpdate.eq('item_name', inc.itemName);
+          const { error: stockErr } = await fallbackUpdate;
           if (stockErr) return `Failed to add to stock: ${stockErr.message}`;
         }
       } else {
         const { error: insErr } = await supabase.from('branch_stock')
-          .insert({ branch, item_name: inc.itemName, quantity: inc.quantity, unit: inc.unit, min_threshold: defaultMinThreshold(inc.unit) });
+          .insert({ branch, item_name: inc.itemName, item_barcode: resolvedBarcode ?? null, quantity: inc.quantity, unit: inc.unit, min_threshold: defaultMinThreshold(inc.unit) });
         if (insErr) return `Failed to create stock entry: ${insErr.message}`;
       }
     }
@@ -799,16 +883,24 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const incoming = { ...s.incoming };
       incoming[branch] = incoming[branch].map((i) => i.id === incomingId ? { ...i, confirmed: true } : i);
       const stock = { ...s.stock };
-      const si = stock[branch].find((x) => x.itemName === inc.itemName);
+      const si = stock[branch].find((item) =>
+        inc.itemBarcode != null && item.itemBarcode != null
+          ? item.itemBarcode === inc.itemBarcode
+          : normalizeStockName(item.itemName) === normalizeStockName(inc.itemName),
+      );
       if (si) {
-        stock[branch] = stock[branch].map((x) =>
-          x.itemName === inc.itemName
-            ? { ...x, quantity: Math.round((x.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
-            : x
+        stock[branch] = stock[branch].map((item) =>
+          inc.itemBarcode != null && item.itemBarcode != null
+            ? item.itemBarcode === inc.itemBarcode
+              ? { ...item, quantity: Math.round((item.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
+              : item
+            : normalizeStockName(item.itemName) === normalizeStockName(inc.itemName)
+              ? { ...item, quantity: Math.round((item.quantity + inc.quantity) * 1000) / 1000, unit: inc.unit }
+              : item,
         );
       } else {
         stock[branch] = [...stock[branch], {
-          itemName: inc.itemName, quantity: inc.quantity, unit: inc.unit, minThreshold: 10, price: null,
+          itemBarcode: inc.itemBarcode, itemName: inc.itemName, quantity: inc.quantity, unit: inc.unit, minThreshold: 10, price: null,
         }];
       }
       return { incoming, stock };
@@ -830,11 +922,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   // ── SNB / Hosur sale — items come from price list, not stock requirement ──
   // Deducts stock when available, logs a mismatch when stock is 0 / insufficient.
-  recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice, billNo) => {
+  recordSnbSale: async (branch, itemName, qty, soldBy, paymentMethod, unitPrice, billNo, itemBarcode) => {
     const now = new Date().toISOString();
     const requestedStockName = normalizeStockName(itemName);
-    const currentStock = get().stock[branch].find((s) => normalizeStockName(s.itemName) === requestedStockName) ?? null;
+    const currentStock = get().stock[branch].find((stockItem) =>
+      itemBarcode != null && stockItem.itemBarcode != null
+        ? stockItem.itemBarcode === itemBarcode
+        : normalizeStockName(stockItem.itemName) === requestedStockName,
+    ) ?? null;
     const stockItemName = currentStock?.itemName ?? itemName;
+    const resolvedBarcode = itemBarcode ?? currentStock?.itemBarcode;
     const availableQty = Number(currentStock?.quantity ?? 0);
 
     if (!currentStock) {
@@ -847,7 +944,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       return { error: `Only ${availableQty} available for ${itemName}. Requested ${qty}.`, mismatch: true };
     }
 
-    const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty);
+    const { data: newQtyRpc, error: rpcErr } = await decrementBranchStockStrict(branch, stockItemName, qty, resolvedBarcode);
     if (rpcErr) {
       console.error('[recordSnbSale] stock RPC error:', rpcErr.message);
       return { error: `Failed to update stock for ${itemName}: ${rpcErr.message}`, mismatch: true };
@@ -864,6 +961,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .insert({
         branch,
         item_name:      itemName,
+        item_barcode:   resolvedBarcode ?? null,
         quantity_sold:  qty,
         sold_at:        now,
         sold_by:        soldBy,
@@ -878,6 +976,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     // 3. Update local state
     const newSale: SaleRecord = {
       id:            saleData.id,
+      itemBarcode:   saleData.item_barcode != null ? Number(saleData.item_barcode) : resolvedBarcode,
       itemName:      saleData.item_name,
       quantitySold:  saleData.quantity_sold,
       soldAt:        saleData.sold_at,
@@ -891,8 +990,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     set((s) => {
       const stock = { ...s.stock };
       const sales = { ...s.sales };
-      stock[branch] = stock[branch].map((si) =>
-        normalizeStockName(si.itemName) === requestedStockName ? { ...si, quantity: newQty } : si,
+      stock[branch] = stock[branch].map((stockItem) =>
+        resolvedBarcode != null && stockItem.itemBarcode != null
+          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty } : stockItem
+          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty } : stockItem,
       );
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
@@ -904,24 +1005,25 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   // ── Manual stock update — branch staff sets qty for any item ─────────────
-  manualUpdateStock: async (branch, itemName, quantity, updatedBy) => {
+  manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode) => {
     const rounded = Math.round(quantity * 1000) / 1000;
     const now = new Date().toISOString();
 
-    const { data: existing } = await supabase
+    let existingQuery = supabase
       .from('branch_stock')
-      .select('quantity')
-      .eq('branch', branch)
-      .eq('item_name', itemName)
-      .single();
+      .select('quantity,item_barcode')
+      .eq('branch', branch);
+    existingQuery = itemBarcode != null ? existingQuery.eq('item_barcode', itemBarcode) : existingQuery.eq('item_name', itemName);
+    const { data: existing } = await existingQuery.maybeSingle();
 
     if (existing) {
       const oldQty = Number(existing.quantity ?? 0);
-      const { error } = await supabase
+      let updateQuery = supabase
         .from('branch_stock')
-        .update({ quantity: rounded, last_updated_by: updatedBy, last_updated_at: now })
-        .eq('branch', branch)
-        .eq('item_name', itemName);
+        .update({ quantity: rounded, item_name: itemName, item_barcode: itemBarcode ?? existing.item_barcode ?? null, last_updated_by: updatedBy, last_updated_at: now })
+        .eq('branch', branch);
+      updateQuery = itemBarcode != null ? updateQuery.eq('item_barcode', itemBarcode) : updateQuery.eq('item_name', itemName);
+      const { error } = await updateQuery;
       if (error) return `Failed to update stock: ${error.message}`;
       // FIX (MD Bug #13): write an audit log row on every manual stock update so
       // owners can see who changed what, when, and by how much. Requires a
@@ -939,7 +1041,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     } else {
       const { error } = await supabase
         .from('branch_stock')
-        .insert({ branch, item_name: itemName, quantity: rounded, min_threshold: 0, last_updated_by: updatedBy, last_updated_at: now });
+        .insert({ branch, item_name: itemName, item_barcode: itemBarcode ?? null, quantity: rounded, min_threshold: 0, last_updated_by: updatedBy, last_updated_at: now });
       if (error) return `Failed to create stock entry: ${error.message}`;
       // Audit log for new stock entry creation
       await supabase.from('branch_stock_adjustments').insert({
@@ -965,8 +1067,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     if (!data) return;
     set({
       stockMismatches: data.map((d) => ({
-        id:       d.id,
-        itemName: d.item_name,
+        id:          d.id,
+        itemBarcode: d.item_barcode != null ? Number(d.item_barcode) : undefined,
+        itemName:    d.item_name,
         branch:   d.branch as Branch,
         soldQty:  d.sold_qty,
         shortage: d.shortage,
@@ -977,14 +1080,15 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   seedBranchItems: async (branch) => {
-    const priceItems = branch === 'VRSNB'
-      ? VRSNB_ITEMS
-      : branch === 'SNB' || branch === 'Hosur'
-        ? SNB_ITEMS
-        : BAKERY_ITEMS.map((item) => ({ ...item, uom: 'Nos' }));
+    const catalogBranch = branch === 'VRSNB' ? 'VRSNB' : branch === 'SNB' || branch === 'Hosur' ? 'SNB' : null;
+    if (catalogBranch) await useBranchCatalogStore.getState().loadCatalog(catalogBranch);
+    const priceItems = catalogBranch
+      ? useBranchCatalogStore.getState().items[catalogBranch].filter((item) => item.active)
+      : BAKERY_ITEMS.map((item) => ({ ...item, barcode: undefined, uom: 'Nos' as const }));
     const rows = priceItems.map(item => ({
       branch,
       item_name:     item.name,
+      item_barcode:  'barcode' in item ? item.barcode ?? null : null,
       quantity:      0,
       unit:          item.uom === 'Kgs' || item.uom === 'kg' ? 'kg' : 'pcs',
       min_threshold: defaultMinThreshold(item.uom),
@@ -1139,6 +1243,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const salesRows = shouldWriteSalesRows ? sale.items.map(item => ({
       branch,
       item_name:      item.itemName,
+      item_barcode:   item.barcode ?? null,
       quantity_sold:  item.quantity,
       sold_at:        now,
       sold_by:        sale.soldBy,

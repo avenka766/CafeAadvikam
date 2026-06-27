@@ -39,8 +39,7 @@ import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
-import { SNB_ITEMS } from "@/branch/snbItems";
-import { VRSNB_ITEMS } from "@/branch/vrsnbItems";
+import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 
 // ── Branch config ──────────────────────────────────────────────────────────────
 
@@ -810,6 +809,7 @@ function HosurOrderPanel({
   userName: string;
   onSaved: () => void;
 }) {
+  const { items: snbItems } = useOperationalBranchCatalog('SNB');
   const [shopId, setShopId] = useState("");
   const [category, setCategory] = useState<string>("All");
   const [search, setSearch] = useState("");
@@ -829,7 +829,7 @@ function HosurOrderPanel({
     return prices
       .filter((price) => price.shopId === selectedShop.id && price.isActive)
       .map((price) => {
-        const master = SNB_ITEMS.find((item) => normalize(item.name) === normalize(price.itemName));
+        const master = snbItems.find((item) => normalize(item.name) === normalize(price.itemName));
         return {
           ...price,
           category: master?.category ?? "Custom",
@@ -837,7 +837,7 @@ function HosurOrderPanel({
         };
       })
       .sort((a, b) => a.itemName.localeCompare(b.itemName));
-  }, [prices, selectedShop]);
+  }, [prices, selectedShop, snbItems]);
 
   const categories = useMemo(
     () => ["All", ...Array.from(new Set(shopItems.map((item) => item.category)))],
@@ -1538,6 +1538,7 @@ function StockCountPanel({
   userName: string;
 }) {
   const { submitStockCountReport } = useBranchOpsStore();
+  const { items: itemMaster } = useOperationalBranchCatalog(branch);
   const [counts, setCounts] = useState<Record<string, string>>({});
   const [countedItems, setCountedItems] = useState<Record<string, boolean>>({});
   const touchedCounts = useRef<Record<string, boolean>>({});
@@ -1548,17 +1549,16 @@ function StockCountPanel({
 
   const rows = useMemo(() => {
     const stockMap = new Map(branchStock.map((item) => [item.itemName, item]));
-    const itemMaster = branch === "VRSNB" ? VRSNB_ITEMS : SNB_ITEMS;
     return itemMaster.map((item) => {
       const stockItem = stockMap.get(item.name);
-      const unit = stockItem?.unit ?? (item.uom === "Kgs" || item.uom === "kg" ? "kg" : "pcs");
+      const unit = stockItem?.unit ?? (item.uom === "Kgs" ? "kg" : "pcs");
       return {
         itemName: item.name,
         unit,
         systemQty: Number(stockItem?.quantity ?? 0),
       };
     });
-  }, [branch, branchStock]);
+  }, [branchStock, itemMaster]);
 
   useEffect(() => {
     setCounts((prev) => {

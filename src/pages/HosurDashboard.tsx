@@ -41,8 +41,7 @@ import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
-import { SNB_CATEGORIES, SNB_ITEMS } from '@/branch/snbItems';
-import type { SnbItem } from '@/branch/snbItems';
+import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
 const BRANCH = 'Hosur' as const;
@@ -285,7 +284,7 @@ interface HosurCatalogItem {
   name: string;
   price: number;
   uom: 'Nos' | 'Kgs';
-  category: SnbItem['category'];
+  category: string;
   source: 'master' | 'shop';
 }
 
@@ -305,7 +304,7 @@ function parseHosurTab(value: string | null): HosurTab {
 }
 
 function masterItemFor(itemName: string) {
-  return SNB_ITEMS.find((item) => normalize(item.name) === normalize(itemName));
+  return useBranchCatalogStore.getState().items.SNB.find((item) => item.active && normalize(item.name) === normalize(itemName));
 }
 
 function inferHosurItemUnit(itemName: string, price: number): 'Nos' | 'Kgs' {
@@ -315,7 +314,7 @@ function inferHosurItemUnit(itemName: string, price: number): 'Nos' | 'Kgs' {
   return price >= 200 || KG_ITEM_HINTS.some((hint) => key.includes(hint)) ? 'Kgs' : 'Nos';
 }
 
-function inferHosurItemCategory(itemName: string): SnbItem['category'] {
+function inferHosurItemCategory(itemName: string): string {
   const master = masterItemFor(itemName);
   if (master) return master.category;
   const key = normalize(itemName);
@@ -999,6 +998,8 @@ function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: s
 
 export default function HosurDashboard() {
   const { currentUser } = useAuthStore();
+  const snbCatalog = useBranchCatalogStore((state) => state.items.SNB);
+  const { loadCatalog, subscribe } = useBranchCatalogStore();
   const userName = currentUser?.displayName || currentUser?.username || 'Hosur User';
   const userRole = currentUser?.role || 'branch_hosur';
   const isAdmin = ['admin', 'owner', 'branch_hosur'].includes(userRole);
@@ -1015,6 +1016,11 @@ export default function HosurDashboard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  useEffect(() => {
+    void loadCatalog('SNB');
+    return subscribe('SNB');
+  }, [loadCatalog, subscribe]);
+
   useEffect(() => {
     if (!success) return;
     const timer = window.setTimeout(() => setSuccess(''), 4000);
@@ -1189,17 +1195,17 @@ export default function HosurDashboard() {
   const failedWhatsapp = whatsappLogs.filter((log) => log.status === 'failed');
   const unreadNotifications = notifications.filter((n) => !n.isRead).length;
 
-  const priceFor = useCallback((shopId: string, item: SnbItem | HosurCatalogItem | string) => {
+  const priceFor = useCallback((shopId: string, item: BranchCatalogItem | HosurCatalogItem | string) => {
     const itemName = typeof item === 'string' ? item : item.name;
     const exact = prices.find((price) => price.shopId === shopId && normalize(price.itemName) === normalize(itemName) && price.isActive);
     if (exact) return exact.unitPrice;
-    const master = typeof item === 'string' ? SNB_ITEMS.find((x) => normalize(x.name) === normalize(itemName)) : item;
+    const master = typeof item === 'string' ? snbCatalog.find((x) => x.active && normalize(x.name) === normalize(itemName)) : item;
     const basePrice = Number(master?.price ?? 0);
     const shop = shops.find((s) => s.id === shopId);
     const disc = shop?.discountPercent ?? 0;
     if (disc > 0 && basePrice > 0) return Math.round(basePrice * (1 - disc / 100) * 100) / 100;
     return basePrice;
-  }, [prices, shops]);
+  }, [prices, shops, snbCatalog]);
 
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
@@ -1696,7 +1702,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   prices: HosurShopPrice[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
+  priceFor: (shopId: string, item: BranchCatalogItem | HosurCatalogItem | string) => number;
 }) {
   const [form, setForm] = useState({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
   const [editingShopId, setEditingShopId] = useState<string | null>(null);
@@ -1904,7 +1910,7 @@ function NewOrderTab({ shops, prices, busy, withBusy, priceFor, userName }: {
   prices: HosurShopPrice[];
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
-  priceFor: (shopId: string, item: SnbItem | HosurCatalogItem | string) => number;
+  priceFor: (shopId: string, item: BranchCatalogItem | HosurCatalogItem | string) => number;
   userName: string;
 }) {
   const [shopId, setShopId] = useState('');

@@ -5,7 +5,7 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
-import { RECIPE_DEFINITIONS } from './recipeDefinitions';
+import { useRecipeStore } from './recipeStore';
 
 export type StockUnit = 'kg' | 'L' | 'pcs' | 'g' | 'nos' | 'bunch' | 'ltr';
 
@@ -71,26 +71,16 @@ function convertToStockUnit(qty: number, recipeUnit: string, stockUnit: string):
 export function normaliseName(n: string) { return n.trim().toLowerCase(); }
 
 export function getAllRecipeMaterials(): { name: string; unit: StockUnit }[] {
-  const seen = new Map<string, StockUnit>();
-  for (const recipe of Object.values(RECIPE_DEFINITIONS)) {
-    for (const mat of recipe.materials) {
-      const key = normaliseName(mat.material);
-      if (!seen.has(key)) {
-        let unit: StockUnit = 'kg';
-        const u = mat.unit.toLowerCase();
-        if (u === 'l' || u === 'ltr' || u === 'ml') unit = 'ltr';
-        else if (u === 'g') unit = 'kg';
-        else if (u === 'nos') unit = 'nos';
-        else if (u === 'pcs') unit = 'pcs';
-        else if (u === 'bunch') unit = 'bunch';
-        else unit = 'kg';
-        seen.set(key, unit);
-      }
-    }
-  }
-  return Array.from(seen.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([name, unit]) => ({ name, unit }));
+  return useRecipeStore.getState().getAllMaterials().map((material) => {
+    const u = material.unit.toLowerCase();
+    let unit: StockUnit = 'kg';
+    if (u === 'l' || u === 'ltr' || u === 'ml') unit = 'ltr';
+    else if (u === 'g' || u === 'kg') unit = 'kg';
+    else if (u === 'nos') unit = 'nos';
+    else if (u === 'pcs') unit = 'pcs';
+    else if (u === 'bunch') unit = 'bunch';
+    return { name: material.name, unit };
+  });
 }
 
 export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
@@ -182,6 +172,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
   },
 
   bulkImportFromRecipes: async () => {
+    await useRecipeStore.getState().loadRecipes();
     const recipeMats = getAllRecipeMaterials();
     const existing = get().items;
     const toInsert = recipeMats.filter(

@@ -8,7 +8,7 @@ import { useStoreStockStore } from './storeStockStore';
 import { useSupplierStore } from './supplierStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
-import { SNB_ITEMS } from '@/branch/snbItems';
+import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 
 type ReceiverBranchScope = 'SNB';
 
@@ -119,6 +119,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const { suppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
   const { currentUser }       = useAuthStore();
   const { createPO }          = usePurchaseOrderStore();
+  const { items: snbItems } = useOperationalBranchCatalog('SNB');
 
   useEffect(() => {
     if (!suppliersLoaded) void loadSuppliers();
@@ -129,7 +130,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const [notes,      setNotes]      = useState('');
   const [itemSearch, setItemSearch] = useState('');
   const materialOptions = branchScope === 'SNB'
-    ? SNB_ITEMS.map((item) => ({ id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category }))
+    ? snbItems.map((item) => ({ id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category }))
     : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material' }));
   const filteredMaterialOptions = materialOptions.filter((item) =>
     !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),

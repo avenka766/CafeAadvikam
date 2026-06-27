@@ -19,10 +19,9 @@ import {
 } from "lucide-react";
 import { useBakeryStore } from "./bakeryStore";
 import { useAuthStore } from "@/stores/authStore";
-import { RECIPE_DEFINITIONS } from "./recipeDefinitions";
-import { VRSNB_ITEMS, VRSNB_CATEGORIES } from "@/branch/vrsnbItems";
-import { SNB_ITEMS, SNB_CATEGORIES } from "@/branch/snbItems";
-import { parseWeightGrams, pcsToKg, findRecipeId } from "./itemMatcher";
+import { parseWeightGrams, pcsToKg } from "./itemMatcher";
+import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
+import { useRecipeStore } from "./recipeStore";
 import type { BakeryOrderItem, Branch } from "./types";
 import { BRANCH_COLOR } from "./receiverConstants";
 import { cn } from "@/lib/utils";
@@ -45,16 +44,6 @@ interface Props {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getBranchSource(branch: Branch) {
-  if (branch === "VRSNB") {
-    return {
-      items: VRSNB_ITEMS,
-      categories: VRSNB_CATEGORIES as readonly string[],
-    };
-  }
-  return { items: SNB_ITEMS, categories: SNB_CATEGORIES as readonly string[] };
-}
-
 function toItemId(branch: Branch, barcode: number): string {
   return `${branch === "VRSNB" ? "vrsnb" : "snb"}-${barcode}`;
 }
@@ -73,10 +62,6 @@ function makeLine(
   };
 }
 
-function hasRecipeFor(itemId: string, itemName: string): boolean {
-  return !!(RECIPE_DEFINITIONS[itemId] ?? findRecipeId(itemName));
-}
-
 const ALL = "All";
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -85,10 +70,12 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const { submitOrder } = useBakeryStore();
   const { currentUser } = useAuthStore();
 
-  const { items: branchItems, categories } = useMemo(
-    () => getBranchSource(branch),
-    [branch],
-  );
+  const { items: branchItems, categories } = useOperationalBranchCatalog(branch);
+  const { recipes, loadRecipes, subscribe: subscribeRecipes, getRecipe } = useRecipeStore();
+  useEffect(() => {
+    void loadRecipes();
+    return subscribeRecipes();
+  }, [loadRecipes, subscribeRecipes]);
   const defaultItem = branchItems[0];
 
   const [submitting, setSubmitting] = useState(false);
@@ -307,7 +294,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
           </p>
         </div>
         <span className="ml-auto text-[10px] font-body font-semibold opacity-60">
-          {branch === "VRSNB" ? `${VRSNB_ITEMS.length}` : `${SNB_ITEMS.length}`}{" "}
+          {branchItems.length}{" "}
           items
         </span>
       </div>
@@ -378,7 +365,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
               const noWeight = line.uom === "Nos" && line.weightGrams === null;
               const recipeFound =
                 line.qty !== ""
-                  ? hasRecipeFor(line.itemId, line.itemName)
+                  ? Boolean(recipes && getRecipe(line.itemId, line.itemName))
                   : null;
 
               return (

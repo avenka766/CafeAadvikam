@@ -131,15 +131,32 @@ export const useAuthStore = create<AuthState>()(
       updateStaffPassword: async (userId, newPassword) => {
         if (newPassword.trim().length < 6) return 'Password must be at least 6 characters';
 
-        const { error } = await supabase
-          .rpc('update_staff_password_hashed', {
+        const primary = await supabase
+          .rpc('set_staff_credential_secure', {
             p_user_id: userId,
-            p_new_password: newPassword,
+            p_new_secret: newPassword,
           });
 
-        if (error) {
-          console.error('Password update error:', error);
-          return error.message;
+        if (!primary.error) return null;
+
+        // Compatibility fallback for installations that have not yet applied
+        // the latest credential migration. The current Test and Aadivikam1
+        // projects use set_staff_credential_secure, which updates both hash
+        // columns atomically.
+        const missingPrimary = /set_staff_credential_secure|could not find the function|does not exist|schema cache/i
+          .test(primary.error.message ?? '');
+        if (!missingPrimary) {
+          console.error('Password update error:', primary.error);
+          return primary.error.message;
+        }
+
+        const fallback = await supabase.rpc('update_staff_password_hashed', {
+          p_user_id: userId,
+          p_new_password: newPassword,
+        });
+        if (fallback.error) {
+          console.error('Password update error:', fallback.error);
+          return fallback.error.message;
         }
 
         return null;

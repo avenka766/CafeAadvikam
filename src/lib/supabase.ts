@@ -11,7 +11,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-const sessionAwareFetch: typeof fetch = async (input, init = {}) => {
+const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) => {
   const headers = new Headers(init.headers ?? {});
   const requestUrl = typeof input === 'string'
     ? input

@@ -13,9 +13,7 @@ import { useBranchOpsStore } from '../branchOpsStore';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from '../types';
 import type { StockItem, IncomingStock, StockMismatch } from '../branchStore';
-import { SNB_ITEMS, SNB_CATEGORIES } from '../snbItems';
-import type { SnbItem } from '../snbItems';
-import { VRSNB_ITEMS, VRSNB_CATEGORIES } from '../vrsnbItems';
+import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 
 interface Props {
   branch: Branch;
@@ -135,11 +133,10 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   const updatedBy = currentUser?.displayName || currentUser?.username || 'Staff';
 
   const isSNB = (SNB_BRANCHES as readonly string[]).includes(branch);
+  const { items: catalogue, categories: catalogCategories } = useOperationalBranchCatalog(isSNB ? 'SNB' : 'VRSNB');
 
-  // Build item list from price list — uom is authoritative for unit display
-  const allItems: { name: string; uom: string; category: string }[] = isSNB
-    ? SNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }))
-    : VRSNB_ITEMS.map((i) => ({ name: i.name, uom: i.uom, category: i.category }));
+  // Build item list from the authoritative live catalogue.
+  const allItems = catalogue.map((item) => ({ barcode: item.barcode, name: item.name, uom: item.uom, category: item.category }));
 
   // Build a quick lookup: itemName → current quantity from DB
   const stockMap = new Map(branchStock.map((s) => [normalizeItemName(s.itemName), s.quantity]));
@@ -152,9 +149,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
   const [saved, setSaved]           = useState<Record<string, boolean>>({});
   const [error, setError]           = useState('');
 
-  const categories = isSNB
-    ? ['All', ...SNB_CATEGORIES]
-    : ['All', ...VRSNB_CATEGORIES];
+  const categories = ['All', ...catalogCategories];
 
   const filtered = allItems.filter((item) => {
     const matchQ   = !search.trim() || item.name.toLowerCase().includes(search.toLowerCase());
@@ -166,7 +161,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
     const qty = parseFloat(editQty);
     if (isNaN(qty) || qty < 0) { setError('Enter a valid quantity.'); return; }
     setSaving(true); setError('');
-    const err = await manualUpdateStock(branch, itemName, qty, updatedBy);
+    const err = await manualUpdateStock(branch, itemName, qty, updatedBy, catalogue.find((item) => item.name === itemName)?.barcode);
     setSaving(false);
     if (err) { setError(err); return; }
     setSaved((prev) => ({ ...prev, [itemName]: true }));
@@ -216,7 +211,7 @@ function ManualStockUpdate({ branch, branchStock }: { branch: Branch; branchStoc
           const isEditing  = editItem === item.name;
           const wasSaved   = saved[item.name];
           // Use price list uom as authority: 'Kgs' → kg, anything else → pcs
-          const isKg       = item.uom === 'Kgs' || item.uom === 'kg';
+          const isKg       = item.uom === 'Kgs';
           const currentQty = stockMap.get(normalizeItemName(item.name)) ?? 0;
           return (
             <div key={item.name} className={cn('flex items-center gap-3 px-4 py-3', wasSaved && 'bg-emerald-50/40')}>
@@ -423,27 +418,20 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
 
   const SNB_BRANCHES_CONST = ['SNB', 'Hosur'] as const;
   const isSNBBranch = (SNB_BRANCHES_CONST as readonly string[]).includes(branch);
-  const allowedItemNames = new Set(
-    isSNBBranch
-      ? SNB_ITEMS.map((i) => i.name)
-      : VRSNB_ITEMS.map((i) => i.name)
-  );
+  const { items: liveCatalogue } = useOperationalBranchCatalog(isSNBBranch ? 'SNB' : 'VRSNB');
+  const allowedItemNames = new Set(liveCatalogue.map((item) => item.name));
 
   const allowedNormalizedNames = new Set(Array.from(allowedItemNames, normalizeItemName));
   const filteredStock = branchStock.filter((s) => allowedNormalizedNames.has(normalizeItemName(s.itemName)));
 
   // Build uom lookup from price list — 'Kgs' → 'kg', 'Nos'/'pcs' → 'pcs'
   const uomMap = new Map<string, 'kg' | 'pcs'>(
-    (isSNBBranch ? SNB_ITEMS : VRSNB_ITEMS).map((i): [string, 'kg' | 'pcs'] => [
-      i.name,
-      i.uom === 'Kgs' || i.uom === 'kg' ? 'kg' : 'pcs',
-    ])
+    liveCatalogue.map((item): [string, 'kg' | 'pcs'] => [item.name, item.uom === 'Kgs' ? 'kg' : 'pcs'])
   );
+  const barcodeMap = new Map(liveCatalogue.map((item) => [item.name, item.barcode]));
 
   // Build a complete item list: all branch items, with DB quantity if exists, else 0
-  const allBranchItemNames = isSNBBranch
-    ? SNB_ITEMS.map((i) => i.name)
-    : VRSNB_ITEMS.map((i) => i.name);
+  const allBranchItemNames = liveCatalogue.map((item) => item.name);
   const stockMap = new Map(filteredStock.map((s) => [normalizeItemName(s.itemName), s]));
   const completeStock = allBranchItemNames.map((name) => {
     const s = stockMap.get(normalizeItemName(name));
@@ -451,8 +439,8 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
     // Use saved threshold from store, fallback to DB row value, then default 10
     const minThreshold = branchThresholds[name] ?? s?.minThreshold ?? 10;
     return s
-      ? { ...s, unit, minThreshold }
-      : { itemName: name, quantity: 0, minThreshold, price: null, unit };
+      ? { ...s, itemBarcode: s.itemBarcode ?? barcodeMap.get(name), unit, minThreshold }
+      : { itemName: name, itemBarcode: barcodeMap.get(name), quantity: 0, minThreshold, price: liveCatalogue.find((item) => item.name === name)?.price ?? null, unit };
   });
 
   // NEGATIVE-ITEM FIX: also include any DB rows with negative quantity that aren't

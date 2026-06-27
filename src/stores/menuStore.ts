@@ -15,6 +15,7 @@ interface MenuState {
   toggleItem: (id: string) => Promise<void>;
   updateItem: (id: string, updates: Partial<MenuItem>) => Promise<void>;
   setItemImage: (id: string, imageUrl: string) => Promise<void>;
+  subscribe: () => () => void;
 }
 
 export const useMenuStore = create<MenuState>()((set, get) => ({
@@ -154,6 +155,11 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     };
     set((s) => ({ items: [...s.items, newItem] }));
     return null;
+  },
+
+  subscribe: () => {
+    const channel = supabase.channel('menu-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, () => { void get().loadMenu(true); }).subscribe();
+    return () => { void supabase.removeChannel(channel); };
   },
 
   setItemImage: async (id: string, imageUrl: string) => {

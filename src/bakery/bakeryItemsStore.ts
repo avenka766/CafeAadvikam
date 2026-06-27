@@ -33,6 +33,7 @@ interface BakeryItemsState {
   updateItem: (id: string, updates: { name?: string; icon?: string; category?: string }) => Promise<string | null>;
   updatePrice: (id: string, price: number | null) => Promise<string | null>;
   deleteItem: (id: string) => Promise<string | null>;
+  subscribe: () => () => void;
 }
 
 function rowToItem(d: Record<string, unknown>): BakeryItem {
@@ -170,6 +171,11 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
       items: s.items.map(i => i.id === id ? { ...i, price } : i),
     }));
     return null;
+  },
+
+  subscribe: () => {
+    const channel = supabase.channel('bakery-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' }, () => { void get().loadAllItems(); }).subscribe();
+    return () => { void supabase.removeChannel(channel); };
   },
 
   // ── Hard delete ───────────────────────────────────────────────────────────

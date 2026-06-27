@@ -3,8 +3,7 @@ import { Settings } from 'lucide-react';
 import { SectionHeader, ThresholdEditor, EmptyState } from '../components';
 import type { Branch } from '../types';
 import type { StockItem } from '../branchStore';
-import { SNB_ITEMS } from '../snbItems';
-import { VRSNB_ITEMS } from '../vrsnbItems';
+import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 
 interface Props {
   branch: Branch;
@@ -15,14 +14,13 @@ const SNB_BRANCHES = ['SNB', 'Hosur'] as const;
 
 export function SettingsTab({ branch, branchStock }: Props) {
   const isSNB = (SNB_BRANCHES as readonly string[]).includes(branch);
-  const allItemNames = isSNB
-    ? SNB_ITEMS.map((i) => i.name)
-    : VRSNB_ITEMS.map((i) => i.name);
+  const { items: catalogue } = useOperationalBranchCatalog(isSNB ? 'SNB' : 'VRSNB');
+  const allItemNames = catalogue.map((item) => item.name);
 
   // Merge DB stock data with full item list — items not yet in DB get defaults
   const stockMap = new Map(branchStock.map((s) => [s.itemName, s]));
   const allItems = allItemNames.map((name) =>
-    stockMap.get(name) ?? { itemName: name, quantity: 0, minThreshold: 10, price: null }
+    stockMap.get(name) ?? { itemName: name, itemBarcode: catalogue.find((item) => item.name === name)?.barcode, quantity: 0, minThreshold: 10, price: catalogue.find((item) => item.name === name)?.price ?? null }
   );
 
   return (

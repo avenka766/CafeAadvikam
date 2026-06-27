@@ -54,6 +54,18 @@ const packageJson = packageJsonText ? JSON.parse(packageJsonText) : null;
 const authStore = read('src/stores/authStore.ts') ?? '';
 const branchBilling = read('src/branch/tabs/BranchBillingProTab.tsx') ?? '';
 const hosurDashboard = read('src/pages/HosurDashboard.tsx') ?? '';
+const branchBusinessModules = read('src/branch/tabs/BranchBusinessModules.tsx') ?? '';
+const adminSnb = read('src/pages/AdminSNBDashboard.tsx') ?? '';
+const adminVrsnb = read('src/pages/AdminVRSNBDashboard.tsx') ?? '';
+const bakeryOrderPage = read('src/pages/BakeryOrderPage.tsx') ?? '';
+const branchCatalogStore = read('src/stores/branchCatalogStore.ts') ?? '';
+const recipeStore = read('src/bakery/recipeStore.ts') ?? '';
+const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
+const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
+const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch_catalog_and_live_recipes.sql') ?? '';
+const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
+const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
+const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
 const sourceText = sourceFiles
@@ -86,8 +98,94 @@ check(
 
 check(
   'Branch checkout uses the atomic checkout RPC',
-  branchBilling.includes("supabase.rpc('complete_branch_checkout'"),
-  'Branch billing must use complete_branch_checkout so stock, payment and audit writes remain atomic.',
+  branchBilling.includes("supabase.rpc('complete_branch_checkout_canonical'")
+    || branchBilling.includes("supabase.rpc('complete_branch_checkout'"),
+  'Branch billing must use an atomic checkout RPC so stock, payment and audit writes remain atomic.',
+);
+
+
+
+check(
+  'Branch operational screens use the live catalogue',
+  branchBilling.includes('useBranchCatalogStore')
+    && branchBusinessModules.includes('useOperationalCatalog')
+    && adminSnb.includes('useBranchCatalogStore')
+    && adminVrsnb.includes('useBranchCatalogStore')
+    && bakeryOrderPage.includes('useBranchCatalogStore'),
+  'Billing, advance orders, quotations, Admin quotations and customer ordering must use branch_items rather than static arrays.',
+);
+
+check(
+  'Branch catalogue supports persistence and realtime refresh',
+  branchCatalogStore.includes("from('branch_items')")
+    && branchCatalogStore.includes("rpc('create_branch_item'")
+    && branchCatalogStore.includes("rpc('update_branch_item'")
+    && branchCatalogStore.includes("postgres_changes"),
+  'New items and price changes must persist and refresh across open branch screens.',
+);
+
+check(
+  'Branch prices have one canonical source and transactional legacy mirroring',
+  priceAuthRepairMigration.includes('sync_branch_item_price_compat_trigger')
+    && priceAuthRepairMigration.includes('on conflict (branch, barcode) do update')
+    && !branchCatalogStore.includes("from('branch_item_prices').upsert")
+    && !itemPriceStore.includes("from('branch_item_prices')"),
+  'Browser code must not write legacy price rows; branch_items must mirror them transactionally in the database.',
+);
+
+check(
+  'Staff creation and password updates write the login hash column',
+  priceAuthRepairMigration.includes('password_hash,')
+    && priceAuthRepairMigration.includes('set password = v_hash')
+    && priceAuthRepairMigration.includes('password_hash = v_hash')
+    && priceAuthRepairMigration.includes('set_staff_credential_secure')
+    && authStore.includes("rpc('set_staff_credential_secure'")
+    && priceAuthRepairMigration.includes("coalesce(nullif(v_user.password_hash, ''), nullif(v_user.password, ''))"),
+  'New staff, changed passwords and login verification must use the same bcrypt hash.',
+);
+
+
+check(
+  'Branch stock linking is canonical and duplicate-safe',
+  branchCatalogStore.includes("rpc('ensure_branch_stock_link'")
+    && !branchCatalogStore.includes(".from('branch_stock').insert")
+    && !branchCatalogStore.includes(".from('branch_stock')")
+    && stockLinkRepairMigration.includes('branch_stock_branch_barcode_unique')
+    && stockLinkRepairMigration.includes('ensure_branch_stock_link'),
+  'Admin item changes must use the database stock-link RPC and enforce one stock row per branch/barcode.',
+);
+
+check(
+  'Item-name normalization lowercases before stripping characters',
+  !unifiedMigration.includes('lower(regexp_replace')
+    && unifiedMigration.includes("regexp_replace(lower(")
+    && stockLinkRepairMigration.includes("normalize_branch_item_name"),
+  'Never strip [^a-z0-9] before lowercasing; uppercase item names would collapse to an empty key.',
+);
+
+check(
+  'Public payment amount is resolved server-side',
+  razorpayFunction.includes("from('branch_items')")
+    && razorpayFunction.includes(".in('barcode'")
+    && !/Number\(raw\.price/.test(razorpayFunction),
+  'The Razorpay function must ignore browser-submitted prices and resolve authorised prices from branch_items.',
+);
+
+check(
+  'Store production uses the live recipe store',
+  storeDashboard.includes('useRecipeStore')
+    && storeDashboard.includes('calculateMaterials')
+    && recipeStore.includes("from('bakery_recipes')")
+    && recipeStore.includes('postgres_changes'),
+  'Recipe Management, production requirements and stock deductions must share bakery_recipes.',
+);
+
+check(
+  'Unified branch catalogue migration is present',
+  unifiedMigration.includes('create table if not exists public.branch_items')
+    && unifiedMigration.includes('create or replace function public.complete_branch_checkout_canonical')
+    && unifiedMigration.includes('create or replace function public.canonicalize_branch_sale_items'),
+  'The database migration must install the persistent catalogue and canonical atomic checkout functions.',
 );
 
 check(
