@@ -580,25 +580,26 @@ export default function BranchBillingProTab({
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
               <div className="flex items-center gap-2">
-                <div className="relative">
-                  <button onClick={()=>setShowNavMenu(v=>!v)} className="rounded-xl bg-slate-100 border border-slate-200 px-3 py-2 text-xs font-black text-slate-700"><Menu className="mr-1 inline size-3"/>Menu</button>
-                  {showNavMenu && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={()=>setShowNavMenu(false)} />
-                      <div className="absolute left-0 top-full z-50 mt-2 w-52 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden">
-                        {([
-                          ['Bill History','history'],
-                          ['Advance Orders','advance'],
-                          ['Returns','returns'],
-                          ['Cashier Closure','closure'],
-                          ['Alerts','alerts'],
-                        ] as [string,string][]).map(([label,id])=>(
-                          <button key={id} onClick={()=>{ onOpenTab?.(id); setShowNavMenu(false); }} className="flex w-full items-center px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 border-b border-slate-100 last:border-0">{label}</button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
+                <button onClick={()=>setShowNavMenu(v=>!v)} className="rounded-xl bg-slate-100 border border-slate-200 px-3 py-2 text-xs font-black text-slate-700"><Menu className="mr-1 inline size-3"/>Menu</button>
+                {showNavMenu && (
+                  <>
+                    <div className="fixed inset-0 z-[90] bg-slate-950/30 backdrop-blur-sm" onClick={()=>setShowNavMenu(false)} />
+                    <div className="fixed bottom-0 left-0 right-0 z-[91] rounded-t-3xl border-t border-slate-200 bg-white shadow-2xl">
+                      <div className="mx-auto mt-3 h-1 w-10 rounded-full bg-slate-300" />
+                      <p className="px-5 pb-2 pt-3 text-xs font-black uppercase tracking-widest text-slate-400">Navigate to</p>
+                      {([
+                        ['Bill History','history'],
+                        ['Advance Orders','advance'],
+                        ['Returns','returns'],
+                        ['Cashier Closure','closure'],
+                        ['Alerts','alerts'],
+                      ] as [string,string][]).map(([label,id])=>(
+                        <button key={id} onClick={()=>{ onOpenTab?.(id); setShowNavMenu(false); }} className="flex w-full items-center px-5 py-4 text-base font-bold text-slate-700 hover:bg-slate-50 border-t border-slate-100">{label}</button>
+                      ))}
+                      <div className="h-[env(safe-area-inset-bottom,16px)]" />
+                    </div>
+                  </>
+                )}
                 <button onClick={clear} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
               </div>
             </div>
