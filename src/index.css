@@ -3252,3 +3252,48 @@
 }
 .workspace-exit-button:hover { background: rgba(239, 68, 68, .34); }
 .workspace-exit-button:active { transform: scale(.96); }
+
+@layer components {
+  /* SNB / VRSNB counter: compact, viewport-locked POS shell. */
+  .workspace-redesign.workspace-branch-billing {
+    --staff-header-h: 2.75rem;
+    --header-h: 2.75rem;
+    --staff-bottom-nav-h: 0rem;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+    padding-top: var(--staff-header-h);
+    padding-bottom: 0;
+  }
+
+  .workspace-branch-billing .branch-billing-content-frame {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .workspace-branch-billing .branch-command-screen {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  @media (max-width: 767px) {
+    .workspace-branch-billing .branch-billmaxo {
+      height: 100%;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .workspace-branch-billing .branch-billmaxo > div {
+      height: auto;
+      min-height: 100%;
+    }
+  }
+}
