@@ -232,6 +232,16 @@ export default function QROrderPage() {
         notes: { public_order_id: data.publicOrderId, tax_rate: '3%' },
         theme: { color: '#16120d' },
         modal: { ondismiss: () => setPaying(false) },
+        config: {
+          display: {
+            blocks: {
+              upi: { name: 'Pay via UPI', instruments: [{ method: 'upi' }] },
+              wallet: { name: 'Pay via Wallet', instruments: [{ method: 'wallet' }] },
+            },
+            sequence: ['block.upi', 'block.wallet'],
+            preferences: { show_default_blocks: false },
+          },
+        },
         handler: async (response: RazorpayResponse) => {
           try {
             const { data: verified, error: verifyError } = await supabase.functions.invoke('verify-razorpay-payment', {
