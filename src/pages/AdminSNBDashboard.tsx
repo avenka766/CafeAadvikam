@@ -21,6 +21,7 @@ import {
 } from "@/branch/branchOpsStore";
 import { SNB_ITEMS } from "@/branch/snbItems";
 import { printHtml } from "@/branch/printUtils";
+import { downloadExcel } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -1012,6 +1013,7 @@ export default function AdminSNBDashboard() {
       {tab === "audit-stock" && (
         <StockAuditTab
           userName={userName}
+          branchStock={branchStock}
           manualUpdateStock={manualUpdateStock}
           fetchBranchData={fetchBranchData}
           setNotice={setNotice}
@@ -4005,25 +4007,145 @@ function ReportsTab(props: any) {
 
 function StockAuditTab({
   userName,
+  branchStock,
   manualUpdateStock,
   fetchBranchData,
   setNotice,
 }: {
   userName: string;
+  branchStock: Array<{ itemName: string; price: number | null }>;
   manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string) => Promise<string | null>;
   fetchBranchData: (branch: Branch) => Promise<void>;
   setNotice: (message: string) => void;
 }) {
-  const { stockCountReports, confirmStockCountReport } = useBranchOpsStore();
+  const { stockCountReports, updateStockCountPhysicalQty, confirmStockCountReport } = useBranchOpsStore();
   const [savingId, setSavingId] = useState("");
+  const [savingLine, setSavingLine] = useState("");
+  const [physicalDrafts, setPhysicalDrafts] = useState<Record<string, string>>({});
+  const [sort, setSort] = useState<{ field: "difference" | "value"; direction: "asc" | "desc" }>({
+    field: "difference",
+    direction: "desc",
+  });
   const reports = stockCountReports
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
   const pending = reports.filter((report) => report.status === "Pending Admin Review");
+
+  const itemMeta = useMemo(() => {
+    const map = new Map<string, { price: number; category: string }>();
+    SNB_ITEMS.forEach((item) => {
+      map.set(normal(item.name), { price: Number(item.price || 0), category: String(item.category || "-") });
+    });
+    branchStock.forEach((item) => {
+      const key = normal(item.itemName);
+      const current = map.get(key) ?? { price: 0, category: "-" };
+      const livePrice = Number(item.price);
+      map.set(key, { ...current, price: Number.isFinite(livePrice) && livePrice > 0 ? livePrice : current.price });
+    });
+    return map;
+  }, [branchStock]);
+
+  const linePrice = (itemName: string) => itemMeta.get(normal(itemName))?.price ?? 0;
+  const lineValue = (line: { itemName: string; difference: number }) =>
+    Math.round(Number(line.difference || 0) * linePrice(line.itemName) * 100) / 100;
   const openDifferences = pending.reduce(
     (sum, report) => sum + report.lines.filter((line) => line.difference !== 0).length,
     0,
   );
+  const openVarianceValue = pending.reduce(
+    (sum, report) => sum + report.lines.reduce((lineSum, line) => lineSum + Math.abs(lineValue(line)), 0),
+    0,
+  );
+
+  const toggleSort = (field: "difference" | "value") => {
+    setSort((current) => ({
+      field,
+      direction: current.field === field && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
+
+  const sortedLines = (report: (typeof reports)[number]) =>
+    [...report.lines].sort((a, b) => {
+      const left = sort.field === "difference" ? Number(a.difference || 0) : lineValue(a);
+      const right = sort.field === "difference" ? Number(b.difference || 0) : lineValue(b);
+      const result = left - right;
+      return (sort.direction === "asc" ? result : -result) || a.itemName.localeCompare(b.itemName);
+    });
+
+  const savePhysicalQty = async (report: (typeof reports)[number], line: (typeof report.lines)[number]) => {
+    const key = `${report.id}::${line.itemName}`;
+    const raw = physicalDrafts[key] ?? String(line.physicalQty);
+    if (raw.trim() === "") {
+      setNotice("Enter a physical quantity before saving.");
+      return;
+    }
+    const quantity = Number(raw);
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      setNotice("Physical stock must be a valid number greater than or equal to zero.");
+      return;
+    }
+    const unit = String(line.unit || "").toLowerCase();
+    if ((unit === "pcs" || unit.includes("nos")) && !Number.isInteger(quantity)) {
+      setNotice("Piece items must use a whole-number physical quantity.");
+      return;
+    }
+    const rounded = Math.round(quantity * 1000) / 1000;
+    if (Math.abs(rounded - Number(line.physicalQty || 0)) < 0.0001) {
+      setNotice(`${line.itemName} already has physical stock ${rounded}.`);
+      return;
+    }
+    const ok = window.confirm(
+      `Change ${line.itemName} physical stock in ${report.reportNo} from ${line.physicalQty} to ${rounded}?`,
+    );
+    if (!ok) return;
+    setSavingLine(key);
+    try {
+      const error = await updateStockCountPhysicalQty(report.id, line.itemName, rounded, userName);
+      if (error) {
+        setNotice(error);
+        return;
+      }
+      setPhysicalDrafts((current) => ({ ...current, [key]: String(rounded) }));
+      setNotice(`${report.reportNo}: ${line.itemName} physical stock updated to ${rounded}.`);
+    } finally {
+      setSavingLine("");
+    }
+  };
+
+  const downloadAudit = () => {
+    const rows = reports.flatMap((report) =>
+      sortedLines(report).map((line) => {
+        const price = linePrice(line.itemName);
+        const differenceValue = lineValue(line);
+        return {
+          "Report No": report.reportNo,
+          "Report Status": report.status,
+          "Reported Date": fmtDateTime(report.createdAt),
+          "Reported By": report.reportedBy,
+          "Confirmed By": report.confirmedBy || "",
+          Category: itemMeta.get(normal(line.itemName))?.category ?? "-",
+          Item: line.itemName,
+          Unit: line.unit || "",
+          "System Qty": line.systemQty,
+          "Physical Qty": line.physicalQty,
+          Difference: line.difference,
+          "Unit Price": price,
+          "Difference Value": differenceValue,
+          "Absolute Difference Value": Math.abs(differenceValue),
+          Status: line.difference > 0 ? "Short" : line.difference < 0 ? "Excess" : "Matched",
+          "Admin Edited": line.editedAt ? "Yes" : "No",
+          "Original Physical Qty": line.originalPhysicalQty ?? line.physicalQty,
+          "Edited By": line.editedBy || "",
+          "Edited At": line.editedAt ? fmtDateTime(line.editedAt) : "",
+        };
+      }),
+    );
+    downloadExcel(
+      `${BRANCH}_Stock_Audit_${dateInput()}.xls`,
+      `${BRANCH} Stock Audit`,
+      rows,
+    );
+  };
 
   const confirmReport = async (reportId: string) => {
     const report = reports.find((row) => row.id === reportId);
@@ -4071,10 +4193,21 @@ function StockAuditTab({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Pending Reports" value={pending.length} icon={<ClipboardCheck className="size-4" />} tone="amber" />
         <Kpi label="Total Reports" value={reports.length} icon={<PackageCheck className="size-4" />} tone="blue" />
         <Kpi label="Open Difference Lines" value={openDifferences} icon={<AlertTriangle className="size-4" />} tone="red" />
+        <Kpi label="Open Variance Value" value={money(openVarianceValue)} icon={<IndianRupee className="size-4" />} tone={openVarianceValue ? "red" : "green"} />
+      </div>
+
+      <div className="flex flex-col gap-3 rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-black text-slate-900">Admin stock verification</p>
+          <p className="text-xs font-semibold text-slate-500">Pending physical quantities can be corrected before confirmation. Click Difference or Difference Value to sort.</p>
+        </div>
+        <button type="button" onClick={downloadAudit} className={cn(btnCls, "bg-emerald-600 text-white shadow-lg shadow-emerald-100")}>
+          <FileSpreadsheet className="size-4" /> Download Excel
+        </button>
       </div>
 
       {reports.length === 0 ? (
@@ -4091,7 +4224,7 @@ function StockAuditTab({
               report.status === "Pending Admin Review" ? (
                 <button
                   type="button"
-                  disabled={savingId === report.id}
+                  disabled={savingId === report.id || Boolean(savingLine)}
                   onClick={() => confirmReport(report.id)}
                   className={cn(btnCls, "bg-orange-500 text-white shadow-lg shadow-orange-200 disabled:opacity-50")}
                 >
@@ -4107,18 +4240,104 @@ function StockAuditTab({
               <span>Date: <b className="text-slate-900">{fmtDateTime(report.createdAt)}</b></span>
               <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
             </div>
-            <DataTable
-              headers={["Item", "System Qty", "Physical Qty", "Difference"]}
-              rows={report.lines.map((line) => [
-                <span key="i" className="font-black">{line.itemName}</span>,
-                <span key="s" className="font-black tabular-nums">{line.systemQty} {line.unit}</span>,
-                <span key="p" className="font-black tabular-nums">{line.physicalQty} {line.unit}</span>,
-                <StatusBadge key="d" tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
-                  {line.difference}
-                </StatusBadge>,
-              ])}
-              empty="No lines in this report."
-            />
+            <div className="overflow-x-auto rounded-3xl border border-slate-200">
+              <table className="w-full min-w-[1250px] text-sm">
+                <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Item</th>
+                    <th className="px-4 py-3 text-right">System Qty</th>
+                    <th className="px-4 py-3">Physical Qty</th>
+                    <th className="px-4 py-3 text-right">Unit Price</th>
+                    <th className="px-4 py-3 text-right">
+                      <button type="button" onClick={() => toggleSort("difference")} className="ml-auto flex items-center gap-1" title="Sort by stock difference">
+                        Difference
+                        <ChevronDown className={cn("size-3 transition", sort.field !== "difference" && "opacity-30", sort.field === "difference" && sort.direction === "asc" && "rotate-180")} />
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <button type="button" onClick={() => toggleSort("value")} className="ml-auto flex items-center gap-1" title="Sort by difference value">
+                        Difference Value
+                        <ChevronDown className={cn("size-3 transition", sort.field !== "value" && "opacity-30", sort.field === "value" && sort.direction === "asc" && "rotate-180")} />
+                      </button>
+                    </th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Edit History</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {sortedLines(report).map((line) => {
+                    const key = `${report.id}::${line.itemName}`;
+                    const draft = physicalDrafts[key] ?? String(line.physicalQty);
+                    const parsedDraft = Number(draft);
+                    const changed = draft.trim() !== "" && Number.isFinite(parsedDraft) && Math.abs(parsedDraft - Number(line.physicalQty || 0)) >= 0.0001;
+                    const price = linePrice(line.itemName);
+                    const differenceValue = lineValue(line);
+                    const unit = String(line.unit || "").toLowerCase();
+                    const step = unit === "pcs" || unit.includes("nos") ? "1" : "0.001";
+                    return (
+                      <tr key={line.itemName} className="align-top hover:bg-slate-50/70">
+                        <td className="px-4 py-3">
+                          <p className="font-black text-slate-900">{line.itemName}</p>
+                          <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{itemMeta.get(normal(line.itemName))?.category ?? "-"}</p>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black tabular-nums text-slate-700">{line.systemQty} {line.unit}</td>
+                        <td className="px-4 py-3">
+                          {report.status === "Pending Admin Review" ? (
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min="0"
+                                step={step}
+                                value={draft}
+                                onChange={(event) => setPhysicalDrafts((current) => ({ ...current, [key]: event.target.value }))}
+                                className="w-28 rounded-xl border border-slate-200 bg-white px-3 py-2 text-right font-black tabular-nums outline-none focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                                aria-label={`Edit physical stock for ${line.itemName}`}
+                              />
+                              <span className="text-xs font-bold text-slate-400">{line.unit}</span>
+                              <button
+                                type="button"
+                                disabled={!changed || savingLine === key}
+                                onClick={() => savePhysicalQty(report, line)}
+                                className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-35"
+                              >
+                                {savingLine === key ? "Saving..." : "Save"}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="font-black tabular-nums">{line.physicalQty} {line.unit}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right font-black tabular-nums">{money(price)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
+                            {line.difference > 0 ? `+${line.difference}` : line.difference}
+                          </StatusBadge>
+                        </td>
+                        <td className={cn("px-4 py-3 text-right font-black tabular-nums", differenceValue > 0 ? "text-red-600" : differenceValue < 0 ? "text-blue-600" : "text-emerald-700")}>
+                          {money(differenceValue)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge tone={line.difference === 0 ? "green" : line.difference > 0 ? "red" : "blue"}>
+                            {line.difference > 0 ? "Short" : line.difference < 0 ? "Excess" : "Matched"}
+                          </StatusBadge>
+                        </td>
+                        <td className="px-4 py-3 text-xs font-semibold text-slate-500">
+                          {line.editedAt ? (
+                            <div className="space-y-1">
+                              <p className="font-black text-amber-700">Admin corrected</p>
+                              <p>Original: <b className="text-slate-800">{line.originalPhysicalQty ?? line.physicalQty} {line.unit}</b></p>
+                              <p>{line.editedBy || "Admin"} · {fmtDateTime(line.editedAt)}</p>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">Not edited</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </Panel>
         ))
       )}
