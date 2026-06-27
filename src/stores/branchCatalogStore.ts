@@ -265,11 +265,10 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
     const stockLinkError = await ensureStockLink(saved);
     if (stockLinkError) return `Item was updated but its stock row could not be linked: ${stockLinkError}`;
 
-    // Maintain the legacy override table during rollout so older deployed screens do not see stale prices.
-    void supabase.from('branch_item_prices').upsert(
-      { branch, barcode, name: saved.name, price: saved.price, updated_by: updatedBy },
-      { onConflict: 'branch,barcode' },
-    );
+    // The database trigger mirrors the canonical branch_items row into the
+    // legacy compatibility table in the same transaction. Never write the
+    // legacy table from the browser, because a failed/fire-and-forget write can
+    // make an old price reappear after refresh.
 
     set((state) => ({
       items: {
@@ -286,11 +285,6 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'branch_items', filter: `branch=eq.${branch}` },
-        () => { void get().loadCatalog(branch, true); },
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'branch_item_prices', filter: `branch=eq.${branch}` },
         () => { void get().loadCatalog(branch, true); },
       )
       .subscribe();
