@@ -25,7 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useNotificationStore } from "@/bakery/notificationStore";
 import { useInvoiceStore } from "@/bakery/invoiceStore";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 interface NavItem {
   label: string;
@@ -39,7 +39,9 @@ export default function BottomNav() {
   const navigate = useNavigate();
   const location = useLocation();
   const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb';
-  const [branchNavVisible, setBranchNavVisible] = useState(true);
+  const [branchNavVisible, setBranchNavVisible] = useState(false);
+  const branchNavRef = useRef<HTMLElement | null>(null);
+  const branchNavHideTimerRef = useRef<number | null>(null);
 
   const {
     unreadCount,
@@ -63,27 +65,77 @@ export default function BottomNav() {
     return () => clearInterval(id);
   }, [isAnyAdmin, isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
 
+  const clearBranchNavHideTimer = useCallback(() => {
+    if (branchNavHideTimerRef.current !== null) {
+      window.clearTimeout(branchNavHideTimerRef.current);
+      branchNavHideTimerRef.current = null;
+    }
+  }, []);
+
+  const showBranchNav = useCallback(() => {
+    if (!isBranchBillingRole) return;
+    clearBranchNavHideTimer();
+    setBranchNavVisible(true);
+  }, [clearBranchNavHideTimer, isBranchBillingRole]);
+
+  const scheduleBranchNavHide = useCallback(() => {
+    if (!isBranchBillingRole) return;
+    const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    if (!finePointer) return;
+    clearBranchNavHideTimer();
+    branchNavHideTimerRef.current = window.setTimeout(() => {
+      setBranchNavVisible(false);
+      branchNavHideTimerRef.current = null;
+    }, 180);
+  }, [clearBranchNavHideTimer, isBranchBillingRole]);
+
   useEffect(() => {
+    clearBranchNavHideTimer();
     if (!isBranchBillingRole) {
       setBranchNavVisible(true);
       return;
     }
+
     const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-    if (!finePointer) {
-      setBranchNavVisible(true);
+    setBranchNavVisible(!finePointer);
+
+    const hideOnWindowBlur = () => {
+      if (finePointer) setBranchNavVisible(false);
+    };
+    window.addEventListener('blur', hideOnWindowBlur);
+    return () => {
+      clearBranchNavHideTimer();
+      window.removeEventListener('blur', hideOnWindowBlur);
+    };
+  }, [clearBranchNavHideTimer, isBranchBillingRole, location.pathname, location.search]);
+
+  useLayoutEffect(() => {
+    if (!isBranchBillingRole) {
+      document.documentElement.style.removeProperty('--branch-nav-reserved-h');
       return;
     }
-    setBranchNavVisible(false);
-    const revealZone = 22;
-    const hideZone = 120;
-    const handlePointerMove = (event: MouseEvent) => {
-      const distanceFromBottom = window.innerHeight - event.clientY;
-      if (distanceFromBottom <= revealZone) setBranchNavVisible(true);
-      else if (distanceFromBottom >= hideZone) setBranchNavVisible(false);
+
+    const nav = branchNavRef.current;
+    const updateReservedHeight = () => {
+      const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+      const shouldReserve = branchNavVisible || !finePointer;
+      const height = shouldReserve && nav ? Math.ceil(nav.getBoundingClientRect().height) : 0;
+      document.documentElement.style.setProperty('--branch-nav-reserved-h', `${height}px`);
     };
-    window.addEventListener('mousemove', handlePointerMove, { passive: true });
-    return () => window.removeEventListener('mousemove', handlePointerMove);
-  }, [isBranchBillingRole, location.pathname, location.search]);
+
+    updateReservedHeight();
+    const observer = nav && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(updateReservedHeight)
+      : null;
+    if (nav) observer?.observe(nav);
+    window.addEventListener('resize', updateReservedHeight);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateReservedHeight);
+      document.documentElement.style.removeProperty('--branch-nav-reserved-h');
+    };
+  }, [branchNavVisible, isBranchBillingRole]);
 
   const unread = isAnyAdmin ? unreadCount() : 0;
   const pendingInvoices = isAdmin
@@ -440,25 +492,28 @@ export default function BottomNav() {
     <>
       {isBranchBillingRole && (
         <div
-          className="fixed inset-x-0 bottom-0 z-[64] hidden h-5 md:block"
-          onMouseEnter={() => setBranchNavVisible(true)}
+          className="fixed inset-x-0 bottom-0 z-[64] hidden h-3 md:block"
+          onMouseEnter={showBranchNav}
+          onMouseLeave={scheduleBranchNavHide}
           aria-hidden="true"
         />
       )}
       {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
-        onMouseEnter={() => isBranchBillingRole && setBranchNavVisible(true)}
+        ref={branchNavRef}
+        onMouseEnter={showBranchNav}
+        onMouseLeave={scheduleBranchNavHide}
         className={cn(
-          "app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] transition-all duration-200",
+          "app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] px-3 pt-0 transition-[transform,opacity] duration-200 ease-out",
           isBranchBillingRole ? "block" : "md:hidden",
           isBranchBillingRole && !branchNavVisible && "md:translate-y-full md:opacity-0 md:pointer-events-none",
           isBranchBillingRole && branchNavVisible && "md:translate-y-0 md:opacity-100",
         )}
         data-safe-bottom
-        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
       >
         <div
-          className="mx-3 mb-3 rounded-2xl overflow-hidden"
+          className="rounded-2xl overflow-hidden"
           style={{
             background: "rgba(18,12,6,0.88)",
             backdropFilter: "blur(24px)",

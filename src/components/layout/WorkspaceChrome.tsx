@@ -409,7 +409,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </div>
       </aside>
 
-      <div className={isBranchBillingRoute ? "flex h-[calc(100dvh-var(--staff-header-h))] min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
+      <div className={isBranchBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
         {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
