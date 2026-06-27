@@ -64,6 +64,8 @@ const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
 const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
 const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch_catalog_and_live_recipes.sql') ?? '';
 const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
+const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
+const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
 const sourceText = sourceFiles
@@ -120,6 +122,26 @@ check(
     && branchCatalogStore.includes("rpc('update_branch_item'")
     && branchCatalogStore.includes("postgres_changes"),
   'New items and price changes must persist and refresh across open branch screens.',
+);
+
+check(
+  'Branch prices have one canonical source and transactional legacy mirroring',
+  priceAuthRepairMigration.includes('sync_branch_item_price_compat_trigger')
+    && priceAuthRepairMigration.includes('on conflict (branch, barcode) do update')
+    && !branchCatalogStore.includes("from('branch_item_prices').upsert")
+    && !itemPriceStore.includes("from('branch_item_prices')"),
+  'Browser code must not write legacy price rows; branch_items must mirror them transactionally in the database.',
+);
+
+check(
+  'Staff creation and password updates write the login hash column',
+  priceAuthRepairMigration.includes('password_hash,')
+    && priceAuthRepairMigration.includes('set password = v_hash')
+    && priceAuthRepairMigration.includes('password_hash = v_hash')
+    && priceAuthRepairMigration.includes('set_staff_credential_secure')
+    && authStore.includes("rpc('set_staff_credential_secure'")
+    && priceAuthRepairMigration.includes("coalesce(nullif(v_user.password_hash, ''), nullif(v_user.password, ''))"),
+  'New staff, changed passwords and login verification must use the same bcrypt hash.',
 );
 
 
