@@ -36,6 +36,13 @@ Deno.serve(async (req) => {
     if (event.event === 'payment.captured' || event.event === 'order.paid') {
       const { data: order, error: orderError } = await supabase.from('public_orders').select('*').eq('razorpay_order_id', razorpayOrderId).single();
       if (orderError || !order) throw new Error('Matching public order not found.');
+      const expectedPaise = Math.round(Number(order.amount) * 100);
+      if (payment?.status !== 'captured' || payment?.currency !== 'INR' || Number(payment?.amount) !== expectedPaise) {
+        await supabase.from('payment_webhook_events').update({
+          status: 'rejected_amount_mismatch', processed_at: new Date().toISOString(),
+        }).eq('provider_event_id', eventId);
+        return json({ error: 'Payment amount, currency, or capture status does not match the order.' }, 409);
+      }
       const now = new Date().toISOString();
       const { data: updated, error: updateError } = await supabase.from('public_orders').update({
         status: 'paid', payment_id: payment.id, paid_at: order.paid_at || now, updated_at: now,
@@ -46,7 +53,7 @@ Deno.serve(async (req) => {
           recipient_role: 'admin', type: 'online_order_paid', title: 'New paid online order',
           body: `${order.order_number} · ${order.customer_name} · ₹${Number(order.amount).toFixed(2)}`,
           ref_id: order.id, ref_label: order.order_number, is_read: false,
-          metadata: { source: 'razorpay_webhook', payment_id: payment.id, event_id: eventId },
+          metadata: { source: 'razorpay_webhook', payment_id: payment.id, event_id: eventId, amount_paise: payment.amount, currency: payment.currency },
         });
       }
     } else if (event.event === 'payment.failed') {
