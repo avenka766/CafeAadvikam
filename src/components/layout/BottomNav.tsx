@@ -25,7 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useNotificationStore } from "@/bakery/notificationStore";
 import { useInvoiceStore } from "@/bakery/invoiceStore";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 interface NavItem {
   label: string;
@@ -38,6 +38,8 @@ export default function BottomNav() {
   const { currentUser } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb';
+  const [branchNavVisible, setBranchNavVisible] = useState(true);
 
   const {
     unreadCount,
@@ -60,6 +62,28 @@ export default function BottomNav() {
     }, 20_000);
     return () => clearInterval(id);
   }, [isAnyAdmin, isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
+
+  useEffect(() => {
+    if (!isBranchBillingRole) {
+      setBranchNavVisible(true);
+      return;
+    }
+    const finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    if (!finePointer) {
+      setBranchNavVisible(true);
+      return;
+    }
+    setBranchNavVisible(false);
+    const revealZone = 22;
+    const hideZone = 120;
+    const handlePointerMove = (event: MouseEvent) => {
+      const distanceFromBottom = window.innerHeight - event.clientY;
+      if (distanceFromBottom <= revealZone) setBranchNavVisible(true);
+      else if (distanceFromBottom >= hideZone) setBranchNavVisible(false);
+    };
+    window.addEventListener('mousemove', handlePointerMove, { passive: true });
+    return () => window.removeEventListener('mousemove', handlePointerMove);
+  }, [isBranchBillingRole, location.pathname, location.search]);
 
   const unread = isAnyAdmin ? unreadCount() : 0;
   const pendingInvoices = isAdmin
@@ -412,15 +436,23 @@ export default function BottomNav() {
   // N-03 / U-03: admin has 8 items — use scrollable nav instead of compressing flex-1
   const useScrollableNav = navItems.length > 5;
 
-  const isBranchBillingRole = currentUser.role === 'branch_snb' || currentUser.role === 'branch_vrsnb';
-
   return (
     <>
+      {isBranchBillingRole && (
+        <div
+          className="fixed inset-x-0 bottom-0 z-[64] hidden h-5 md:block"
+          onMouseEnter={() => setBranchNavVisible(true)}
+          aria-hidden="true"
+        />
+      )}
       {/* Frosted floating nav bar — z-50 (N-08: was z-40, modals are z-50 so nav must match or be above) */}
       <nav
+        onMouseEnter={() => isBranchBillingRole && setBranchNavVisible(true)}
         className={cn(
-          "app-bottom-nav fixed bottom-0 left-0 right-0 z-[65]",
+          "app-bottom-nav fixed bottom-0 left-0 right-0 z-[65] transition-all duration-200",
           isBranchBillingRole ? "block" : "md:hidden",
+          isBranchBillingRole && !branchNavVisible && "md:translate-y-full md:opacity-0 md:pointer-events-none",
+          isBranchBillingRole && branchNavVisible && "md:translate-y-0 md:opacity-100",
         )}
         data-safe-bottom
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
