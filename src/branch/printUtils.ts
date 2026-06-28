@@ -5,6 +5,14 @@ import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
 
+const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const billRoundOff = (bill: BranchBillRecord) => bill.roundOff ?? roundMoney(
+  bill.total - (bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)),
+);
+const discountLabel = (bill: BranchBillRecord) => bill.discountPercent != null
+  ? `Discount (${Number(bill.discountPercent).toFixed(2).replace(/\.00$/, '')}%)`
+  : 'Discount';
+
 // ─── Generic HTML print helper ─────────────────────────────────────────────────
 export function printHtml(title: string, body: string) {
   const w = window.open('', '_blank', 'width=920,height=900');
@@ -81,6 +89,7 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     td{font-size:11px;padding:2px 2px;vertical-align:top}
     .num{text-align:right}
     .total-row td{border-top:1px solid #111;font-weight:700;font-size:11px}
+    .summary{font-size:11px;margin-top:4px}.summary .row{padding:1px 0}
     .grand{font-size:14px;font-weight:900;display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid #111;border-bottom:1px solid #111;margin:4px 0}
     .footer{text-align:center;font-weight:900;font-size:12px;margin-top:6px}
     .paid-via{font-size:10px;margin:3px 0}
@@ -112,6 +121,11 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
         <tr class="total-row"><td colspan="1"></td><td colspan="1" style="font-size:10px">Total Qty: ${totalQty % 1 === 0 ? totalQty : totalQty.toFixed(2)}</td><td style="font-size:10px;text-align:right">Sub Total</td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
       </tbody>
     </table>
+    <div class="summary">
+      <div class="row"><span>${discountLabel(bill)}</span><span>-&#x20B9;${bill.discount.toFixed(2)}</span></div>
+      <div class="row"><span>Amount before round-off</span><span>&#x20B9;${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div>
+      <div class="row"><span>Round-Off</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div>
+    </div>
     <div class="grand"><span>Grand Total</span><span>&#x20B9;${bill.total.toFixed(2)}</span></div>
     <div class="paid-via">Paid via ${payModeLabel}</div>
     <div class="dash"></div>
@@ -151,7 +165,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
       ${bill.items.map((i, idx) => `<tr><td>${idx + 1}</td><td>${i.itemName}</td><td class="num">${i.quantity.toFixed(i.unit === 'kg' ? 2 : 0)}</td><td class="num">${i.price.toFixed(2)}</td><td class="num">${i.lineTotal.toFixed(2)}</td></tr>`).join('')}
       <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
     </tbody></table>
-    <div class="summary"><div class="row"><span>Discount :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Delivery Charges :</span><span>0.00</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>0.00</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
+    <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Delivery Charges :</span><span>0.00</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
     <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}</div>
     ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
     <div class="c small">Staff Name : ${bill.biller}</div>
@@ -295,10 +309,8 @@ export function printBranchCashierClosure(input: {
 
 
 export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
-  const target = window.open('', '_blank', 'width=420,height=680');
-  if (!target) throw new Error('Print window was blocked. Allow pop-ups and try again.');
-  target.document.write('<!doctype html><title>Preparing print</title><body style="font-family:Arial;padding:24px">Allocating controlled print copy…</body>');
-  target.document.close();
+  // Allocate the controlled copy first, then print through an off-screen iframe.
+  // This avoids opening or leaving a visible "Preparing print" browser page.
   const { data, error } = await supabase.rpc('allocate_document_print', {
     p_document_type: 'branch_bill',
     p_document_id: bill.id || bill.billNo,
@@ -306,14 +318,36 @@ export async function printCounterBill(bill: BranchBillRecord, duplicate = false
     p_reason: duplicate ? 'User-requested duplicate print' : null,
     p_device_info: navigator.userAgent,
   });
-  if (error || !data) {
-    target.document.open();
-    target.document.write(`<body style="font-family:Arial;padding:24px;color:#991b1b"><h2>Print blocked</h2><p>${String(error?.message || 'Unable to allocate print copy').replace(/[<>]/g, '')}</p></body>`);
-    target.document.close();
-    throw new Error(error?.message || 'Unable to allocate controlled print copy.');
-  }
+  if (error || !data) throw new Error(error?.message || 'Unable to allocate controlled print copy.');
+
   const row = Array.isArray(data) ? data[0] : data;
   const isDuplicate = String((row as { copy_type?: string }).copy_type) === 'duplicate';
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.bottom = '0';
+  frame.style.width = '1px';
+  frame.style.height = '1px';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  document.body.appendChild(frame);
+
+  const target = frame.contentWindow;
+  if (!target) {
+    frame.remove();
+    throw new Error('Unable to create the direct print frame.');
+  }
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    frame.remove();
+  };
+  target.onafterprint = cleanup;
+  window.setTimeout(cleanup, 60_000);
+
   if (bill.branch === 'VRSNB') printVrsnbReceiptBill(bill, isDuplicate, target);
   else printSnbCounterBill(bill, isDuplicate, target);
 }
