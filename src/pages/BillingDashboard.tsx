@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -25,6 +25,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useNotificationStore } from '@/bakery/notificationStore';
+import { useSearchParams } from 'react-router-dom';
 
 // -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
@@ -869,6 +870,17 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
 // -- Custom item type (for non-menu items) -------------------------------------
 interface CustomLineItem { id: string; name: string; price: number; qty: number; }
 
+interface HeldCafeBill {
+  id: string;
+  createdAt: string;
+  menuItems: Array<{ itemId: string; quantity: number }>;
+  customItems: CustomLineItem[];
+  orderType: OrderType;
+  tableNumber: number | null;
+  customerName: string;
+  notes: string;
+}
+
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore(
@@ -1480,10 +1492,46 @@ function NewBillPanel() {
   const [customQty, setCustomQty]     = useState('1');
   const [customError, setCustomError] = useState('');
   const [submitError, setSubmitError] = useState('');
+  const [cashTendered, setCashTendered] = useState('');
+  const [heldBills, setHeldBills] = useState<HeldCafeBill[]>(() => {
+    try {
+      const raw = localStorage.getItem('cafe-biller-held-bills');
+      return raw ? JSON.parse(raw) as HeldCafeBill[] : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showHeldBills, setShowHeldBills] = useState(false);
+  const [selectedCartId, setSelectedCartId] = useState<string | null>(null);
+  const [quantityEditId, setQuantityEditId] = useState<string | null>(null);
+  const [quantityEditValue, setQuantityEditValue] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const tenderRef = useRef<HTMLInputElement>(null);
+  const shortcutActionsRef = useRef<{
+    submit: () => Promise<void>;
+    hold: () => void;
+    openBill: () => void;
+    editQuantity: () => void;
+    paymentMode: 'regular' | 'credit';
+  } | null>(null);
 
   useEffect(() => {
     void loadMenu();
   }, [loadMenu]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-biller-held-bills', JSON.stringify(heldBills));
+  }, [heldBills]);
+
+  useEffect(() => {
+    if (cart.length === 0) {
+      setSelectedCartId(null);
+      return;
+    }
+    if (!selectedCartId || !cart.some((line) => line.menuItem.id === selectedCartId)) {
+      setSelectedCartId(cart[0].menuItem.id);
+    }
+  }, [cart, selectedCartId]);
 
   const enabledItems = useMemo(() => items.filter(i => i.enabled), [items]);
   const filteredItems = useMemo(() => {
@@ -1502,6 +1550,8 @@ function NewBillPanel() {
                       + customItems.reduce((s, c) => s + c.qty, 0);
   const parcelCharges = orderType === 'takeaway' ? totalItemQty * PARCEL_CHARGE_PER_ITEM : 0;
   const total         = itemsSubtotal + parcelCharges;
+  const tenderedAmount = Number(cashTendered || 0);
+  const cashChange = Math.max(0, tenderedAmount - total);
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
@@ -1531,6 +1581,72 @@ function NewBillPanel() {
   const updateCustomQty = (id: string, qty: number) => {
     if (qty <= 0) setCustomItems(prev => prev.filter(c => c.id !== id));
     else setCustomItems(prev => prev.map(c => c.id === id ? { ...c, qty } : c));
+  };
+
+  const holdCurrentBill = () => {
+    if (allEmpty) {
+      setSubmitError('Add at least one item before holding the bill.');
+      return;
+    }
+    const held: HeldCafeBill = {
+      id: `CAFE-HOLD-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      menuItems: cart.map((line) => ({ itemId: line.menuItem.id, quantity: line.quantity })),
+      customItems,
+      orderType,
+      tableNumber,
+      customerName,
+      notes,
+    };
+    setHeldBills((current) => [held, ...current].slice(0, 25));
+    clearCart();
+    setCustomItems([]);
+    setCustomerName('');
+    setNotes('');
+    setTableNumber(null);
+    setCashTendered('');
+    setSubmitError('Bill held successfully. Use Recall Hold to restore it.');
+  };
+
+  const recallHeldBill = (held: HeldCafeBill) => {
+    clearCart();
+    held.menuItems.forEach(({ itemId, quantity }) => {
+      const item = enabledItems.find((candidate) => candidate.id === itemId);
+      if (!item) return;
+      for (let index = 0; index < quantity; index += 1) addToCart(item);
+    });
+    setCustomItems(held.customItems);
+    setOrderType(held.orderType);
+    setTableNumber(held.tableNumber);
+    setCustomerName(held.customerName);
+    setNotes(held.notes);
+    setHeldBills((current) => current.filter((entry) => entry.id !== held.id));
+    setShowHeldBills(false);
+    setSubmitError('Held bill restored.');
+  };
+
+  const openQuantityEditor = () => {
+    const itemId = selectedCartId || cart[0]?.menuItem.id;
+    if (!itemId) {
+      setSubmitError('Add an item to the cart before changing quantity.');
+      return;
+    }
+    const line = cart.find((entry) => entry.menuItem.id === itemId);
+    if (!line) return;
+    setQuantityEditId(itemId);
+    setQuantityEditValue(String(line.quantity));
+  };
+
+  const saveQuantityEdit = () => {
+    if (!quantityEditId) return;
+    const quantity = Math.max(0, Math.floor(Number(quantityEditValue || 0)));
+    if (quantity <= 0) {
+      setSubmitError('Quantity must be at least 1. Use Remove to delete the item.');
+      return;
+    }
+    updateCartQuantity(quantityEditId, quantity);
+    setQuantityEditId(null);
+    setQuantityEditValue('');
   };
 
   const openBillModal = () => {
@@ -1634,6 +1750,7 @@ function NewBillPanel() {
         setNotes(''); setCustomerName(''); setTableNumber(null);
         setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
         setCreditCustomerPhone(''); setCreditDueDate('');
+        setCashTendered('');
         setPaymentMode('regular');
         setTimeout(() => setShowSuccess(false), 2200);
       } catch (err) {
@@ -1661,6 +1778,10 @@ function NewBillPanel() {
         setSubmitError(`Split payment must match bill total. Remaining: ${formatCurrency(splitRemaining)}`);
         return;
       }
+    }
+    if (billMethod === 'cash' && cashTendered !== '' && tenderedAmount < total) {
+      setSubmitError(`Cash tendered is short by ${formatCurrency(total - tenderedAmount)}.`);
+      return;
     }
     setSubmitting(true);
 
@@ -1693,6 +1814,7 @@ function NewBillPanel() {
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
       setBillMethod('cash');
       setSplitPayment({ cash: '', upi: '', card: '' });
+      setCashTendered('');
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to submit order - please try again.';
@@ -1701,6 +1823,51 @@ function NewBillPanel() {
       setSubmitting(false);
     }
   };
+
+  shortcutActionsRef.current = {
+    submit: handleSubmit,
+    hold: holdCurrentBill,
+    openBill: openBillModal,
+    editQuantity: openQuantityEditor,
+    paymentMode,
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT';
+      if (isTyping && event.key !== 'F12' && event.key !== 'Escape') return;
+      const actions = shortcutActionsRef.current;
+      if (!actions) return;
+      if (event.key === 'F12') {
+        event.preventDefault();
+        searchRef.current?.focus({ preventScroll: true });
+        searchRef.current?.select();
+      } else if (event.key === 'F2') {
+        event.preventDefault();
+        actions.editQuantity();
+      } else if (event.key === 'F8') {
+        event.preventDefault();
+        tenderRef.current?.focus({ preventScroll: true });
+        tenderRef.current?.select();
+      } else if (event.key === 'F9') {
+        event.preventDefault();
+        actions.hold();
+      } else if (event.key === 'F10') {
+        event.preventDefault();
+        if (actions.paymentMode === 'credit') void actions.submit();
+        else actions.openBill();
+      } else if (event.key === 'F11') {
+        event.preventDefault();
+        setShowHeldBills(true);
+      } else if (event.key === 'Escape') {
+        setQuantityEditId(null);
+        setShowHeldBills(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   if (showSuccess) {
     return (
@@ -1736,11 +1903,11 @@ function NewBillPanel() {
 
   return (
     <>
-    {!counterOpenedToday && (
-      <div className="m-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-900">
-        Counter is not opened today. Open Cashier Counter, then Counter Open before billing.
-      </div>
-    )}
+      {!counterOpenedToday && (
+        <div className="mx-2 mb-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-black text-amber-900">
+          Counter is not opened today. Open Cashier Counter, then Counter Open before billing.
+        </div>
+      )}
     {showBillModal && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4" onClick={() => !submitting && setShowBillModal(false)}>
         <div className="w-full max-w-md rounded-3xl bg-background border border-border shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1815,429 +1982,378 @@ function NewBillPanel() {
         </div>
       </div>
     )}
-    <div className="biller-workspace flex flex-1 min-h-0 overflow-hidden">
-
-      {/* -- COL 1: Category sidebar ---------------------- */}
-      {itemMode === 'menu' && (
-        <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
-          <div className="px-2 py-2 border-b border-border bg-background shrink-0">
-            <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
-              <button onClick={() => setItemMode('menu')}
-                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
-                <UtensilsCrossed className="size-4" />Menu
-              </button>
-              <button onClick={() => setItemMode('custom')}
-                className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
-                <Edit3 className="size-4" />Custom
-              </button>
+      {quantityEditId && (
+        <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/60 p-4" onClick={() => setQuantityEditId(null)}>
+          <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">F2 · Quantity Change</p>
+            <h3 className="mt-1 text-xl font-black text-slate-950">{cart.find((line) => line.menuItem.id === quantityEditId)?.menuItem.name}</h3>
+            <input
+              autoFocus
+              type="number"
+              min="1"
+              step="1"
+              value={quantityEditValue}
+              onChange={(event) => setQuantityEditValue(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') saveQuantityEdit(); }}
+              className="mt-4 h-14 w-full rounded-2xl border-2 border-slate-200 px-4 text-2xl font-black outline-none focus:border-emerald-500"
+            />
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button onClick={() => setQuantityEditId(null)} className="rounded-2xl bg-slate-100 py-3 font-black text-slate-700">Cancel</button>
+              <button onClick={saveQuantityEdit} className="rounded-2xl bg-emerald-600 py-3 font-black text-white">Update</button>
             </div>
           </div>
-          {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat) => {
-            const isActive = selectedCategory === cat.id && !search.trim();
-            const catCount = cat.id === 'all'
-              ? enabledItems.length
-              : enabledItems.filter(i => i.category === cat.id).length;
-            return (
-              <button key={cat.id}
-                onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
-                  isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground')}>
-                <p className="text-sm font-bold leading-tight">{cat.name}</p>
-                <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
-                  {catCount} items
-                </p>
-              </button>
-            );
-          })}
         </div>
       )}
 
-      {/* -- COL 2: Search + Item picker -------------------- */}
-      <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
-        {itemMode === 'menu' ? (
-          <>
-            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
-              <div className="relative">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  className="w-full pl-10 pr-9 py-2.5 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
-                {search && <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"><X className="size-4" /></button>}
-              </div>
-              {search.trim() ? (
-                <p className="text-[11px] text-primary font-semibold mt-1.5 px-1">
-                  {filteredItems.length} result{filteredItems.length !== 1 ? 's' : ''} across all categories
-                </p>
-              ) : (
-                <p className="text-[11px] text-muted-foreground mt-1.5 px-1">
-                  {selectedCategory === 'all' ? `${enabledItems.length} items` : `${filteredItems.length} in ${MENU_CATEGORIES.find(c => c.id === selectedCategory)?.name ?? selectedCategory}`}
-                </p>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">
-              {filteredItems.length === 0 ? (
-                <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
-              ) : (
-                <div className="biller-menu-grid grid grid-cols-4 gap-1.5">
-                  {filteredItems.map(item => (
-                    <MenuItemCard key={item.id} item={item} quantity={getQty(item.id)}
-                      onAdd={() => addToCart(item)} onRemove={() => updateCartQuantity(item.id, getQty(item.id) - 1)} compact hideImage />
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-            <div className="flex gap-1 p-1 rounded-xl bg-muted">
-              <button onClick={() => setItemMode('menu')}
-                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all text-muted-foreground active:scale-95 flex items-center justify-center gap-1.5">
-                <UtensilsCrossed className="size-3.5" />Menu Items
-              </button>
-              <button onClick={() => setItemMode('custom')}
-                className="flex-1 py-2 rounded-lg text-sm font-body font-semibold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
-                <Edit3 className="size-3.5" />Custom Items
-              </button>
-            </div>
-            <div className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-soft">
-              <div className="flex items-center gap-2 mb-1">
-                <div className="size-7 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <Edit3 className="size-3.5 text-primary" />
-                </div>
-                <p className="text-sm font-body font-bold text-foreground">Add Custom Item</p>
-              </div>
+      {showHeldBills && (
+        <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/60 p-4" onClick={() => setShowHeldBills(false)}>
+          <div className="max-h-[82dvh] w-full max-w-2xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <div>
-                <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                  Item Name <span className="text-destructive">*</span>
-                </label>
-                <input type="text" placeholder="e.g. Special Thali, Custom Parcel..."
-                  value={customName} onChange={e => { setCustomName(e.target.value); setCustomError(''); }}
-                  className="w-full px-4 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
-                  onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">F11 · Recall Hold</p>
+                <h3 className="text-xl font-black text-slate-950">Held Cafe Bills</h3>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-                    Price (Rs ) <span className="text-destructive">*</span>
-                  </label>
-                  <div className="relative">
-                    <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                    <input type="number" min="0" step="0.5" placeholder="0.00"
-                      value={customPrice} onChange={e => { setCustomPrice(e.target.value); setCustomError(''); }}
-                      className="w-full pl-8 pr-3 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all"
-                      onKeyDown={e => e.key === 'Enter' && handleAddCustomItem()} />
+              <button onClick={() => setShowHeldBills(false)} className="rounded-xl bg-slate-100 p-2"><X className="size-5" /></button>
+            </div>
+            <div className="max-h-[65dvh] space-y-2 overflow-y-auto p-4">
+              {heldBills.length === 0 ? (
+                <div className="rounded-2xl bg-slate-50 p-8 text-center font-bold text-slate-500">No held bills.</div>
+              ) : heldBills.map((held) => (
+                <div key={held.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 p-4">
+                  <div className="min-w-0">
+                    <p className="font-black text-slate-950">{held.customerName || (held.tableNumber ? `Table ${held.tableNumber}` : 'Walk-in customer')}</p>
+                    <p className="text-xs font-bold text-slate-500">{held.menuItems.length + held.customItems.length} lines · {new Date(held.createdAt).toLocaleString('en-IN')}</p>
                   </div>
+                  <button onClick={() => recallHeldBill(held)} className="shrink-0 rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Recall</button>
                 </div>
-                <div>
-                  <label className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1.5 block">Qty</label>
-                  <div className="flex items-center gap-1.5">
-                    <button onClick={() => setCustomQty(q => String(Math.max(1, parseInt(q || '1') - 1)))}
-                      aria-label="Decrease quantity"
-                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
-                      <Minus className="size-3.5" />
-                    </button>
-                    <input type="number" min="1" value={customQty} onChange={e => setCustomQty(e.target.value)}
-                      className="flex-1 py-3 rounded-xl bg-muted/50 border border-border text-sm font-body tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-card transition-all" />
-                    <button onClick={() => setCustomQty(q => String((parseInt(q || '1')) + 1))}
-                aria-label="Increase quantity"
-                      className="size-10 shrink-0 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90 transition-all">
-                      <Plus className="size-3.5" />
-                    </button>
-                  </div>
-                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="cafe-vrsnb-billing min-h-0 flex-1 overflow-hidden rounded-[1.35rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/60">
+        <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(300px,46%)_minmax(0,1fr)] lg:grid-cols-[clamp(300px,31vw,410px)_minmax(0,1fr)] lg:grid-rows-1">
+          <aside className="flex min-h-0 flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Cafe Biller</p>
+                <p className="truncate text-base font-black text-slate-950">{currentUser?.displayName || currentUser?.username || 'Cashier'}</p>
               </div>
-              {customError && (
-                <p className="text-xs font-body text-destructive flex items-center gap-1.5">
-                  <AlertCircle className="size-3 shrink-0" />{customError}
-                </p>
-              )}
-              <button onClick={handleAddCustomItem}
-                className="w-full py-3 rounded-xl font-body font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.97] transition-all text-primary-foreground shadow-teal"
-                style={{ background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' }}>
-                <Plus className="size-4" />Add to Bill
+              <button onClick={() => setShowHeldBills(true)} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700">{heldBills.length} Hold</button>
+            </div>
+
+            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-1.5">
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="size-4 text-emerald-600" />
+                <h3 className="text-lg font-black text-slate-950">Cart</h3>
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">{cartCount + customItems.length}</span>
+              </div>
+              <button
+                onClick={() => { clearCart(); setCustomItems([]); setCashTendered(''); }}
+                disabled={allEmpty}
+                className="rounded-lg bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-600 disabled:opacity-40"
+              >
+                <Trash2 className="mr-1 inline size-3" />Clear
               </button>
             </div>
-            {customItems.length > 0 ? (
-              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-soft">
-                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between bg-muted/30">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-body font-bold text-foreground">Custom Items</span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full cafe-gradient text-primary-foreground">{customItems.length}</span>
-                  </div>
-                  <button onClick={() => setCustomItems([])} className="text-xs font-body font-semibold text-destructive active:opacity-70">Clear all</button>
+
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
+              {allEmpty ? (
+                <div className="grid h-full min-h-24 place-items-center rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
+                  <div><Receipt className="mx-auto size-8 text-slate-300" /><p className="mt-2 text-sm font-black text-slate-600">Cart is empty</p><p className="text-xs text-slate-400">Select items from the right.</p></div>
                 </div>
-                <div className="divide-y divide-border/50">
-                  {customItems.map(ci => (
-                    <div key={ci.id} className="flex items-center gap-3 px-4 py-3">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-body font-semibold text-foreground truncate">{ci.name}</p>
-                        <p className="text-xs font-body text-muted-foreground tabular-nums">
-                          {formatCurrency(ci.price)} x {ci.qty} = <span className="font-bold text-primary">{formatCurrency(ci.price * ci.qty)}</span>
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-7 rounded-lg bg-muted border border-border flex items-center justify-center active:scale-90"><Minus className="size-3" /></button>
-                        <span className="w-6 text-center text-sm font-bold tabular-nums">{ci.qty}</span>
-                        <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-7 rounded-lg text-primary-foreground flex items-center justify-center active:scale-90"
-                          style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3" /></button>
-                        <button onClick={() => updateCustomQty(ci.id, 0)} className="size-7 rounded-lg bg-destructive/10 text-destructive border border-destructive/20 flex items-center justify-center active:scale-90 ml-0.5"><Trash2 className="size-3" /></button>
-                      </div>
+              ) : (
+                <div className="space-y-1">
+                  {cart.map((line) => (
+                    <div
+                      key={line.menuItem.id}
+                      onClick={() => setSelectedCartId(line.menuItem.id)}
+                      className={cn(
+                        'grid cursor-pointer grid-cols-[minmax(0,1fr)_auto_50px_24px] items-center gap-1 rounded-lg border bg-white px-2 py-1.5 text-left shadow-sm transition',
+                        selectedCartId === line.menuItem.id ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-200',
+                      )}
+                    >
+                      <div className="min-w-0"><p className="truncate text-[11px] font-black text-slate-950">{line.menuItem.name}</p><p className="text-[9px] font-bold text-slate-500">{formatCurrency(line.menuItem.price)} each</p></div>
+                      <p className="text-[11px] font-black tabular-nums text-slate-950">{formatCurrency(line.menuItem.price * line.quantity)}</p>
+                      <input
+                        value={line.quantity}
+                        onClick={(event) => event.stopPropagation()}
+                        onFocus={() => setSelectedCartId(line.menuItem.id)}
+                        onChange={(event) => updateCartQuantity(line.menuItem.id, Math.max(1, Math.floor(Number(event.target.value || 1))))}
+                        className="h-7 w-12 rounded-md border border-slate-200 bg-slate-50 px-1 text-center text-[11px] font-black outline-none focus:border-emerald-500"
+                        aria-label={`Quantity for ${line.menuItem.name}`}
+                      />
+                      <button onClick={(event) => { event.stopPropagation(); updateCartQuantity(line.menuItem.id, 0); }} className="grid size-6 place-items-center rounded-md bg-red-50 text-red-500"><X className="size-3.5" /></button>
+                    </div>
+                  ))}
+                  {customItems.map((line) => (
+                    <div key={line.id} className="grid grid-cols-[minmax(0,1fr)_auto_50px_24px] items-center gap-1 rounded-lg border border-amber-200 bg-amber-50/50 px-2 py-1.5 shadow-sm">
+                      <div className="min-w-0"><p className="truncate text-[11px] font-black text-slate-950">{line.name}</p><p className="text-[9px] font-bold text-amber-700">Custom · {formatCurrency(line.price)}</p></div>
+                      <p className="text-[11px] font-black tabular-nums text-slate-950">{formatCurrency(line.price * line.qty)}</p>
+                      <input value={line.qty} onChange={(event) => updateCustomQty(line.id, Math.max(1, Math.floor(Number(event.target.value || 1))))} className="h-7 w-12 rounded-md border border-amber-200 bg-white px-1 text-center text-[11px] font-black outline-none focus:border-amber-500" />
+                      <button onClick={() => updateCustomQty(line.id, 0)} className="grid size-6 place-items-center rounded-md bg-red-50 text-red-500"><X className="size-3.5" /></button>
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+
+            <div className="shrink-0 border-t border-slate-200 bg-white px-2.5 py-2 shadow-[0_-10px_30px_rgba(15,23,42,.07)]">
+              <div className="grid grid-cols-[1fr_auto] items-center gap-2 border-b border-slate-100 pb-1.5">
+                <div className="text-xs font-bold text-slate-500">{totalItemQty} items{parcelCharges > 0 ? ` · Parcel ${formatCurrency(parcelCharges)}` : ''}</div>
+                <div className="rounded-xl bg-slate-950 px-3 py-1 text-lg font-black tabular-nums text-white">{formatCurrency(total)}</div>
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-                <div className="size-14 rounded-2xl bg-muted flex items-center justify-center">
-                  <Edit3 className="size-6 text-muted-foreground/40" />
-                </div>
-                <p className="text-sm font-body text-muted-foreground">No custom items yet.</p>
-                <p className="text-xs font-body text-muted-foreground/70">Add items not listed in the menu.</p>
+
+              <div className="mt-1.5 grid grid-cols-4 gap-1">
+                <button onClick={() => { setOrderType('dine_in'); setTableError(false); }} className={cn('rounded-lg py-1.5 text-[10px] font-black', orderType === 'dine_in' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600')}>Dine In</button>
+                <button onClick={() => { setOrderType('takeaway'); setTableError(false); }} className={cn('rounded-lg py-1.5 text-[10px] font-black', orderType === 'takeaway' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600')}>Takeaway</button>
+                <button onClick={() => setPaymentMode('regular')} className={cn('rounded-lg py-1.5 text-[10px] font-black', paymentMode === 'regular' ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-600')}>Regular</button>
+                <button onClick={() => setPaymentMode('credit')} className={cn('rounded-lg py-1.5 text-[10px] font-black', paymentMode === 'credit' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700')}>Credit</button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
 
-      {/* -- COL 3: Bill summary ------------------------ */}
-      <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
-          <div className="flex items-center gap-2">
-            <ShoppingBag className="size-4 text-primary" />
-            <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
-            {!allEmpty && (
-              <span className="text-xs font-body font-bold px-1.5 py-0.5 rounded-full text-primary-foreground"
-                style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}>
-                {cartCount + customItems.length}
-              </span>
-            )}
-          </div>
-          {!allEmpty && (
-            <button onClick={() => { clearCart(); setCustomItems([]); }}
-              className="text-xs font-body font-semibold text-destructive bg-destructive/10 px-2.5 py-1 rounded-lg active:scale-95 border border-destructive/15">
-              Clear
-            </button>
-          )}
-        </div>
-
-        <div className="biller-cart-items flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2">
-          {allEmpty ? (
-            <div className="flex flex-col items-center justify-center h-full py-8 text-muted-foreground gap-2 text-center">
-              <ShoppingBag className="size-8 opacity-25" />
-              <p className="text-sm font-body font-bold">Cart is empty</p>
-              <p className="text-xs font-body text-muted-foreground/70">Tap any item to add it here.</p>
-            </div>
-          ) : (
-            <>
-              {cart.map(ci => (
-                <div key={ci.menuItem.id} className="biller-cart-line rounded-2xl border border-border bg-background p-2.5 shadow-sm">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.menuItem.name}</p>
-                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.menuItem.price)} each</p>
+              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                {orderType === 'dine_in' ? (
+                  <div className="relative">
+                    <button onClick={() => setShowTableSelect(!showTableSelect)} className={cn('h-9 w-full rounded-lg border px-3 text-left text-xs font-black', tableError ? 'border-red-500 bg-red-50' : 'border-slate-200 bg-slate-50')}>{tableNumber ? `Table ${tableNumber}` : 'Select Table *'}</button>
+                    {showTableSelect && (
+                      <div className="absolute bottom-full left-0 z-30 mb-1 grid max-h-48 w-64 grid-cols-5 gap-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+                        {TABLE_NUMBERS.map((num) => <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }} className={cn('rounded-lg py-2 text-xs font-black', tableNumber === num ? 'bg-emerald-600 text-white' : 'bg-slate-100')}>{num}</button>)}
+                      </div>
+                    )}
                   </div>
-                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, ci.quantity - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.menuItem.name}`}><Minus className="size-3.5" /></button>
-                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.quantity}</span>
-                    <button onClick={() => addToCart(ci.menuItem)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.menuItem.name}`}
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm text-primary font-black tabular-nums">{formatCurrency(ci.menuItem.price * ci.quantity)}</p>
-                    <button onClick={() => updateCartQuantity(ci.menuItem.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.menuItem.name}`}><Trash2 className="size-3" />Remove</button>
-                  </div>
-                </div>
-              ))}
-              {customItems.map(ci => (
-                <div key={ci.id} className="biller-cart-line rounded-2xl border border-amber-200 bg-amber-50/45 p-2.5 shadow-sm">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <p className="text-sm font-body font-black truncate leading-tight text-foreground">{ci.name}</p>
-                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">CUSTOM</span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground tabular-nums">{formatCurrency(ci.price)} each</p>
-                  </div>
-                  <div className="biller-cart-qty flex items-center gap-1.5 shrink-0">
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty - 1)} className="size-8 rounded-xl bg-muted border border-border flex items-center justify-center active:scale-90" aria-label={`Decrease ${ci.name}`}><Minus className="size-3.5" /></button>
-                    <span className="min-w-8 text-center rounded-xl bg-muted/60 px-2 py-1.5 text-sm font-black tabular-nums">{ci.qty}</span>
-                    <button onClick={() => updateCustomQty(ci.id, ci.qty + 1)} className="size-8 rounded-xl text-primary-foreground flex items-center justify-center active:scale-90" aria-label={`Increase ${ci.name}`}
-                      style={{ background: 'linear-gradient(135deg,hsl(164 52% 32%),hsl(164 52% 22%))' }}><Plus className="size-3.5" /></button>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm text-amber-700 font-black tabular-nums">{formatCurrency(ci.price * ci.qty)}</p>
-                    <button onClick={() => updateCustomQty(ci.id, 0)} className="mt-1 text-[10px] font-black text-destructive inline-flex items-center gap-1" aria-label={`Remove ${ci.name}`}><Trash2 className="size-3" />Remove</button>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-
-        {!allEmpty && (
-          <div className="biller-cart-footer border-t border-border px-4 py-3 space-y-3 bg-muted/20 shrink-0 overflow-y-auto">
-            <div className="flex gap-2">
-              <button onClick={() => { setOrderType('dine_in'); setTableError(false); }}
-                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
-                  orderType === 'dine_in' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={orderType === 'dine_in' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                Dine In
-              </button>
-              <button onClick={() => { setOrderType('takeaway'); setTableError(false); }}
-                className={cn('flex-1 py-3 rounded-xl text-sm font-body font-semibold transition-all active:scale-95',
-                  orderType === 'takeaway' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={orderType === 'takeaway' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                Takeaway
-              </button>
-            </div>
-
-            {/* -- Payment Mode: Regular vs Credit -- */}
-            <div className="flex gap-2">
-              <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
-                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
-                  paymentMode === 'regular' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={paymentMode === 'regular' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                <Banknote className="size-3.5" />Regular
-              </button>
-              <button onClick={() => { setPaymentMode('credit'); setCreditError(''); }}
-                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
-                  paymentMode === 'credit' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
-                <CreditCard className="size-3.5" />Credit
-              </button>
-            </div>
-
-            {/* -- Credit sale form (shown only when Credit mode is active) -- */}
-            {paymentMode === 'credit' && (
-              <div className="bg-red-50 border border-red-200 rounded-2xl p-3 space-y-2.5">
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <CreditCard className="size-3.5 text-red-600" />
-                  <p className="text-xs font-body font-bold text-red-700 uppercase tracking-widest">Credit Sale Details</p>
-                </div>
-                <div className="relative">
-                  <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                  <input type="text" placeholder="Customer name *"
-                    value={customerName}
-                    onChange={e => { setCustomerName(e.target.value); setCreditError(''); }}
-                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
-                </div>
-                <div className="relative">
-                  <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                  <input type="tel" placeholder="Phone number *"
-                    value={creditCustomerPhone}
-                    onChange={e => { setCreditCustomerPhone(e.target.value); setCreditError(''); }}
-                    className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
-                </div>
-                <div>
-                  <label className="text-[10px] font-body font-bold text-red-700 uppercase tracking-widest mb-1 block flex items-center gap-1">
-                    <Calendar className="size-3" />Due Date *
-                  </label>
-                  <input type="date" value={creditDueDate}
-                    min={businessDate()}
-                    onChange={e => { setCreditDueDate(e.target.value); setCreditError(''); }}
-                    className="w-full px-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-400/40 transition-all" />
-                </div>
-                <div className="flex items-center gap-2 bg-red-100/60 rounded-xl px-3 py-2">
-                  <Bell className="size-3.5 text-red-600 shrink-0" />
-                  <p className="text-[10px] font-body text-red-700">VRSNB Admin &amp; Admin will be notified automatically.</p>
-                </div>
-                {creditError && (
-                  <p className="text-xs font-body text-destructive flex items-center gap-1.5">
-                    <AlertCircle className="size-3 shrink-0" />{creditError}
-                  </p>
+                ) : (
+                  <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Customer name" className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-bold outline-none focus:border-emerald-500" />
                 )}
+                <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Order notes" className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-bold outline-none focus:border-emerald-500" />
               </div>
-            )}
-            {orderType === 'dine_in' ? (
-              <div className="relative">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <button onClick={() => setShowTableSelect(!showTableSelect)}
-                  className={cn('w-full pl-9 pr-9 py-3 bg-card border rounded-xl text-left text-sm font-body transition-all',
-                    tableError ? 'border-destructive ring-1 ring-destructive/30' : 'border-border')}>
-                  {tableNumber ? `Table ${tableNumber}` : 'Select Table *'}
-                </button>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                {showTableSelect && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-2xl shadow-lifted z-50 p-2.5 grid grid-cols-5 gap-1 max-h-48 overflow-y-auto">
-                    {TABLE_NUMBERS.map(num => (
-                      <button key={num} onClick={() => { setTableNumber(num); setShowTableSelect(false); setTableError(false); }}
-                        className={cn('py-2 rounded-xl text-xs font-body font-semibold transition-all active:scale-90',
-                          tableNumber === num ? 'text-primary-foreground shadow-teal' : 'hover:bg-muted text-foreground')}
-                        style={tableNumber === num ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                        {num}
-                      </button>
+
+              {paymentMode === 'credit' && (
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5 rounded-xl bg-red-50 p-1.5">
+                  <input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Customer name *" className="h-8 rounded-lg border border-red-200 bg-white px-2 text-[11px] font-bold" />
+                  <input value={creditCustomerPhone} onChange={(event) => setCreditCustomerPhone(event.target.value)} placeholder="Mobile *" className="h-8 rounded-lg border border-red-200 bg-white px-2 text-[11px] font-bold" />
+                  <input type="date" min={businessDate()} value={creditDueDate} onChange={(event) => setCreditDueDate(event.target.value)} className="col-span-2 h-8 rounded-lg border border-red-200 bg-white px-2 text-[11px] font-bold" />
+                  {creditError && <p className="col-span-2 text-[10px] font-bold text-red-700">{creditError}</p>}
+                </div>
+              )}
+
+              <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-amber-200 bg-amber-50">
+                <label className="flex min-w-0 items-center gap-2 px-2"><span className="text-[10px] font-black text-amber-800">Cash Tendered</span><input ref={tenderRef} type="number" min="0" value={cashTendered} onChange={(event) => setCashTendered(event.target.value)} placeholder="F8" className="h-8 min-w-0 flex-1 bg-transparent text-right text-sm font-black outline-none" /></label>
+                <div className="flex items-center gap-2 border-l border-amber-200 px-3 text-xs font-black text-emerald-700"><span>Change</span><span className="text-base tabular-nums">{formatCurrency(cashChange)}</span></div>
+              </div>
+
+              {submitError && <p className="mt-1 text-center text-[10px] font-bold text-red-600">{submitError}</p>}
+              <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                <button onClick={holdCurrentBill} disabled={allEmpty} className="rounded-xl bg-amber-50 py-2 text-[11px] font-black text-amber-800 ring-1 ring-amber-200 disabled:opacity-40">Hold · F9</button>
+                <button onClick={() => setShowHeldBills(true)} className="rounded-xl bg-slate-100 py-2 text-[11px] font-black text-slate-700">Recall · F11</button>
+                <button onClick={() => paymentMode === 'credit' ? void handleSubmit() : openBillModal()} disabled={allEmpty || submitting} className="rounded-xl bg-rose-600 py-2 text-[11px] font-black text-white shadow-lg shadow-rose-200 disabled:opacity-40">{submitting ? 'Billing...' : 'Final Bill · F10'}</button>
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex min-h-0 min-w-0 flex-col bg-slate-50">
+            <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-2 border-b border-slate-200 bg-white px-2.5 py-2">
+              <div className="relative min-w-0"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search item by name..." className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-12 text-sm font-bold outline-none focus:border-emerald-500 focus:bg-white" /><kbd className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-slate-200 px-2 py-1 text-[10px] font-black text-slate-600">F12</kbd></div>
+              <button onClick={openQuantityEditor} className="rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">Qty Change · F2</button>
+              <button onClick={() => setItemMode((mode) => mode === 'menu' ? 'custom' : 'menu')} className={cn('rounded-xl px-3 text-xs font-black', itemMode === 'custom' ? 'bg-amber-500 text-white' : 'bg-slate-950 text-white')}>{itemMode === 'custom' ? 'Back to Menu' : 'Custom Item'}</button>
+            </div>
+
+            {itemMode === 'menu' ? (
+              <>
+                <div className="shrink-0 border-b border-slate-200 bg-white/90 px-2.5 py-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {[{ id: 'all', name: 'All Items' }, ...MENU_CATEGORIES].map((cat, index) => (
+                      <button key={cat.id} onClick={() => { setSelectedCategory(cat.id); setSearch(''); }} className={cn('rounded-lg px-3 py-2 text-xs font-black leading-none transition', selectedCategory === cat.id && !search.trim() ? 'bg-rose-600 text-white shadow-md' : 'bg-white text-slate-600 ring-1 ring-slate-200')}><span className="mr-1 text-[9px] opacity-60">{index === 0 ? 'A' : index}</span>{cat.name}</button>
                     ))}
                   </div>
-                )}
-                {tableError && (
-                  <div className="flex items-center gap-1 mt-1.5 text-destructive">
-                    <AlertCircle className="size-3" /><span className="text-[11px] font-body">Table required for Dine In</span>
-                  </div>
-                )}
-              </div>
-            ) : paymentMode !== 'credit' ? (
-              <div className="relative">
-                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                <input type="text" placeholder="Customer name (optional)" value={customerName} onChange={e => setCustomerName(e.target.value)}
-                  className="w-full pl-8 pr-3 py-3 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
-              </div>
-            ) : null}
-            <div className="relative">
-              <StickyNote className="absolute left-3 top-2.5 size-3.5 text-muted-foreground" />
-              <textarea placeholder="Order notes (optional)" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
-                className="w-full pl-8 pr-3 py-2.5 bg-card border border-border rounded-xl text-sm font-body placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all" />
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {QUICK_NOTES.slice(0, 4).map(n => (
-                <button key={n} onClick={() => setNotes(prev => prev ? `${prev}, ${n}` : n)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-body font-semibold bg-muted border border-border text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 active:scale-95 transition-all">
-                  + {n}
-                </button>
-              ))}
-            </div>
-            <div className="pt-1 border-t border-border space-y-2">
-              {menuTotal > 0 && customTotal > 0 && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs font-body text-muted-foreground">
-                    <span>Menu</span><span className="tabular-nums">{formatCurrency(menuTotal)}</span>
-                  </div>
-                  <div className="flex justify-between text-xs font-body text-primary">
-                    <span>Custom</span><span className="tabular-nums">{formatCurrency(customTotal)}</span>
-                  </div>
                 </div>
-              )}
-              {parcelCharges > 0 && (
-                <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
-                  <span className="flex items-center gap-1">Parcel ({totalItemQty} x Rs 10)</span>
-                  <span className="tabular-nums font-bold">+{formatCurrency(parcelCharges)}</span>
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+                  {filteredItems.length === 0 ? (
+                    <EmptyState icon="" message="No items found" sub="Try a different category or clear the search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
+                  ) : (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-1.5">
+                      {filteredItems.map((item, index) => {
+                        const quantity = getQty(item.id);
+                        return (
+                          <button key={item.id} onClick={() => { addToCart(item); setSelectedCartId(item.id); }} className={cn('group min-h-24 rounded-lg border-2 bg-white p-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg', quantity > 0 ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200')}>
+                            <div className="flex items-start justify-between gap-1"><p className="line-clamp-2 text-[12px] font-black leading-tight text-slate-950">{item.name}</p><span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{index + 1}</span></div>
+                            <div className="mt-2 flex items-end justify-between gap-2"><p className="text-sm font-black text-rose-600">{formatCurrency(item.price)}</p><span className="grid size-7 place-items-center rounded-lg bg-rose-600 text-white"><Plus className="size-4" /></span></div>
+                            {quantity > 0 && <div className="mt-1 rounded-md bg-emerald-600 px-2 py-0.5 text-center text-[9px] font-black text-white">In cart: {quantity}</div>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-              <div className="flex items-center justify-between">
-                <span className="font-body text-base font-bold text-foreground">Total</span>
-                <span className="font-display text-3xl font-bold text-foreground tabular-nums">{formatCurrency(total)}</span>
+              </>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mx-auto max-w-2xl rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-amber-600">Custom billing item</p>
+                  <h3 className="mt-1 text-2xl font-black text-slate-950">Add an item not listed in the menu</h3>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_100px]">
+                    <input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder="Item name" className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-bold outline-none focus:border-amber-500" />
+                    <input type="number" min="0" value={customPrice} onChange={(event) => setCustomPrice(event.target.value)} placeholder="Price" className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-bold outline-none focus:border-amber-500" />
+                    <input type="number" min="1" value={customQty} onChange={(event) => setCustomQty(event.target.value)} placeholder="Qty" className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-bold outline-none focus:border-amber-500" />
+                  </div>
+                  {customError && <p className="mt-2 text-xs font-bold text-red-600">{customError}</p>}
+                  <button onClick={handleAddCustomItem} className="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-amber-500 px-5 text-sm font-black text-white"><Plus className="size-4" />Add to Cart</button>
+                </div>
               </div>
-              {submitError && <p className="text-xs font-body text-destructive text-center">{submitError}</p>}
-              <button onClick={() => paymentMode === 'credit' ? handleSubmit() : openBillModal()} disabled={submitting}
-                className={cn(
-                  'w-full py-3.5 rounded-xl font-body font-bold text-sm active:scale-[0.97] transition-all disabled:opacity-60 flex items-center justify-center gap-2 text-white',
-                  paymentMode === 'credit' ? 'shadow-md' : 'shadow-teal'
-                )}
-                style={{
-                  background: paymentMode === 'credit'
-                    ? 'linear-gradient(135deg,#dc2626,#b91c1c)'
-                    : 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))',
-                  boxShadow: paymentMode === 'credit'
-                    ? '0 4px 16px rgba(220,38,38,0.35)'
-                    : undefined,
-                }}>
-                {paymentMode === 'credit'
-                  ? <><CreditCard className="size-4" />{submitting ? 'Recording...' : 'Record Credit Sale'}</>
-                  : <><Receipt className="size-4" />{submitting ? 'Creating...' : 'Create Bill'}</>
-                }
-              </button>
-            </div>
-          </div>
-        )}
+            )}
+          </main>
+        </div>
       </div>
-    </div>
     </>
+  );
+
+}
+
+
+type CafeEditablePaymentMode = Extract<PaymentType, 'cash' | 'upi' | 'card'>;
+
+type CafePaymentEditAudit = {
+  order_id: string;
+  old_mode: CafeEditablePaymentMode;
+  new_mode: CafeEditablePaymentMode;
+  changed_by: string;
+  reason: string | null;
+  changed_at: string;
+};
+
+function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
+  const { currentUser } = useAuthStore();
+  const loadOrders = useOrderStore((state) => state.loadOrders);
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [nextMode, setNextMode] = useState<CafeEditablePaymentMode>('cash');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [auditRows, setAuditRows] = useState<CafePaymentEditAudit[]>([]);
+
+  const loadAuditRows = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('cafe_payment_mode_edits')
+      .select('order_id, old_mode, new_mode, changed_by, reason, changed_at')
+      .order('changed_at', { ascending: false })
+      .limit(500);
+    if (!error && data) setAuditRows(data as CafePaymentEditAudit[]);
+  }, []);
+
+  useEffect(() => {
+    void loadOrders(3650);
+    void loadAuditRows();
+  }, [loadAuditRows, loadOrders]);
+
+  const auditsByOrder = useMemo(() => {
+    const map = new Map<string, CafePaymentEditAudit>();
+    auditRows.forEach((row) => { if (!map.has(row.order_id)) map.set(row.order_id, row); });
+    return map;
+  }, [auditRows]);
+
+  const editableOrders = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return orders
+      .filter((order) => order.status === 'served' && ['cash', 'upi', 'card'].includes(order.paymentType))
+      .filter((order) => {
+        if (!normalized) return true;
+        return [
+          String(order.orderNumber),
+          order.customerName || '',
+          order.billedBy || '',
+          order.createdBy || '',
+          order.paymentType,
+        ].some((value) => String(value).toLowerCase().includes(normalized));
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [orders, query]);
+
+  const beginEdit = (order: Order) => {
+    setEditingId(order.id);
+    setNextMode(order.paymentType as CafeEditablePaymentMode);
+    setReason('');
+    setMessage('');
+  };
+
+  const saveEdit = async (order: Order) => {
+    if (nextMode === order.paymentType) {
+      setMessage('Choose a different payment mode.');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const changedBy = currentUser?.displayName || currentUser?.username || 'Cafe Biller';
+    const { error } = await supabase.rpc('edit_cafe_order_payment_mode', {
+      p_order_id: order.id,
+      p_new_mode: nextMode,
+      p_changed_by: changedBy,
+      p_reason: reason.trim() || null,
+    });
+    if (error) {
+      setMessage(error.message.includes('edit_cafe_order_payment_mode')
+        ? 'Cafe payment-mode migration is not installed. Apply the included Supabase migration first.'
+        : error.message);
+      setSaving(false);
+      return;
+    }
+    await Promise.all([loadOrders(3650), loadAuditRows()]);
+    setEditingId(null);
+    setReason('');
+    setSaving(false);
+    setMessage(`Bill #${String(order.orderNumber).padStart(4, '0')} payment mode updated to ${nextMode.toUpperCase()}.`);
+  };
+
+  return (
+    <div className="h-full min-h-0 overflow-y-auto bg-slate-50 p-2 sm:p-3">
+      <section className="mx-auto max-w-7xl overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-rose-600">Cafe Biller</p>
+            <h2 className="text-2xl font-black text-slate-950">Payment Mode Edit</h2>
+            <p className="text-sm font-semibold text-slate-500">Only Cash, UPI and Card can be corrected. Items, quantities and bill totals remain locked.</p>
+          </div>
+          <div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search bill, customer or cashier" className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-rose-500 focus:bg-white" /></div>
+        </div>
+
+        {message && <div className={cn('mx-4 mt-3 rounded-xl px-3 py-2 text-sm font-bold', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</div>}
+
+        <div className="overflow-x-auto p-3">
+          <table className="w-full min-w-[900px] border-separate border-spacing-y-1 text-left">
+            <thead><tr className="text-[10px] font-black uppercase tracking-wider text-slate-500"><th className="px-3 py-2">Bill</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Cashier</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Payment Mode</th><th className="px-3 py-2">Last Correction</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+            <tbody>
+              {editableOrders.map((order) => {
+                const audit = auditsByOrder.get(order.id);
+                const editing = editingId === order.id;
+                return (
+                  <tr key={order.id} className="bg-slate-50 text-sm font-semibold text-slate-700">
+                    <td className="rounded-l-xl px-3 py-3 font-black text-slate-950">#{String(order.orderNumber).padStart(4, '0')}</td>
+                    <td className="px-3 py-3 text-xs">{new Date(order.createdAt).toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-3">{order.customerName || '-'}</td>
+                    <td className="px-3 py-3">{order.billedBy || order.createdBy}</td>
+                    <td className="px-3 py-3 font-black tabular-nums text-slate-950">{formatCurrency(order.total)}</td>
+                    <td className="px-3 py-3">
+                      {editing ? (
+                        <select value={nextMode} onChange={(event) => setNextMode(event.target.value as CafeEditablePaymentMode)} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black uppercase outline-none focus:border-rose-500"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select>
+                      ) : <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase text-white">{order.paymentType}</span>}
+                    </td>
+                    <td className="px-3 py-3 text-[11px] text-slate-500">{audit ? `${audit.old_mode.toUpperCase()} → ${audit.new_mode.toUpperCase()} · ${new Date(audit.changed_at).toLocaleString('en-IN')}` : 'No correction'}</td>
+                    <td className="rounded-r-xl px-3 py-3 text-right">
+                      {editing ? (
+                        <div className="flex items-center justify-end gap-2"><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" className="h-9 w-40 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold outline-none focus:border-rose-500" /><button onClick={() => void saveEdit(order)} disabled={saving} className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">Save</button><button onClick={() => setEditingId(null)} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Cancel</button></div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-2"><button onClick={() => printPaidBill(order, 'duplicate')} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Duplicate</button><button onClick={() => beginEdit(order)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-black text-white">Edit Mode</button></div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {editableOrders.length === 0 && <div className="rounded-2xl bg-slate-50 p-10 text-center font-bold text-slate-500">No eligible Cash, UPI or Card bills found.</div>}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2256,12 +2372,22 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts'>('new_bill');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit' | null>(null);
+
+  useEffect(() => {
+    const requested = searchParams.get('tab');
+    if (requested === 'advance') setActiveTab('advance');
+    else if (requested === 'alerts') setActiveTab('alerts');
+    else if (requested === 'payment-edit') setActiveTab('payment_edit');
+    else if (requested === 'history') setActiveTab('served');
+    else setActiveTab('new_bill');
+  }, [searchParams]);
 
   // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts') => {
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -2274,19 +2400,30 @@ export default function BillingDashboard() {
       clearCart();
     }
     setActiveTab(tab);
+    if (tab === 'new_bill') setSearchParams({});
+    else if (tab === 'advance') setSearchParams({ tab: 'advance' });
+    else if (tab === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (tab === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
   };
 
   const confirmTabSwitch = () => {
     if (!pendingTab) return;
     clearCart();
-    setActiveTab(pendingTab);
+    const next = pendingTab;
+    setActiveTab(next);
+    if (next === 'new_bill') setSearchParams({});
+    else if (next === 'advance') setSearchParams({ tab: 'advance' });
+    else if (next === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (next === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
     setPendingTab(null);
   };
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
-    startPolling(60); // Biller needs older open advance balances until they are fully collected.
+    startPolling(3650); // Cafe history and payment-mode corrections need the complete retained bill history.
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
@@ -2352,7 +2489,7 @@ export default function BillingDashboard() {
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts' || activeTab === 'payment_edit') return [];
     let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
@@ -2363,7 +2500,7 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: '.35rem', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
+    <div className="flex min-h-0 flex-col overflow-hidden bg-slate-50 p-1.5" style={{ height: 'calc(100dvh - var(--header-h, 4rem))', paddingBottom: 'var(--branch-nav-reserved-h, 0px)' }} data-billing-dashboard>
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (
@@ -2402,99 +2539,50 @@ export default function BillingDashboard() {
               <button onClick={() => setShowDeliveryPopup(false)} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
             </div>
             <div className="mt-4 max-h-64 overflow-y-auto space-y-2">{todayDeliveryAlerts.map(o => <div key={o.id} className="rounded-2xl border border-border p-3"><div className="flex justify-between gap-3"><span className="font-bold">#{String(o.orderNumber).padStart(4,'0')} · {o.customerName || 'Customer'}</span><span className="text-xs font-bold text-amber-700">{new Date(o.deliveryDate!).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div><p className="text-xs text-muted-foreground mt-1">Balance: {formatCurrency(o.balanceDue ?? 0)}</p></div>)}</div>
-            <button onClick={() => { setShowDeliveryPopup(false); setActiveTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
+            <button onClick={() => { setShowDeliveryPopup(false); setActiveTab('alerts'); setSearchParams({ tab: 'alerts' }); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
           </div>
         </div>
       )}
 
-      {/* -- Status bar -- */}
-      <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
-          <span className="text-xs font-body font-medium text-muted-foreground">
-            {polling ? 'Live' : 'Offline'}
-          </span>
+      {!['new_bill', 'advance', 'alerts', 'payment_edit'].includes(activeTab) && (
+        <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-2">
+              <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
+              <h2 className="text-lg font-black text-slate-950">Cafe Bill History</h2>
+              <span className="text-xs font-bold text-slate-500">{polling ? 'Live' : 'Offline'}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {STATUS_TABS.map((status) => {
+                const isActive = activeTab === status.key;
+                const count = sourceFilter === 'all'
+                  ? regularOrders.filter((order) => matchesStatusTab(order, status.key)).length
+                  : regularOrders.filter((order) => matchesStatusTab(order, status.key) && order.orderSource === sourceFilter).length;
+                return (
+                  <button key={status.key} onClick={() => setActiveTab(status.key)} className={cn('rounded-lg px-3 py-2 text-xs font-black', isActive ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-600')}>
+                    {status.label}{count > 0 ? ` ${count}` : ''}
+                  </button>
+                );
+              })}
+              {([
+                { key: 'all' as SourceFilter, label: `All ${regularOrders.length}` },
+                { key: 'staff' as SourceFilter, label: `Staff ${staffCount}` },
+                { key: 'qr' as SourceFilter, label: `QR ${qrCount}` },
+              ]).map((source) => (
+                <button key={source.key} onClick={() => setSourceFilter(source.key)} className={cn('rounded-lg px-3 py-2 text-xs font-black', sourceFilter === source.key ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700')}>{source.label}</button>
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          {([
-            { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },
-            { key: 'staff' as SourceFilter, label: `Staff: ${staffCount}`, icon: <UserCheck className="size-3" /> },
-            { key: 'qr' as SourceFilter, label: `QR: ${qrCount}`, icon: <QrCode className="size-3" /> },
-          ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
-            <button key={s.key} onClick={() => setSourceFilter(s.key)}
-              className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
-                sourceFilter === s.key ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground active:scale-95')}>
-              {s.icon}{s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* -- Tab rail -- */}
-      <div className="border-b border-border bg-background shrink-0">
-        <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
-
-          <button onClick={() => switchTab('new_bill')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'new_bill'
-                ? 'text-white shadow-lifted'
-                : 'bg-emerald-50 border border-emerald-200 text-emerald-700')}
-            style={activeTab === 'new_bill' ? { background: 'linear-gradient(135deg,#1a7a50,#0f5436)', boxShadow: '0 4px 16px rgba(26,122,80,0.35)' } : {}}>
-            <Plus className="size-3.5" />New Bill
-          </button>
-
-          <button onClick={() => switchTab('advance')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'advance'
-                ? 'bg-amber-500 text-white shadow-md'
-                : 'bg-amber-50 border border-amber-200 text-amber-700')}>
-            <Wallet className="size-3.5" />Advance
-            {advanceOrders.length > 0 && (
-              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                activeTab === 'advance' ? 'bg-white/30 text-white' : 'bg-amber-200 text-amber-800')}>
-                {advanceOrders.length}
-              </span>
-            )}
-          </button>
-
-
-
-
-          <button onClick={() => switchTab('alerts')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
-            <Bell className="size-3.5" />Alerts
-            {todayDeliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{todayDeliveryAlerts.length}</span>}
-          </button>
-
-          {STATUS_TABS.map(tab => {
-            const isActive = activeTab === tab.key;
-            const count = sourceFilter === 'all'
-              ? regularOrders.filter(o => matchesStatusTab(o, tab.key)).length
-              : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
-            return (
-              <button key={tab.key} onClick={() => switchTab(tab.key)}
-                className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-                  isActive ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={isActive ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                <span className={cn('size-2 rounded-full shrink-0', isActive ? 'bg-white/80' : tab.dotColor)} />
-                {tab.label}
-                {count > 0 && (
-                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0',
-                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
       {/* -- Content -- */}
       {activeTab === 'new_bill' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      ) : activeTab === 'payment_edit' ? (
+        <div className="flex-1 min-h-0 overflow-hidden"><CafePaymentModeEditTab orders={orders} /></div>
       ) : activeTab === 'alerts' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Today's Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Only advance orders scheduled for delivery today are shown.</p></div>
