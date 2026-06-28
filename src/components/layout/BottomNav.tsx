@@ -322,6 +322,7 @@ export default function BottomNav() {
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/vrsnb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/vrsnb?tab=alerts" },
     );
@@ -331,6 +332,7 @@ export default function BottomNav() {
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/snb?tab=advance" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/snb?tab=returns" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/snb?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/snb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
     );
