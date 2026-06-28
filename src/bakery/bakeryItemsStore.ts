@@ -1,6 +1,7 @@
 // src/bakery/bakeryItemsStore.ts  ← NEW FILE
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 
 export interface BakeryItem {
   id: string;
@@ -173,10 +174,10 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     return null;
   },
 
-  subscribe: () => {
-    const channel = supabase.channel('bakery-items-live').on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' }, () => { void get().loadAllItems(); }).subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  },
+  subscribe: makeSingletonSubscriber('bakery-items-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_items' },
+      () => { void get().loadAllItems(); }),
+  ),
 
   // ── Hard delete ───────────────────────────────────────────────────────────
   deleteItem: async (id) => {

@@ -103,10 +103,26 @@ export const useAuthStore = create<AuthState>()(
       },
 
       // SM-02: never fetch the password column
+      // SM-03 FIX: if the server rejects the session (SESSION_REQUIRED / 28000),
+      // the user's sessionStorage holds a stale currentUser from an old build that
+      // didn't create app_staff_sessions rows (old login_staff RPC). Auto-logout
+      // so they are redirected to the login screen and get a fresh secure session.
       loadStaff: async () => {
         const { data, error } = await supabase.rpc('list_staff_secure');
         if (!error && data) {
           set({ staffList: data.map((d) => rowToUser(d as Record<string, unknown>)), staffLoaded: true });
+          return;
+        }
+        if (error) {
+          const isSessionError =
+            error.code === '28000' ||
+            /SESSION_REQUIRED|PGRST301|JWT/i.test(error.message ?? '');
+          if (isSessionError) {
+            // Stale session from pre-secure-login build — force re-login.
+            get().logout();
+          }
+          // Other errors (network, role mismatch) are left silent; the
+          // staff list simply stays empty and the user sees 0 members.
         }
       },
 
@@ -210,10 +226,21 @@ export const useAuthStore = create<AuthState>()(
       // if the user session was restored (so they are still auto-logged out after 8 hours).
       onRehydrateStorage: () => (state) => {
         if (state?.currentUser) {
-          state._resetSessionTimer();
-          // M-03 FIX: attach sliding-session activity listeners after rehydration so that
-          // staff who are actively using the app never get kicked mid-shift.
-          _attachActivityListeners();
+          // SM-03 FIX: if the auth record was restored from sessionStorage but the
+          // matching app session token is missing (upgraded from old build that used
+          // login_staff without creating app_staff_sessions rows), force logout so
+          // the user re-authenticates with login_staff_secure and gets a valid token.
+          // Import lazily to avoid circular-module issues at module initialisation time.
+          import('@/lib/appSession').then(({ getAppSessionToken }) => {
+            if (!getAppSessionToken()) {
+              state.logout();
+              return;
+            }
+            state._resetSessionTimer();
+            // M-03 FIX: attach sliding-session activity listeners after rehydration so that
+            // staff who are actively using the app never get kicked mid-shift.
+            _attachActivityListeners();
+          });
         }
       },
     },

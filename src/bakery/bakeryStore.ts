@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
 
@@ -497,15 +498,8 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
   // Realtime subscription — any INSERT/UPDATE to bakery_orders triggers immediate re-fetch.
   // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
-  subscribe: () => {
-    const channel = supabase
-      .channel('bakery-orders-live')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'bakery_orders' },
-        () => { get().fetchOrders(true); },
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  },
+  subscribe: makeSingletonSubscriber('bakery-orders-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_orders' },
+      () => { get().fetchOrders(true); }),
+  ),
 }));

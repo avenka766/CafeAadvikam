@@ -3,6 +3,17 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 
+// Auto-reload on stale chunk error (happens after a new deploy invalidates old hashed assets)
+window.addEventListener('vite:preloadError', () => {
+  window.location.reload();
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = e?.reason?.message ?? '';
+  if (msg.includes('Failed to fetch dynamically imported module') || msg.includes('Importing a module script failed')) {
+    window.location.reload();
+  }
+});
+
 try {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
