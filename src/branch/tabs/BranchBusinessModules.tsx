@@ -36,7 +36,9 @@ type LedgerBillRow = {
   biller: string | null;
   subtotal: number | string;
   discount: number | string;
+  discount_percent?: number | string | null;
   tax: number | string;
+  round_off?: number | string | null;
   total: number | string;
   tendered: number | string;
   balance: number | string;
@@ -97,6 +99,7 @@ type SavedClosureRow = {
 };
 
 const num = (value: number | string | null | undefined) => Number(value ?? 0);
+const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 const todayIso = () => businessDate();
 
 type FieldProps = { label: string; children: React.ReactNode };
@@ -223,7 +226,10 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
           items,
           subtotal: num(row.subtotal),
           discount: num(row.discount),
+          discountPercent: row.discount_percent == null ? undefined : num(row.discount_percent),
           tax: num(row.tax),
+          roundOff: row.round_off == null ? undefined : num(row.round_off),
+          amountBeforeRoundOff: roundMoney(num(row.total) - num(row.round_off)),
           total: num(row.total),
           tendered: num(row.tendered),
           balance: num(row.balance),

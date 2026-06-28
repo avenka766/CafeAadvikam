@@ -16,6 +16,7 @@ import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useInvoiceStore } from '@/bakery/invoiceStore';
+import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
 import {
@@ -1304,41 +1305,18 @@ function AdminDashboard() {
     </div>
   );
 
-  // Invoices Tab
+  // Invoices Tab — uses the full AdminInvoicesTab so admin can view, approve and reject
   const InvoicesTab = (
     <div className="space-y-5">
-      <div className="grid gap-3 sm:grid-cols-3">
+      {/* Summary KPIs retained for the overview strip */}
+      <div className="grid gap-3 sm:grid-cols-4">
         <KpiCard label="Total Invoices" value={invoices.length} icon={<Receipt className="size-5" />} tone="slate" />
         <KpiCard label="Pending Review" value={invoices.filter(inv => inv.status === 'pending_review').length} icon={<AlertTriangle className="size-5" />} tone={invoices.filter(inv => inv.status === 'pending_review').length > 0 ? 'amber' : 'slate'} />
+        <KpiCard label="Approved" value={invoices.filter(inv => inv.status === 'approved').length} icon={<CheckCircle2 className="size-5" />} tone="green" />
         <KpiCard label="Total Value" value={formatCurrency(invoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0))} icon={<IndianRupee className="size-5" />} tone="blue" />
       </div>
-      <Panel title="Supplier Invoices" subtitle="Store purchase invoices and review status"
-        action={
-          <button onClick={() => csvDownload('Admin_Invoices.csv', invoices.map(inv => ({ Invoice: inv.invoiceNumber || '-', Supplier: inv.supplierName || '-', Delivery: fmtDate(inv.deliveryDate || inv.createdAt), Total: inv.grandTotal || 0, Status: inv.status || '-', Notes: inv.notes || '-' })))}
-            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-black text-white">
-            <FileSpreadsheet className="size-3.5" /> Excel
-          </button>
-        }>
-        {invoices.length === 0 ? <EmptyState label="No invoices found. Store purchase invoices appear here after being created in the bakery store." /> : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[680px] text-sm">
-              <thead><tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500"><th className="p-3">Invoice #</th><th className="p-3">Supplier</th><th className="p-3">Delivery Date</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Notes</th></tr></thead>
-              <tbody className="divide-y">
-                {invoices.slice(0, 100).map(inv => (
-                  <tr key={inv.id} className="hover:bg-slate-50">
-                    <td className="p-3 font-bold">{inv.invoiceNumber || '-'}</td>
-                    <td className="p-3">{inv.supplierName || '-'}</td>
-                    <td className="p-3 text-slate-500">{fmtDate(inv.deliveryDate || inv.createdAt)}</td>
-                    <td className="p-3 text-right font-black">{formatCurrency(Number(inv.grandTotal || 0))}</td>
-                    <td className="p-3"><Badge tone={inv.status === 'approved' ? 'green' : inv.status === 'pending_review' ? 'amber' : 'red'}>{inv.status?.replace(/_/g, ' ') || 'pending'}</Badge></td>
-                    <td className="p-3 text-slate-500 max-w-[200px] truncate">{inv.notes || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      {/* Full review UI — approve/reject/view/print all live here */}
+      <AdminInvoicesTab />
     </div>
   );
 

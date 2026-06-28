@@ -61,10 +61,13 @@ const bakeryOrderPage = read('src/pages/BakeryOrderPage.tsx') ?? '';
 const branchCatalogStore = read('src/stores/branchCatalogStore.ts') ?? '';
 const recipeStore = read('src/bakery/recipeStore.ts') ?? '';
 const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
+const invoiceStore = read('src/bakery/invoiceStore.ts') ?? '';
+const adminInvoicesTab = read('src/bakery/AdminInvoicesTab.tsx') ?? '';
 const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
 const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch_catalog_and_live_recipes.sql') ?? '';
 const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
 const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
+const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix_admin_invoice_review_workflow.sql') ?? '';
 const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
@@ -178,6 +181,30 @@ check(
     && recipeStore.includes("from('bakery_recipes')")
     && recipeStore.includes('postgres_changes'),
   'Recipe Management, production requirements and stock deductions must share bakery_recipes.',
+);
+
+check(
+  'Admin invoice totals are normalised before rendering',
+  invoiceStore.includes('grandTotal: toFiniteNumber(r.grand_total)')
+    && invoiceStore.includes('mapLineItems(r.line_items)'),
+  'PostgREST numeric values may arrive as strings; invoice rows must be normalised before calling number formatters.',
+);
+
+check(
+  'Admin invoice review uses secure RPCs and visible errors',
+  invoiceStore.includes("rpc('list_store_invoices_secure'")
+    && invoiceStore.includes("rpc('review_store_invoice_secure'")
+    && adminInvoicesTab.includes('Unable to load invoices')
+    && adminInvoicesTab.includes('actionError'),
+  'Admin invoice reads/reviews must use role-checked RPCs and must not silently close on failure.',
+);
+
+check(
+  'Invoice review statuses stay synchronized',
+  adminInvoiceRepairMigration.includes('sync_store_invoice_status_columns')
+    && adminInvoiceRepairMigration.includes('purchase_status = p_status')
+    && adminInvoiceRepairMigration.includes('review_store_invoice_secure'),
+  'status and purchase_status must remain synchronized for Admin and Owner reporting.',
 );
 
 check(

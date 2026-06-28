@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   FileText, ChevronDown, ChevronUp, CheckCircle2,
   XCircle, Clock, Printer, Search, RefreshCw,
-  AlertCircle, Check, X, Loader2,
+  AlertCircle, Check, X, Loader2, Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useInvoiceStore, type StoreInvoice, type InvoiceStatus } from './invoiceStore';
@@ -65,16 +65,25 @@ function ReviewModal({
 }: {
   invoice: StoreInvoice;
   onClose: () => void;
-  onReview: (id: string, status: InvoiceStatus, note: string) => Promise<void>;
+  onReview: (id: string, status: InvoiceStatus, note: string) => Promise<string | null>;
 }) {
-  const [note, setNote]     = useState('');
-  const [saving, setSaving] = useState(false);
+  const [note, setNote]               = useState('');
+  const [saving, setSaving]           = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handle = async (status: InvoiceStatus) => {
     setSaving(true);
-    await onReview(invoice.id, status, note);
-    setSaving(false);
-    onClose();
+    setActionError(null);
+    try {
+      const error = await onReview(invoice.id, status, note);
+      if (error) {
+        setActionError(error);
+        return;
+      }
+      onClose();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -123,6 +132,13 @@ function ReviewModal({
           />
         </div>
 
+        {actionError && (
+          <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-body text-red-700" role="alert">
+            <AlertCircle className="size-4 shrink-0 mt-0.5" />
+            <span>{actionError}</span>
+          </div>
+        )}
+
         <div className="flex gap-3">
           <button
             onClick={() => handle('rejected')}
@@ -167,6 +183,8 @@ function AdminInvoiceCard({
       <button
         className={cn('w-full px-4 py-3.5 flex items-center gap-3 text-left', statusMeta.headerBg)}
         onClick={() => setExpanded(v => !v)}
+        aria-expanded={expanded}
+        title={expanded ? 'Hide invoice details' : 'View invoice details'}
       >
         <div className="size-9 rounded-xl bg-white/70 flex items-center justify-center shrink-0 shadow-sm">
           {invoice.status === 'pending_review'
@@ -186,6 +204,9 @@ function AdminInvoiceCard({
             {invoice.supplierName} · ₹{invoice.grandTotal.toFixed(2)} · {new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
           </p>
         </div>
+        <span className="hidden sm:flex items-center gap-1 text-[10px] font-body font-semibold text-muted-foreground shrink-0">
+          <Eye className="size-3.5" /> {expanded ? 'Hide' : 'View'}
+        </span>
         {expanded ? <ChevronUp className="size-4 text-muted-foreground shrink-0" /> : <ChevronDown className="size-4 text-muted-foreground shrink-0" />}
       </button>
 
@@ -265,7 +286,7 @@ function AdminInvoiceCard({
 
 // ─── Main Admin Invoices Tab ──────────────────────────────────────────────────
 export default function AdminInvoicesTab() {
-  const { invoices, loaded, loading, load, updateStatus } = useInvoiceStore();
+  const { invoices, loaded, loading, error, load, updateStatus } = useInvoiceStore();
   const [reviewInvoice, setReviewInvoice] = useState<StoreInvoice | null>(null);
   const [search, setSearch]               = useState('');
   const [filterStatus, setFilterStatus]   = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('pending_review');
@@ -294,7 +315,7 @@ export default function AdminInvoicesTab() {
   }, [invoices, search, filterStatus]);
 
   const handleReview = async (id: string, status: InvoiceStatus, note: string) => {
-    await updateStatus(id, status, note);
+    return updateStatus(id, status, note);
   };
 
   return (
@@ -311,6 +332,23 @@ export default function AdminInvoicesTab() {
               Store has submitted supplier deliveries that need approval
             </p>
           </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-3 px-4 py-3 bg-red-50 border border-red-200 rounded-2xl" role="alert">
+          <AlertCircle className="size-5 text-red-600 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-body font-bold text-red-800">Unable to load invoices</p>
+            <p className="text-[11px] font-body text-red-700 mt-0.5 break-words">{error}</p>
+          </div>
+          <button
+            onClick={() => void load()}
+            disabled={loading}
+            className="h-8 px-3 rounded-lg border border-red-200 bg-white text-[11px] font-body font-bold text-red-700 disabled:opacity-50"
+          >
+            Retry
+          </button>
         </div>
       )}
 

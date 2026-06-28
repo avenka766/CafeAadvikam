@@ -40,7 +40,13 @@ export interface BranchBillRecord {
   items: BranchBillItem[];
   subtotal: number;
   discount: number;
+  /** Percentage entered by the cashier. Optional for historical bills created before this field existed. */
+  discountPercent?: number;
   tax: number;
+  /** Adjustment applied after discount/tax so the payable amount is a whole rupee. */
+  roundOff?: number;
+  /** Bill value after discount/tax and before the final whole-rupee round off. */
+  amountBeforeRoundOff?: number;
   total: number;
   tendered: number;
   balance: number;
