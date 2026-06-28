@@ -22,6 +22,7 @@ import {
 } from '../branchOpsStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { printCounterBill, printHtml, printBranchCashierClosure } from '../printUtils';
+import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void };
 
@@ -106,15 +107,15 @@ type FieldProps = { label: string; children: React.ReactNode };
 function Field({ label, children }: FieldProps) {
   return <label className="space-y-1.5"><span className="text-xs font-black uppercase tracking-wide text-slate-500">{label}</span>{children}</label>;
 }
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={cn('h-12 w-full rounded-2xl border-2 border-slate-200 bg-white px-4 text-base font-bold text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
-function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cn('h-12 w-full rounded-2xl border-2 border-slate-200 bg-white px-4 text-base font-bold text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
-function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn('min-h-24 w-full rounded-2xl border-2 border-slate-200 bg-white px-4 py-3 text-base font-bold text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
-function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-lg shadow-slate-200 transition hover:-translate-y-0.5 disabled:opacity-50', props.className)} />; }
-function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={cn('inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50', props.className)} />; }
-function Section({ title, icon, children, action }: { title: string; icon: React.ReactNode; children: React.ReactNode; action?: React.ReactNode }) { return <section className="rounded-[2rem] border border-slate-200 bg-white shadow-sm"><div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-3"> <div className="rounded-2xl bg-slate-100 p-3 text-slate-700">{icon}</div><h3 className="text-xl font-black text-slate-950">{title}</h3></div>{action}</div><div className="p-5">{children}</div></section>; }
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={cn('h-[clamp(2.5rem,5vh,3rem)] w-full rounded-xl border-2 border-slate-200 bg-white px-3 text-sm font-bold sm:text-base text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
+function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cn('h-[clamp(2.5rem,5vh,3rem)] w-full rounded-xl border-2 border-slate-200 bg-white px-3 text-sm font-bold sm:text-base text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea {...props} className={cn('min-h-[clamp(4.5rem,10vh,6rem)] w-full rounded-xl border-2 border-slate-200 bg-white px-3 py-2 text-sm font-bold sm:text-base text-slate-900 outline-none focus:border-amber-400', props.className)} />; }
+function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={cn('inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white shadow-lg shadow-slate-200 transition hover:-translate-y-0.5 disabled:opacity-50', props.className)} />; }
+function SoftButton(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={cn('inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50', props.className)} />; }
+function Section({ title, icon, children, action }: { title: string; icon: React.ReactNode; children: React.ReactNode; action?: React.ReactNode }) { return <section className="rounded-[1.4rem] border border-slate-200 bg-white shadow-sm sm:rounded-[1.7rem]"><div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2.5 sm:px-4 sm:py-3"><div className="flex items-center gap-2"> <div className="rounded-xl bg-slate-100 p-2 text-slate-700">{icon}</div><h3 className="text-lg font-black text-slate-950 sm:text-xl">{title}</h3></div>{action}</div><div className="p-3 sm:p-4">{children}</div></section>; }
 function Kpi({ label, value, icon, tone = 'slate' }: { label: string; value: string | number; icon: React.ReactNode; tone?: 'slate'|'green'|'amber'|'red'|'blue' }) {
   const styles = { slate: 'bg-slate-950 text-white', green: 'bg-emerald-600 text-white', amber: 'bg-amber-400 text-slate-950', red: 'bg-red-600 text-white', blue: 'bg-blue-600 text-white' };
-  return <div className={cn('rounded-[1.7rem] p-5 shadow-sm', styles[tone])}><div className="flex items-center justify-between"><p className="text-xs font-black uppercase tracking-[0.18em] opacity-70">{label}</p>{icon}</div><p className="mt-3 text-3xl font-black tabular-nums">{value}</p></div>;
+  return <div className={cn('rounded-[1.25rem] p-3 shadow-sm sm:p-4', styles[tone])}><div className="flex items-center justify-between"><p className="text-[10px] font-black uppercase tracking-[0.14em] opacity-70 sm:text-xs">{label}</p>{icon}</div><p className="mt-2 text-2xl font-black tabular-nums sm:text-3xl">{value}</p></div>;
 }
 
 function useOperationalCatalog(branch: Branch) {
@@ -135,6 +136,7 @@ function month(d: string) { const x = new Date(d), n = new Date(); return x.getF
 function printAdvanceSalesOrder(payload: {
   branch: Branch;
   orderNo: string;
+  slipNumber?: string;
   customerName: string;
   mobile: string;
   deliveryDate: string;
@@ -146,6 +148,20 @@ function printAdvanceSalesOrder(payload: {
   paymentMode: string;
   staffName: string;
   fullyPaid?: boolean;
+  cakeDetails?: {
+    creamType: string;
+    cakeType: string;
+    flavor: string;
+    weightKg: number;
+    shape: string;
+    design: string;
+    baseRate: number;
+    baseAmount: number;
+    designCharge: number;
+    drawingCharge: number;
+    photoCharge: number;
+    messageOnCake?: string;
+  };
 }) {
   const now = new Date();
   const business = payload.branch === 'VRSNB'
@@ -154,7 +170,9 @@ function printAdvanceSalesOrder(payload: {
   const itemRows = payload.items.map((item, idx) => `<tr><td>${idx + 1}</td><td>${item.itemName}</td><td class="num">${item.quantity.toFixed(item.unit === 'kg' ? 2 : 0)}</td><td class="num">${item.price.toFixed(2)}</td><td class="num">${item.lineTotal.toFixed(2)}</td></tr>`).join('');
   const qtyTotal = payload.items.reduce((sum, item) => sum + item.quantity, 0);
   const docTitle = payload.fullyPaid ? 'SALES ORDER SLIP' : 'ADVANCE SALES ORDER';
-  const html = `<!doctype html><html><head><title>${payload.orderNo}</title><style>@page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900}.small{font-size:10px}.doc{font-size:14px;font-weight:900;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:5px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:14px;font-weight:900;margin-top:4px;padding:4px 0;display:flex;justify-content:space-between}.stamp{border:2px solid #111;padding:4px 8px;text-align:center;font-weight:900;font-size:13px;margin:4px 0}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}</style></head><body><div class="c brand">${business.name}</div><div class="c small">${business.lines.join('<br/>')}</div><div class="c doc">${docTitle}</div>${payload.fullyPaid ? '<div class="stamp">PAID IN FULL</div>' : ''}<div class="dash"></div><div class="row"><span>Order No: ${payload.orderNo}</span><span>Date: ${now.toLocaleDateString('en-GB')}</span></div><div class="row"><span>Customer: ${payload.customerName}</span><span>${payload.mobile}</span></div><div class="row"><span>Delivery: ${payload.deliveryDate} ${payload.deliveryTime || ''}</span></div><div class="dash"></div><table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amt</th></tr></thead><tbody>${itemRows}<tr class="total-row"><td></td><td>Total Qty: ${qtyTotal.toFixed(0)}</td><td></td><td class="num">Sub Total</td><td class="num">&#x20B9;${payload.orderValue.toFixed(2)}</td></tr></tbody></table><div class="net"><span>Grand Total</span><span>&#x20B9;${payload.orderValue.toFixed(2)}</span></div><div class="row"><span>Advance Paid:</span><span>&#x20B9;${payload.advanceAmount.toFixed(2)} (${payload.paymentMode.toUpperCase()})</span></div>${!payload.fullyPaid ? `<div class="row"><span>Balance Due:</span><span>&#x20B9;${payload.balanceAmount.toFixed(2)}</span></div>` : ''}<div class="dash"></div><div class="c small">Staff: ${payload.staffName}</div><div class="footer">Thank You &amp; Visit Again...!!!</div><script>window.onload=()=>window.print()</script></body></html>`;
+  const cakeDetailsHtml = payload.cakeDetails ? `<div class="dash"></div><div class="small"><b>Cake:</b> ${payload.cakeDetails.creamType} · ${payload.cakeDetails.cakeType}<br/><b>Flavor:</b> ${payload.cakeDetails.flavor} · <b>Weight:</b> ${payload.cakeDetails.weightKg} kg · <b>Shape:</b> ${payload.cakeDetails.shape}<br/><b>Design:</b> ${payload.cakeDetails.design}${payload.cakeDetails.messageOnCake ? `<br/><b>Message:</b> ${payload.cakeDetails.messageOnCake}` : ''}</div>` : '';
+  const cakePriceHtml = payload.cakeDetails ? `<div class="dash"></div><div class="row"><span>Base (${payload.cakeDetails.weightKg === 0.5 ? '½ kg special rate' : `₹${payload.cakeDetails.baseRate.toFixed(2)}/kg`}):</span><span>₹${payload.cakeDetails.baseAmount.toFixed(2)}</span></div>${payload.cakeDetails.designCharge > 0 ? `<div class="row"><span>${payload.cakeDetails.design}:</span><span>+₹${payload.cakeDetails.designCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.drawingCharge > 0 ? `<div class="row"><span>Drawing/design work:</span><span>+₹${payload.cakeDetails.drawingCharge.toFixed(2)}</span></div>` : ''}${payload.cakeDetails.photoCharge > 0 ? `<div class="row"><span>Photo work:</span><span>+₹${payload.cakeDetails.photoCharge.toFixed(2)}</span></div>` : ''}` : '';
+  const html = `<!doctype html><html><head><title>${payload.orderNo}</title><style>@page{size:80mm auto;margin:3mm}body{font-family:Arial,sans-serif;font-size:11px;color:#111}.c{text-align:center}.brand{font-size:20px;font-weight:900}.small{font-size:10px}.doc{font-size:14px;font-weight:900;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px}.dash{border-top:1px solid #111;margin:5px 0}table{width:100%;border-collapse:collapse}th{border-top:1px solid #111;border-bottom:1px solid #111;font-size:11px;text-align:left;padding:3px 2px}td{padding:3px 2px;vertical-align:top}.num{text-align:right}.total-row td{border-top:1px solid #111;font-weight:900}.net{border-top:1px solid #111;border-bottom:1px solid #111;font-size:14px;font-weight:900;margin-top:4px;padding:4px 0;display:flex;justify-content:space-between}.stamp{border:2px solid #111;padding:4px 8px;text-align:center;font-weight:900;font-size:13px;margin:4px 0}.footer{margin-top:10px;text-align:center;font-size:13px;font-weight:800}</style></head><body><div class="c brand">${business.name}</div><div class="c small">${business.lines.join('<br/>')}</div><div class="c doc">${docTitle}</div>${payload.fullyPaid ? '<div class="stamp">PAID IN FULL</div>' : ''}<div class="dash"></div><div class="row"><span>Order No: ${payload.orderNo}</span><span>Date: ${now.toLocaleDateString('en-GB')}</span></div>${payload.slipNumber ? `<div class="row"><span>Slip No:</span><span>${payload.slipNumber}</span></div>` : ''}<div class="row"><span>Customer: ${payload.customerName}</span><span>${payload.mobile}</span></div><div class="row"><span>Delivery: ${payload.deliveryDate} ${payload.deliveryTime || ''}</span></div>${cakeDetailsHtml}<div class="dash"></div><table><thead><tr><th>Sn</th><th>Item Name</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amt</th></tr></thead><tbody>${itemRows}<tr class="total-row"><td></td><td>Total Qty: ${qtyTotal.toFixed(0)}</td><td></td><td class="num">Sub Total</td><td class="num">&#x20B9;${payload.orderValue.toFixed(2)}</td></tr></tbody></table>${cakePriceHtml}<div class="net"><span>Grand Total</span><span>&#x20B9;${payload.orderValue.toFixed(2)}</span></div><div class="row"><span>Advance Paid:</span><span>&#x20B9;${payload.advanceAmount.toFixed(2)} (${payload.paymentMode.toUpperCase()})</span></div>${!payload.fullyPaid ? `<div class="row"><span>Balance Due:</span><span>&#x20B9;${payload.balanceAmount.toFixed(2)}</span></div>` : ''}<div class="dash"></div><div class="c small">${payload.branch === 'SNB' ? 'Salesperson' : 'Cashier'}: ${payload.staffName}</div><div class="footer">Thank You &amp; Visit Again...!!!</div><script>window.onload=()=>window.print()</script></body></html>`;
   const win = window.open('', '_blank', 'width=420,height=680');
   if (win) { win.document.write(html); win.document.close(); }
 }
@@ -263,7 +281,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
     markBillDuplicate(bill.id, currentUser?.displayName || 'Staff');
     void printCounterBill(bill, true);
   };
-  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill or salesperson'} className="pl-9"/></div>}>
+  return <Section title="Bill History" icon={<History className="size-5"/>} action={<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"/><Input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="pl-9"/></div>}>
     {ledgerMessage && <p className="mb-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">{ledgerMessage}</p>}
     {loadingLedger && <p className="mb-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-500">Loading bill history from Supabase...</p>}
     <div className="overflow-x-auto"><table className={cn('w-full text-sm', isVRSNB ? 'min-w-[760px]' : 'min-w-[850px]')}><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Bill</th><th className="p-3">Time</th>{!isVRSNB && <th className="p-3">Salesperson</th>}<th className="p-3">Cashier</th><th className="p-3">Mode</th><th className="p-3 text-right">Total</th><th className="p-3">Print Status</th><th className="p-3 text-right">Action</th></tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-6 text-center font-bold text-slate-500">No bills found.</td></tr> : rows.map(b=><tr key={b.id} className="border-t"><td className="p-3 font-black">{b.billNo}</td><td className="p-3">{new Date(b.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-3">{b.salesperson}</td>}<td className="p-3">{b.biller}</td><td className="p-3 uppercase">{b.paymentMode}</td><td className="p-3 text-right font-black">{money(b.total)}</td><td className="p-3"><span className={cn('rounded-full px-2 py-1 text-xs font-black', b.printCount > 1 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>{b.printCount > 1 ? 'Duplicate Printed' : 'Original Bill'}</span></td><td className="p-3 text-right"><SoftButton onClick={()=>reprint(b)}><Printer className="size-4"/>Duplicate</SoftButton></td></tr>)}</tbody></table></div>
@@ -386,29 +404,43 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
+  const requiresSalesperson = branch === 'SNB';
   const user = currentUser?.displayName || currentUser?.username || 'Cashier';
   const items = useOperationalCatalog(branch);
-  const people = isVRSNB ? [] : salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name);
+  const people = Array.from(new Set(salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name).filter(Boolean)));
   const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
   const [finalPaymentMode, setFinalPaymentMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [pipelineView, setPipelineView] = useState<'active' | 'history'>('active');
   const [collectingId, setCollectingId] = useState<string | null>(null);
   const [collectMode, setCollectMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [sendingToStore, setSendingToStore] = useState<string | null>(null);
-  const [common, setCommon] = useState({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
+  const [common, setCommon] = useState({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
   const [storePick, setStorePick] = useState({ itemName: items[0]?.name || '', quantity:'1' });
   const [storeLines, setStoreLines] = useState<BranchBillItem[]>([]);
   const [storeFullyPaid, setStoreFullyPaid] = useState(false);
   const [customFullyPaid, setCustomFullyPaid] = useState(false);
   const [custom, setCustom] = useState({ itemName:'', quantity:'1', unit:'pcs' as 'pcs' | 'kg', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' });
   const [customLines, setCustomLines] = useState<BranchBillItem[]>([]);
-  const [cake, setCake] = useState({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+  const [cake, setCake] = useState({
+    cakeKg:'', creamType:'Butter Cream' as CakeCreamType, cakeTypeId:'butter-birthday', flavor:'', shape:'',
+    designType:'Normal' as CakeDesignType, drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'',
+    attachmentName:'', attachmentDataUrl:'',
+  });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
   const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false);
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
-  const staff = isVRSNB ? user : common.salesperson;
+  const staff = requiresSalesperson ? common.salesperson : user;
+  const cakeTypeOptions = useMemo(() => cakeTypesFor(cake.creamType), [cake.creamType]);
+  const selectedCakeType = useMemo(() => findCakeType(cake.cakeTypeId), [cake.cakeTypeId]);
+  const cakePrice = useMemo(() => calculateCakePrice({
+    cakeTypeId: cake.cakeTypeId,
+    weightKg: Number(cake.cakeKg || 0),
+    design: cake.designType,
+    drawingWork: cake.drawingWork,
+    photoWork: cake.photoWork,
+  }), [cake.cakeKg, cake.cakeTypeId, cake.designType, cake.drawingWork, cake.photoWork]);
 
   const updateCommon = (k: string, v: string) => { setCommon((f)=>({...f,[k]:v})); setError(''); };
   const handleAttachment = (file: File | undefined, target: 'custom' | 'cake') => {
@@ -463,7 +495,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const validateCommon = (value: number) => {
     const adv = Number(common.advanceAmount || 0);
     if (!common.customerName.trim() || !common.mobile.trim() || !common.deliveryDate) return 'Customer name, mobile number and delivery date are mandatory.';
-    if (!isVRSNB && !common.salesperson) return 'Salesperson is mandatory.';
+    if (requiresSalesperson && !common.salesperson) return 'Salesperson is mandatory.';
     if (value <= 0 || adv < 0 || adv > value) return 'Check order value and advance amount.';
     return '';
   };
@@ -510,27 +542,34 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   };
   const sendCakeToStoreDashboard = async (order: CakeAdvanceOrder) => {
     if (branch === 'Cafe') throw new Error('Cafe cake orders cannot be sent to the bakery branch workflow.');
+    const cakeLine = order.items?.[0];
     const bakeryItems: BakeryOrderItem[] = [{
       itemId: `${order.orderNo}-0`,
-      itemName: `${order.cakeKg}kg ${order.flavor} ${order.shape}`.trim(),
-      quantity: Number(order.cakeKg || 1),
+      itemName: cakeLine?.itemName || `${order.creamType || ''} ${order.cakeTypeName || ''} ${order.flavor}`.trim(),
+      quantity: cakeLine?.quantity || Number(order.cakeKg || 1),
       isCustom: true,
       dispatchUnit: 'kg',
       attachmentName: order.attachmentName,
       attachmentDataUrl: order.attachmentDataUrl,
     }];
-    const notes = `${order.orderNo} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | Cake ${order.cakeKg}kg ${order.shape} | Flavor: ${order.flavor} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
+    const notes = `${order.orderNo}${order.slipNumber ? ` | Slip ${order.slipNumber}` : ''} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | ${order.creamType || ''} ${order.cakeTypeName || ''} ${order.cakeKg}kg ${order.shape} | Flavor: ${order.flavor} | Design: ${order.designType || 'Normal'} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
     await submitBakeryOrder(bakeryItems, `${user} - ${branch} cake advance`, branch, notes);
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
     if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
     const fullyPaid = orderType === 'store' ? storeFullyPaid : orderType === 'custom' ? customFullyPaid : false;
+    const cakeWeight = Number(cake.cakeKg || 0);
+    const cakeItemName = `${cake.creamType} - ${selectedCakeType?.name || 'Cake'} - ${cake.flavor || 'Flavour not entered'}`.trim();
     const sourceLines = orderType === 'store'
       ? storeLines
       : orderType === 'custom'
         ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
-        : [{ itemName: `${cake.cakeKg}kg ${cake.flavor} ${cake.shape}`.trim(), quantity: Number(cake.cakeKg || 0) || 1, unit:'kg' as const, price: Number(cake.orderValue || 0), tax:0, discount:0, lineTotal: Number(cake.orderValue || 0) }];
+        : [{ itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakePrice.total / cakeWeight : 0, tax:0, discount:0, lineTotal: cakePrice.total }];
     const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
+    if (orderType === 'cake' && (!selectedCakeType || cakeWeight <= 0 || !cake.flavor.trim() || !cake.shape.trim())) {
+      setError('Cream type, cake type, weight, flavor and shape are mandatory.');
+      return;
+    }
     const message = validateCommon(orderValue);
     if (message) { setError(message); return; }
     if (sourceLines.length === 0 || sourceLines.some((line)=>!line.itemName || line.quantity <= 0)) { setError('Add at least one valid item.'); return; }
@@ -568,16 +607,28 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     }
     const order = addAdvanceCakeOrder({
       orderNo,
+      slipNumber: common.slipNumber.trim() || undefined,
       branch, orderType, customerName: common.customerName.trim(), mobile: common.mobile.trim(), orderDate: businessDate(),
-      deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity), flavor: orderType === 'cake' ? cake.flavor : first.itemName, shape: orderType === 'cake' ? cake.shape : first.unit,
+      deliveryDate: common.deliveryDate, deliveryTime: common.deliveryTime, items: sourceLines, cakeKg: String(first.quantity),
+      creamType: orderType === 'cake' ? cake.creamType : undefined,
+      cakeTypeId: orderType === 'cake' ? cake.cakeTypeId : undefined,
+      cakeTypeName: orderType === 'cake' ? selectedCakeType?.name : undefined,
+      flavor: orderType === 'cake' ? cake.flavor.trim() : first.itemName, shape: orderType === 'cake' ? cake.shape.trim() : first.unit,
+      designType: orderType === 'cake' ? cake.designType : undefined,
+      baseRate: orderType === 'cake' ? cakePrice.baseRate : undefined,
+      baseAmount: orderType === 'cake' ? cakePrice.baseAmount : undefined,
+      designPercent: orderType === 'cake' ? cakePrice.designPercent : undefined,
+      designCharge: orderType === 'cake' ? cakePrice.designCharge : undefined,
+      drawingCharge: orderType === 'cake' ? cakePrice.drawingCharge : undefined,
+      photoCharge: orderType === 'cake' ? cakePrice.photoCharge : undefined,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : (fullyPaid ? 'Existing branch stock advance order [Stock Reserved]' : 'Existing branch stock advance order'),
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
     });
     // Print slip — show "PAID IN FULL" stamp when fully paid
-    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid });
-    setCommon({ customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
+    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
+    setCommon({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
     setStoreFullyPaid(false); setCustomFullyPaid(false);
-    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', flavor:'', shape:'', messageOnCake:'', designNotes:'', orderValue:'', attachmentName:'', attachmentDataUrl:'' });
+    setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'' });
     setError('');
   };
   const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
@@ -586,6 +637,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
+    if (orderKind === 'cake' && !stockAlreadyReserved) {
+      const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
+      if (missingLine) {
+        const available = stockQty(branchStock, missingLine.itemName, missingLine.barcode);
+        setError(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock.`);
+        return;
+      }
+    }
     const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order', {
       p_branch: branch,
       p_order_no: o.orderNo,
@@ -595,7 +654,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       p_payment_mode: usedMode,
       p_salesperson: o.salesperson,
       p_biller: currentUser?.displayName || 'Staff',
-      p_deduct_stock: orderKind === 'store' && !stockAlreadyReserved,
+      p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved,
     });
     if (finalError) {
       setError(/finalize_branch_advance_order|could not find the function|schema cache/i.test(finalError.message)
@@ -606,7 +665,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const finalResult = finalData as { billNo?: string; invoiceNo?: number } | null;
     if (!finalResult?.billNo || !finalResult.invoiceNo) { setError('Final invoice was not returned by Supabase.'); return; }
     const { billNo, invoiceNo } = finalResult;
-    if (orderKind === 'store' && !stockAlreadyReserved) await fetchBranchData(branch);
+    if (orderKind !== 'custom' && !stockAlreadyReserved) await fetchBranchData(branch);
     if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
@@ -648,7 +707,10 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
         {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
       </div>
       <div className="grid gap-3">
-        <Field label="Customer Name *"><Input value={common.customerName} onChange={(e)=>updateCommon('customerName',e.target.value)}/></Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Slip Number"><Input value={common.slipNumber} onChange={(e)=>updateCommon('slipNumber',e.target.value)} placeholder="Enter customer slip number"/></Field>
+          <Field label="Customer Name *"><Input value={common.customerName} onChange={(e)=>updateCommon('customerName',e.target.value)}/></Field>
+        </div>
         <Field label="Mobile Number *"><Input value={common.mobile} onChange={(e)=>updateCommon('mobile',e.target.value)}/></Field>
         <div className="grid grid-cols-2 gap-3"><Field label="Delivery Date *"><Input type="date" value={common.deliveryDate} onChange={(e)=>updateCommon('deliveryDate',e.target.value)}/></Field><Field label="Delivery Time"><Input type="time" value={common.deliveryTime} onChange={(e)=>updateCommon('deliveryTime',e.target.value)}/></Field></div>
         {mode === 'store' && <>
@@ -681,31 +743,67 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
           {customFullyPaid && <div className="rounded-xl bg-emerald-100 px-3 py-2 text-center text-sm font-black text-emerald-700">Fully paid - no balance due</div>}
         </>}
         {mode === 'cake' && <>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Cake KG *"><Input value={cake.cakeKg} onChange={(e)=>setCake({...cake,cakeKg:e.target.value})}/></Field>
-            <Field label="Shape *"><Input value={cake.shape} onChange={(e)=>setCake({...cake,shape:e.target.value})}/></Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Cream Type *">
+              <Select value={cake.creamType} onChange={(e)=>{
+                const creamType = e.target.value as CakeCreamType;
+                const firstType = cakeTypesFor(creamType)[0];
+                setCake({...cake, creamType, cakeTypeId:firstType?.id || '', flavor:''});
+              }}>
+                <option value="Butter Cream">Butter Cream</option>
+                <option value="Fresh Cream">Fresh Cream</option>
+              </Select>
+            </Field>
+            <Field label="Cake Type *">
+              <Select value={cake.cakeTypeId} onChange={(e)=>setCake({...cake,cakeTypeId:e.target.value,flavor:''})}>
+                {cakeTypeOptions.map((type)=><option key={type.id} value={type.id}>{type.name} - {money(type.perKg)}/kg{type.halfKg ? ` - ½kg ${money(type.halfKg)}` : ''}</option>)}
+              </Select>
+            </Field>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Cake Weight (KG) *"><Input type="number" min="0.5" step="0.25" value={cake.cakeKg} onChange={(e)=>setCake({...cake,cakeKg:e.target.value})} placeholder="0.5"/></Field>
+            <Field label="Shape *"><Input value={cake.shape} onChange={(e)=>setCake({...cake,shape:e.target.value})} placeholder="Round, square..."/></Field>
           </div>
           <Field label="Flavor *">
-            <Select value={cake.flavor} onChange={(e) => setCake({...cake, flavor: e.target.value})}>
-              <option value="">Select flavor</option>
-              <option value="Vanilla">Vanilla</option>
-              <option value="Chocolate">Chocolate</option>
-              <option value="Butterscotch">Butterscotch</option>
-              <option value="Pineapple">Pineapple</option>
-              <option value="Black Forest">Black Forest</option>
-              <option value="Red Velvet">Red Velvet</option>
-              <option value="Other">Other</option>
+            <Input list={`cake-flavours-${branch}`} value={cake.flavor} onChange={(e)=>setCake({...cake,flavor:e.target.value})} placeholder="Enter flavour"/>
+            <datalist id={`cake-flavours-${branch}`}>{selectedCakeType?.flavours.map((flavour)=><option key={flavour} value={flavour}/>)}</datalist>
+          </Field>
+          <Field label="Design *">
+            <Select value={cake.designType} onChange={(e)=>setCake({...cake,designType:e.target.value as CakeDesignType})}>
+              {CAKE_DESIGNS.map((design)=><option key={design} value={design}>{design}</option>)}
             </Select>
           </Field>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-sm font-black text-slate-700 ring-1 ring-slate-200">
+              <input type="checkbox" checked={cake.drawingWork} onChange={(e)=>setCake({...cake,drawingWork:e.target.checked})} className="size-5 accent-emerald-600"/>
+              Cake drawing/design work (+{money(CAKE_DRAWING_CHARGE)})
+            </label>
+            <label className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-sm font-black text-slate-700 ring-1 ring-slate-200">
+              <input type="checkbox" checked={cake.photoWork} onChange={(e)=>setCake({...cake,photoWork:e.target.checked})} className="size-5 accent-emerald-600"/>
+              Photo cake/print work (+{money(CAKE_PHOTO_CHARGE)})
+            </label>
+          </div>
+          <div className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-100">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm font-bold text-emerald-900">
+              <span>Rate</span><span className="text-right">{money(cakePrice.baseRate)}{Number(cake.cakeKg) === 0.5 && selectedCakeType?.halfKg ? ' (special ½kg)' : '/kg'}</span>
+              <span>Base amount</span><span className="text-right">{money(cakePrice.baseAmount)}</span>
+              <span>{cake.designType}</span><span className="text-right">{cakePrice.designCharge > 0 ? `+${money(cakePrice.designCharge)}` : money(0)}</span>
+              {cakePrice.drawingCharge > 0 && <><span>Drawing/design work</span><span className="text-right">+{money(cakePrice.drawingCharge)}</span></>}
+              {cakePrice.photoCharge > 0 && <><span>Photo work</span><span className="text-right">+{money(cakePrice.photoCharge)}</span></>}
+              <span className="mt-2 border-t border-emerald-200 pt-2 text-base font-black">Final cake amount</span><span className="mt-2 border-t border-emerald-200 pt-2 text-right text-lg font-black">{money(cakePrice.total)}</span>
+            </div>
+          </div>
           <Field label="Message on cake"><Input value={cake.messageOnCake} onChange={(e)=>setCake({...cake,messageOnCake:e.target.value})}/></Field>
           <Field label="Design notes"><Textarea value={cake.designNotes} onChange={(e)=>setCake({...cake,designNotes:e.target.value})}/></Field>
           <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'cake')}/></Field>
           {cake.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {cake.attachmentName}</p>}
-          <Field label="Order Value *"><Input type="number" value={cake.orderValue} onChange={(e)=>setCake({...cake,orderValue:e.target.value})}/></Field>
         </>}
-        <div className="grid grid-cols-2 gap-3">{!isVRSNB && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.map(p=><option key={p}>{p}</option>)}</Select></Field>}
-          {!storeFullyPaid && !customFullyPaid && <Field label="Advance Amount *"><Input type="number" value={common.advanceAmount} onChange={(e)=>updateCommon('advanceAmount',e.target.value)}/></Field>}
-          <Field label="Payment Mode"><Select value={common.paymentMode} onChange={(e)=>updateCommon('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>{isVRSNB && <div className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>}</div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {requiresSalesperson && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.map(p=><option key={p}>{p}</option>)}</Select></Field>}
+          {!storeFullyPaid && !customFullyPaid && <Field label="Advance Amount *"><Input type="number" min="0" value={common.advanceAmount} onChange={(e)=>updateCommon('advanceAmount',e.target.value)}/></Field>}
+          <Field label="Payment Mode"><Select value={common.paymentMode} onChange={(e)=>updateCommon('paymentMode',e.target.value)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></Field>
+          <div className="flex items-center rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-100">Cashier: {user}</div>
+        </div>
         {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-black text-red-700">{error}</p>}
         <PrimaryButton onClick={()=>void saveAdvance(mode)}><Printer className="size-4"/>Generate Sales Order Slip</PrimaryButton>
       </div>
@@ -720,9 +818,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` · Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' · ')}{o.designCharge ? ` · Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[600px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Customer</th><th className="p-3">Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={5} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3">{o.deliveryDate}</td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
+        <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[720px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Slip No</th><th className="p-3">Customer</th><th className="p-3">Cake / Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={6} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3 font-bold">{o.slipNumber || '-'}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3"><p>{[o.creamType, o.cakeTypeName, o.flavor].filter(Boolean).join(' · ') || o.deliveryDate}</p><p className="text-xs text-slate-500">Delivery {o.deliveryDate} {o.deliveryTime || ''}</p></td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
     </Section>
   </div>;
