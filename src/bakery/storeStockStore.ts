@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { useRecipeStore } from './recipeStore';
 
 export type StockUnit = 'kg' | 'L' | 'pcs' | 'g' | 'nos' | 'bunch' | 'ltr';
@@ -265,15 +266,8 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     return warnings.length > 0 ? `Note: ${warnings.join(', ')}` : null;
   },
 
-  subscribe: () => {
-    const channel = supabase
-      .channel('store-raw-stock-live')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'store_raw_stock' },
-        () => { get().load(); },
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  },
+  subscribe: makeSingletonSubscriber('store-raw-stock-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'store_raw_stock' },
+      () => { get().load(); }),
+  ),
 }));

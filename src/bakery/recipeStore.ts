@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
+import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { RECIPE_DEFINITIONS, type RecipeDefinition } from './recipeDefinitions';
 import { nameToSlug } from './itemMatcher';
 
@@ -130,15 +131,10 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     return null;
   },
 
-  subscribe: () => {
-    const channel = supabase
-      .channel('bakery-recipes-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' }, () => {
-        void get().loadRecipes(true);
-      })
-      .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  },
+  subscribe: makeSingletonSubscriber('bakery-recipes-live', (ch) =>
+    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_recipes' },
+      () => { void get().loadRecipes(true); }),
+  ),
 
   getRecipe: (itemId, itemName) => {
     const key = resolveRecipeKey(get().recipes, itemId, itemName);
