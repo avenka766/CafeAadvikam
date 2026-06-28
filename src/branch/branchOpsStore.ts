@@ -224,6 +224,8 @@ export interface PurchaseRecord {
   syncedToStock?: boolean;
   syncedAt?: string;
   syncedBy?: string;
+  lastEditedAt?: string;
+  lastEditedBy?: string;
 }
 
 export interface PurchasePayment {
@@ -582,6 +584,11 @@ interface BranchOpsState {
       | "syncedBy"
     >,
   ) => PurchaseRecord;
+  updatePurchase: (
+    purchaseId: string,
+    updates: Partial<Omit<PurchaseRecord, "id" | "branch" | "createdAt" | "enteredBy" | "paidAmount" | "syncStatus" | "syncedToStock" | "syncedAt" | "syncedBy">>,
+    user: string,
+  ) => PurchaseRecord | undefined;
   addPurchasePayment: (
     payment: Omit<PurchasePayment, "id" | "createdAt">,
   ) => PurchasePayment;
@@ -1920,6 +1927,47 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           actor: purchase.enteredBy,
         });
         return newPurchase;
+      },
+      updatePurchase: (purchaseId, updates, user) => {
+        const previous = get().purchases.find((purchase) => purchase.id === purchaseId);
+        if (!previous) return undefined;
+        const updated: PurchaseRecord = {
+          ...previous,
+          ...updates,
+          id: previous.id,
+          branch: previous.branch,
+          createdAt: previous.createdAt,
+          enteredBy: previous.enteredBy,
+          paidAmount: previous.paidAmount,
+          syncStatus: previous.syncStatus,
+          syncedToStock: previous.syncedToStock,
+          syncedAt: previous.syncedAt,
+          syncedBy: previous.syncedBy,
+          lastEditedAt: new Date().toISOString(),
+          lastEditedBy: user,
+        };
+        set((state) => ({
+          purchases: state.purchases.map((purchase) =>
+            purchase.id === purchaseId ? updated : purchase,
+          ),
+          auditLogs: [
+            audit(
+              previous.branch,
+              user,
+              "Edit Purchase Invoice",
+              `${previous.invoiceNo} · ${previous.supplier} · ${previous.total}`,
+              `${updated.invoiceNo} · ${updated.supplier} · ${updated.total}`,
+            ),
+            ...state.auditLogs,
+          ],
+        }));
+        mirrorOperationRecord(previous.branch, "purchase_invoice", purchaseId, updated, {
+          recordNo: updated.invoiceNo,
+          amount: updated.total,
+          status: updated.syncStatus,
+          actor: user,
+        });
+        return updated;
       },
       addPurchasePayment: (payment) => {
         const amount = Number(payment.amount || 0);
