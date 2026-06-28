@@ -20,6 +20,7 @@ import {
   FileText,
   Bell,
   WalletCards,
+  CreditCard,
   Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,7 @@ export default function BottomNav() {
   const { currentUser } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb';
+  const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb' || currentUser?.role === 'billing';
   const [branchNavVisible, setBranchNavVisible] = useState(false);
   const branchNavRef = useRef<HTMLElement | null>(null);
   const branchNavHideTimerRef = useRef<number | null>(null);
@@ -164,21 +165,12 @@ export default function BottomNav() {
     );
   } else if (currentUser.role === "billing") {
     navItems.push(
-      {
-        label: "Orders",
-        icon: <Receipt className="size-5" />,
-        path: "/billing",
-      },
-      {
-        label: "History",
-        icon: <History className="size-5" />,
-        path: "/order-history",
-      },
-      {
-        label: "Counter",
-        icon: <WalletCards className="size-5" />,
-        path: "/daily-closure",
-      },
+      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/billing" },
+      { label: "Advance", icon: <FileText className="size-5" />, path: "/billing?tab=advance" },
+      { label: "History", icon: <History className="size-5" />, path: "/billing?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/billing?tab=payment-edit" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/daily-closure" },
+      { label: "Alerts", icon: <Bell className="size-5" />, path: "/billing?tab=alerts" },
     );
   } else if (currentUser.role === "kitchen") {
     navItems.push(

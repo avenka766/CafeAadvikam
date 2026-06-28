@@ -281,8 +281,9 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
-  const isBillingFullscreen = /^\/branch\/(snb|vrsnb)/.test(location.pathname) && (!location.search || !location.search.includes('tab=') || location.search.includes('tab=billing'));
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
+  const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
     || /^\/(daily-closure|order-history)/.test(location.pathname)
@@ -337,8 +338,8 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   ));
 
   return (
-    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isBranchBillingRoute && 'workspace-branch-billing')}>
-      {items.length > 0 && !isBranchBillingRoute && (
+    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isFullscreenBillingRoute && 'workspace-branch-billing')}>
+      {items.length > 0 && !isFullscreenBillingRoute && (
         <>
           <button
             type="button"
@@ -386,7 +387,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </>
       )}
 
-      <aside className={isBranchBillingRoute ? "hidden" : "workspace-sidebar hidden md:flex"}>
+      <aside className={isFullscreenBillingRoute ? "hidden" : "workspace-sidebar hidden md:flex"}>
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
           <div>
@@ -411,7 +412,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </div>
       </aside>
 
-      <div className={isBranchBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
+      <div className={isFullscreenBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
         {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
@@ -434,7 +435,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </section>
         )}
 
-        <div className={cn('workspace-content-frame', isBranchBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
+        <div className={cn('workspace-content-frame', isFullscreenBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
           {children}
         </div>
       </div>
