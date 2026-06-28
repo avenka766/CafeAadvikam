@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { printCounterBill } from '../printUtils';
+import { BRANCH_PRINT_COMPLETE_EVENT, printCounterBill } from '../printUtils';
 import {
   AlertTriangle, Banknote, CreditCard, FileText, HelpCircle, IndianRupee, Lock,
   Package, PauseCircle, Printer, Receipt, Search, Smartphone,
@@ -206,10 +206,30 @@ export default function BranchBillingProTab({
   const [showCounterClosedAlert, setShowCounterClosedAlert] = useState(false);
   const [billingInputMode, setBillingInputMode] = useState<'manual' | 'barcode'>('manual');
 
+  const focusSearch = useCallback((resetQuery = true) => {
+    if (resetQuery) {
+      setQuery('');
+      setShowDropdown(false);
+      setDropdownIndex(0);
+    }
+    const focus = () => {
+      searchRef.current?.focus({ preventScroll: true });
+      searchRef.current?.select();
+    };
+    window.requestAnimationFrame(focus);
+    window.setTimeout(focus, 80);
+  }, []);
+
   useEffect(() => {
     void loadCatalog(catalogBranch);
     return subscribe(catalogBranch);
   }, [catalogBranch, loadCatalog, subscribe]);
+
+  useEffect(() => {
+    const handlePrintComplete = () => focusSearch(false);
+    window.addEventListener(BRANCH_PRINT_COMPLETE_EVENT, handlePrintComplete);
+    return () => window.removeEventListener(BRANCH_PRINT_COMPLETE_EVENT, handlePrintComplete);
+  }, [focusSearch]);
 
   const branchPeople = useMemo(() => {
     if (isVRSNB) return [];
@@ -342,7 +362,8 @@ export default function BranchBillingProTab({
     setShowQtyPopup(false);
     setQtyPopupItem(null);
     setQtyPopupValue('');
-  }, [branchStock, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
+    focusSearch(true);
+  }, [branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
 
   const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');
@@ -582,7 +603,9 @@ export default function BranchBillingProTab({
         printWarning = `Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`;
       }
       setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
+      focusSearch(true);
       await fetchBranchData(branch);
+      window.setTimeout(() => focusSearch(false), 150);
       if (printWarning) setError(printWarning);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
@@ -701,34 +724,24 @@ export default function BranchBillingProTab({
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
               <button onClick={clear} className="rounded-lg bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+            <div className={cn('min-h-0 flex-1 overscroll-contain p-1.5', cart.length > 10 ? 'overflow-y-auto' : 'overflow-hidden')}>
               {cart.length === 0 ? (
                 <div className="flex min-h-28 items-center justify-center rounded-3xl border-2 border-dashed border-slate-200 bg-slate-50 text-center">
                   <div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-black text-slate-600">Cart is empty</p><p className="text-xs text-slate-400">Select items from the right.</p></div>
                 </div>
               ) : (
-                <div className="space-y-1.5">
+                <div
+                  className={cn('grid min-h-0 gap-1', cart.length <= 10 && 'h-full')}
+                  style={cart.length <= 10 ? { gridTemplateRows: `repeat(${cart.length}, minmax(0, 1fr))` } : undefined}
+                >
                   {cart.map((i) => (
-                    <div key={i.itemName} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-                      <div className="flex items-center gap-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold leading-tight text-slate-950 truncate">{i.itemName}</p>
-                          <p className="text-xs text-slate-500">{formatQty(i.quantity, i.unit)} × {money(i.price)}</p>
+                    <div key={i.itemName} className="min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white px-1.5 py-1 shadow-sm">
+                      <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_auto_48px_22px] items-center gap-1">
+                        <div className="min-w-0 self-center">
+                          <p className="truncate text-[11px] font-black leading-tight text-slate-950">{i.itemName}</p>
+                          <p className="truncate text-[9px] font-bold leading-tight text-slate-500">{formatQty(i.quantity, i.unit)} × {money(i.price)}</p>
                         </div>
-                        <p className="shrink-0 text-sm font-black text-slate-950">{money(i.lineTotal)}</p>
-                        <button
-                          onClick={() => {
-                            setCart((c) => c.filter((x) => x.itemName !== i.itemName));
-                            clearCartQuantityDraft(i.itemName);
-                          }}
-                          className="shrink-0 rounded-lg bg-red-50 p-1 text-red-500 hover:bg-red-100"
-                          aria-label={`Remove ${i.itemName} from cart`}
-                        >
-                          <XCircle className="size-4"/>
-                        </button>
-                      </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                        <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">Edit quantity</span>
+                        <p className="shrink-0 text-[11px] font-black tabular-nums text-slate-950">{money(i.lineTotal)}</p>
                         <input
                           value={cartQuantityDrafts[i.itemName] ?? (i.unit === 'kg' ? parseFloat(i.quantity.toFixed(3)).toString() : String(i.quantity))}
                           onFocus={(e) => {
@@ -745,11 +758,20 @@ export default function BranchBillingProTab({
                             }
                           }}
                           inputMode="decimal"
-                          placeholder={i.unit === 'kg' ? '100g / 0.1' : '1'}
-                          className="h-8 min-w-24 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-xs font-black tabular-nums text-slate-950 outline-none focus:border-amber-400 focus:bg-white"
+                          placeholder={i.unit === 'kg' ? '0.1' : '1'}
+                          className="h-6 w-12 rounded-md border border-slate-200 bg-slate-50 px-1 text-center text-[10px] font-black tabular-nums text-slate-950 outline-none focus:border-amber-400 focus:bg-white"
                           aria-label={`Quantity for ${i.itemName}`}
                         />
-                        <span className="rounded-lg bg-slate-950 px-2 py-1 text-center text-[11px] font-black text-white tabular-nums">{formatQty(i.quantity, i.unit)}</span>
+                        <button
+                          onClick={() => {
+                            setCart((c) => c.filter((x) => x.itemName !== i.itemName));
+                            clearCartQuantityDraft(i.itemName);
+                          }}
+                          className="grid size-[22px] shrink-0 place-items-center rounded-md bg-red-50 text-red-500 hover:bg-red-100"
+                          aria-label={`Remove ${i.itemName} from cart`}
+                        >
+                          <XCircle className="size-3.5"/>
+                        </button>
                       </div>
                     </div>
                   ))}
