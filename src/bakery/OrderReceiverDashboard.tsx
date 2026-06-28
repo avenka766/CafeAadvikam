@@ -544,9 +544,7 @@ function PlacedOrdersPanel({
     setRemoving(true); setRemoveError("");
     const { order, itemIndex } = removeTarget;
     const item = order.items[itemIndex];
-    const tableName =
-      branch === "SNB" ? "snb_orders" :
-      branch === "VRSNB" ? "vrsnb_orders" : "snb_orders";
+    const tableName = branch === "Hosur" ? "hosur_orders" : "bakery_orders";
 
     // Fetch current removed_items
     const { data: current } = await supabase
