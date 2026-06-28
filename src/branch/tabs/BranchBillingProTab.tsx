@@ -79,8 +79,12 @@ function unitOf(item: BillingItem): 'pcs' | 'kg' {
 
 function isSnbFlexibleStockItem(branch: Branch, item: Pick<BillingItem, 'category'>) {
   if (branch !== 'SNB') return false;
-  const category = item.category.trim().toLowerCase();
-  return category.includes('mix') || category.includes('combo');
+  const category = item.category
+    .trim()
+    .toLowerCase()
+    .replace(/\s*&\s*/g, ' & ')
+    .replace(/\s+/g, ' ');
+  return category === 'mix & combo' || category === 'mix and combo';
 }
 
 function normalizeItemName(name: string) {
