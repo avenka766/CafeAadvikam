@@ -690,6 +690,7 @@ function PlacedOrdersPanel({
   ];
 
   return (
+    <>
     <div className="space-y-4">
       <div className="rounded-3xl border border-border bg-white/95 p-4 shadow-soft">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -886,7 +887,7 @@ function PlacedOrdersPanel({
       )}
     </div>
 
-      {/* Remove Item Modal */}
+    {/* Remove Item Modal */}
       {removeTarget && (
         <div
           className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-4"
@@ -959,6 +960,7 @@ function PlacedOrdersPanel({
           </div>
         </div>
       )}
+    </>
   );
 }
 
