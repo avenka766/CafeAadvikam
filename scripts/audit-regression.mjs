@@ -53,6 +53,7 @@ const packageJsonText = read('package.json');
 const packageJson = packageJsonText ? JSON.parse(packageJsonText) : null;
 const authStore = read('src/stores/authStore.ts') ?? '';
 const branchBilling = read('src/branch/tabs/BranchBillingProTab.tsx') ?? '';
+const bottomNav = read('src/components/layout/BottomNav.tsx') ?? '';
 const hosurDashboard = read('src/pages/HosurDashboard.tsx') ?? '';
 const branchBusinessModules = read('src/branch/tabs/BranchBusinessModules.tsx') ?? '';
 const adminSnb = read('src/pages/AdminSNBDashboard.tsx') ?? '';
@@ -68,6 +69,7 @@ const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch
 const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
 const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
 const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix_admin_invoice_review_workflow.sql') ?? '';
+const branchPaymentStockCorrectionMigration = read('supabase/migrations/20260628224500_fix_branch_payment_edit_nav_and_mix_combo_stock.sql') ?? '';
 const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
@@ -106,6 +108,21 @@ check(
   'Branch billing must use an atomic checkout RPC so stock, payment and audit writes remain atomic.',
 );
 
+check(
+  'SNB and VRSNB bottom navigation exposes Payment Mode Edit',
+  bottomNav.includes('/branch/snb?tab=payment-edit')
+    && bottomNav.includes('/branch/vrsnb?tab=payment-edit'),
+  'Both branch biller bottom navigation bars must include the Payment Mode Edit route.',
+);
+
+check(
+  'Flexible zero-stock billing is restricted to exact SNB Mix & Combo category',
+  branchBilling.includes("category === 'mix & combo' || category === 'mix and combo'")
+    && !branchBilling.includes("category.includes('mix')")
+    && branchPaymentStockCorrectionMigration.includes("in ('mix & combo', 'mix and combo')")
+    && !branchPaymentStockCorrectionMigration.includes("like '%mix%'"),
+  'Namkeens & Mixtures must use normal stock validation; only exact Mix & Combo may bill through zero stock.',
+);
 
 
 check(
