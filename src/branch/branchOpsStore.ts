@@ -123,6 +123,7 @@ export interface CakeAdvanceOrder {
   id: string;
   branch: Branch;
   orderNo: string;
+  slipNumber?: string;
   orderType?: "store" | "cake" | "custom";
   customerName: string;
   mobile: string;
@@ -131,8 +132,18 @@ export interface CakeAdvanceOrder {
   deliveryTime: string;
   items?: BranchBillItem[];
   cakeKg: string;
+  creamType?: "Butter Cream" | "Fresh Cream";
+  cakeTypeId?: string;
+  cakeTypeName?: string;
   flavor: string;
   shape: string;
+  designType?: "Normal" | "Custom 20%" | "Custom 25%";
+  baseRate?: number;
+  baseAmount?: number;
+  designPercent?: number;
+  designCharge?: number;
+  drawingCharge?: number;
+  photoCharge?: number;
   messageOnCake: string;
   designNotes: string;
   attachmentName?: string;
@@ -519,6 +530,7 @@ interface BranchOpsState {
     bill: Omit<BranchBillRecord, "id" | "createdAt" | "printCount" | "status" | "source">,
   ) => BranchBillRecord;
   markBillDuplicate: (billId: string, user: string) => void;
+  updateBillPaymentMode: (billId: string, newMode: "cash" | "upi" | "card", user: string) => BranchBillRecord | undefined;
   collectCreditPayment: (
     creditId: string,
     payment: Omit<BranchCreditPayment, "id" | "createdAt">,
@@ -1353,6 +1365,37 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           actor: bill.biller,
         });
         return newBill;
+      },
+      updateBillPaymentMode: (billId, newMode, user) => {
+        let updatedBill: BranchBillRecord | undefined;
+        set((state) => {
+          const previous = state.bills.find((bill) => bill.id === billId || bill.billNo === billId);
+          if (!previous || previous.paymentMode === "credit" || previous.paymentMode === "split") return state;
+          const oldMode = previous.paymentMode;
+          updatedBill = { ...previous, paymentMode: newMode, split: undefined };
+          const cashMovements = state.cashMovements.map((movement) =>
+            movement.referenceNumber === previous.billNo
+            && movement.direction === "in"
+            && movement.purpose === "Bill collection"
+              ? { ...movement, paymentMode: newMode }
+              : movement,
+          );
+          mirrorOperationRecord(previous.branch, previous.source === "advance-final" ? "advance_final_bill" : "bill", previous.id, updatedBill, {
+            recordNo: previous.billNo,
+            amount: previous.total,
+            status: updatedBill.status,
+            actor: user,
+          });
+          return {
+            bills: state.bills.map((bill) => bill.id === previous.id ? updatedBill! : bill),
+            cashMovements,
+            auditLogs: [
+              audit(previous.branch, user, "Payment Mode Edited", oldMode.toUpperCase(), `${newMode.toUpperCase()} - ${previous.billNo}`),
+              ...state.auditLogs,
+            ],
+          };
+        });
+        return updatedBill;
       },
       addAdvanceFinalBill: (bill) => {
         const newBill: BranchBillRecord = {
