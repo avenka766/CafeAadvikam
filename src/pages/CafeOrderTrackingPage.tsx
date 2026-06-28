@@ -75,7 +75,9 @@ export default function OrderTrackingPage() {
 
     fetchOrder();
 
-    // Poll every 5s
+    // EGRESS FIX: Raised from 5 s → 30 s. A customer watching their order status
+    // does not need sub-second updates; 30 s is acceptable and cuts this page's
+    // per-visit egress by 83 %.
     const interval = setInterval(async () => {
       const { data } = await supabase
         .from('orders')
@@ -86,7 +88,7 @@ export default function OrderTrackingPage() {
       if (data) {
         setOrder(dbRowToOrder(data as Record<string, unknown>));
       }
-    }, 5000);
+    }, 30_000);
 
     return () => clearInterval(interval);
   }, [orderId]);

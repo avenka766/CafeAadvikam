@@ -209,7 +209,9 @@ export default function OrderTrackingPage() {
 
   useEffect(() => {
     if (!searched || !/^\d{10}$/.test(phone.replace(/\D/g, ''))) return;
-    const timer = window.setInterval(() => void searchOrders(phone, true), 12000);
+    // EGRESS FIX: Raised from 12 s → 30 s. Order status changes are infrequent;
+    // 30 s refresh is imperceptible to customers waiting for their order.
+    const timer = window.setInterval(() => void searchOrders(phone, true), 30_000);
     return () => window.clearInterval(timer);
   }, [phone, searchOrders, searched]);
 
