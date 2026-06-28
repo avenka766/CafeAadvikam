@@ -140,7 +140,14 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
 
     void load();
     return () => { active = false; };
-  }, [fromDate, toDate, branchesKey, branches]);
+  // EGRESS FIX: `branches` was listed alongside `branchesKey` in deps.
+  // Because callers pass a new array literal each render, React sees a new
+  // reference every time and re-fires this effect — triggering 4 heavy
+  // queries (branch_daily_closure_ledger, branch_daily_closures,
+  // branch_operation_records, branch_bill_headers) in an infinite loop.
+  // `branchesKey` is already a stable sorted-join string that captures the
+  // same information, so `branches` must be removed from deps here.
+  }, [fromDate, toDate, branchesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closureByBranchDate = useMemo(() => {
     const map = new Map<string, LedgerClosureRow>();
