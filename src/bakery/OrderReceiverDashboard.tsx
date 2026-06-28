@@ -26,6 +26,7 @@ import {
   ShoppingCart,
   Store,
   X,
+  Trash2,
 } from "lucide-react";
 import { useBakeryStore } from "./bakeryStore";
 import { useAuthStore } from "@/stores/authStore";
@@ -527,6 +528,77 @@ function PlacedOrdersPanel({
   const [customStart, setCustomStart] = useState(toDateInputValue(new Date()));
   const [customEnd, setCustomEnd] = useState(toDateInputValue(new Date()));
 
+  // Remove item state
+  const [removeTarget, setRemoveTarget] = useState<{ order: BakeryOrder; itemIndex: number } | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
+  const [customRemoveReason, setCustomRemoveReason] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+
+  const REMOVE_PRESETS = ["Wrong item", "Damaged on arrival", "Quantity error", "Not needed", "Custom reason"];
+
+  const finalRemoveReason = removeReason === "Custom reason" ? customRemoveReason.trim() : removeReason;
+
+  const handleRemoveItem = async () => {
+    if (!removeTarget || !finalRemoveReason) return;
+    setRemoving(true); setRemoveError("");
+    const { order, itemIndex } = removeTarget;
+    const item = order.items[itemIndex];
+    const tableName =
+      branch === "SNB" ? "snb_orders" :
+      branch === "VRSNB" ? "vrsnb_orders" : "snb_orders";
+
+    // Fetch current removed_items
+    const { data: current } = await supabase
+      .from(tableName)
+      .select("removed_items")
+      .eq("id", order.id)
+      .single();
+
+    const existing = Array.isArray((current as Record<string,unknown>)?.removed_items)
+      ? (current as Record<string,unknown>).removed_items as unknown[]
+      : [];
+
+    const removedEntry = {
+      itemName: item.itemName,
+      quantity: item.quantity,
+      unit: item.dispatchUnit ?? "pcs",
+      reason: finalRemoveReason,
+      removedAt: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from(tableName)
+      .update({ removed_items: [...existing, removedEntry] })
+      .eq("id", order.id);
+
+    if (error) {
+      setRemoveError(`Failed to remove item: ${error.message}`);
+      setRemoving(false);
+      return;
+    }
+
+    // Insert notification
+    await supabase.from("store_notifications").insert({
+      type: "item_removed",
+      title: `Item removed from Order #${order.orderNumber}`,
+      body: `${item.itemName} removed — ${finalRemoveReason}`,
+      branch,
+      meta: {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        itemName: item.itemName,
+        reason: finalRemoveReason,
+        branch,
+      },
+    }).select().maybeSingle(); // fire-and-forget; ignore if notifications table schema differs
+
+    setRemoving(false);
+    setRemoveTarget(null);
+    setRemoveReason("");
+    setCustomRemoveReason("");
+  };
+
   const range = useMemo(
     () => presetRange(preset, customStart, customEnd),
     [preset, customStart, customEnd],
@@ -780,14 +852,34 @@ function PlacedOrdersPanel({
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {order.items.map((item, i) => (
-                    <span
-                      key={`${order.id}-${i}`}
-                      className="rounded-full bg-muted px-2.5 py-1 text-[11px] font-body font-black text-muted-foreground"
-                    >
-                      {item.itemName} × {displayQty(item)} {displayUnit(item)}
-                    </span>
-                  ))}
+                  {order.items.map((item, i) => {
+                    const removedItems = (order as unknown as { removed_items?: Array<{ itemName: string }> }).removed_items ?? [];
+                    const isRemoved = removedItems.some(r => r.itemName === item.itemName);
+                    return (
+                      <span
+                        key={`${order.id}-${i}`}
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-[11px] font-body font-black flex items-center gap-1.5",
+                          isRemoved
+                            ? "bg-red-50 text-red-400 line-through border border-red-100"
+                            : "bg-muted text-muted-foreground"
+                        )}
+                      >
+                        {item.itemName} × {displayQty(item)} {displayUnit(item)}
+                        {!isRemoved && (
+                          <button
+                            type="button"
+                            onClick={() => { setRemoveTarget({ order, itemIndex: i }); setRemoveReason(""); setCustomRemoveReason(""); setRemoveError(""); }}
+                            className="ml-0.5 text-red-400 hover:text-red-600 transition-colors"
+                            title="Remove this item"
+                          >
+                            <Trash2 className="size-3" />
+                          </button>
+                        )}
+                        {isRemoved && <span className="text-[9px] text-red-400 font-body normal-case no-underline">(removed)</span>}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -795,6 +887,80 @@ function PlacedOrdersPanel({
         </div>
       )}
     </div>
+
+      {/* Remove Item Modal */}
+      {removeTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-4"
+          onClick={e => { if (e.target === e.currentTarget) setRemoveTarget(null); }}
+        >
+          <div className="bg-card border border-border rounded-2xl w-full max-w-sm overflow-hidden">
+            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+              <h3 className="font-display font-bold text-sm text-foreground">Remove Item</h3>
+              <button onClick={() => setRemoveTarget(null)} className="size-7 rounded-lg bg-muted flex items-center justify-center">
+                <X className="size-3.5 text-muted-foreground" />
+              </button>
+            </div>
+            <div className="px-4 py-4 space-y-3">
+              <div className="bg-red-50 border border-red-100 rounded-xl px-3 py-2.5">
+                <p className="text-xs font-body font-bold text-red-700">
+                  {removeTarget.order.items[removeTarget.itemIndex].itemName}
+                </p>
+                <p className="text-[11px] font-body text-red-500 mt-0.5">
+                  Order #{removeTarget.order.orderNumber}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5">Reason *</p>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {REMOVE_PRESETS.map(r => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setRemoveReason(r)}
+                      className={cn(
+                        "text-[11px] font-body font-semibold px-2.5 py-1.5 rounded-xl border transition-all",
+                        removeReason === r
+                          ? "bg-red-600 text-white border-transparent"
+                          : "bg-muted/40 border-border text-foreground hover:border-red-300"
+                      )}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                {removeReason === "Custom reason" && (
+                  <input
+                    value={customRemoveReason}
+                    onChange={e => setCustomRemoveReason(e.target.value)}
+                    placeholder="Describe the reason…"
+                    className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-red-300"
+                  />
+                )}
+              </div>
+              {removeError && (
+                <p className="text-xs font-body text-red-600 bg-red-50 rounded-xl px-3 py-2">{removeError}</p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => setRemoveTarget(null)}
+                  className="flex-1 h-10 rounded-xl border border-border text-sm font-body font-semibold hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRemoveItem}
+                  disabled={removing || !finalRemoveReason}
+                  className="flex-1 h-10 rounded-xl bg-red-600 text-white text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                >
+                  {removing ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
   );
 }
 

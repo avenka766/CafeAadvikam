@@ -14,7 +14,7 @@ import { useSupplierStore } from './supplierStore';
 import { useInvoiceStore, type StoreInvoice, type InvoiceLineItem } from './invoiceStore';
 import { useStoreStockStore, type StockUnit } from './storeStockStore';
 import { useNotificationStore } from './notificationStore';
-import { searchItems, getSuppliersForItem } from './storeItemMaster';
+import { searchItems } from './storeItemMaster';
 
 // ─── Print helper ─────────────────────────────────────────────────────────────
 function printInvoice(invoice: StoreInvoice) {
@@ -106,7 +106,7 @@ function printInvoice(invoice: StoreInvoice) {
 }
 
 // ─── Invoice Card (list view) ─────────────────────────────────────────────────
-function InvoiceCard({ invoice, onPrint }: { invoice: StoreInvoice; onPrint: (inv: StoreInvoice) => void }) {
+function InvoiceCard({ invoice, onPrint, onEdit }: { invoice: StoreInvoice; onPrint: (inv: StoreInvoice) => void; onEdit?: (inv: StoreInvoice) => void }) {
   const [expanded, setExpanded] = useState(false);
 
   const statusMeta = {
@@ -137,6 +137,11 @@ function InvoiceCard({ invoice, onPrint }: { invoice: StoreInvoice; onPrint: (in
             {invoice.syncedToStock && (
               <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
                 Stock Synced ✓
+              </span>
+            )}
+            {invoice.editedAt && (
+              <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200 flex items-center gap-1">
+                ✎ Edited {invoice.editCount && invoice.editCount > 1 ? `(×${invoice.editCount})` : ''}
               </span>
             )}
           </div>
@@ -187,13 +192,29 @@ function InvoiceCard({ invoice, onPrint }: { invoice: StoreInvoice; onPrint: (in
               <span className="font-bold">Admin: </span>{invoice.reviewNote}
             </p>
           )}
+          {invoice.editedAt && (
+            <p className="text-[11px] font-body text-orange-600 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+              ✎ Last edited {new Date(invoice.editedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              {invoice.editCount && invoice.editCount > 1 && ` · ${invoice.editCount} edits total`}
+            </p>
+          )}
 
-          <button
-            onClick={() => onPrint(invoice)}
-            className="w-full h-10 rounded-xl border border-primary/30 bg-primary/5 text-primary text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
-          >
-            <Printer className="size-4" /> Print Invoice
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onPrint(invoice)}
+              className="flex-1 h-10 rounded-xl border border-primary/30 bg-primary/5 text-primary text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
+            >
+              <Printer className="size-4" /> Print
+            </button>
+            {invoice.status === 'pending_review' && onEdit && (
+              <button
+                onClick={() => onEdit(invoice)}
+                className="flex-1 h-10 rounded-xl border border-amber-300 bg-amber-50 text-amber-700 text-sm font-body font-semibold flex items-center justify-center gap-2 active:scale-[0.98]"
+              >
+                ✎ Edit & Resubmit
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -204,35 +225,31 @@ function InvoiceCard({ invoice, onPrint }: { invoice: StoreInvoice; onPrint: (in
 function CreateInvoiceModal({
   onClose,
   onCreated,
+  editingInvoice,
 }: {
   onClose: () => void;
   onCreated: (invoiceNumber: string) => void;
+  editingInvoice?: StoreInvoice;
 }) {
   const { suppliers, loaded: suppLoaded, load: loadSuppliers } = useSupplierStore();
-  const { createInvoice } = useInvoiceStore();
+  const { createInvoice, updateInvoice } = useInvoiceStore();
   const { items: stockItems, addItem, updateItem } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
   useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
 
-  const [supplierId, setSupplierId]   = useState('');
-  const [deliveryDate, setDeliveryDate] = useState(businessDate());
-  const [notes, setNotes]             = useState('');
-  const [lines, setLines]             = useState<InvoiceLineItem[]>([
-    { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 },
-  ]);
-  // Track which line indexes have had their supplier hint dismissed
-  const [dismissedHints, setDismissedHints] = useState<Set<number>>(new Set());
+  const [supplierId, setSupplierId]   = useState(editingInvoice?.supplierId ?? '');
+  const [deliveryDate, setDeliveryDate] = useState(editingInvoice?.deliveryDate ?? businessDate());
+  const [notes, setNotes]             = useState(editingInvoice?.notes ?? '');
+  const [lines, setLines]             = useState<InvoiceLineItem[]>(
+    editingInvoice?.lineItems ?? [{ itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 }]
+  );
   const [saving, setSaving]   = useState(false);
   const [error, setError]     = useState('');
 
-  const dismissHint = (idx: number) =>
-    setDismissedHints(prev => new Set([...prev, idx]));
-
-  // Reset dismissed state when item name changes (so hint reappears for new item)
+  // Reset dismissed state when item name changes
   const handleItemNameChange = (idx: number, val: string) => {
     updateLine(idx, 'itemName', val);
-    setDismissedHints(prev => { const next = new Set(prev); next.delete(idx); return next; });
   };
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
@@ -262,7 +279,6 @@ function CreateInvoiceModal({
 
   const removeLine = (idx: number) => {
     setLines(prev => prev.filter((_, i) => i !== idx));
-    setDismissedHints(new Set()); // reindex hints
   };
 
   const grandTotal = lines.reduce((s, l) => s + l.totalPrice, 0);
@@ -271,6 +287,26 @@ function CreateInvoiceModal({
     if (!supplierId) { setError('Select a supplier'); return; }
     if (lines.some(l => !l.itemName.trim())) { setError('All items need a name'); return; }
     if (lines.some(l => l.quantity <= 0 || l.pricePerUnit < 0)) { setError('Check quantities and prices'); return; }
+
+    // Edit mode: just update the pending invoice, no stock re-sync
+    if (editingInvoice) {
+      setSaving(true); setError('');
+      const err = await updateInvoice(editingInvoice.id, {
+        supplierId,
+        supplierName: suppliers.find(s => s.id === supplierId)?.businessName ?? editingInvoice.supplierName,
+        deliveryDate,
+        lineItems: lines,
+        grandTotal,
+        notes,
+        syncedToStock: editingInvoice.syncedToStock,
+      });
+      setSaving(false);
+      if (err) { setError(`Update failed: ${err}`); return; }
+      onCreated(editingInvoice.invoiceNumber);
+      onClose();
+      return;
+    }
+
     // Date guard: no future dates, max 1 day in the past
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
@@ -354,8 +390,8 @@ function CreateInvoiceModal({
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="font-display font-bold text-lg text-foreground">New Invoice</h3>
-            <p className="text-[11px] font-body text-muted-foreground">Add delivery → sync stock → send to admin</p>
+            <h3 className="font-display font-bold text-lg text-foreground">{editingInvoice ? 'Edit Invoice' : 'New Invoice'}</h3>
+            <p className="text-[11px] font-body text-muted-foreground">{editingInvoice ? 'Update this pending invoice & resubmit to admin' : 'Add delivery → sync stock → send to admin'}</p>
           </div>
           <button onClick={onClose} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted">
             <X className="size-4" />
@@ -382,10 +418,6 @@ function CreateInvoiceModal({
                     <input
                       value={li.itemName}
                       onChange={e => handleItemNameChange(idx, e.target.value)}
-                      onBlur={() => {
-                        // Small delay so tap-to-select fires before blur hides the dropdown
-                        setTimeout(() => dismissHint(idx), 150);
-                      }}
                       placeholder="Item name…"
                       list={`suggestions-${idx}`}
                       className="w-full h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
@@ -393,37 +425,6 @@ function CreateInvoiceModal({
                     <datalist id={`suggestions-${idx}`}>
                       {searchItems(li.itemName).map(s => <option key={s.item} value={s.item} />)}
                     </datalist>
-                    {li.itemName.trim().length > 2 && !dismissedHints.has(idx) && (() => {
-                      const itemSuppliers = getSuppliersForItem(li.itemName);
-                      return itemSuppliers.length > 0 ? (
-                        <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-background border border-primary/30 rounded-xl shadow-lg overflow-hidden">
-                          <div className="flex items-center justify-between px-2.5 pt-2 pb-1">
-                            <p className="text-[9px] font-body font-bold text-primary uppercase">Known suppliers for this item</p>
-                            <button
-                              type="button"
-                              onMouseDown={e => { e.preventDefault(); dismissHint(idx); }}
-                              className="text-[9px] text-muted-foreground hover:text-foreground px-1"
-                            >✕</button>
-                          </div>
-                          {itemSuppliers.map(s => (
-                            <button
-                              key={s}
-                              type="button"
-                              onMouseDown={e => {
-                                e.preventDefault(); // prevent blur firing first
-                                const match = suppliers.find(sup => sup.businessName.toLowerCase() === s.toLowerCase());
-                                if (match) setSupplierId(match.id);
-                                dismissHint(idx);
-                              }}
-                              className="w-full px-2.5 py-1.5 text-xs font-body text-foreground flex items-center gap-2 border-t border-border/40 hover:bg-muted text-left"
-                            >
-                              <span className="size-1.5 rounded-full bg-primary shrink-0" />{s}
-                              <span className="ml-auto text-[9px] text-primary font-semibold">tap to select</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null;
-                    })()}
                   </div>
                   {lines.length > 1 && (
                     <button onClick={() => removeLine(idx)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50">
@@ -546,7 +547,9 @@ function CreateInvoiceModal({
         >
           {saving
             ? <Loader2 className="size-4 animate-spin" />
-            : <><Send className="size-4" /> Sync Stock & Send to Admin</>}
+            : editingInvoice
+              ? <><Send className="size-4" /> Update Invoice</>
+              : <><Send className="size-4" /> Sync Stock & Send to Admin</>}
         </button>
       </div>
     </div>
@@ -575,6 +578,7 @@ function SuccessToast({ invoiceNumber, onClose }: { invoiceNumber: string; onClo
 export default function InvoiceTab() {
   const { invoices, loaded, loading, load, deleteInvoice } = useInvoiceStore();
   const [showCreate, setShowCreate] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState<StoreInvoice | null>(null);
   const [search, setSearch]         = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
   const [toast, setToast]           = useState<string | null>(null);
@@ -665,7 +669,7 @@ export default function InvoiceTab() {
       ) : (
         <div className="space-y-2">
           {filtered.map(inv => (
-            <InvoiceCard key={inv.id} invoice={inv} onPrint={printInvoice} />
+            <InvoiceCard key={inv.id} invoice={inv} onPrint={printInvoice} onEdit={setEditingInvoice} />
           ))}
         </div>
       )}
@@ -674,6 +678,14 @@ export default function InvoiceTab() {
         <CreateInvoiceModal
           onClose={() => setShowCreate(false)}
           onCreated={(num) => { setToast(num); load(); }}
+        />
+      )}
+
+      {editingInvoice && (
+        <CreateInvoiceModal
+          editingInvoice={editingInvoice}
+          onClose={() => setEditingInvoice(null)}
+          onCreated={(num) => { setToast(`${num} updated`); setEditingInvoice(null); load(); }}
         />
       )}
 

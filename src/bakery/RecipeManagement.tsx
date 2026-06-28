@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useBakeryItemsStore } from './bakeryItemsStore';
 import { useRecipeStore } from './recipeStore';
+import { useStoreStockStore, type StockItem } from './storeStockStore';
 import { cn } from '@/lib/utils';
 import EmptyState from '@/components/ui/EmptyState';
 import { useNotificationStore } from './notificationStore';
@@ -45,21 +46,55 @@ function blankRecipe(): Omit<RecipeRow,'itemId'|'source'> {
 
 // ── Material editor row ───────────────────────────────────────────────────────
 function MatRow({
-  mat, idx, onChange, onRemove, isLast,
+  mat, idx, onChange, onRemove, isLast, inventory,
 }: {
   mat: Material; idx: number;
   onChange: (idx: number, field: keyof Material, val: string | number) => void;
   onRemove: (idx: number) => void;
   isLast: boolean;
+  inventory: StockItem[];
 }) {
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const suggestions = useMemo(() => {
+    const q = mat.material.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return inventory.filter(i => i.name.toLowerCase().includes(q)).slice(0, 8);
+  }, [mat.material, inventory]);
+
+  const handleSuggestionClick = (item: StockItem) => {
+    onChange(idx, 'material', item.name);
+    onChange(idx, 'unit', item.unit);
+    setShowSuggestions(false);
+  };
+
   return (
     <div className="flex gap-1.5 items-center">
-      <input
-        placeholder="Material name"
-        value={mat.material}
-        onChange={e => onChange(idx, 'material', e.target.value)}
-        className="flex-1 h-8 px-2 text-xs font-body rounded-lg border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary/30"
-      />
+      <div className="flex-1 relative">
+        <input
+          placeholder="Material name"
+          value={mat.material}
+          onChange={e => { onChange(idx, 'material', e.target.value); setShowSuggestions(true); }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+          className="w-full h-8 px-2 text-xs font-body rounded-lg border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary/30"
+        />
+        {showSuggestions && suggestions.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-0.5 bg-card border border-border rounded-lg shadow-lg z-30 overflow-hidden max-h-40 overflow-y-auto">
+            {suggestions.map(item => (
+              <button
+                key={item.id}
+                type="button"
+                onMouseDown={e => { e.preventDefault(); handleSuggestionClick(item); }}
+                className="w-full px-2.5 py-1.5 text-left flex items-center justify-between hover:bg-muted transition-colors border-b border-border/30 last:border-0"
+              >
+                <span className="text-xs font-body font-semibold text-foreground truncate">{item.name}</span>
+                <span className="text-[10px] font-body text-muted-foreground ml-2 shrink-0">{item.unit}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <input
         type="number" min={0} step={0.001}
         placeholder="Qty"
@@ -85,13 +120,14 @@ function MatRow({
 
 // ── Recipe edit panel ─────────────────────────────────────────────────────────
 function RecipeEditor({
-  itemId, itemName, itemIcon, initial, onSave, onCancel, saving,
+  itemId, itemName, itemIcon, initial, onSave, onCancel, saving, inventory,
 }: {
   itemId: string; itemName: string; itemIcon: string;
   initial: Omit<RecipeRow,'itemId'|'source'>;
   onSave:  (data: Omit<RecipeRow,'itemId'|'source'>) => Promise<void>;
   onCancel: () => void;
   saving: boolean;
+  inventory: StockItem[];
 }) {
   const [outputQty,   setOutputQty]   = useState<string>(initial.outputQty ? String(initial.outputQty) : '');
   const [outputUnit,  setOutputUnit]  = useState<'kg'|'L'|'pcs'|'loaf'>(initial.outputUnit ?? 'kg');
@@ -169,7 +205,7 @@ function RecipeEditor({
         </div>
         <div className="space-y-1.5">
           {materials.map((mat, idx) => (
-            <MatRow key={idx} mat={mat} idx={idx} onChange={changeMat} onRemove={removeMat} isLast={materials.length === 1} />
+            <MatRow key={idx} mat={mat} idx={idx} onChange={changeMat} onRemove={removeMat} isLast={materials.length === 1} inventory={inventory} />
           ))}
         </div>
       </div>
@@ -433,6 +469,8 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
   const { items: bakeryItems, loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const { pushRecipeChange } = useNotificationStore();
   const currentUser = useAuthStore(s => s.currentUser);
+  const { items: storeInventory, loaded: inventoryLoaded, load: loadInventory } = useStoreStockStore();
+  useEffect(() => { if (!inventoryLoaded) void loadInventory(); }, [inventoryLoaded, loadInventory]);
   useEffect(() => { void loadAllItems(); return subscribeBakeryItems(); }, [loadAllItems, subscribeBakeryItems]);
 
   const { recipes, loading, loadRecipes, saveRecipe, subscribe: subscribeRecipes, getRecipe: getLiveRecipe } = useRecipeStore();
@@ -637,6 +675,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
               onSave={(data) => handleSave(editingItem.id, data)}
               onCancel={() => setEditingId(null)}
               saving={saving}
+              inventory={storeInventory}
             />
           </div>
         </div>

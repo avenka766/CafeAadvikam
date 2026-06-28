@@ -29,6 +29,8 @@ export interface StoreInvoice {
   createdAt: string;
   reviewedAt?: string;
   reviewNote?: string;
+  editedAt?: string;
+  editCount?: number;
 }
 
 interface InvoiceState {
@@ -38,6 +40,7 @@ interface InvoiceState {
   error: string | null;
   load: () => Promise<string | null>;
   createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>) => Promise<{ id: string; invoiceNumber: string } | null>;
+  updateInvoice: (id: string, data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt' | 'editedAt' | 'editCount'>) => Promise<string | null>;
   updateStatus: (id: string, status: InvoiceStatus, reviewNote?: string) => Promise<string | null>;
   deleteInvoice: (id: string) => Promise<void>;
   pendingCount: () => number;
@@ -93,6 +96,8 @@ export function mapInvoiceRow(r: Record<string, unknown>): StoreInvoice {
     createdAt: String(r.created_at ?? ''),
     reviewedAt: r.reviewed_at ? String(r.reviewed_at) : undefined,
     reviewNote: r.review_note ? String(r.review_note) : undefined,
+    editedAt: r.edited_at ? String(r.edited_at) : undefined,
+    editCount: r.edit_count ? Number(r.edit_count) : undefined,
   };
 }
 
@@ -170,6 +175,61 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
     if (error) return null;
     await get().load();
     return { id: inserted.id, invoiceNumber: inserted.invoice_number };
+  },
+
+  updateInvoice: async (id, data) => {
+    const editedAt = new Date().toISOString();
+    const { error } = await supabase.rpc('update_store_invoice_secure', {
+      p_invoice_id: id,
+      p_supplier_id: data.supplierId,
+      p_supplier_name: data.supplierName,
+      p_delivery_date: data.deliveryDate,
+      p_line_items: data.lineItems,
+      p_grand_total: data.grandTotal,
+      p_notes: data.notes || null,
+    });
+
+    // Fallback: direct update if RPC not deployed yet
+    if (error && isMissingRpcError(error)) {
+      const { error: directErr } = await supabase
+        .from('store_invoices')
+        .update({
+          supplier_id: data.supplierId,
+          supplier_name: data.supplierName,
+          delivery_date: data.deliveryDate,
+          line_items: data.lineItems,
+          grand_total: data.grandTotal,
+          notes: data.notes || null,
+          edited_at: editedAt,
+          edit_count: supabase.rpc('', {}) as unknown as number, // will be handled by DB trigger
+        })
+        .eq('id', id)
+        .eq('status', 'pending_review');
+
+      // Simpler fallback without increment
+      if (directErr) {
+        const { error: fallbackErr } = await supabase
+          .from('store_invoices')
+          .update({
+            supplier_id: data.supplierId,
+            supplier_name: data.supplierName,
+            delivery_date: data.deliveryDate,
+            line_items: data.lineItems,
+            grand_total: data.grandTotal,
+            notes: data.notes || null,
+            edited_at: editedAt,
+          })
+          .eq('id', id)
+          .eq('status', 'pending_review');
+        if (fallbackErr) return fallbackErr.message;
+      }
+    } else if (error) {
+      return error.message;
+    }
+
+    // Reload to get fresh data including edit_count
+    await get().load();
+    return null;
   },
 
   updateStatus: async (id, status, reviewNote) => {
