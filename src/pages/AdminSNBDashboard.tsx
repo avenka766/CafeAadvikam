@@ -58,6 +58,7 @@ import {
   MessageSquareWarning,
   Package,
   PackageCheck,
+  Pencil,
   Plus,
   Printer,
   Receipt,
@@ -235,6 +236,10 @@ function normal(name: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function purchaseUnitFromCatalog(uom?: string): NonNullable<PurchaseRecord["unit"]> {
+  return uom === "Kgs" ? "kg" : "nos";
 }
 
 function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number }>(rows: T[]) {
@@ -2423,360 +2428,992 @@ function PurchaseInvoicesTab({
   fetchBranchData: any;
   setNotice: (v: string) => void;
 }) {
+  type PurchaseUnit = NonNullable<PurchaseRecord["unit"]>;
+  type PurchaseLine = NonNullable<PurchaseRecord["items"]>[number];
+
   const catalogItems = useSNBCatalog();
   const {
     purchases,
     suppliers,
     addPurchase,
+    updatePurchase,
     markPurchaseSynced,
     addAuditLog,
   } = useBranchOpsStore();
-  const [form, setForm] = useState({
-    supplier: "",
-    invoiceNo: "",
-    itemName: catalogItems[0]?.name || "",
-    quantity: "",
-    unit: "pcs",
-    rate: "",
-    tax: "0",
-    discount: "0",
-    paidAmount: "0",
-    remarks: "",
-  });
-  const [itemSearch, setItemSearch] = useState("");
-  const [lines, setLines] = useState<Array<{ itemName: string; quantity: number; unit: any; cost: number; tax: number; discount: number; total: number }>>([]);
-  const filteredItems = catalogItems.filter((item) => item.name.toLowerCase().includes(itemSearch.toLowerCase()));
-  const supplierForItem = (itemName: string) =>
-    suppliers.find(
-      (s) =>
-        s.branch === BRANCH &&
-        s.itemsProvided.toLowerCase().includes(itemName.toLowerCase()),
-    );
-  const selectedSupplier = supplierForItem(form.itemName);
-  const rows = purchases.filter((p) => p.branch === BRANCH);
-  const addLine = () => {
-    const qty = Number(form.quantity);
-    const rate = Number(form.rate);
-    const tax = Number(form.tax || 0);
-    const discount = Number(form.discount || 0);
-    const total = Math.max(0, qty * rate + tax - discount);
-    if (!qty || !rate) return;
-    setLines((current) => [...current, { itemName: form.itemName, quantity: qty, unit: form.unit, cost: rate, tax, discount, total }]);
-    setForm({ ...form, quantity: "", rate: "", tax: "0", discount: "0" });
-  };
-  const create = async () => {
-    const draftLines = lines.length
-      ? lines
-      : Number(form.quantity) && Number(form.rate)
-        ? [{ itemName: form.itemName, quantity: Number(form.quantity), unit: form.unit, cost: Number(form.rate), tax: Number(form.tax || 0), discount: Number(form.discount || 0), total: Math.max(0, Number(form.quantity) * Number(form.rate) + Number(form.tax || 0) - Number(form.discount || 0)) }]
-        : [];
-    const total = draftLines.reduce((sum, line) => sum + line.total, 0);
-    if (!form.supplier.trim() || !form.invoiceNo.trim() || draftLines.length === 0)
-      return;
-    const first = draftLines[0];
-    const purchase = addPurchase({
-      branch: BRANCH,
-      supplier: form.supplier,
-      invoiceNo: form.invoiceNo,
-      itemName: draftLines.length > 1 ? `${draftLines.length} items` : first.itemName,
-      quantity: draftLines.reduce((sum, line) => sum + line.quantity, 0),
-      unit: first.unit,
-      cost: draftLines.length > 1 ? 0 : first.cost,
-      items: draftLines,
-      tax: draftLines.reduce((sum, line) => sum + line.tax, 0),
-      discount: draftLines.reduce((sum, line) => sum + line.discount, 0),
-      total,
-      enteredBy: userName,
-      paymentMethod: "credit",
-      remarks: form.remarks,
-    });
-    setNotice(`${form.invoiceNo} saved. Stock sync is pending until Sync to Stock is clicked.`);
-    setForm({
-      ...form,
+
+  const itemFromCatalog = (itemName: string) =>
+    catalogItems.find((item) => normal(item.name) === normal(itemName));
+  const createBlankForm = () => {
+    const first = catalogItems[0];
+    return {
+      supplier: "",
       invoiceNo: "",
+      invoiceDate: dateInput(),
+      itemName: first?.name || "",
       quantity: "",
-      rate: "",
+      unit: purchaseUnitFromCatalog(first?.uom),
+      rate: first ? String(first.price) : "",
       tax: "0",
       discount: "0",
-      paidAmount: "0",
       remarks: "",
-    });
-    setLines([]);
+    };
   };
-  const sync = async (p: PurchaseRecord) => {
-    if (p.syncedToStock || p.syncStatus === "Synced") {
-      setNotice(
-        "This purchase invoice is already synced to stock. Duplicate sync prevented.",
-      );
+
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
+  const [form, setForm] = useState(createBlankForm);
+  const [itemSearch, setItemSearch] = useState("");
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [syncFilter, setSyncFilter] = useState<"all" | "synced" | "not-synced">("all");
+  const [lines, setLines] = useState<PurchaseLine[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!form.itemName && catalogItems[0]) {
+      const first = catalogItems[0];
+      setForm((current) => ({
+        ...current,
+        itemName: first.name,
+        unit: purchaseUnitFromCatalog(first.uom),
+        rate: String(first.price),
+      }));
+    }
+  }, [catalogItems, form.itemName]);
+
+  const supplierForItem = (itemName: string) =>
+    suppliers.find(
+      (supplier) =>
+        supplier.branch === BRANCH &&
+        supplier.itemsProvided.toLowerCase().includes(itemName.toLowerCase()),
+    );
+
+  const selectedCatalogItem = itemFromCatalog(form.itemName);
+  const selectedSupplier = supplierForItem(form.itemName);
+  const filteredCatalogItems = catalogItems.filter((item) =>
+    item.name.toLowerCase().includes(itemSearch.trim().toLowerCase()),
+  );
+  const itemOptions = selectedCatalogItem && !filteredCatalogItems.some((item) => item.barcode === selectedCatalogItem.barcode)
+    ? [selectedCatalogItem, ...filteredCatalogItems]
+    : filteredCatalogItems;
+
+  const rows = useMemo(
+    () =>
+      purchases
+        .filter((purchase) => purchase.branch === BRANCH)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [purchases],
+  );
+
+  const visibleRows = useMemo(() => {
+    const query = invoiceSearch.trim().toLowerCase();
+    return rows.filter((purchase) => {
+      const isSynced = purchase.syncedToStock || purchase.syncStatus === "Synced";
+      const syncMatches =
+        syncFilter === "all" ||
+        (syncFilter === "synced" && isSynced) ||
+        (syncFilter === "not-synced" && !isSynced);
+      const itemText = (purchase.items?.length
+        ? purchase.items.map((line) => line.itemName).join(" ")
+        : purchase.itemName
+      ).toLowerCase();
+      const searchMatches =
+        !query ||
+        purchase.invoiceNo.toLowerCase().includes(query) ||
+        purchase.supplier.toLowerCase().includes(query) ||
+        itemText.includes(query);
+      return syncMatches && searchMatches;
+    });
+  }, [invoiceSearch, rows, syncFilter]);
+
+  const selectedPurchase = editingPurchaseId
+    ? rows.find((purchase) => purchase.id === editingPurchaseId)
+    : undefined;
+
+  const totalInvoiceValue = rows.reduce((sum, purchase) => sum + Number(purchase.total || 0), 0);
+  const totalOutstanding = rows.reduce(
+    (sum, purchase) => sum + Math.max(0, Number(purchase.total || 0) - Number(purchase.paidAmount || 0)),
+    0,
+  );
+  const pendingSyncCount = rows.filter(
+    (purchase) => !(purchase.syncedToStock || purchase.syncStatus === "Synced"),
+  ).length;
+
+  const lineTotal = (line: Pick<PurchaseLine, "quantity" | "cost" | "tax" | "discount">) =>
+    Math.max(
+      0,
+      Number(line.quantity || 0) * Number(line.cost || 0) +
+        Number(line.tax || 0) -
+        Number(line.discount || 0),
+    );
+
+  const invoiceTotal = lines.reduce((sum, line) => sum + lineTotal(line), 0);
+
+  const chooseItem = (itemName: string) => {
+    const item = itemFromCatalog(itemName);
+    const suggestedSupplier = supplierForItem(itemName);
+    setForm((current) => ({
+      ...current,
+      itemName,
+      unit: purchaseUnitFromCatalog(item?.uom),
+      rate: item ? String(item.price) : current.rate,
+      supplier: current.supplier || suggestedSupplier?.name || "",
+    }));
+  };
+
+  const openCreate = () => {
+    setEditingPurchaseId(null);
+    setForm(createBlankForm());
+    setLines([]);
+    setItemSearch("");
+    setEditorOpen(true);
+  };
+
+  const purchaseLines = (purchase: PurchaseRecord): PurchaseLine[] =>
+    purchase.items?.length
+      ? purchase.items.map((line) => ({
+          ...line,
+          tax: Number(line.tax || 0),
+          discount: Number(line.discount || 0),
+          total: lineTotal(line),
+        }))
+      : [
+          {
+            itemName: purchase.itemName,
+            quantity: Number(purchase.quantity || 0),
+            unit: purchase.unit || "pcs",
+            cost: Number(purchase.cost || 0),
+            tax: Number(purchase.tax || 0),
+            discount: Number(purchase.discount || 0),
+            total: Number(purchase.total || 0),
+          },
+        ];
+
+  const openEdit = (purchase: PurchaseRecord) => {
+    const first = catalogItems[0];
+    setEditingPurchaseId(purchase.id);
+    setForm({
+      supplier: purchase.supplier,
+      invoiceNo: purchase.invoiceNo,
+      invoiceDate: purchase.invoiceDate || localDateKey(purchase.createdAt),
+      itemName: first?.name || purchase.itemName,
+      quantity: "",
+      unit: purchaseUnitFromCatalog(first?.uom),
+      rate: first ? String(first.price) : "",
+      tax: "0",
+      discount: "0",
+      remarks: purchase.remarks || "",
+    });
+    setLines(purchaseLines(purchase));
+    setItemSearch("");
+    setEditorOpen(true);
+  };
+
+  const addLine = () => {
+    const quantity = Number(form.quantity);
+    const cost = Number(form.rate);
+    const tax = Number(form.tax || 0);
+    const discount = Number(form.discount || 0);
+    if (!form.itemName || !Number.isFinite(quantity) || quantity <= 0) {
+      setNotice("Enter a valid item quantity before adding it to the invoice.");
       return;
     }
-    const syncLines = p.items?.length
-      ? p.items
-      : [{ itemName: p.itemName, quantity: p.quantity }];
+    if (!Number.isFinite(cost) || cost < 0) {
+      setNotice("Enter a valid item price before adding it to the invoice.");
+      return;
+    }
+    const newLine: PurchaseLine = {
+      itemName: form.itemName,
+      quantity,
+      unit: form.unit,
+      cost,
+      tax: Math.max(0, tax),
+      discount: Math.max(0, discount),
+      total: 0,
+    };
+    newLine.total = lineTotal(newLine);
+    setLines((current) => [...current, newLine]);
+    setForm((current) => ({
+      ...current,
+      quantity: "",
+      tax: "0",
+      discount: "0",
+    }));
+  };
+
+  const updateLine = (index: number, updates: Partial<PurchaseLine>) => {
+    setLines((current) =>
+      current.map((line, lineIndex) => {
+        if (lineIndex !== index) return line;
+        const next = { ...line, ...updates };
+        return { ...next, total: lineTotal(next) };
+      }),
+    );
+  };
+
+  const changeLineItem = (index: number, itemName: string) => {
+    const item = itemFromCatalog(itemName);
+    updateLine(index, {
+      itemName,
+      unit: purchaseUnitFromCatalog(item?.uom),
+      cost: item ? Number(item.price) : 0,
+    });
+  };
+
+  const aggregateQuantities = (purchaseLinesToAggregate: PurchaseLine[]) => {
+    const map = new Map<string, { itemName: string; quantity: number }>();
+    purchaseLinesToAggregate.forEach((line) => {
+      const key = normal(line.itemName);
+      const current = map.get(key);
+      map.set(key, {
+        itemName: current?.itemName || line.itemName,
+        quantity: Number(current?.quantity || 0) + Number(line.quantity || 0),
+      });
+    });
+    return map;
+  };
+
+  const stockAdjustments = (() => {
+    if (!selectedPurchase || !(selectedPurchase.syncedToStock || selectedPurchase.syncStatus === "Synced")) {
+      return [] as Array<{ itemName: string; delta: number }>;
+    }
+    const oldMap = aggregateQuantities(purchaseLines(selectedPurchase));
+    const newMap = aggregateQuantities(lines);
+    return Array.from(new Set([...oldMap.keys(), ...newMap.keys()]))
+      .map((key) => ({
+        itemName: newMap.get(key)?.itemName || oldMap.get(key)?.itemName || key,
+        delta: Number(newMap.get(key)?.quantity || 0) - Number(oldMap.get(key)?.quantity || 0),
+      }))
+      .filter((adjustment) => Math.abs(adjustment.delta) > 0.0001);
+  })();
+
+  const reconcileSyncedStock = async () => {
+    if (!selectedPurchase || stockAdjustments.length === 0) return null;
+    const plan = stockAdjustments.map((adjustment) => {
+      const catalogItem = itemFromCatalog(adjustment.itemName);
+      const stockItem = branchStock.find((entry) =>
+        catalogItem?.barcode != null && entry.itemBarcode != null
+          ? Number(entry.itemBarcode) === Number(catalogItem.barcode)
+          : normal(entry.itemName) === normal(adjustment.itemName),
+      );
+      const currentQuantity = Number(stockItem?.quantity || 0);
+      return {
+        ...adjustment,
+        barcode: catalogItem?.barcode,
+        stockName: stockItem?.itemName || adjustment.itemName,
+        currentQuantity,
+        nextQuantity: currentQuantity + adjustment.delta,
+      };
+    });
+    const invalid = plan.find((adjustment) => adjustment.nextQuantity < 0);
+    if (invalid) {
+      return `Cannot reduce ${invalid.itemName} by ${Math.abs(invalid.delta)} because only ${invalid.currentQuantity} is currently available in stock.`;
+    }
+
+    const applied: typeof plan = [];
+    for (const adjustment of plan) {
+      const error = await manualUpdateStock(
+        BRANCH,
+        adjustment.stockName,
+        adjustment.nextQuantity,
+        userName,
+        adjustment.barcode,
+      );
+      if (error) {
+        for (const rollback of [...applied].reverse()) {
+          await manualUpdateStock(
+            BRANCH,
+            rollback.stockName,
+            rollback.currentQuantity,
+            userName,
+            rollback.barcode,
+          );
+        }
+        return `${error} Any stock changes made during this edit were rolled back.`;
+      }
+      applied.push(adjustment);
+    }
+    await fetchBranchData(BRANCH);
+    addAuditLog({
+      branch: BRANCH,
+      user: userName,
+      action: "SNB Purchase Invoice Stock Reconciliation",
+      previousValue: selectedPurchase.invoiceNo,
+      newValue: plan
+        .map((adjustment) => `${adjustment.itemName} ${adjustment.delta > 0 ? "+" : ""}${adjustment.delta}`)
+        .join(", "),
+    });
+    return null;
+  };
+
+  const saveInvoice = async () => {
+    if (saving) return;
+    if (!form.supplier.trim()) {
+      setNotice("Supplier is required.");
+      return;
+    }
+    if (!form.invoiceNo.trim()) {
+      setNotice("Invoice number is required.");
+      return;
+    }
+    if (!lines.length) {
+      setNotice("Add at least one item to the invoice.");
+      return;
+    }
+    const duplicate = rows.find(
+      (purchase) =>
+        purchase.id !== editingPurchaseId &&
+        purchase.invoiceNo.trim().toLowerCase() === form.invoiceNo.trim().toLowerCase(),
+    );
+    if (duplicate) {
+      setNotice(`Invoice number ${form.invoiceNo.trim()} already exists.`);
+      return;
+    }
+
+    const normalizedLines = lines.map((line) => ({
+      ...line,
+      quantity: Number(line.quantity || 0),
+      cost: Number(line.cost || 0),
+      tax: Math.max(0, Number(line.tax || 0)),
+      discount: Math.max(0, Number(line.discount || 0)),
+      total: lineTotal(line),
+    }));
+    if (normalizedLines.some((line) => !line.itemName || line.quantity <= 0 || line.cost < 0)) {
+      setNotice("Every invoice item must have a valid item, quantity, unit, and price.");
+      return;
+    }
+    const total = normalizedLines.reduce((sum, line) => sum + line.total, 0);
+    if (selectedPurchase && total + 0.001 < Number(selectedPurchase.paidAmount || 0)) {
+      setNotice(`Invoice total cannot be below the already paid amount of ${money(selectedPurchase.paidAmount)}.`);
+      return;
+    }
+
+    const first = normalizedLines[0];
+    const invoiceData = {
+      supplier: form.supplier.trim(),
+      invoiceNo: form.invoiceNo.trim(),
+      invoiceDate: form.invoiceDate,
+      itemName: normalizedLines.length > 1 ? `${normalizedLines.length} items` : first.itemName,
+      quantity: normalizedLines.reduce((sum, line) => sum + line.quantity, 0),
+      unit: first.unit || "pcs",
+      cost: normalizedLines.length > 1 ? 0 : first.cost,
+      items: normalizedLines,
+      tax: normalizedLines.reduce((sum, line) => sum + line.tax, 0),
+      discount: normalizedLines.reduce((sum, line) => sum + Number(line.discount || 0), 0),
+      total,
+      paymentMethod: selectedPurchase?.paymentMethod || ("credit" as const),
+      remarks: form.remarks.trim(),
+    };
+
+    setSaving(true);
+    try {
+      if (selectedPurchase) {
+        const reconciliationError = await reconcileSyncedStock();
+        if (reconciliationError) {
+          setNotice(reconciliationError);
+          return;
+        }
+        updatePurchase(selectedPurchase.id, invoiceData, userName);
+        setNotice(
+          stockAdjustments.length
+            ? `${form.invoiceNo.trim()} updated and stock reconciled successfully.`
+            : `${form.invoiceNo.trim()} updated successfully.`,
+        );
+      } else {
+        addPurchase({
+          branch: BRANCH,
+          ...invoiceData,
+          enteredBy: userName,
+        });
+        setNotice(`${form.invoiceNo.trim()} saved. Stock sync is pending.`);
+      }
+      setEditorOpen(false);
+      setEditingPurchaseId(null);
+      setLines([]);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sync = async (purchase: PurchaseRecord) => {
+    if (purchase.syncedToStock || purchase.syncStatus === "Synced") {
+      setNotice("This purchase invoice is already synced to stock. Duplicate sync prevented.");
+      return;
+    }
+    const syncLines = purchaseLines(purchase);
     for (const line of syncLines) {
-      const catalogItem = catalogItems.find((item) => normal(item.name) === normal(line.itemName));
+      const catalogItem = itemFromCatalog(line.itemName);
       const existing = branchStock.find((stockItem) =>
         catalogItem?.barcode != null && stockItem.itemBarcode != null
-          ? stockItem.itemBarcode === catalogItem.barcode
+          ? Number(stockItem.itemBarcode) === Number(catalogItem.barcode)
           : normal(stockItem.itemName) === normal(line.itemName),
       );
       const currentQty = Number(existing?.quantity ?? 0);
-      const err = await manualUpdateStock(
+      const error = await manualUpdateStock(
         BRANCH,
         existing?.itemName || line.itemName,
         currentQty + Number(line.quantity),
         userName,
         catalogItem?.barcode,
       );
-      if (err) {
-        setNotice(err);
+      if (error) {
+        setNotice(error);
         return;
       }
     }
-    markPurchaseSynced(p.id, userName, "Synced");
+    markPurchaseSynced(purchase.id, userName, "Synced");
     addAuditLog({
       branch: BRANCH,
       user: userName,
       action: "SNB Purchase Sync To Stock",
-      previousValue: p.itemName,
-      newValue: `${syncLines.length} item(s) synced from ${p.invoiceNo}`,
+      previousValue: purchase.itemName,
+      newValue: `${syncLines.length} item(s) synced from ${purchase.invoiceNo}`,
     });
     await fetchBranchData(BRANCH);
-    setNotice(`${p.invoiceNo} synced to SNB stock successfully.`);
+    setNotice(`${purchase.invoiceNo} synced to SNB stock successfully.`);
   };
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi
+          label="Purchase Invoices"
+          value={rows.length}
+          sub={`${visibleRows.length} currently shown`}
+          icon={<Receipt className="size-5" />}
+          tone="blue"
+        />
+        <Kpi
+          label="Purchase Value"
+          value={money(totalInvoiceValue)}
+          sub="All recorded invoices"
+          icon={<IndianRupee className="size-5" />}
+          tone="purple"
+        />
+        <Kpi
+          label="Outstanding"
+          value={money(totalOutstanding)}
+          sub="Pending supplier payment"
+          icon={<WalletCards className="size-5" />}
+          tone="amber"
+        />
+        <Kpi
+          label="Pending Stock Sync"
+          value={pendingSyncCount}
+          sub="Invoices waiting for stock update"
+          icon={<PackageCheck className="size-5" />}
+          tone={pendingSyncCount ? "red" : "green"}
+        />
+      </div>
+
       <Panel
-        title="Create Purchase Invoice"
-        icon={<Receipt className="size-4" />}
-      >
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Supplier">
-              <input
-                className={inputCls}
-                value={form.supplier}
-                onChange={(e) => setForm({ ...form, supplier: e.target.value })}
-                placeholder={selectedSupplier ? `Suggested: ${selectedSupplier.name}` : "Enter or choose by item"}
-              />
-            </Field>
-            <Field label="Invoice No">
-              <input
-                className={inputCls}
-                value={form.invoiceNo}
-                onChange={(e) =>
-                  setForm({ ...form, invoiceNo: e.target.value })
-                }
-              />
-            </Field>
-          </div>
-          <Field label="Search Item">
-            <input
-              className={inputCls}
-              value={itemSearch}
-              onChange={(e) => setItemSearch(e.target.value)}
-              placeholder="Search purchase item"
-            />
-          </Field>
-          <Field label="Item">
-            <select
-              className={inputCls}
-              value={form.itemName}
-              onChange={(e) => {
-                const itemName = e.target.value;
-                const suggested = supplierForItem(itemName);
-                setForm({ ...form, itemName, supplier: form.supplier || suggested?.name || "" });
-              }}
-            >
-              {filteredItems.map((item) => (
-                <option key={item.name}>{item.name}</option>
-              ))}
-            </select>
-          </Field>
-          {selectedSupplier && (
-            <div className="rounded-2xl bg-blue-50 p-3 text-sm font-black text-blue-700">
-              Supplier found for this item: {selectedSupplier.name}
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Quantity">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.quantity}
-                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-              />
-            </Field>
-            <Field label="Unit">
-              <select
-                className={inputCls}
-                value={form.unit}
-                onChange={(e) => setForm({ ...form, unit: e.target.value })}
-              >
-                <option value="pcs">Pcs</option>
-                <option value="kg">KG</option>
-                <option value="ltr">Ltr</option>
-                <option value="nos">Nos</option>
-                <option value="bunch">Bunch</option>
-              </select>
-            </Field>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Rate">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.rate}
-                onChange={(e) => setForm({ ...form, rate: e.target.value })}
-              />
-            </Field>
-            <Field label="Tax">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.tax}
-                onChange={(e) => setForm({ ...form, tax: e.target.value })}
-              />
-            </Field>
-            <Field label="Discount">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.discount}
-                onChange={(e) => setForm({ ...form, discount: e.target.value })}
-              />
-            </Field>
-          </div>
-          <button
-            onClick={addLine}
-            className={cn(btnCls, "w-full bg-white text-slate-700 ring-1 ring-slate-200")}
-          >
-            <Plus className="size-4" />
-            Add Item To Invoice
-          </button>
-          {lines.length > 0 && (
-            <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl bg-slate-50 p-2">
-              {lines.map((line, index) => (
-                <div key={`${line.itemName}-${index}`} className="flex items-center justify-between gap-2 rounded-xl bg-white p-3 text-sm font-bold">
-                  <span>{line.itemName} - {line.quantity} {line.unit} x {money(line.cost)}</span>
-                  <button className="text-red-600" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
-                    <X className="size-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <Field label="Remarks">
-            <input
-              className={inputCls}
-              value={form.remarks}
-              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
-            />
-          </Field>
-          <button
-            onClick={create}
-            className={cn(btnCls, "w-full bg-slate-950 text-white")}
-          >
-            <Receipt className="size-4" />
-            Save Invoice
-          </button>
-        </div>
-      </Panel>
-      <Panel
-        title="Purchase Invoice Management & Stock Sync"
-        icon={<PackageCheck className="size-4" />}
+        title="Purchase Invoice Management"
+        icon={<ShoppingCart className="size-4" />}
         action={
-          <div className="flex items-center gap-2">
-            <StatusBadge tone="amber">
-              {
-                rows.filter(
-                  (r) => !(r.syncedToStock || r.syncStatus === "Synced"),
-                ).length
-              }{" "}
-              Not Synced
-            </StatusBadge>
+          <div className="flex flex-wrap items-center gap-2">
             <button
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
                 csvDownload(
                   "SNB_Purchase_Invoices.csv",
-                  rows.map((p) => ({
-                    Invoice: p.invoiceNo,
-                    Supplier: p.supplier,
-                    Item: p.itemName,
-                    Quantity: p.quantity,
-                    Total: p.total,
-                    Paid: p.paidAmount,
-                    Balance: Math.max(0, p.total - p.paidAmount),
-                    SyncStatus: p.syncStatus ?? "Not Synced",
+                  visibleRows.map((purchase) => ({
+                    Invoice: purchase.invoiceNo,
+                    Date: purchase.invoiceDate || localDateKey(purchase.createdAt),
+                    Supplier: purchase.supplier,
+                    Items: purchase.items?.length || 1,
+                    Total: purchase.total,
+                    Paid: purchase.paidAmount,
+                    Balance: Math.max(0, purchase.total - purchase.paidAmount),
+                    SyncStatus: purchase.syncStatus ?? "Not Synced",
+                    LastEditedBy: purchase.lastEditedBy || "",
                   })),
                 )
               }
             >
-              <Download className="size-4" /> Excel
+              <Download className="size-4" /> Export
+            </button>
+            <button
+              className={cn(btnCls, "bg-slate-950 text-white")}
+              onClick={openCreate}
+            >
+              <Plus className="size-4" /> New Invoice
             </button>
           </div>
         }
       >
+        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+          <label className="relative">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              className={cn(inputCls, "pl-10")}
+              value={invoiceSearch}
+              onChange={(event) => setInvoiceSearch(event.target.value)}
+              placeholder="Search invoice, supplier, or item"
+            />
+          </label>
+          <label className="relative">
+            <Filter className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <select
+              className={cn(inputCls, "pl-10")}
+              value={syncFilter}
+              onChange={(event) => setSyncFilter(event.target.value as typeof syncFilter)}
+            >
+              <option value="all">All stock statuses</option>
+              <option value="not-synced">Not synced</option>
+              <option value="synced">Synced</option>
+            </select>
+          </label>
+          {(invoiceSearch || syncFilter !== "all") && (
+            <button
+              className={cn(btnCls, "bg-slate-100 text-slate-700")}
+              onClick={() => {
+                setInvoiceSearch("");
+                setSyncFilter("all");
+              }}
+            >
+              <X className="size-4" /> Clear
+            </button>
+          )}
+        </div>
+
         <DataTable
-          headers={[
-            "Invoice",
-            "Supplier",
-            "Item",
-            "Qty",
-            "Total",
-            "Paid",
-            "Balance",
-            "Payment Status",
-            "Pending Days",
-            "Sync Status",
-            "Action",
-          ]}
-          rows={rows.map((p) => {
-            const balance = Math.max(0, p.total - p.paidAmount);
-            const payStatus = balance <= 0 ? "Cleared" : p.paidAmount > 0 ? "Partial" : "Pending";
-            const pendingDays = balance <= 0 ? 0 : Math.max(0, Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000));
+          headers={["Invoice", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
+          rows={visibleRows.map((purchase) => {
+            const balance = Math.max(0, purchase.total - purchase.paidAmount);
+            const paymentStatus = balance <= 0 ? "Cleared" : purchase.paidAmount > 0 ? "Partial" : "Pending";
+            const isSynced = purchase.syncedToStock || purchase.syncStatus === "Synced";
+            const invoiceLines = purchaseLines(purchase);
             return [
-              p.invoiceNo,
-              p.supplier,
-              p.itemName,
-              `${p.quantity} ${p.unit ?? ""}`,
-              money(p.total),
-              money(p.paidAmount),
-              money(balance),
-              <StatusBadge key="p" tone={payStatus === "Cleared" ? "green" : payStatus === "Partial" ? "blue" : "amber"}>{payStatus}</StatusBadge>,
-              pendingDays ? `${pendingDays} days` : "-",
-              <StatusBadge
-                key="s"
-                tone={
-                  p.syncedToStock || p.syncStatus === "Synced" ? "green" : "amber"
-                }
-              >
-                {p.syncStatus ?? "Not Synced"}
-              </StatusBadge>,
-              <button
-                key="a"
-                onClick={() => sync(p)}
-                disabled={p.syncedToStock || p.syncStatus === "Synced"}
-                className={cn(
-                  btnCls,
-                  p.syncedToStock || p.syncStatus === "Synced"
-                    ? "bg-slate-100 text-slate-400"
-                    : "bg-emerald-600 text-white",
+              <div key="invoice" className="min-w-[130px]">
+                <p className="font-black text-slate-950">{purchase.invoiceNo}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {fmtDate(purchase.invoiceDate || purchase.createdAt)}
+                </p>
+                {purchase.lastEditedBy && (
+                  <p className="mt-1 text-[10px] font-bold text-blue-600">
+                    Edited by {purchase.lastEditedBy}
+                  </p>
                 )}
-              >
-                <RefreshCcw className="size-4" />
-                Sync to Stock
-              </button>,
+              </div>,
+              <div key="supplier" className="min-w-[140px]">
+                <p className="font-black text-slate-800">{purchase.supplier}</p>
+                {purchase.remarks && <p className="mt-1 max-w-[180px] truncate text-xs text-slate-500">{purchase.remarks}</p>}
+              </div>,
+              <div key="items" className="min-w-[160px]">
+                <p className="font-black text-slate-800">
+                  {invoiceLines.length} item{invoiceLines.length === 1 ? "" : "s"}
+                </p>
+                <p className="mt-1 max-w-[210px] truncate text-xs text-slate-500">
+                  {invoiceLines.map((line) => line.itemName).join(", ")}
+                </p>
+              </div>,
+              <div key="total" className="font-black tabular-nums text-slate-950">{money(purchase.total)}</div>,
+              <div key="balance" className="tabular-nums">
+                <p className="font-black text-slate-800">{money(balance)}</p>
+                <p className="mt-1 text-xs text-slate-500">Paid {money(purchase.paidAmount)}</p>
+              </div>,
+              <StatusBadge key="payment" tone={paymentStatus === "Cleared" ? "green" : paymentStatus === "Partial" ? "blue" : "amber"}>
+                {paymentStatus}
+              </StatusBadge>,
+              <StatusBadge key="stock" tone={isSynced ? "green" : "amber"}>
+                {purchase.syncStatus ?? "Not Synced"}
+              </StatusBadge>,
+              <div key="actions" className="flex min-w-[210px] flex-wrap gap-2">
+                <button
+                  onClick={() => openEdit(purchase)}
+                  className={cn(btnCls, "bg-blue-50 px-3 py-1.5 text-blue-700 ring-1 ring-blue-100")}
+                >
+                  <Pencil className="size-3.5" /> Edit
+                </button>
+                <button
+                  onClick={() => sync(purchase)}
+                  disabled={isSynced}
+                  className={cn(
+                    btnCls,
+                    "px-3 py-1.5",
+                    isSynced
+                      ? "cursor-not-allowed bg-slate-100 text-slate-400"
+                      : "bg-emerald-600 text-white",
+                  )}
+                >
+                  <RefreshCcw className="size-3.5" />
+                  {isSynced ? "Synced" : "Sync"}
+                </button>
+              </div>,
             ];
           })}
-          empty="No purchase invoices created."
+          empty="No purchase invoices match the current search and filters."
         />
       </Panel>
+
+      {editorOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex justify-end bg-slate-950/45 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !saving) setEditorOpen(false);
+          }}
+        >
+          <section className="flex h-full w-full max-w-5xl flex-col overflow-hidden bg-slate-50 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-600">
+                  {selectedPurchase ? "Edit existing invoice" : "Create purchase invoice"}
+                </p>
+                <h2 className="mt-1 text-xl font-black text-slate-950">
+                  {selectedPurchase ? selectedPurchase.invoiceNo : "New Purchase Invoice"}
+                </h2>
+              </div>
+              <button
+                className="flex size-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600"
+                onClick={() => !saving && setEditorOpen(false)}
+                aria-label="Close invoice editor"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
+              <Panel title="Invoice Details" icon={<Receipt className="size-4" />}>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Field label="Supplier *">
+                    <input
+                      className={inputCls}
+                      value={form.supplier}
+                      onChange={(event) => setForm({ ...form, supplier: event.target.value })}
+                      list="snb-purchase-suppliers"
+                      placeholder="Enter or select supplier"
+                    />
+                    <datalist id="snb-purchase-suppliers">
+                      {suppliers
+                        .filter((supplier) => supplier.branch === BRANCH)
+                        .map((supplier) => <option key={supplier.id} value={supplier.name} />)}
+                    </datalist>
+                  </Field>
+                  <Field label="Invoice No *">
+                    <input
+                      className={inputCls}
+                      value={form.invoiceNo}
+                      onChange={(event) => setForm({ ...form, invoiceNo: event.target.value })}
+                      placeholder="Supplier invoice number"
+                    />
+                  </Field>
+                  <Field label="Invoice Date">
+                    <input
+                      type="date"
+                      className={inputCls}
+                      value={form.invoiceDate}
+                      onChange={(event) => setForm({ ...form, invoiceDate: event.target.value })}
+                    />
+                  </Field>
+                </div>
+              </Panel>
+
+              <Panel
+                title="Add Invoice Item"
+                icon={<Package className="size-4" />}
+                action={
+                  <StatusBadge tone="blue">Price and unit autofill</StatusBadge>
+                }
+              >
+                <div className="grid gap-3 lg:grid-cols-12">
+                  <div className="lg:col-span-4">
+                    <Field label="Search Item">
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          className={cn(inputCls, "pl-10")}
+                          value={itemSearch}
+                          onChange={(event) => setItemSearch(event.target.value)}
+                          placeholder="Search catalogue"
+                        />
+                      </div>
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-4">
+                    <Field label="Item *">
+                      <select
+                        className={inputCls}
+                        value={form.itemName}
+                        onChange={(event) => chooseItem(event.target.value)}
+                      >
+                        {itemOptions.map((item) => (
+                          <option key={item.barcode} value={item.name}>{item.name}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-2">
+                    <Field label="Quantity *">
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        className={inputCls}
+                        value={form.quantity}
+                        onChange={(event) => setForm({ ...form, quantity: event.target.value })}
+                        placeholder="0"
+                      />
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-2">
+                    <Field label="Unit *">
+                      <select
+                        className={inputCls}
+                        value={form.unit}
+                        onChange={(event) => setForm({ ...form, unit: event.target.value as PurchaseUnit })}
+                      >
+                        <option value="pcs">Pcs</option>
+                        <option value="kg">KG</option>
+                        <option value="ltr">Ltr</option>
+                        <option value="nos">Nos</option>
+                        <option value="bunch">Bunch</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-3">
+                    <Field label="Item Price / Rate *">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className={inputCls}
+                        value={form.rate}
+                        onChange={(event) => setForm({ ...form, rate: event.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-3">
+                    <Field label="Tax Amount">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className={inputCls}
+                        value={form.tax}
+                        onChange={(event) => setForm({ ...form, tax: event.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="lg:col-span-3">
+                    <Field label="Discount Amount">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className={inputCls}
+                        value={form.discount}
+                        onChange={(event) => setForm({ ...form, discount: event.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="flex items-end lg:col-span-3">
+                    <button
+                      onClick={addLine}
+                      className={cn(btnCls, "w-full bg-amber-500 text-slate-950")}
+                    >
+                      <Plus className="size-4" /> Add Item
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
+                  {selectedCatalogItem && (
+                    <span className="rounded-full bg-blue-50 px-3 py-1.5 text-blue-700">
+                      Catalogue: {money(selectedCatalogItem.price)} / {purchaseUnitFromCatalog(selectedCatalogItem.uom)}
+                    </span>
+                  )}
+                  {selectedSupplier && (
+                    <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">
+                      Suggested supplier: {selectedSupplier.name}
+                    </span>
+                  )}
+                  <span>The auto-filled price and unit can be changed before adding the item.</span>
+                </div>
+              </Panel>
+
+              <Panel
+                title={`Invoice Items (${lines.length})`}
+                icon={<ShoppingCart className="size-4" />}
+                action={<p className="text-sm font-black text-slate-950">Total: {money(invoiceTotal)}</p>}
+              >
+                {lines.length ? (
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                    <table className="w-full min-w-[920px] text-sm">
+                      <thead className="bg-slate-50 text-left text-[10px] font-black uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2.5">Item</th>
+                          <th className="px-3 py-2.5">Qty</th>
+                          <th className="px-3 py-2.5">Unit</th>
+                          <th className="px-3 py-2.5">Rate</th>
+                          <th className="px-3 py-2.5">Tax</th>
+                          <th className="px-3 py-2.5">Discount</th>
+                          <th className="px-3 py-2.5 text-right">Amount</th>
+                          <th className="w-14 px-3 py-2.5"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {lines.map((line, index) => (
+                          <tr key={`${line.itemName}-${index}`}>
+                            <td className="min-w-[230px] px-3 py-2.5">
+                              <select
+                                className="w-full rounded-xl border border-slate-200 px-2 py-1.5 font-black text-slate-800 outline-none focus:border-amber-400"
+                                value={line.itemName}
+                                onChange={(event) => changeLineItem(index, event.target.value)}
+                              >
+                                {catalogItems.map((item) => (
+                                  <option key={item.barcode} value={item.name}>{item.name}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-24 rounded-xl border border-slate-200 px-2 py-1.5 font-bold outline-none focus:border-amber-400"
+                                value={line.quantity}
+                                onChange={(event) => updateLine(index, { quantity: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <select
+                                className="w-24 rounded-xl border border-slate-200 px-2 py-1.5 font-bold outline-none focus:border-amber-400"
+                                value={line.unit || "pcs"}
+                                onChange={(event) => updateLine(index, { unit: event.target.value as PurchaseUnit })}
+                              >
+                                <option value="pcs">Pcs</option>
+                                <option value="kg">KG</option>
+                                <option value="ltr">Ltr</option>
+                                <option value="nos">Nos</option>
+                                <option value="bunch">Bunch</option>
+                              </select>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="w-28 rounded-xl border border-slate-200 px-2 py-1.5 font-bold outline-none focus:border-amber-400"
+                                value={line.cost}
+                                onChange={(event) => updateLine(index, { cost: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="w-24 rounded-xl border border-slate-200 px-2 py-1.5 font-bold outline-none focus:border-amber-400"
+                                value={line.tax}
+                                onChange={(event) => updateLine(index, { tax: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="w-24 rounded-xl border border-slate-200 px-2 py-1.5 font-bold outline-none focus:border-amber-400"
+                                value={line.discount || 0}
+                                onChange={(event) => updateLine(index, { discount: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-black tabular-nums text-slate-950">{money(lineTotal(line))}</td>
+                            <td className="px-3 py-2.5">
+                              <button
+                                className="flex size-8 items-center justify-center rounded-xl bg-red-50 text-red-600"
+                                onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))}
+                                aria-label={`Remove ${line.itemName}`}
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl bg-slate-50 p-8 text-center text-sm font-black text-slate-400">
+                    Select an item above, confirm its auto-filled unit and price, and click Add Item.
+                  </div>
+                )}
+              </Panel>
+
+              <Panel title="Remarks" icon={<BookOpenCheck className="size-4" />}>
+                <textarea
+                  className={cn(inputCls, "min-h-24 resize-y")}
+                  value={form.remarks}
+                  onChange={(event) => setForm({ ...form, remarks: event.target.value })}
+                  placeholder="Optional invoice notes"
+                />
+              </Panel>
+
+              {selectedPurchase?.syncedToStock || selectedPurchase?.syncStatus === "Synced" ? (
+                <div className={cn(
+                  "rounded-3xl p-4 ring-1",
+                  stockAdjustments.length
+                    ? "bg-amber-50 text-amber-900 ring-amber-200"
+                    : "bg-emerald-50 text-emerald-900 ring-emerald-200",
+                )}>
+                  <div className="flex items-start gap-3">
+                    {stockAdjustments.length ? <AlertTriangle className="mt-0.5 size-5 shrink-0" /> : <CheckCircle2 className="mt-0.5 size-5 shrink-0" />}
+                    <div>
+                      <p className="font-black">
+                        {stockAdjustments.length ? "Stock reconciliation will be applied" : "No stock quantity changes detected"}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold opacity-80">
+                        {stockAdjustments.length
+                          ? stockAdjustments.map((adjustment) => `${adjustment.itemName}: ${adjustment.delta > 0 ? "+" : ""}${adjustment.delta}`).join(" · ")
+                          : "Changing supplier, invoice number, price, tax, discount, or remarks will not alter stock."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">Invoice Total</p>
+                <p className="text-2xl font-black tabular-nums text-slate-950">{money(invoiceTotal)}</p>
+                {selectedPurchase && selectedPurchase.paidAmount > 0 && (
+                  <p className="text-xs font-bold text-slate-500">Already paid: {money(selectedPurchase.paidAmount)}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className={cn(btnCls, "bg-slate-100 text-slate-700")}
+                  onClick={() => !saving && setEditorOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={saving || !lines.length}
+                  className={cn(
+                    btnCls,
+                    "min-w-[180px]",
+                    saving || !lines.length
+                      ? "cursor-not-allowed bg-slate-200 text-slate-400"
+                      : "bg-slate-950 text-white",
+                  )}
+                  onClick={saveInvoice}
+                >
+                  <CheckCircle2 className="size-4" />
+                  {saving
+                    ? "Saving..."
+                    : selectedPurchase && stockAdjustments.length
+                      ? "Save & Reconcile"
+                      : selectedPurchase
+                        ? "Update Invoice"
+                        : "Save Invoice"}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
-
 function SupplierPaymentsTab({ userName }: { userName: string }) {
   const { purchases, purchasePayments, addPurchasePayment } =
     useBranchOpsStore();
