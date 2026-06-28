@@ -38,6 +38,13 @@ interface CustomDeduction {
   createdAt: string;
 }
 
+interface DeductionRow {
+  item: StockItem | null;
+  itemSearch: string;
+  showDD: boolean;
+  quantity: string;
+}
+
 // ─── Preset reason tags ───────────────────────────────────────────────────────
 const REASON_PRESETS = [
   'Staff meal / canteen',
@@ -111,87 +118,82 @@ async function insertDeduction(
   };
 }
 
-// ─── Confirm Dialog ────────────────────────────────────────────────────────────
-function ConfirmDialog({
-  item,
-  quantity,
+// ─── Batch Confirm Dialog ──────────────────────────────────────────────────────
+function BatchConfirmDialog({
+  rows,
   reason,
+  stockItems,
   onConfirm,
   onCancel,
   saving,
 }: {
-  item: StockItem;
-  quantity: number;
+  rows: DeductionRow[];
   reason: string;
+  stockItems: StockItem[];
   onConfirm: () => void;
   onCancel: () => void;
   saving: boolean;
 }) {
-  const newQty = Math.max(0, item.quantity - quantity);
-  const isFullDepletion = newQty === 0 && item.quantity > 0;
+  const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
 
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-4"
       onClick={e => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div className="bg-card border border-border rounded-2xl w-full max-w-sm overflow-hidden">
+      <div className="bg-card border border-border rounded-2xl w-full max-w-md overflow-hidden">
         {/* Header */}
         <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-display font-bold text-foreground">Confirm Deduction</h3>
+          <h3 className="font-display font-bold text-foreground">Confirm Batch Deduction</h3>
           <button onClick={onCancel} className="size-7 rounded-lg bg-muted flex items-center justify-center">
             <X className="size-3.5 text-muted-foreground" />
           </button>
         </div>
 
-        {/* Stock preview */}
-        <div className="px-5 py-4 space-y-3">
-          <div className="bg-muted/40 rounded-xl p-3 space-y-2">
-            <div className="flex justify-between text-sm font-body">
-              <span className="text-muted-foreground">Item</span>
-              <span className="font-semibold text-foreground">{item.name}</span>
-            </div>
-            <div className="flex justify-between text-sm font-body">
-              <span className="text-muted-foreground">Deduct</span>
-              <span className="font-bold text-destructive">−{quantity} {item.unit}</span>
-            </div>
-            <div className="border-t border-border/50 pt-2 flex justify-between text-sm font-body">
-              <span className="text-muted-foreground">Current stock</span>
-              <span className="font-semibold">{item.quantity} {item.unit}</span>
-            </div>
-            <div className="flex justify-between text-sm font-body">
-              <span className="text-muted-foreground font-bold">New stock</span>
-              <span className={cn(
-                'font-display font-bold text-base tabular-nums',
-                newQty === 0 ? 'text-destructive' : newQty <= item.minThreshold ? 'text-amber-600' : 'text-emerald-600'
-              )}>
-                {newQty} {item.unit}
-              </span>
-            </div>
+        {/* Items table */}
+        <div className="px-5 py-4 space-y-3 max-h-80 overflow-y-auto">
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-xs font-body">
+              <thead>
+                <tr className="bg-muted/50 border-b border-border">
+                  <th className="px-3 py-2 text-left text-muted-foreground font-bold uppercase text-[10px]">Item</th>
+                  <th className="px-3 py-2 text-right text-muted-foreground font-bold uppercase text-[10px]">Deduct</th>
+                  <th className="px-3 py-2 text-right text-muted-foreground font-bold uppercase text-[10px]">After</th>
+                </tr>
+              </thead>
+              <tbody>
+                {validRows.map((r, i) => {
+                  const qty = Number(r.quantity);
+                  const newStock = r.item!.quantity - qty;
+                  const goesNegative = newStock < 0;
+                  return (
+                    <tr key={i} className={cn('border-b border-border/40 last:border-0', goesNegative && 'bg-red-50/40')}>
+                      <td className="px-3 py-2 font-semibold text-foreground">{r.item!.name}</td>
+                      <td className="px-3 py-2 text-right text-destructive font-bold">−{qty} {r.item!.unit}</td>
+                      <td className={cn('px-3 py-2 text-right font-bold', goesNegative ? 'text-red-600' : newStock <= r.item!.minThreshold ? 'text-amber-600' : 'text-emerald-600')}>
+                        {newStock} {r.item!.unit}
+                        {goesNegative && <span className="block text-[9px] font-body text-red-500">goes negative</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
+
+          {validRows.some(r => r.item!.quantity - Number(r.quantity) < 0) && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex gap-2">
+              <AlertCircle className="size-3.5 text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-[11px] font-body text-amber-700">
+                Some items will go negative. This is allowed — stock will be recorded as a negative value for tracking.
+              </p>
+            </div>
+          )}
 
           <div className="bg-muted/30 rounded-xl px-3 py-2">
             <p className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-0.5">Reason</p>
             <p className="text-sm font-body text-foreground">{reason}</p>
           </div>
-
-          {isFullDepletion && (
-            <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 flex gap-2">
-              <AlertCircle className="size-3.5 text-red-600 shrink-0 mt-0.5" />
-              <p className="text-[11px] font-body text-red-700">
-                This will fully deplete the stock for <strong>{item.name}</strong>.
-              </p>
-            </div>
-          )}
-
-          {!isFullDepletion && newQty <= item.minThreshold && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex gap-2">
-              <AlertCircle className="size-3.5 text-amber-600 shrink-0 mt-0.5" />
-              <p className="text-[11px] font-body text-amber-700">
-                Stock will fall below the minimum threshold of {item.minThreshold} {item.unit}.
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Actions */}
@@ -208,10 +210,142 @@ function ConfirmDialog({
             className="flex-1 h-11 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-semibold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition-all"
           >
             {saving ? <Loader2 className="size-4 animate-spin" /> : <Scissors className="size-4" />}
-            Sync & Deduct
+            Sync & Deduct All
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Single deduction row ──────────────────────────────────────────────────────
+function DeductionRowEditor({
+  row,
+  index,
+  stockItems,
+  onUpdate,
+  onRemove,
+  canRemove,
+}: {
+  row: DeductionRow;
+  index: number;
+  stockItems: StockItem[];
+  onUpdate: (index: number, patch: Partial<DeductionRow>) => void;
+  onRemove: (index: number) => void;
+  canRemove: boolean;
+}) {
+  const filtered = useMemo(() => {
+    const q = row.itemSearch.toLowerCase();
+    return q ? stockItems.filter(i => i.name.toLowerCase().includes(q)) : stockItems;
+  }, [stockItems, row.itemSearch]);
+
+  const qty = Number(row.quantity);
+  const newStock = row.item ? row.item.quantity - qty : null;
+  const goesNegative = newStock !== null && newStock < 0;
+
+  return (
+    <div className="p-3 bg-muted/20 rounded-xl border border-border space-y-2">
+      <div className="flex items-start gap-2">
+        <div className="flex-1 relative">
+          <button
+            onClick={() => onUpdate(index, { showDD: !row.showDD })}
+            className={cn(
+              'w-full h-10 px-3 rounded-xl border bg-background text-xs font-body flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-primary/30',
+              row.item ? 'border-primary/40 text-foreground' : 'border-border text-muted-foreground'
+            )}
+          >
+            <span className="truncate">
+              {row.item ? row.item.name : 'Select item…'}
+            </span>
+            <ChevronDown className={cn('size-3.5 text-muted-foreground shrink-0 ml-2 transition-transform', row.showDD && 'rotate-180')} />
+          </button>
+
+          {row.showDD && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-xl shadow-xl z-30 overflow-hidden">
+              <div className="p-2 border-b border-border">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <input
+                    autoFocus
+                    value={row.itemSearch}
+                    onChange={e => onUpdate(index, { itemSearch: e.target.value })}
+                    placeholder="Search items…"
+                    className="w-full h-8 pl-7 pr-3 rounded-lg border border-border bg-background text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                </div>
+              </div>
+              <div className="max-h-44 overflow-y-auto divide-y divide-border/40">
+                {filtered.length === 0 && (
+                  <p className="px-3 py-3 text-xs font-body text-muted-foreground text-center">No items found</p>
+                )}
+                {filtered.map(item => (
+                  <button
+                    key={item.id}
+                    onClick={() => onUpdate(index, { item, showDD: false, itemSearch: '', quantity: '' })}
+                    className="w-full px-3 py-2.5 flex items-center justify-between text-left hover:bg-muted transition-colors"
+                  >
+                    <div>
+                      <p className="text-xs font-body font-semibold text-foreground">{item.name}</p>
+                      <p className="text-[10px] font-body text-muted-foreground">{item.unit}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={cn('text-xs font-body font-bold tabular-nums', item.quantity <= item.minThreshold ? 'text-red-600' : 'text-foreground')}>
+                        {item.quantity} {item.unit}
+                      </p>
+                      {item.quantity <= item.minThreshold && (
+                        <p className="text-[9px] font-body text-red-500">Low stock</p>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Qty */}
+        <div className="flex items-center gap-1 shrink-0">
+          <input
+            type="number"
+            min={0.01}
+            step={0.01}
+            value={row.quantity}
+            onChange={e => onUpdate(index, { quantity: e.target.value })}
+            placeholder="Qty"
+            className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          {row.item && (
+            <span className="text-xs font-body font-semibold text-muted-foreground w-6 text-center">
+              {row.item.unit}
+            </span>
+          )}
+        </div>
+
+        {canRemove && (
+          <button
+            onClick={() => onRemove(index)}
+            className="size-10 flex items-center justify-center rounded-xl text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* After-deduction preview */}
+      {row.item && qty > 0 && (
+        <div className="flex items-center gap-2 text-[11px] font-body px-1">
+          <span className="text-muted-foreground">After:</span>
+          <span className={cn('font-bold tabular-nums', goesNegative ? 'text-red-600' : newStock! <= row.item.minThreshold ? 'text-amber-600' : 'text-emerald-600')}>
+            {newStock} {row.item.unit}
+          </span>
+          {goesNegative && (
+            <span className="flex items-center gap-0.5 text-red-600">
+              <AlertCircle className="size-3" />
+              Stock will go negative (−{Math.abs(newStock!)} {row.item.unit})
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -243,6 +377,10 @@ function HistoryRow({ record }: { record: CustomDeduction }) {
   );
 }
 
+function blankRow(): DeductionRow {
+  return { item: null, itemSearch: '', showDD: false, quantity: '' };
+}
+
 // ─── Main Component ────────────────────────────────────────────────────────────
 export default function StoreCustomTab() {
   const { items: stockItems, loaded: stockLoaded, load: loadStock, deductMaterials } = useStoreStockStore();
@@ -251,10 +389,7 @@ export default function StoreCustomTab() {
   const [tableReady, setTableReady]     = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  const [itemSearch, setItemSearch] = useState('');
-  const [selectedItem, setSelectedItem] = useState<StockItem | null>(null);
-  const [showItemDD, setShowItemDD]  = useState(false);
-  const [quantity, setQuantity]      = useState('');
+  const [rows, setRows] = useState<DeductionRow[]>([blankRow()]);
   const [reason, setReason]          = useState('');
   const [customReason, setCustomReason] = useState('');
 
@@ -273,51 +408,64 @@ export default function StoreCustomTab() {
     });
   }, []);
 
-  const filteredItems = useMemo(() => {
-    const q = itemSearch.toLowerCase();
-    return q ? stockItems.filter(i => i.name.toLowerCase().includes(q)) : stockItems;
-  }, [stockItems, itemSearch]);
-
   const finalReason = reason === '__custom__' ? customReason.trim() : reason;
 
-  const canSubmit = selectedItem
-    && Number(quantity) > 0
-    && Number(quantity) <= selectedItem.quantity
-    && finalReason.length > 0;
+  const validRows = rows.filter(r => r.item && Number(r.quantity) > 0);
+  const canSubmit = validRows.length > 0 && finalReason.length > 0;
+
+  const updateRow = (index: number, patch: Partial<DeductionRow>) => {
+    setRows(prev => prev.map((r, i) => i === index ? { ...r, ...patch } : r));
+  };
+
+  const removeRow = (index: number) => {
+    setRows(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const addRow = () => {
+    // Close any open dropdowns first
+    setRows(prev => [...prev.map(r => ({ ...r, showDD: false })), blankRow()]);
+  };
 
   const handleConfirm = async () => {
-    if (!selectedItem || !canSubmit) return;
+    if (!canSubmit) return;
     setSaving(true); setError('');
 
-    const qty = Number(quantity);
+    const results: string[] = [];
+    const newRecords: CustomDeduction[] = [];
 
-    // 1. Deduct from inventory
-    const deductErr = await deductMaterials([{ name: selectedItem.name, qty }]);
-    if (deductErr && !deductErr.startsWith('Note:')) {
-      setSaving(false);
-      setError(`Stock deduction failed: ${deductErr}`);
-      return;
+    for (const r of validRows) {
+      const qty = Number(r.quantity);
+
+      // Deduct from inventory (allow negative)
+      const deductErr = await deductMaterials([{ name: r.item!.name, qty }]);
+      if (deductErr && !deductErr.startsWith('Note:')) {
+        results.push(`${r.item!.name}: deduction failed — ${deductErr}`);
+        continue;
+      }
+
+      // Log to DB
+      const record = await insertDeduction(r.item!, qty, finalReason);
+      if (record) newRecords.push(record);
     }
 
-    // 2. Log to DB
-    const record = await insertDeduction(selectedItem, qty, finalReason);
     setSaving(false);
 
-    if (!record) {
-      // Stock was deducted but log failed — warn but don't block
-      setError('Stock deducted but failed to save to history. Please note this manually.');
-    } else {
-      setDeductions(prev => [record, ...prev]);
+    if (newRecords.length > 0) {
+      setDeductions(prev => [...newRecords.reverse(), ...prev]);
     }
 
-    // 3. Reset form
+    // Reset form
     setShowConfirm(false);
-    setSelectedItem(null);
-    setQuantity('');
+    setRows([blankRow()]);
     setReason('');
     setCustomReason('');
-    setSuccess(`Deducted ${qty} ${selectedItem.unit} of ${selectedItem.name} successfully.`);
-    setTimeout(() => setSuccess(''), 4000);
+
+    if (results.length > 0) {
+      setError(`Some items had errors:\n${results.join('\n')}`);
+    } else {
+      setSuccess(`Deducted ${validRows.length} item${validRows.length > 1 ? 's' : ''} successfully.`);
+      setTimeout(() => setSuccess(''), 4000);
+    }
   };
 
   return (
@@ -330,7 +478,7 @@ export default function StoreCustomTab() {
           <h2 className="font-display font-bold text-foreground">Custom Deduction</h2>
         </div>
         <p className="text-[11px] font-body text-muted-foreground">
-          Manually remove stock for internal use, spillage, or any other reason. All deductions are logged.
+          Manually remove stock for internal use, spillage, or any other reason. Add multiple items at once. All deductions are logged.
         </p>
       </div>
 
@@ -361,121 +509,39 @@ export default function StoreCustomTab() {
         <div className="px-4 py-3 border-b border-border flex items-center gap-2">
           <Plus className="size-4 text-primary" />
           <h3 className="font-display font-bold text-foreground">New Deduction</h3>
+          <span className="ml-auto text-[10px] font-body text-muted-foreground">{validRows.length} item{validRows.length !== 1 ? 's' : ''} selected</span>
         </div>
 
         <div className="px-4 py-4 space-y-4">
 
-          {/* Item selector */}
-          <div>
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">
-              Item *
+          {/* Multi-row item editor */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase block">
+              Items *
             </label>
-            <div className="relative">
-              <button
-                onClick={() => setShowItemDD(v => !v)}
-                className={cn(
-                  'w-full h-11 px-3 rounded-xl border bg-background text-sm font-body flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-primary/30',
-                  selectedItem ? 'border-primary/40 text-foreground' : 'border-border text-muted-foreground'
-                )}
-              >
-                <span className="truncate">
-                  {selectedItem
-                    ? `${selectedItem.name} (${selectedItem.quantity} ${selectedItem.unit} in stock)`
-                    : 'Select item…'}
-                </span>
-                <ChevronDown className={cn('size-4 text-muted-foreground shrink-0 ml-2 transition-transform', showItemDD && 'rotate-180')} />
-              </button>
-
-              {showItemDD && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-xl shadow-xl z-30 overflow-hidden">
-                  <div className="p-2 border-b border-border">
-                    <div className="relative">
-                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                      <input
-                        autoFocus
-                        value={itemSearch}
-                        onChange={e => setItemSearch(e.target.value)}
-                        placeholder="Search items…"
-                        className="w-full h-9 pl-8 pr-3 rounded-lg border border-border bg-background text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                      />
-                    </div>
-                  </div>
-                  <div className="max-h-52 overflow-y-auto divide-y divide-border/40">
-                    {filteredItems.length === 0 && (
-                      <p className="px-3 py-3 text-xs font-body text-muted-foreground text-center">No items found</p>
-                    )}
-                    {filteredItems.map(item => (
-                      <button
-                        key={item.id}
-                        onClick={() => { setSelectedItem(item); setShowItemDD(false); setItemSearch(''); setQuantity(''); }}
-                        className="w-full px-3 py-2.5 flex items-center justify-between text-left hover:bg-muted transition-colors"
-                      >
-                        <div>
-                          <p className="text-xs font-body font-semibold text-foreground">{item.name}</p>
-                          <p className="text-[10px] font-body text-muted-foreground">{item.unit}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className={cn(
-                            'text-xs font-body font-bold tabular-nums',
-                            item.quantity <= item.minThreshold ? 'text-red-600' : 'text-foreground'
-                          )}>
-                            {item.quantity} {item.unit}
-                          </p>
-                          {item.quantity <= item.minThreshold && (
-                            <p className="text-[9px] font-body text-red-500">Low stock</p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            {rows.map((row, i) => (
+              <DeductionRowEditor
+                key={i}
+                row={row}
+                index={i}
+                stockItems={stockItems}
+                onUpdate={updateRow}
+                onRemove={removeRow}
+                canRemove={rows.length > 1}
+              />
+            ))}
+            <button
+              onClick={addRow}
+              className="w-full h-9 rounded-xl border border-dashed border-primary/40 text-xs font-body font-semibold text-primary hover:bg-primary/5 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Plus className="size-3.5" /> Add another item
+            </button>
           </div>
-
-          {/* Quantity */}
-          {selectedItem && (
-            <div>
-              <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">
-                Quantity to Deduct * <span className="normal-case font-normal">(max {selectedItem.quantity} {selectedItem.unit})</span>
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0.01}
-                  step={0.01}
-                  max={selectedItem.quantity}
-                  value={quantity}
-                  onChange={e => setQuantity(e.target.value)}
-                  placeholder={`e.g. 2.5`}
-                  className="flex-1 h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                />
-                <span className="text-sm font-body font-semibold text-muted-foreground shrink-0 w-10 text-center">
-                  {selectedItem.unit}
-                </span>
-              </div>
-              {Number(quantity) > selectedItem.quantity && (
-                <p className="text-[11px] font-body text-destructive mt-1 flex items-center gap-1">
-                  <AlertCircle className="size-3" /> Exceeds available stock ({selectedItem.quantity} {selectedItem.unit})
-                </p>
-              )}
-              {Number(quantity) > 0 && Number(quantity) <= selectedItem.quantity && (
-                <p className="text-[11px] font-body text-muted-foreground mt-1">
-                  After deduction: <strong className={cn(
-                    Math.max(0, selectedItem.quantity - Number(quantity)) <= selectedItem.minThreshold
-                      ? 'text-amber-600' : 'text-foreground'
-                  )}>
-                    {Math.max(0, selectedItem.quantity - Number(quantity))} {selectedItem.unit}
-                  </strong>
-                </p>
-              )}
-            </div>
-          )}
 
           {/* Reason presets */}
           <div>
             <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">
-              Reason *
+              Reason * <span className="normal-case font-normal text-muted-foreground">(shared for all items)</span>
             </label>
             <div className="flex flex-wrap gap-1.5 mb-2">
               {REASON_PRESETS.map(r => (
@@ -517,7 +583,7 @@ export default function StoreCustomTab() {
           {error && (
             <div className="bg-destructive/10 border border-destructive/30 rounded-xl px-3 py-2 flex gap-2">
               <AlertCircle className="size-3.5 text-destructive shrink-0 mt-0.5" />
-              <p className="text-xs font-body text-destructive">{error}</p>
+              <p className="text-xs font-body text-destructive whitespace-pre-wrap">{error}</p>
             </div>
           )}
 
@@ -527,7 +593,8 @@ export default function StoreCustomTab() {
             onClick={() => { setError(''); setShowConfirm(true); }}
             className="w-full h-12 rounded-xl bg-destructive text-destructive-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.98] transition-all"
           >
-            <Scissors className="size-4" /> Sync & Deduct from Inventory
+            <Scissors className="size-4" />
+            {validRows.length > 1 ? `Sync & Deduct ${validRows.length} Items` : 'Sync & Deduct from Inventory'}
           </button>
         </div>
       </div>
@@ -561,12 +628,12 @@ export default function StoreCustomTab() {
         )}
       </div>
 
-      {/* Confirm modal */}
-      {showConfirm && selectedItem && (
-        <ConfirmDialog
-          item={selectedItem}
-          quantity={Number(quantity)}
+      {/* Batch Confirm modal */}
+      {showConfirm && (
+        <BatchConfirmDialog
+          rows={rows}
           reason={finalReason}
+          stockItems={stockItems}
           onConfirm={handleConfirm}
           onCancel={() => setShowConfirm(false)}
           saving={saving}

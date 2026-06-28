@@ -199,6 +199,11 @@ function AdminInvoiceCard({
             <span className={cn('text-[9px] font-body font-bold px-2 py-0.5 rounded-full border', statusMeta.badgeCls)}>
               {statusMeta.label}
             </span>
+            {invoice.editedAt && (
+              <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-orange-50 text-orange-700 border-orange-200 flex items-center gap-0.5">
+                ✎ Edited{invoice.editCount && invoice.editCount > 1 ? ` ×${invoice.editCount}` : ''}
+              </span>
+            )}
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
             {invoice.supplierName} · ₹{invoice.grandTotal.toFixed(2)} · {new Date(invoice.deliveryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
@@ -247,6 +252,12 @@ function AdminInvoiceCard({
           {invoice.notes && (
             <p className="text-xs font-body text-muted-foreground bg-muted/40 rounded-xl px-3 py-2">
               <span className="font-bold text-foreground">Notes: </span>{invoice.notes}
+            </p>
+          )}
+          {invoice.editedAt && (
+            <p className="text-[11px] font-body text-orange-700 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+              ✎ Last edited {new Date(invoice.editedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              {invoice.editCount && invoice.editCount > 1 && ` · ${invoice.editCount} edits total`}
             </p>
           )}
           {invoice.reviewNote && (

@@ -794,8 +794,58 @@ const mergeOperationRecordsIntoState = (
   return { ...(saved ?? { version: 1 }), state };
 };
 
+// EGRESS FIX: Derive the current branch from the auth session so hydration
+// queries are scoped to just this device's branch. Without a branch filter,
+// every page load pulls up to 5 000 operation records from ALL branches,
+// which multiplies egress by the number of branches. We read the persisted
+// auth state directly from localStorage to avoid a circular store dependency.
+function getSessionBranch(): Branch | null {
+  try {
+    const raw = localStorage.getItem('cafe-aadvikam-auth');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { state?: { currentUser?: { role?: string } } };
+    const role = parsed?.state?.currentUser?.role ?? '';
+    if (role === 'branch_snb') return 'SNB';
+    if (role === 'branch_vrsnb') return 'VRSNB';
+    if (role === 'branch_hosur') return 'Hosur';
+    return null; // admin/owner roles load all branches — handled below
+  } catch {
+    return null;
+  }
+}
+
 const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
   getItem: async (name) => {
+    // EGRESS FIX: Scope all hydration queries to the current branch when possible.
+    // Branch staff devices only ever need their own branch's records; fetching all
+    // branches was multiplying egress by N branches on every page load/refresh.
+    // Admin/owner roles (sessionBranch === null) still load everything.
+    const sessionBranch = getSessionBranch();
+
+    let opQuery = supabase
+      .from("branch_operation_records")
+      .select("record_type, record_id, payload, created_at")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 1000 : 2000); // EGRESS FIX: reduced from 5000
+
+    let stockCountQuery = supabase
+      .from("branch_stock_count_reports")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 200 : 1000); // EGRESS FIX: reduced from 1000
+
+    let varianceQuery = supabase
+      .from("branch_stock_variance_records")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
+
+    if (sessionBranch) {
+      opQuery = opQuery.eq("branch", sessionBranch);
+      stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
+      varianceQuery = varianceQuery.eq("branch", sessionBranch);
+    }
+
     const [
       { data, error },
       { data: opRows, error: opError },
@@ -807,21 +857,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         .select("value")
         .eq("key", name)
         .maybeSingle(),
-      supabase
-        .from("branch_operation_records")
-        .select("record_type, record_id, payload, created_at")
-        .order("created_at", { ascending: false })
-        .limit(5000),
-      supabase
-        .from("branch_stock_count_reports")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(1000),
-      supabase
-        .from("branch_stock_variance_records")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(2000),
+      opQuery,
+      stockCountQuery,
+      varianceQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);

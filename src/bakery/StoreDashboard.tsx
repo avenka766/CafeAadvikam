@@ -7,7 +7,7 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle, ChefHat,
-  History, WalletCards,
+  History, WalletCards, Download,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
@@ -1010,21 +1010,114 @@ function OrdersTab() {
   const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const [initialLoading, setInitialLoading] = useState(true);
   useEffect(() => {
-    // Initial fetch
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
-    // Realtime subscriptions — instant updates instead of polling
     const unsubOrders = subscribeOrders();
     const unsubStock  = subscribeStock();
-    return () => {
-      unsubOrders();
-      unsubStock();
-    };
+    return () => { unsubOrders(); unsubStock(); };
   }, [fetchOrders, loadStock, subscribeOrders, subscribeStock]);
-  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+
+  const pending = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+
+  const downloadExcel = () => {
+    const rows: string[][] = [
+      ['Order #', 'Status', 'Branch', 'Item', 'Quantity', 'Unit', 'Created At'],
+    ];
+    for (const o of pending) {
+      for (const item of o.items) {
+        rows.push([
+          String(o.orderNumber),
+          o.status,
+          o.targetBranch ?? '',
+          item.itemName,
+          String(item.quantity),
+          item.dispatchUnit ?? 'pcs',
+          new Date(o.createdAt).toLocaleString('en-IN'),
+        ]);
+      }
+    }
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `pending-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const printAllOrders = () => {
+    const rows = pending.map(o => `
+      <tr class="order-header">
+        <td colspan="4"><strong>Order #${o.orderNumber}</strong> &nbsp;
+          ${o.targetBranch ? `<span class="branch">${o.targetBranch}</span>` : ''}
+          <span class="time">${new Date(o.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+        </td>
+      </tr>
+      ${o.items.map(item => `
+        <tr>
+          <td style="padding-left:24px">${item.itemName}</td>
+          <td>${item.quantity} ${item.dispatchUnit ?? 'pcs'}</td>
+          <td>${o.status}</td>
+          <td>${o.targetBranch ?? '—'}</td>
+        </tr>
+      `).join('')}
+    `).join('');
+
+    const win = window.open('', '_blank', 'width=800,height=600');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head>
+      <title>Pending Orders — ${new Date().toLocaleDateString('en-IN')}</title>
+      <style>
+        body { font-family: sans-serif; font-size: 13px; margin: 24px; color: #111; }
+        h2 { margin: 0 0 8px; }
+        p.sub { color: #666; font-size: 11px; margin: 0 0 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f5f5f5; border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 11px; text-transform: uppercase; }
+        td { border: 1px solid #eee; padding: 5px 10px; }
+        tr.order-header td { background: #fff8e1; font-weight: bold; border-top: 2px solid #e0c040; }
+        .branch { background: #e3f0ff; color: #1a56c4; border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+        .time { color: #888; font-size: 11px; margin-left: 8px; font-weight: normal; }
+        @media print { body { margin: 8px; } }
+      </style>
+    </head><body>
+      <h2>Pending Orders</h2>
+      <p class="sub">Printed: ${new Date().toLocaleString('en-IN')} &nbsp;·&nbsp; ${pending.length} order${pending.length !== 1 ? 's' : ''}</p>
+      <table>
+        <thead><tr><th>Item</th><th>Qty</th><th>Status</th><th>Branch</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 400);
+  };
+
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
+
   return (
     <>
+      {/* Export / Print header bar */}
+      <div className="flex items-center gap-2 mb-3">
+        <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1">
+          {pending.length} Pending Order{pending.length !== 1 ? 's' : ''}
+        </p>
+        <button
+          onClick={downloadExcel}
+          disabled={pending.length === 0}
+          className="h-8 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 disabled:opacity-40 hover:bg-muted transition-colors active:scale-95"
+        >
+          <Download className="size-3.5 text-emerald-600" /> Excel
+        </button>
+        <button
+          onClick={printAllOrders}
+          disabled={pending.length === 0}
+          className="h-8 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 disabled:opacity-40 hover:bg-muted transition-colors active:scale-95"
+        >
+          <Printer className="size-3.5 text-primary" /> Print All
+        </button>
+      </div>
+
       {pending.length > 0 && (
         <div className="mb-4 space-y-3">
           <div className="flex items-center gap-2"><Flame className="size-3.5 text-amber-500" /><p className="text-xs font-body font-bold text-muted-foreground uppercase">New Orders</p></div>

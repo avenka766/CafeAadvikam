@@ -58,10 +58,13 @@ export default function BottomNav() {
     if (!isAnyAdmin) return;
     if (!notifLoaded) loadNotifs();
     if (isAdmin && !invLoaded) loadInvoices();
+    // EGRESS FIX: Raised from 20 s → 90 s. Notification badges don't need
+    // sub-minute freshness; a 90 s cadence is invisible to users while cutting
+    // BottomNav egress by ~78 %.
     const id = setInterval(() => {
       loadNotifs();
       if (isAdmin) loadInvoices();
-    }, 20_000);
+    }, 90_000);
     return () => clearInterval(id);
   }, [isAnyAdmin, isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
 

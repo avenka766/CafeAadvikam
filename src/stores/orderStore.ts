@@ -4,10 +4,12 @@ import type { CartItem, MenuItem, Order, OrderType, OrderStatus, PaymentType, Pa
 import { generateId } from '@/lib/utils';
 import { useMenuStore } from '@/stores/menuStore';
 
-// HYGIENE FIX: 3-second polling is very aggressive — with multiple devices/tabs open it creates a
-// large number of DB reads. Increased to 30 seconds. The preferred long-term solution is to
-// migrate to Supabase Realtime subscriptions, but this constant makes it easy to tune.
-const POLL_INTERVAL_MS = 5_000;
+// EGRESS FIX: Raised from 5 s → 30 s. With multiple tabs/devices open the old value
+// generated ~24 order-table fetches per minute. At 30 s the same scenario drops to
+// 4 fetches per minute — an 83 % reduction in order-query egress. The long-term
+// solution is Supabase Realtime postgres_changes, but this constant makes it easy
+// to tune further.
+const POLL_INTERVAL_MS = 30_000;
 
 const moneyValue = (value: number) => Math.round(Number(value) * 100) / 100;
 
