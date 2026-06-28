@@ -5,6 +5,8 @@ import { BRANCH_LABELS } from './types';
 import type { BranchBillRecord } from './branchOpsStore';
 import { supabase } from '@/lib/supabase';
 
+export const BRANCH_PRINT_COMPLETE_EVENT = 'cafe-aadvikam:branch-print-complete';
+
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 const billRoundOff = (bill: BranchBillRecord) => bill.roundOff ?? roundMoney(
   bill.total - (bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)),
@@ -340,13 +342,18 @@ export async function printCounterBill(bill: BranchBillRecord, duplicate = false
     throw new Error('Unable to create the direct print frame.');
   }
   let cleaned = false;
-  const cleanup = () => {
+  const cleanup = (notify = false) => {
     if (cleaned) return;
     cleaned = true;
     frame.remove();
+    if (notify) {
+      window.dispatchEvent(new CustomEvent(BRANCH_PRINT_COMPLETE_EVENT, {
+        detail: { billNo: bill.billNo, branch: bill.branch },
+      }));
+    }
   };
-  target.onafterprint = cleanup;
-  window.setTimeout(cleanup, 60_000);
+  target.onafterprint = () => cleanup(true);
+  window.setTimeout(() => cleanup(false), 60_000);
 
   if (bill.branch === 'VRSNB') printVrsnbReceiptBill(bill, isDuplicate, target);
   else printSnbCounterBill(bill, isDuplicate, target);
