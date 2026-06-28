@@ -199,7 +199,15 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
     }
 
     const { data, error } = result;
-    if (error) return error.message;
+    if (error) {
+      // Map custom Postgres exception messages to user-friendly strings.
+      const msg = error.message ?? '';
+      if (msg.includes('INVOICE_ALREADY_REVIEWED')) return 'This invoice was already reviewed by another admin.';
+      if (msg.includes('INVOICE_NOT_FOUND')) return 'Invoice not found. It may have been deleted.';
+      if (msg.includes('SESSION_REQUIRED') || error.code === '28000') return 'Your session has expired. Please log in again.';
+      if (msg.includes('ROLE_NOT_ALLOWED') || error.code === '42501') return 'You do not have permission to review invoices.';
+      return error.message;
+    }
     if (!data) return 'This invoice was already reviewed or could not be updated.';
 
     set((state) => ({
