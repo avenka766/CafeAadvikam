@@ -48,6 +48,8 @@ type Props = {
 
 const TAX_RATE = 0;
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const roundWholeRupee = (value: number) => Math.round(Math.max(0, value));
+const clampPercentage = (value: number) => Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
 const BASE_SHORTCUTS = [
   ['F1', 'Change Salesperson'],
   ['F2', 'Search Items'],
@@ -249,10 +251,15 @@ export default function BranchBillingProTab({
     setShowQtyPopup(true);
   };
 
-  const subtotal = useMemo(() => cart.reduce((s, i) => s + i.price * i.quantity, 0), [cart]);
-  const discountValue = Math.min(Number(discount || 0), subtotal);
-  const tax = useMemo(() => cart.reduce((s, i) => s + i.tax, 0), [cart]);
-  const total = Math.max(0, subtotal + tax - discountValue);
+  const subtotal = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.price * i.quantity, 0)), [cart]);
+  const discountPercent = clampPercentage(Number(discount || 0));
+  const rawDiscountValue = roundMoney((subtotal * discountPercent) / 100);
+  const discountValue = Math.min(subtotal, roundWholeRupee(rawDiscountValue));
+  const tax = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.tax, 0)), [cart]);
+  const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - discountValue));
+  const total = roundWholeRupee(amountBeforeRoundOff);
+  const roundOff = roundMoney(total - amountBeforeRoundOff);
+  const itemCount = cart.length;
   const creditPaid = Math.min(Number(creditAmountPaid || 0), total);
   const tendered = paymentMode === 'credit'
     ? creditPaid
@@ -422,6 +429,7 @@ export default function BranchBillingProTab({
     if (paymentMode === 'credit' && !creditCustomerName.trim()) return 'Customer name is required for credit sale.';
     if (paymentMode === 'credit' && !creditCustomerMobile.trim()) return 'Mobile number is required for credit sale.';
     if (paymentMode === 'credit' && !creditDueDate) return 'Due date is required for credit sale.';
+    if (discountPercent < 0 || discountPercent > 100) return 'Discount percentage must be between 0 and 100.';
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
     if (paymentMode === 'split' && tendered < total) return 'Split payment total is less than bill total.';
     if (paymentMode === 'split' && tendered > total) return 'Split payment cannot exceed the bill total.';
@@ -496,12 +504,16 @@ export default function BranchBillingProTab({
       const canonicalItems = (canonicalData ?? []) as BranchBillItem[];
       const canonicalSubtotal = roundMoney(canonicalItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
       const canonicalTax = roundMoney(canonicalItems.reduce((sum, item) => sum + Number(item.tax || 0), 0));
-      const canonicalTotal = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - discountValue));
+      const canonicalRawDiscount = roundMoney((canonicalSubtotal * discountPercent) / 100);
+      const canonicalDiscount = Math.min(canonicalSubtotal, roundWholeRupee(canonicalRawDiscount));
+      const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalDiscount));
+      const canonicalTotal = roundWholeRupee(canonicalAmountBeforeRoundOff);
+      const canonicalRoundOff = roundMoney(canonicalTotal - canonicalAmountBeforeRoundOff);
       const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
         const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
         return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
       });
-      if (catalogueChanged || canonicalTotal !== roundMoney(total)) {
+      if (catalogueChanged || canonicalDiscount !== discountValue || canonicalTotal !== total) {
         setCart(canonicalItems);
         throw new Error('An item name or price changed in Admin. The cart has been refreshed with the current catalogue; please review and collect payment again.');
       }
@@ -517,7 +529,7 @@ export default function BranchBillingProTab({
               ].filter((row) => row.amount > 0)
             : [{ mode: paymentMode, amount: total }];
 
-      const { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', {
+      const checkoutPayload = {
         p_branch: branch,
         p_items: canonicalItems,
         p_payments: paymentRows,
@@ -525,13 +537,20 @@ export default function BranchBillingProTab({
         p_customer_phone: paymentMode === 'credit' ? creditCustomerMobile.trim() : null,
         p_salesperson: billingStaff,
         p_biller: userName,
-        p_discount: discountValue,
-        p_tax: tax,
-        p_round_off: 0,
+        p_discount: canonicalDiscount,
+        p_tax: canonicalTax,
+        p_round_off: canonicalRoundOff,
         p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
         p_due_date: paymentMode === 'credit' ? creditDueDate : null,
         p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
+      };
+      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
+        ...checkoutPayload,
+        p_discount_percent: discountPercent,
       });
+      if (rpcError && /complete_branch_checkout_canonical_v2|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
+        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', checkoutPayload));
+      }
       if (rpcError) {
         const missingRpc = /complete_branch_checkout_canonical|complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
         throw new Error(missingRpc ? 'Canonical atomic checkout is not installed in Supabase. Run all pending migrations before billing.' : rpcError.message);
@@ -543,7 +562,7 @@ export default function BranchBillingProTab({
       // for an existing bill with the same billNo first, the write is idempotent.
       const existingBill = bills.find(b => b.billNo === result.billNo);
       const saved = existingBill ?? addBill({
-        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: canonicalItems, subtotal: canonicalSubtotal, discount: discountValue, tax: canonicalTax, total: canonicalTotal,
+        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: canonicalItems, subtotal: canonicalSubtotal, discount: canonicalDiscount, discountPercent, tax: canonicalTax, roundOff: canonicalRoundOff, amountBeforeRoundOff: canonicalAmountBeforeRoundOff, total: canonicalTotal,
         tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,
@@ -555,10 +574,16 @@ export default function BranchBillingProTab({
         salesperson: billingStaff,
         biller: userName,
       });
-      await printCounterBill(saved, false);
       setLastBill(saved);
+      let printWarning = '';
+      try {
+        await printCounterBill(saved, false);
+      } catch (printError) {
+        printWarning = `Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`;
+      }
       setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       await fetchBranchData(branch);
+      if (printWarning) setError(printWarning);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Billing failed.');
       addNotification({ branch, type: 'Stock Dispute', title: 'Bill blocked during stock validation', details: String(e), raisedBy: userName });
@@ -736,9 +761,27 @@ export default function BranchBillingProTab({
           <div className="shrink-0 border-t border-slate-200 bg-white shadow-[0_-12px_35px_rgba(15,23,42,.08)]">
             <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-sm">
               <div className="min-w-0 flex-1"><span className="text-xs font-bold text-slate-500">Subtotal </span><span className="font-black tabular-nums">{money(subtotal)}</span></div>
-              <div className="flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1"><span className="text-xs font-bold text-slate-500">Disc</span><input value={discount} onChange={(e)=>setDiscount(e.target.value)} placeholder="0" className="w-16 bg-transparent text-sm font-black outline-none"/></div>
+              <div className="flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1">
+                <span className="text-xs font-bold text-slate-500">Disc %</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={discount}
+                  onChange={(e) => setDiscount(e.target.value)}
+                  onBlur={() => { if (discount !== '') setDiscount(String(clampPercentage(Number(discount)))); }}
+                  placeholder="0"
+                  className="w-14 bg-transparent text-sm font-black outline-none"
+                  aria-label="Discount percentage"
+                />
+              </div>
               <div className="rounded-xl bg-slate-950 px-3 py-1 text-lg font-black tabular-nums text-white">{money(total)}</div>
               <div className="rounded-xl bg-emerald-50 px-3 py-1 text-lg font-black tabular-nums text-emerald-800">{money(due > 0 ? due : balance)}</div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 px-4 py-1.5 text-xs font-black">
+              <span className="text-slate-600">Quantity: {itemCount} item{itemCount === 1 ? '' : 's'}</span>
+              <span className="ml-auto text-right text-slate-500">Discount -{money(discountValue)} · Before round-off {money(amountBeforeRoundOff)} · Round-off {roundOff >= 0 ? '+' : ''}{money(roundOff)}</span>
             </div>
             <div className="grid grid-cols-5 gap-1.5 px-4 py-2">
               {([['cash','Cash',Banknote],['upi','UPI',Smartphone],['card','Card',CreditCard],['split','Split',WalletCards],['credit','Credit',FileText]] as const).map(([key,label,Icon]) => (
@@ -876,7 +919,7 @@ export default function BranchBillingProTab({
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
-            <div ref={itemsGridRef} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+            <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
                 const disabled = stock <= 0;
@@ -892,17 +935,17 @@ export default function BranchBillingProTab({
                     onClick={() => !disabled && openQtyPopup(item)}
                     onMouseEnter={() => setSelectedIndex(idx)}
                     onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) openQtyPopup(item); }}
-                    className={cn('group rounded-xl border-2 bg-white p-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-xl', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-orange-500 bg-amber-50 ring-4 ring-amber-300 shadow-lg' : 'border-slate-200', inCart && idx !== selectedIndex && 'border-emerald-400 bg-emerald-50')}
+                    className={cn('group rounded-lg border-2 bg-white p-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-orange-500 bg-amber-50 ring-2 ring-amber-300 shadow-md' : 'border-slate-200', inCart && idx !== selectedIndex && 'border-emerald-400 bg-emerald-50')}
                   >
                     <div className="flex items-start justify-between gap-1">
                       <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{idx + 1}</span>
                     </div>
-                    <div className="mt-1.5">
+                    <div className="mt-1">
                       <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
                       <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                     </div>
-                    {inCart && <div className="mt-2 rounded-xl bg-emerald-600 px-2 py-1 text-center text-[10px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
+                    {inCart && <div className="mt-1.5 rounded-lg bg-emerald-600 px-2 py-0.5 text-center text-[9px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
                 );
               })}
