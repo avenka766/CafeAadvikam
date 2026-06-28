@@ -196,6 +196,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alerts', path: '/branch/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/vrsnb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Payment Mode Edit', path: '/branch/vrsnb?tab=payment-edit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Cashier Closure', path: '/branch/vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
       ];
     case 'branch_snb':
@@ -204,6 +205,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Advance Orders', path: '/branch/snb?tab=advance', icon: <FileText className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/snb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/snb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Payment Mode Edit', path: '/branch/snb?tab=payment-edit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Cashier Closure', path: '/branch/snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/branch/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
