@@ -47,6 +47,8 @@ export default function Header() {
   const isVrsnbRoute = location.pathname.startsWith('/admin-vrsnb') || location.pathname.startsWith('/branch/vrsnb');
   const isSnbRoute = location.pathname.startsWith('/admin-snb') || location.pathname.startsWith('/branch/snb') || location.pathname.startsWith('/bakery');
   const isBranchCounterRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
+  const isCompactCounterRoute = isBranchCounterRoute || isCafeBillerRoute;
   const isBakeryRoute = isVrsnbRoute || isSnbRoute;
   const headerName = isVrsnbRoute ? 'VRSNB' : (activeVenue === 'bakery' || isSnbRoute) ? 'SNB Bakery' : CAFE_CONFIG.name;
 
@@ -78,7 +80,7 @@ export default function Header() {
   return (
     <header className={cn(
       'app-header fixed top-0 left-0 right-0 z-[70] text-white border-b border-white/10',
-      isBranchCounterRoute ? 'branch-counter-header lg:left-0' : 'lg:left-[288px]',
+      isCompactCounterRoute ? 'branch-counter-header lg:left-0' : 'lg:left-[288px]',
     )}
       style={{
         background: 'linear-gradient(135deg, rgba(28,16,8,0.96), rgba(14,57,46,0.96))',
@@ -86,32 +88,32 @@ export default function Header() {
         WebkitBackdropFilter: 'blur(22px)',
         boxShadow: '0 12px 40px rgba(30,18,6,0.18)',
       }}>
-      <div className={cn('flex items-center justify-between', isBranchCounterRoute ? 'h-11 px-3 sm:px-4' : 'h-14 px-4 sm:px-6')}>
+      <div className={cn('flex items-center justify-between', isCompactCounterRoute ? 'h-11 px-3 sm:px-4' : 'h-14 px-4 sm:px-6')}>
         {/* Left — logo + name */}
-        <div className={cn('flex items-center', isBranchCounterRoute ? 'gap-2' : 'gap-2.5')}>
-          <img src={cafeLogo} alt="logo" className={cn('rounded-xl object-cover border border-white/20', isBranchCounterRoute ? 'size-7' : 'size-8')} />
+        <div className={cn('flex items-center min-w-0', isCompactCounterRoute ? 'gap-2' : 'gap-2.5')}>
+          <img src={cafeLogo} alt="logo" className={cn('shrink-0 rounded-xl object-cover border border-white/20', isCompactCounterRoute ? 'size-7' : 'size-8')} />
           <div className="leading-none">
-            <p className={cn('font-display font-semibold text-white/95', isBranchCounterRoute ? 'text-sm' : 'text-base')}>{headerName}</p>
-            {!isBranchCounterRoute && <p className="text-[10px] font-body text-white/50 uppercase tracking-[0.22em]">{isBakeryRoute ? 'Bakery operations' : 'Cafe operations'}</p>}
+            <p className={cn('truncate font-display font-semibold text-white/95', isCompactCounterRoute ? 'text-sm' : 'text-base')}>{headerName}</p>
+            {!isCompactCounterRoute && <p className="text-[10px] font-body text-white/50 uppercase tracking-[0.22em]">{isBakeryRoute ? 'Bakery operations' : 'Cafe operations'}</p>}
           </div>
         </div>
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
-          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] text-[11px] font-bold text-white/70', isBranchCounterRoute ? 'lg:flex px-2.5 py-1' : 'sm:flex px-3 py-1.5')}>
+          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] text-[11px] font-bold text-white/70', isCompactCounterRoute ? 'lg:flex px-2.5 py-1' : 'sm:flex px-3 py-1.5')}>
             <Wifi className="size-3.5 text-emerald-300" /> Online
           </div>
-          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70', isBranchCounterRoute ? 'xl:flex' : 'md:flex')}>
+          <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-[11px] font-bold text-white/70', isCompactCounterRoute ? 'xl:flex' : 'md:flex')}>
             <ShieldCheck className="size-3.5 text-amber-300" /> Role secured
           </div>
           {currentUser && (
             <div className="flex flex-col items-end">
-              <span className={cn('font-body font-semibold text-white/90 leading-none', isBranchCounterRoute ? 'text-[11px]' : 'text-xs')}>
+              <span className={cn('font-body font-semibold text-white/90 leading-none', isCompactCounterRoute ? 'text-[11px]' : 'text-xs')}>
                 {currentUser.displayName || currentUser.username}
               </span>
               <span className={cn(
                 'font-body font-bold px-1.5 py-0.5 rounded-full border mt-0.5 uppercase tracking-wide',
-                isBranchCounterRoute ? 'text-[8px]' : 'text-[9px]',
+                isCompactCounterRoute ? 'text-[8px]' : 'text-[9px]',
                 roleColor
               )}>
                 {ROLE_LABELS[currentUser.role] || currentUser.role.replace(/_/g, ' ')}
@@ -120,7 +122,7 @@ export default function Header() {
           )}
           <button
             onClick={handleLogout}
-            className={cn('rounded-xl flex items-center justify-center active:scale-90 transition-all', isBranchCounterRoute ? 'size-8' : 'size-9')}
+            className={cn('rounded-xl flex items-center justify-center active:scale-90 transition-all', isCompactCounterRoute ? 'size-8' : 'size-9')}
             style={{ background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.12)' }}
             aria-label="Exit dashboard"
             title="Exit dashboard"

@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import CafeBillerTopNav from '@/components/layout/CafeBillerTopNav';
 
 interface WorkspaceChromeProps {
   children: React.ReactNode;
@@ -196,6 +197,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alerts', path: '/branch/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/vrsnb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Payment Mode Edit', path: '/branch/vrsnb?tab=payment-edit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Cashier Closure', path: '/branch/vrsnb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
       ];
     case 'branch_snb':
@@ -204,6 +206,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Advance Orders', path: '/branch/snb?tab=advance', icon: <FileText className="size-4" />, group: 'Main' },
         { label: 'Returns', path: '/branch/snb?tab=returns', icon: <Trash2 className="size-4" />, group: 'Operations' },
         { label: 'Bill History', path: '/branch/snb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
+        { label: 'Payment Mode Edit', path: '/branch/snb?tab=payment-edit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Cashier Closure', path: '/branch/snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/branch/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
       ];
@@ -279,8 +282,9 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
-  const isBillingFullscreen = /^\/branch\/(snb|vrsnb)/.test(location.pathname) && (!location.search || !location.search.includes('tab=') || location.search.includes('tab=billing'));
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
+  const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
   const hideWorkspaceHero = /^\/(order-pad|kitchen|billing)/.test(location.pathname)
     || /^\/(daily-closure|order-history)/.test(location.pathname)
@@ -335,8 +339,8 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   ));
 
   return (
-    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isBranchBillingRoute && 'workspace-branch-billing')}>
-      {items.length > 0 && !isBranchBillingRoute && (
+    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isFullscreenBillingRoute && 'workspace-branch-billing')}>
+      {items.length > 0 && !isFullscreenBillingRoute && (
         <>
           <button
             type="button"
@@ -384,7 +388,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </>
       )}
 
-      <aside className={isBranchBillingRoute ? "hidden" : "workspace-sidebar hidden md:flex"}>
+      <aside className={isFullscreenBillingRoute ? "hidden" : "workspace-sidebar hidden md:flex"}>
         <div className="workspace-brand-card">
           <div className="workspace-brand-mark"><Sparkles className="size-5" /></div>
           <div>
@@ -409,7 +413,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
         </div>
       </aside>
 
-      <div className={isBranchBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
+      <div className={isFullscreenBillingRoute ? "flex h-full min-h-0 w-full flex-col overflow-hidden" : "workspace-main-shell"}>
         {!hideWorkspaceHero && (
           <section className="workspace-hero">
             <div className="space-y-3">
@@ -432,7 +436,9 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
           </section>
         )}
 
-        <div className={cn('workspace-content-frame', isBranchBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
+        {isCafeBillerRoute && <CafeBillerTopNav />}
+
+        <div className={cn('workspace-content-frame', isFullscreenBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
           {children}
         </div>
       </div>

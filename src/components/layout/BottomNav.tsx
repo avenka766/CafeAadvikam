@@ -20,6 +20,7 @@ import {
   FileText,
   Bell,
   WalletCards,
+  CreditCard,
   Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -146,6 +147,8 @@ export default function BottomNav() {
     : 0;
 
   if (!currentUser) return null;
+  // Cafe Biller navigation is rendered in the compact top command bar.
+  if (currentUser.role === 'billing') return null;
 
   const navItems: NavItem[] = [];
 
@@ -164,21 +167,12 @@ export default function BottomNav() {
     );
   } else if (currentUser.role === "billing") {
     navItems.push(
-      {
-        label: "Orders",
-        icon: <Receipt className="size-5" />,
-        path: "/billing",
-      },
-      {
-        label: "History",
-        icon: <History className="size-5" />,
-        path: "/order-history",
-      },
-      {
-        label: "Counter",
-        icon: <WalletCards className="size-5" />,
-        path: "/daily-closure",
-      },
+      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/billing" },
+      { label: "Advance", icon: <FileText className="size-5" />, path: "/billing?tab=advance" },
+      { label: "History", icon: <History className="size-5" />, path: "/billing?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/billing?tab=payment-edit" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/daily-closure" },
+      { label: "Alerts", icon: <Bell className="size-5" />, path: "/billing?tab=alerts" },
     );
   } else if (currentUser.role === "kitchen") {
     navItems.push(
@@ -330,6 +324,7 @@ export default function BottomNav() {
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/vrsnb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/vrsnb?tab=alerts" },
     );
@@ -339,6 +334,7 @@ export default function BottomNav() {
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/snb?tab=advance" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/snb?tab=returns" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/snb?tab=history" },
+      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/snb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=closure" },
       { label: "Alerts", icon: <Bell className="size-5" />, path: "/branch/snb?tab=alerts" },
     );

@@ -25,6 +25,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useNotificationStore } from '@/bakery/notificationStore';
+import { useSearchParams } from 'react-router-dom';
 
 // -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
@@ -869,6 +870,7 @@ export function AdvancePaymentPanel({ order, onClose }: { order: Order; onClose:
 // -- Custom item type (for non-menu items) -------------------------------------
 interface CustomLineItem { id: string; name: string; price: number; qty: number; }
 
+
 function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void; advanceOrders: Order[] }) {
   const { items, loadMenu } = useMenuStore();
   const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitAdvanceOrder } = useOrderStore(
@@ -1037,7 +1039,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
-          <div className="px-2 py-2 border-b border-border bg-background shrink-0">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
                 className="flex-1 py-2.5 rounded-md text-sm font-body font-bold bg-card shadow text-foreground flex items-center justify-center gap-1.5">
@@ -1057,7 +1059,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-amber-500 text-white' : 'hover:bg-muted text-foreground')}>
                 <p className="text-sm font-bold leading-tight">{cat.name}</p>
                 <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-white/70' : 'text-muted-foreground')}>
@@ -1073,7 +1075,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
-            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
@@ -1091,7 +1093,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
@@ -1820,7 +1822,7 @@ function NewBillPanel() {
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
-          <div className="px-2 py-2 border-b border-border bg-background shrink-0">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
                 className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
@@ -1840,7 +1842,7 @@ function NewBillPanel() {
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground')}>
                 <p className="text-sm font-bold leading-tight">{cat.name}</p>
                 <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
@@ -1856,7 +1858,7 @@ function NewBillPanel() {
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
-            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
@@ -1874,7 +1876,7 @@ function NewBillPanel() {
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
@@ -2001,7 +2003,7 @@ function NewBillPanel() {
 
       {/* -- COL 3: Bill summary ------------------------ */}
       <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
+        <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
             <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
@@ -2242,6 +2244,144 @@ function NewBillPanel() {
 }
 
 // -- Main BillingDashboard -----------------------------------------------------
+
+function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
+  const { currentUser } = useAuthStore();
+  const loadOrders = useOrderStore((state) => state.loadOrders);
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [nextMode, setNextMode] = useState<CafeEditablePaymentMode>('cash');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [auditRows, setAuditRows] = useState<CafePaymentEditAudit[]>([]);
+
+  const loadAuditRows = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('cafe_payment_mode_edits')
+      .select('order_id, old_mode, new_mode, changed_by, reason, changed_at')
+      .order('changed_at', { ascending: false })
+      .limit(500);
+    if (!error && data) setAuditRows(data as CafePaymentEditAudit[]);
+  }, []);
+
+  useEffect(() => {
+    void loadOrders(3650);
+    void loadAuditRows();
+  }, [loadAuditRows, loadOrders]);
+
+  const auditsByOrder = useMemo(() => {
+    const map = new Map<string, CafePaymentEditAudit>();
+    auditRows.forEach((row) => { if (!map.has(row.order_id)) map.set(row.order_id, row); });
+    return map;
+  }, [auditRows]);
+
+  const editableOrders = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return orders
+      .filter((order) => order.status === 'served' && ['cash', 'upi', 'card'].includes(order.paymentType))
+      .filter((order) => {
+        if (!normalized) return true;
+        return [
+          String(order.orderNumber),
+          order.customerName || '',
+          order.billedBy || '',
+          order.createdBy || '',
+          order.paymentType,
+        ].some((value) => String(value).toLowerCase().includes(normalized));
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [orders, query]);
+
+  const beginEdit = (order: Order) => {
+    setEditingId(order.id);
+    setNextMode(order.paymentType as CafeEditablePaymentMode);
+    setReason('');
+    setMessage('');
+  };
+
+  const saveEdit = async (order: Order) => {
+    if (nextMode === order.paymentType) {
+      setMessage('Choose a different payment mode.');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const changedBy = currentUser?.displayName || currentUser?.username || 'Cafe Biller';
+    const { error } = await supabase.rpc('edit_cafe_order_payment_mode', {
+      p_order_id: order.id,
+      p_new_mode: nextMode,
+      p_changed_by: changedBy,
+      p_reason: reason.trim() || null,
+    });
+    if (error) {
+      setMessage(error.message.includes('edit_cafe_order_payment_mode')
+        ? 'Cafe payment-mode migration is not installed. Apply the included Supabase migration first.'
+        : error.message);
+      setSaving(false);
+      return;
+    }
+    await Promise.all([loadOrders(3650), loadAuditRows()]);
+    setEditingId(null);
+    setReason('');
+    setSaving(false);
+    setMessage(`Bill #${String(order.orderNumber).padStart(4, '0')} payment mode updated to ${nextMode.toUpperCase()}.`);
+  };
+
+  return (
+    <div className="h-full min-h-0 overflow-y-auto bg-slate-50 p-2 sm:p-3">
+      <section className="mx-auto max-w-7xl overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white shadow-lg shadow-slate-200/50">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-rose-600">Cafe Biller</p>
+            <h2 className="text-2xl font-black text-slate-950">Payment Mode Edit</h2>
+            <p className="text-sm font-semibold text-slate-500">Only Cash, UPI and Card can be corrected. Items, quantities and bill totals remain locked.</p>
+          </div>
+          <div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search bill, customer or cashier" className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-rose-500 focus:bg-white" /></div>
+        </div>
+
+        {message && <div className={cn('mx-4 mt-3 rounded-xl px-3 py-2 text-sm font-bold', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</div>}
+
+        <div className="overflow-x-auto p-3">
+          <table className="w-full min-w-[900px] border-separate border-spacing-y-1 text-left">
+            <thead><tr className="text-[10px] font-black uppercase tracking-wider text-slate-500"><th className="px-3 py-2">Bill</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Cashier</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Payment Mode</th><th className="px-3 py-2">Last Correction</th><th className="px-3 py-2 text-right">Action</th></tr></thead>
+            <tbody>
+              {editableOrders.map((order) => {
+                const audit = auditsByOrder.get(order.id);
+                const editing = editingId === order.id;
+                return (
+                  <tr key={order.id} className="bg-slate-50 text-sm font-semibold text-slate-700">
+                    <td className="rounded-l-xl px-3 py-3 font-black text-slate-950">#{String(order.orderNumber).padStart(4, '0')}</td>
+                    <td className="px-3 py-3 text-xs">{new Date(order.createdAt).toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-3">{order.customerName || '-'}</td>
+                    <td className="px-3 py-3">{order.billedBy || order.createdBy}</td>
+                    <td className="px-3 py-3 font-black tabular-nums text-slate-950">{formatCurrency(order.total)}</td>
+                    <td className="px-3 py-3">
+                      {editing ? (
+                        <select value={nextMode} onChange={(event) => setNextMode(event.target.value as CafeEditablePaymentMode)} className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black uppercase outline-none focus:border-rose-500"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select>
+                      ) : <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase text-white">{order.paymentType}</span>}
+                    </td>
+                    <td className="px-3 py-3 text-[11px] text-slate-500">{audit ? `${audit.old_mode.toUpperCase()} → ${audit.new_mode.toUpperCase()} · ${new Date(audit.changed_at).toLocaleString('en-IN')}` : 'No correction'}</td>
+                    <td className="rounded-r-xl px-3 py-3 text-right">
+                      {editing ? (
+                        <div className="flex items-center justify-end gap-2"><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" className="h-9 w-40 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold outline-none focus:border-rose-500" /><button onClick={() => void saveEdit(order)} disabled={saving} className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">Save</button><button onClick={() => setEditingId(null)} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Cancel</button></div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-2"><button onClick={() => printPaidBill(order, 'duplicate')} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-black text-slate-700">Duplicate</button><button onClick={() => beginEdit(order)} className="rounded-lg bg-slate-950 px-3 py-2 text-xs font-black text-white">Edit Mode</button></div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {editableOrders.length === 0 && <div className="rounded-2xl bg-slate-50 p-10 text-center font-bold text-slate-500">No eligible Cash, UPI or Card bills found.</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// -- Main BillingDashboard -----------------------------------------------------
 export default function BillingDashboard() {
   // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
   const { orders, startPolling, stopPolling, polling, clearCart, cart } = useOrderStore(
@@ -2256,12 +2396,22 @@ export default function BillingDashboard() {
   );
   const { currentUser } = useAuthStore();
   const counterOpenedToday = useCafeCounterOpened();
-  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts'>('new_bill');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit'>('new_bill');
   // U-01 FIX: track pending tab switch so we can show a confirmation before wiping cart
-  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | null>(null);
+  const [pendingTab, setPendingTab] = useState<OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit' | null>(null);
+
+  useEffect(() => {
+    const requested = searchParams.get('tab');
+    if (requested === 'advance') setActiveTab('advance');
+    else if (requested === 'alerts') setActiveTab('alerts');
+    else if (requested === 'payment-edit') setActiveTab('payment_edit');
+    else if (requested === 'history') setActiveTab('served');
+    else setActiveTab('new_bill');
+  }, [searchParams]);
 
   // U-01 FIX: guard against accidental cart wipe - show confirmation when cart has items
-  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts') => {
+  const switchTab = (tab: OrderStatus | 'new_bill' | 'advance' | 'alerts' | 'payment_edit') => {
     const leavingBillTab = activeTab === 'new_bill' || activeTab === 'advance';
     const enteringBillTab = tab === 'new_bill' || tab === 'advance';
     const cartHasItems = cart.length > 0;
@@ -2274,19 +2424,30 @@ export default function BillingDashboard() {
       clearCart();
     }
     setActiveTab(tab);
+    if (tab === 'new_bill') setSearchParams({});
+    else if (tab === 'advance') setSearchParams({ tab: 'advance' });
+    else if (tab === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (tab === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
   };
 
   const confirmTabSwitch = () => {
     if (!pendingTab) return;
     clearCart();
-    setActiveTab(pendingTab);
+    const next = pendingTab;
+    setActiveTab(next);
+    if (next === 'new_bill') setSearchParams({});
+    else if (next === 'advance') setSearchParams({ tab: 'advance' });
+    else if (next === 'alerts') setSearchParams({ tab: 'alerts' });
+    else if (next === 'payment_edit') setSearchParams({ tab: 'payment-edit' });
+    else setSearchParams({ tab: 'history' });
     setPendingTab(null);
   };
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
-    startPolling(60); // Biller needs older open advance balances until they are fully collected.
+    startPolling(3650); // Cafe history and payment-mode corrections need the complete retained bill history.
     return () => stopPolling();
   }, [startPolling, stopPolling]);
 
@@ -2352,7 +2513,7 @@ export default function BillingDashboard() {
   }, [isUnpaidOpenOrder]);
 
   const filtered = useMemo(() => {
-    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts') return [];
+    if (activeTab === 'new_bill' || activeTab === 'advance' || activeTab === 'alerts' || activeTab === 'payment_edit') return [];
     let result = regularOrders.filter(o => matchesStatusTab(o, activeTab));
     if (sourceFilter !== 'all') result = result.filter(o => o.orderSource === sourceFilter);
     return result;
@@ -2363,7 +2524,14 @@ export default function BillingDashboard() {
   const staffCount = regularOrders.filter(o => o.orderSource === 'staff').length;
 
   return (
-    <div className="flex flex-col bg-background" style={{ height: '100dvh', paddingTop: '.35rem', paddingBottom: 'var(--nav-h, 5.25rem)' }} data-billing-dashboard>
+    <div
+      className="flex min-h-0 flex-col overflow-hidden bg-background"
+      style={{
+        height: '100%',
+        paddingTop: '.2rem',
+      }}
+      data-billing-dashboard
+    >
 
       {/* U-01 FIX: cart-clear confirmation dialog */}
       {pendingTab !== null && (
@@ -2402,69 +2570,32 @@ export default function BillingDashboard() {
               <button onClick={() => setShowDeliveryPopup(false)} className="p-2 rounded-xl bg-muted"><X className="size-4" /></button>
             </div>
             <div className="mt-4 max-h-64 overflow-y-auto space-y-2">{todayDeliveryAlerts.map(o => <div key={o.id} className="rounded-2xl border border-border p-3"><div className="flex justify-between gap-3"><span className="font-bold">#{String(o.orderNumber).padStart(4,'0')} · {o.customerName || 'Customer'}</span><span className="text-xs font-bold text-amber-700">{new Date(o.deliveryDate!).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</span></div><p className="text-xs text-muted-foreground mt-1">Balance: {formatCurrency(o.balanceDue ?? 0)}</p></div>)}</div>
-            <button onClick={() => { setShowDeliveryPopup(false); setActiveTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
+            <button onClick={() => { setShowDeliveryPopup(false); switchTab('alerts'); }} className="mt-4 w-full rounded-xl bg-amber-500 py-3 text-sm font-bold text-white">Open Alerts</button>
           </div>
         </div>
       )}
 
-      {/* -- Status bar -- */}
-      <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
-          <span className="text-xs font-body font-medium text-muted-foreground">
-            {polling ? 'Live' : 'Offline'}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
+      {/* Compact live/order filter rail. Main Cafe navigation now lives above this page. */}
+      <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="mr-1 flex items-center gap-1.5">
+            <span className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
+            <span className="text-[11px] font-bold text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
+          </div>
+
           {([
             { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },
             { key: 'staff' as SourceFilter, label: `Staff: ${staffCount}`, icon: <UserCheck className="size-3" /> },
             { key: 'qr' as SourceFilter, label: `QR: ${qrCount}`, icon: <QrCode className="size-3" /> },
           ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
             <button key={s.key} onClick={() => setSourceFilter(s.key)}
-              className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
-                sourceFilter === s.key ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground active:scale-95')}>
+              className={cn('flex min-h-7 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black transition-all',
+                sourceFilter === s.key ? 'bg-foreground text-background' : 'border border-border bg-muted/60 text-muted-foreground active:scale-95')}>
               {s.icon}{s.label}
             </button>
           ))}
-        </div>
-      </div>
 
-      {/* -- Tab rail -- */}
-      <div className="border-b border-border bg-background shrink-0">
-        <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
-
-          <button onClick={() => switchTab('new_bill')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'new_bill'
-                ? 'text-white shadow-lifted'
-                : 'bg-emerald-50 border border-emerald-200 text-emerald-700')}
-            style={activeTab === 'new_bill' ? { background: 'linear-gradient(135deg,#1a7a50,#0f5436)', boxShadow: '0 4px 16px rgba(26,122,80,0.35)' } : {}}>
-            <Plus className="size-3.5" />New Bill
-          </button>
-
-          <button onClick={() => switchTab('advance')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'advance'
-                ? 'bg-amber-500 text-white shadow-md'
-                : 'bg-amber-50 border border-amber-200 text-amber-700')}>
-            <Wallet className="size-3.5" />Advance
-            {advanceOrders.length > 0 && (
-              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                activeTab === 'advance' ? 'bg-white/30 text-white' : 'bg-amber-200 text-amber-800')}>
-                {advanceOrders.length}
-              </span>
-            )}
-          </button>
-
-
-
-
-          <button onClick={() => switchTab('alerts')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
-            <Bell className="size-3.5" />Alerts
-            {todayDeliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{todayDeliveryAlerts.length}</span>}
-          </button>
+          <span className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
 
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
@@ -2473,28 +2604,24 @@ export default function BillingDashboard() {
               : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
             return (
               <button key={tab.key} onClick={() => switchTab(tab.key)}
-                className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-                  isActive ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={isActive ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                <span className={cn('size-2 rounded-full shrink-0', isActive ? 'bg-white/80' : tab.dotColor)} />
+                className={cn('flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black whitespace-nowrap transition-all active:scale-95',
+                  isActive ? 'border-emerald-700 bg-emerald-700 text-white shadow-sm' : 'border-border bg-card text-foreground')}>
+                <span className={cn('size-1.5 rounded-full shrink-0', isActive ? 'bg-white/85' : tab.dotColor)} />
                 {tab.label}
-                {count > 0 && (
-                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0',
-                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
-                    {count}
-                  </span>
-                )}
+                {count > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[9px] leading-none', isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>{count}</span>}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* -- Content -- */}
+      {/* Content */}
       {activeTab === 'new_bill' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><NewBillPanel /></div>
       ) : activeTab === 'advance' ? (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden"><AdvanceOrderPanel onCreated={() => {}} advanceOrders={advanceOrders} /></div>
+      ) : activeTab === 'payment_edit' ? (
+        <div className="flex-1 min-h-0 overflow-hidden"><CafePaymentModeEditTab orders={orders} /></div>
       ) : activeTab === 'alerts' ? (
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4"><h2 className="font-display text-lg font-black text-red-800">Today's Delivery Alerts</h2><p className="text-xs text-red-700 mt-1">Only advance orders scheduled for delivery today are shown.</p></div>
@@ -2514,7 +2641,6 @@ export default function BillingDashboard() {
                     ? `No ${activeTab} orders from ${sourceFilter === 'qr' ? 'QR' : 'Staff'} right now`
                     : activeTab === 'pending' ? 'Waiting for new orders...' : `No ${activeTab} orders right now`}
                 </p>
-                {/* U-11 FIX: offer one-tap clear when a source filter is hiding results */}
                 {sourceFilter !== 'all' && (
                   <button
                     onClick={() => setSourceFilter('all')}
@@ -2532,4 +2658,5 @@ export default function BillingDashboard() {
       )}
     </div>
   );
+
 }

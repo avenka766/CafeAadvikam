@@ -15,6 +15,7 @@ import { useBranchStore } from './branchStore';
 import { SettingsTab } from './tabs/SettingsTab';
 import { ReportsTab } from './tabs/ReportsTab';
 import BranchBillingProTab from './tabs/BranchBillingProTab';
+import { PaymentModeEditTab } from './tabs/PaymentModeEditTab';
 import {
   AdvanceCakeOrdersTab,
   AdminNotificationsBranchTab,
@@ -43,6 +44,7 @@ type TabId =
   | 'purchase-pay'
   | 'po'
   | 'history'
+  | 'payment-edit'
   | 'closure'
   | 'alerts'
   | 'salesperson'
@@ -59,6 +61,7 @@ const BASE_TABS = [
   { id: 'advance' as const, label: 'Advance Orders', icon: FileClock, adminOnly: false },
   { id: 'returns' as const, label: 'Returns', icon: RotateCcw, adminOnly: false },
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
+  { id: 'payment-edit' as const, label: 'Payment Mode Edit', icon: CreditCard, adminOnly: false },
   { id: 'closure' as const, label: 'Cashier Closure', icon: WalletCards, adminOnly: false },
   { id: 'alerts' as const, label: 'Alerts', icon: Bell, adminOnly: false },
   { id: 'store-orders' as const, label: 'Store Orders', icon: Store, adminOnly: false },
@@ -75,7 +78,6 @@ const BASE_TABS = [
 ];
 
 const VRSNB_HIDDEN_TABS: TabId[] = [
-  'salesperson',
   'store-orders',
   'reports',
   'purchase',
@@ -132,7 +134,7 @@ export default function BranchDashboard({ branch }: Props) {
     : branch === 'SNB'
       ? isSnbAdmin
       : isAdminUser;
-  const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : isAdminUser;
+  const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : branch === 'VRSNB' ? isVrsnbAdmin : isAdminUser;
   const tabs = useMemo(() => BASE_TABS.filter((t) => {
     if (branch === 'VRSNB' && VRSNB_HIDDEN_TABS.includes(t.id)) return false;
     if (t.id === 'reports') return canViewReports;
@@ -288,12 +290,10 @@ export default function BranchDashboard({ branch }: Props) {
   }
 
   return (
-    <div
-      className={cn('branch-command-screen min-h-0 bg-transparent pt-0', tab === 'bill' ? 'h-full overflow-hidden' : 'min-h-[calc(100dvh-var(--header-h,3.5rem))]')}
-    >
-      <div className={cn('grid min-h-0', tab === 'bill' ? 'h-full p-1.5' : 'gap-4 px-3 py-3 md:px-5')}>
-        <main className={cn('min-w-0 min-h-0 border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'h-full overflow-hidden rounded-[1.45rem]' : 'overflow-visible rounded-[2rem]')}>
-          <div className={cn(tab === 'bill' ? 'h-full min-h-0 p-1.5' : 'min-h-0 px-3 py-3 md:px-4 max-h-[calc(100dvh-var(--header-h,4rem)-9rem)] overflow-y-auto space-y-5')}>
+    <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
+      <div className="grid h-full min-h-0 p-1.5 sm:p-2">
+        <main className={cn('h-full min-h-0 min-w-0 overflow-hidden border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'rounded-[1.35rem]' : 'rounded-[1.6rem]')}>
+          <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'overflow-y-auto overscroll-contain px-2 py-2 sm:px-3 sm:py-3 md:px-4 space-y-4')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
@@ -301,9 +301,10 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'purchase-pay' && isAdminUser && <PurchasePayTab branch={branch} branchStock={branchStock} />}
             {tab === 'po' && isAdminUser && <PurchaseOrderTab branch={branch} branchStock={branchStock} />}
             {tab === 'history' && <BranchBillHistoryProTab branch={branch} branchStock={branchStock} />}
+            {tab === 'payment-edit' && <PaymentModeEditTab branch={branch} />}
             {tab === 'closure' && <CashierClosureTab branch={branch} branchStock={branchStock} />}
             {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
-            {tab === 'salesperson' && branch !== 'VRSNB' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
+            {tab === 'salesperson' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
             {tab === 'store-orders' && branch !== 'VRSNB' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
             {tab === 'current-cash' && isAdminUser && <CurrentCashTab branch={branch} branchStock={branchStock} />}

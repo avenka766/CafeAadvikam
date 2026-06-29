@@ -3298,3 +3298,221 @@
     }
   }
 }
+
+@layer components {
+  /* Cafe Biller: compact top navigation replacing the floating bottom nav. */
+  .workspace-branch-billing .cafe-biller-top-nav {
+    min-height: 2.55rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .workspace-branch-billing .cafe-biller-top-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .workspace-branch-billing .cafe-biller-top-nav-button {
+    min-height: 1.95rem;
+    padding: .34rem .72rem;
+    font-size: .7rem;
+    line-height: 1;
+    touch-action: manipulation;
+  }
+
+  /* Daily Closure uses its own touch-friendly vertical scroller inside the locked Cafe shell. */
+  .workspace-branch-billing .daily-closure-page {
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding-bottom: 0 !important;
+  }
+  .workspace-branch-billing .daily-closure-scroll {
+    min-height: 0 !important;
+    overflow-x: hidden;
+    overflow-y: auto !important;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    scrollbar-gutter: stable;
+  }
+
+  /* Keep the Cafe biller page itself locked to the available viewport. */
+  .workspace-branch-billing [data-billing-dashboard] {
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-status-bar {
+    min-height: 2rem;
+    padding: .28rem .65rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-workspace {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden !important;
+  }
+
+  /* Smaller, denser category controls for the 30 x 23 touch counter. */
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-sidebar {
+    width: clamp(8.75rem, 13vw, 11rem) !important;
+    min-width: 8.75rem;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-mode {
+    padding: .35rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-mode button {
+    min-height: 2rem;
+    padding-block: .35rem !important;
+    font-size: .72rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-button {
+    min-height: 2.65rem;
+    padding: .42rem .65rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-button p:first-child {
+    font-size: .74rem !important;
+    line-height: 1.05;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-category-button p:last-child {
+    margin-top: .15rem !important;
+    font-size: .62rem !important;
+  }
+
+  /* Shorter search header and more product cards per row. */
+  .workspace-branch-billing [data-billing-dashboard] .biller-search-shell {
+    padding: .38rem .55rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-search-shell input {
+    min-height: 2rem;
+    padding-top: .4rem !important;
+    padding-bottom: .4rem !important;
+    font-size: .76rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-search-shell p {
+    margin-top: .2rem !important;
+    font-size: .61rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-item-scroll {
+    min-height: 0;
+    padding: .38rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-menu-panel .biller-menu-grid {
+    grid-template-columns: repeat(auto-fill, minmax(7.6rem, 1fr)) !important;
+    gap: .4rem !important;
+  }
+
+  /* Smaller item cards while preserving touch-sized add/quantity controls. */
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-card-compact-no-image {
+    min-height: 4.7rem !important;
+    border-radius: .72rem !important;
+    box-shadow: 0 5px 14px rgba(48,29,8,.065) !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-card-compact-no-image .pos-menu-body {
+    padding: .42rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-body-compact h3 {
+    min-height: 1.65rem !important;
+    font-size: .74rem !important;
+    line-height: 1.04 !important;
+    -webkit-line-clamp: 2;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-card-compact-no-image .pos-menu-footer {
+    margin-top: .26rem !important;
+    gap: .3rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-body-compact .pos-menu-price {
+    font-size: .78rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-add-small,
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-stepper-small button {
+    width: 1.9rem !important;
+    height: 1.9rem !important;
+    min-width: 1.9rem !important;
+    min-height: 1.9rem !important;
+    border-radius: .58rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .pos-menu-stepper-small span {
+    min-width: 1.25rem;
+    font-size: .75rem;
+  }
+
+  /* Compact cart cards and retain a larger scrollable cart area. */
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-panel {
+    width: clamp(19.5rem, 30vw, 26rem) !important;
+    min-width: 19.5rem;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-header {
+    padding: .48rem .7rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-header h3 {
+    font-size: .9rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-items {
+    min-height: 0 !important;
+    padding: .45rem .6rem !important;
+    gap: .38rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-line {
+    gap: .38rem !important;
+    padding: .42rem !important;
+    border-radius: .72rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-line p.text-sm {
+    font-size: .73rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-line p.text-\[11px\] {
+    font-size: .6rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-qty button {
+    width: 1.75rem !important;
+    height: 1.75rem !important;
+    min-width: 1.75rem !important;
+    min-height: 1.75rem !important;
+    border-radius: .55rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-qty span {
+    min-width: 1.7rem !important;
+    padding: .28rem .38rem !important;
+    font-size: .72rem !important;
+  }
+  .workspace-branch-billing [data-billing-dashboard] .biller-cart-footer {
+    max-height: min(35dvh, 20rem) !important;
+    padding: .48rem .62rem !important;
+  }
+
+  /* The counter touchscreen keeps all three POS columns on one locked screen. */
+  @media (min-width: 861px) {
+    .workspace-branch-billing [data-billing-dashboard] .biller-workspace {
+      flex-direction: row !important;
+      overflow: hidden !important;
+    }
+    .workspace-branch-billing [data-billing-dashboard] .biller-category-sidebar {
+      max-height: none !important;
+      border-right: 1px solid hsl(var(--border)) !important;
+      border-bottom: 0 !important;
+    }
+    .workspace-branch-billing [data-billing-dashboard] .biller-menu-panel {
+      min-height: 0 !important;
+      flex: 1 1 auto !important;
+    }
+    .workspace-branch-billing [data-billing-dashboard] .biller-cart-panel {
+      width: clamp(19.5rem, 30vw, 26rem) !important;
+      min-width: 19.5rem !important;
+      max-height: none !important;
+      border-top: 0 !important;
+      border-left: 1px solid hsl(var(--border)) !important;
+    }
+    .workspace-branch-billing [data-billing-dashboard] .biller-cart-footer {
+      max-height: min(35dvh, 20rem) !important;
+    }
+  }
+
+  @media (max-width: 860px) {
+    .workspace-branch-billing .cafe-biller-top-nav {
+      padding-inline: .45rem !important;
+    }
+    .workspace-branch-billing [data-billing-dashboard] {
+      overflow-y: auto !important;
+    }
+  }
+}

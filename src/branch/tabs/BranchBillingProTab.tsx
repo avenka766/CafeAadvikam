@@ -52,7 +52,7 @@ const roundWholeRupee = (value: number) => Math.round(Math.max(0, value));
 const clampPercentage = (value: number) => Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
 const BASE_SHORTCUTS = [
   ['F1', 'Change Salesperson'],
-  ['F2', 'Search Items'],
+  ['F2', 'Quantity Change'],
   ['F3', 'Cash'],
   ['F4', 'UPI'],
   ['F5', 'Card'],
@@ -62,7 +62,7 @@ const BASE_SHORTCUTS = [
   ['F9', 'Hold Bill'],
   ['F10', 'Final Bill'],
   ['F11', 'Recall Hold'],
-  ['F12', 'Quantity Change'],
+  ['F12', 'Search Items'],
   ['Esc', 'Close popup'],
 ];
 const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
@@ -75,6 +75,16 @@ const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
 
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
   return item.uom === 'Kgs' ? 'kg' : 'pcs';
+}
+
+function isSnbFlexibleStockItem(branch: Branch, item: Pick<BillingItem, 'category'>) {
+  if (branch !== 'SNB') return false;
+  const category = item.category
+    .trim()
+    .toLowerCase()
+    .replace(/\s*&\s*/g, ' & ')
+    .replace(/\s+/g, ' ');
+  return category === 'mix & combo' || category === 'mix and combo';
 }
 
 function normalizeItemName(name: string) {
@@ -165,7 +175,7 @@ export default function BranchBillingProTab({
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
   const isVRSNB = branch === 'VRSNB';
   const catalogBranch = isVRSNB ? 'VRSNB' : 'SNB';
-  const requiresSalesperson = !isVRSNB;
+  const requiresSalesperson = branch === 'SNB';
   const searchRef = useRef<HTMLInputElement>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
   const cashTenderedRef = useRef<HTMLInputElement>(null);
@@ -232,13 +242,12 @@ export default function BranchBillingProTab({
   }, [focusSearch]);
 
   const branchPeople = useMemo(() => {
-    if (isVRSNB) return [];
     const configured = salespeople.filter((p) => p.branch === branch && p.active).map((p) => p.name);
     return Array.from(new Set(configured.filter(Boolean)));
-  }, [branch, isVRSNB, salespeople]);
+  }, [branch, salespeople]);
 
   const billingStaff = requiresSalesperson ? salesperson : userName;
-  const shortcutHelp = useMemo(() => BASE_SHORTCUTS, []);
+  const shortcutHelp = useMemo(() => requiresSalesperson ? BASE_SHORTCUTS : BASE_SHORTCUTS.filter(([key]) => key !== 'F1'), [requiresSalesperson]);
 
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -316,15 +325,16 @@ export default function BranchBillingProTab({
       return;
     }
     const unit = unitOf(item);
+    const flexibleStock = isSnbFlexibleStockItem(branch, item);
     const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-    if (available <= 0) {
+    if (!flexibleStock && available <= 0) {
       setError(`${item.name} is out of stock and cannot be billed.`);
       return;
     }
     setCart((current) => {
       const existing = current.find((c) => c.barcode === item.barcode || c.itemName === item.name);
       const finalQty = Number(amount.toFixed(3));
-      if (finalQty > available) {
+      if (!flexibleStock && finalQty > available) {
         setError(`Only ${available} ${unit} available for ${item.name}.`);
         return current;
       }
@@ -337,7 +347,7 @@ export default function BranchBillingProTab({
       delete next[item.name];
       return next;
     });
-  }, [branchStock, stockMap, isCounterOpen]);
+  }, [branch, branchStock, stockMap, isCounterOpen]);
 
   const submitQtyPopup = useCallback(() => {
     if (!qtyPopupItem) return;
@@ -353,8 +363,9 @@ export default function BranchBillingProTab({
       setShowCounterClosedAlert(true);
       return;
     }
+    const flexibleStock = isSnbFlexibleStockItem(branch, qtyPopupItem);
     const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name, qtyPopupItem.barcode));
-    if (amount > available) {
+    if (!flexibleStock && amount > available) {
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
     }
@@ -363,7 +374,7 @@ export default function BranchBillingProTab({
     setQtyPopupItem(null);
     setQtyPopupValue('');
     focusSearch(true);
-  }, [branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
+  }, [branch, branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
 
   const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');
@@ -401,8 +412,10 @@ export default function BranchBillingProTab({
       return;
     }
 
+    const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
+    const flexibleStock = catalogItem ? isSnbFlexibleStockItem(branch, catalogItem) : false;
     const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-    if (nextQty > available) {
+    if (!flexibleStock && nextQty > available) {
       setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
       clearCartQuantityDraft(itemName);
       return;
@@ -442,9 +455,11 @@ export default function BranchBillingProTab({
     if (requiresSalesperson && !salesperson) return 'Salesperson selection is mandatory before billing.';
     if (!cart.length) return 'Cart is empty.';
     for (const item of cart) {
+      const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
+      const flexibleStock = catalogItem ? isSnbFlexibleStockItem(branch, catalogItem) : false;
       const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-      if (available <= 0) return `${item.itemName} is out of stock.`;
-      if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
+      if (!flexibleStock && available <= 0) return `${item.itemName} is out of stock.`;
+      if (!flexibleStock && item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
     }
     if (paymentMode === 'cash' && Number(cashTendered || 0) < total) return 'Cash tendered is less than bill total.';
     if (paymentMode === 'credit' && !creditCustomerName.trim()) return 'Customer name is required for credit sale.';
@@ -565,10 +580,16 @@ export default function BranchBillingProTab({
         p_due_date: paymentMode === 'credit' ? creditDueDate : null,
         p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
       };
-      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
+      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
         ...checkoutPayload,
         p_discount_percent: discountPercent,
       });
+      if (rpcError && /complete_branch_checkout_canonical_v3|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
+        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
+          ...checkoutPayload,
+          p_discount_percent: discountPercent,
+        }));
+      }
       if (rpcError && /complete_branch_checkout_canonical_v2|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
         ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', checkoutPayload));
       }
@@ -602,7 +623,7 @@ export default function BranchBillingProTab({
       } catch (printError) {
         printWarning = `Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`;
       }
-      setCart([]); setCartQuantityDrafts({}); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
+      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
       focusSearch(true);
       await fetchBranchData(branch);
       window.setTimeout(() => focusSearch(false), 150);
@@ -633,8 +654,12 @@ export default function BranchBillingProTab({
         }
         return;
       }
-      if (e.key === 'F1') { e.preventDefault(); selectRef.current?.focus(); }
-      if (e.key === 'F2') { e.preventDefault(); searchRef.current?.focus(); }
+      if (e.key === 'F1' && requiresSalesperson) { e.preventDefault(); selectRef.current?.focus(); }
+      if (e.key === 'F2') {
+        e.preventDefault();
+        const selectedCartItem = cart[0] ? items.find((item) => item.name === cart[0].itemName) : visibleItems[selectedIndex];
+        if (selectedCartItem) openQtyPopup(selectedCartItem);
+      }
       if (e.key === 'F3') { e.preventDefault(); selectPaymentModeRef.current('cash'); }
       if (e.key === 'F4') { e.preventDefault(); selectPaymentModeRef.current('upi'); }
       if (e.key === 'F5') { e.preventDefault(); selectPaymentModeRef.current('card'); }
@@ -644,11 +669,7 @@ export default function BranchBillingProTab({
       if (e.key === 'F9') { e.preventDefault(); holdBill(); }
       if (e.key === 'F10') { e.preventDefault(); checkoutRef.current(); }
       if (e.key === 'F11') { e.preventDefault(); setShowHold(true); }
-      if (e.key === 'F12') {
-        e.preventDefault();
-        const selectedCartItem = cart[0] ? items.find((item) => item.name === cart[0].itemName) : visibleItems[selectedIndex];
-        if (selectedCartItem) openQtyPopup(selectedCartItem);
-      }
+      if (e.key === 'F12') { e.preventDefault(); focusSearch(false); }
       const target = e.target as HTMLElement | null;
       const isEditing = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'));
       if (isEditing) return;
@@ -661,7 +682,7 @@ export default function BranchBillingProTab({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, holdBill, items, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
+  }, [cart, focusSearch, holdBill, items, requiresSalesperson, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
 
   if (!billingAllowed) {
     return (
@@ -683,7 +704,7 @@ export default function BranchBillingProTab({
 
   return (
     <div className="branch-billmaxo h-full min-h-0 overflow-hidden rounded-[1.35rem] border border-slate-200 bg-slate-100 shadow-xl shadow-slate-200/70">
-      <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[minmax(300px,340px)_minmax(0,1fr)] xl:grid-cols-[minmax(330px,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(350px,410px)_minmax(0,1fr)]">
+      <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[clamp(280px,31vw,390px)_minmax(0,1fr)]">
         <aside ref={cartRef} tabIndex={-1} className="flex min-h-0 flex-col border-r border-slate-200 bg-white focus:outline-none focus:ring-4 focus:ring-amber-300/30">
           <div className="hidden">
             <div className="flex items-center justify-between gap-3">
@@ -701,9 +722,9 @@ export default function BranchBillingProTab({
           </div>
 
           {requiresSalesperson ? (
-            <div className="space-y-1.5 border-b border-slate-200 px-3 py-2">
+            <div className="space-y-1 border-b border-slate-200 px-2.5 py-1.5">
               <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Salesperson <span className="text-red-500">*</span></label>
-              <select ref={selectRef} value={salesperson} onChange={(e) => setSalesperson(e.target.value)} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900 focus:border-amber-400 focus:outline-none">
+              <select ref={selectRef} value={salesperson} onChange={(e) => setSalesperson(e.target.value)} className="h-8 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 text-sm font-black text-slate-900 focus:border-amber-400 focus:outline-none">
                 <option value="">Select salesperson before billing</option>
                 {branchPeople.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
@@ -720,7 +741,7 @@ export default function BranchBillingProTab({
           )}
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+            <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
               <div className="flex items-center gap-2"><ShoppingCartIcon /><h3 className="text-lg font-black">Cart</h3></div>
               <button onClick={clear} className="rounded-lg bg-red-50 px-2.5 py-1.5 text-[11px] font-black text-red-600 hover:bg-red-100"><Trash2 className="mr-1 inline size-3"/>Clear</button>
             </div>
@@ -781,7 +802,7 @@ export default function BranchBillingProTab({
           </div>
 
           <div className="shrink-0 border-t border-slate-200 bg-white shadow-[0_-12px_35px_rgba(15,23,42,.08)]">
-            <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-sm">
+            <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-1.5 text-xs">
               <div className="min-w-0 flex-1"><span className="text-xs font-bold text-slate-500">Subtotal </span><span className="font-black tabular-nums">{money(subtotal)}</span></div>
               <div className="flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1">
                 <span className="text-xs font-bold text-slate-500">Disc %</span>
@@ -801,13 +822,13 @@ export default function BranchBillingProTab({
               <div className="rounded-xl bg-slate-950 px-3 py-1 text-lg font-black tabular-nums text-white">{money(total)}</div>
               <div className="rounded-xl bg-emerald-50 px-3 py-1 text-lg font-black tabular-nums text-emerald-800">{money(due > 0 ? due : balance)}</div>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 px-4 py-1.5 text-xs font-black">
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 px-2.5 py-1 text-[10px] font-black">
               <span className="text-slate-600">Quantity: {itemCount} item{itemCount === 1 ? '' : 's'}</span>
               <span className="ml-auto text-right text-slate-500">Discount -{money(discountValue)} · Before round-off {money(amountBeforeRoundOff)} · Round-off {roundOff >= 0 ? '+' : ''}{money(roundOff)}</span>
             </div>
-            <div className="grid grid-cols-5 gap-1.5 px-4 py-2">
+            <div className="grid grid-cols-5 gap-1 px-2.5 py-1.5">
               {([['cash','Cash',Banknote],['upi','UPI',Smartphone],['card','Card',CreditCard],['split','Split',WalletCards],['credit','Credit',FileText]] as const).map(([key,label,Icon]) => (
-                <button key={String(key)} onClick={()=>selectPaymentMode(key as PayMode)} className={cn('rounded-2xl border-2 px-1 py-1.5 text-xs font-black', paymentMode === key ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-600')}><Icon className="mx-auto mb-0.5 size-3.5"/>{String(label)}<span className="ml-1 text-[9px] font-black opacity-70">[{PAYMENT_SHORTCUTS[key as PayMode]}]</span></button>
+                <button key={String(key)} onClick={()=>selectPaymentMode(key as PayMode)} className={cn('rounded-xl border-2 px-1 py-1 text-[10px] font-black', paymentMode === key ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-600')}><Icon className="mx-auto mb-0.5 size-3.5"/>{String(label)}<span className="ml-1 text-[9px] font-black opacity-70">[{PAYMENT_SHORTCUTS[key as PayMode]}]</span></button>
               ))}
             </div>
             {paymentMode === 'split' ? (
@@ -838,20 +859,28 @@ export default function BranchBillingProTab({
                 </div>
                 <p className="text-xs font-bold text-amber-800">Credit due after upfront payment: {money(Math.max(0, total - creditPaid))}.</p>
               </div>
-            ) : (
-              <div className="mx-4 mb-2 flex items-center gap-2 rounded-2xl border-2 border-slate-200 bg-slate-50 px-3 py-1"><IndianRupee className="size-5 text-slate-400"/><input ref={cashTenderedRef} value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-9 flex-1 bg-transparent text-xl font-black outline-none"/></div>
-            )}
-            {error && <p className="mx-4 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700"><AlertTriangle className="mr-1 inline size-4"/>{error}</p>}
-            <div className="grid grid-cols-2 gap-2 px-4 py-2">
-              <button onClick={holdBill} className="rounded-2xl bg-amber-100 px-3 py-2 text-sm font-black text-amber-800"><PauseCircle className="mx-auto mb-1 size-4"/>Hold <span className="ml-1 text-[9px] font-black opacity-70">[F9]</span></button>
-              <button onClick={checkout} disabled={saving || cart.length === 0} className="rounded-2xl bg-orange-500 px-3 py-2 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:opacity-50"><Printer className="mx-auto mb-1 size-4"/>{saving ? 'Saving' : 'Final Bill'} <span className="ml-1 text-[9px] font-black opacity-70">[F10]</span></button>
+            ) : null}
+            {error && <p className="mx-2.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700"><AlertTriangle className="mr-1 inline size-3.5"/>{error}</p>}
+            <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-stretch gap-1.5 px-2.5 py-1.5">
+              {paymentMode === 'split' || paymentMode === 'credit' ? (
+                <div className="flex min-w-0 items-center rounded-xl bg-slate-100 px-2 text-xs font-black text-slate-700">
+                  {paymentMode === 'split' ? `Split ${money(tendered)} / ${money(total)}` : `Credit due ${money(Math.max(0, total - creditPaid))}`}
+                </div>
+              ) : (
+                <div className="flex min-w-0 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2">
+                  <IndianRupee className="size-4 shrink-0 text-slate-400"/>
+                  <input ref={cashTenderedRef} value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-8 min-w-0 flex-1 bg-transparent text-base font-black outline-none"/>
+                </div>
+              )}
+              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
+              <button onClick={checkout} disabled={saving || cart.length === 0} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
             </div>
-            {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white py-2 text-sm font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
+            {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border border-slate-200 bg-white py-1.5 text-xs font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
           </div>
         </aside>
 
         <main className="flex min-h-0 flex-col bg-slate-100">
-          <div className="shrink-0 border-b border-slate-200 bg-white px-2.5 py-2">
+          <div className="shrink-0 border-b border-slate-200 bg-white px-2 py-1.5">
             <div className="flex flex-wrap items-center justify-end gap-1.5">
                 <div className="relative grid h-8 w-[142px] grid-cols-2 rounded-lg border border-slate-200 bg-slate-100 p-0.5 shadow-inner" aria-label="Billing input mode">
                   <span className={cn('pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 w-[calc(50%-2px)] rounded-[9px] shadow-sm transition-all duration-300 ease-out', billingInputMode === 'manual' ? 'translate-x-0 bg-slate-950' : 'translate-x-full bg-orange-500 shadow-orange-200')} />
@@ -861,7 +890,7 @@ export default function BranchBillingProTab({
                 <button onClick={()=>setShowHold(true)} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-black text-white"><PauseCircle className="mr-1 inline size-3.5"/>Recall ({branchHolds.length})</button>
                 <button onClick={()=>setShowShortcuts(true)} className="rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950"><HelpCircle className="mr-1 inline size-3.5"/>Shortcuts</button>
             </div>
-            <div className="mt-1.5 flex items-center gap-2 rounded-xl border-2 border-slate-200 bg-slate-50 px-3 py-0.5 focus-within:border-amber-400">
+            <div className="mt-1 flex items-center gap-2 rounded-xl border-2 border-slate-200 bg-slate-50 px-2.5 py-0.5 focus-within:border-amber-400">
               <Search className="size-4 text-slate-400"/>
               <div className="relative flex-1">
                 <input
@@ -911,21 +940,22 @@ export default function BranchBillingProTab({
                     }
                     if (e.key === 'Escape') setShowDropdown(false);
                   }}
-                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F2 - search item name or barcode'}
-                  className="h-9 w-full bg-transparent text-base font-black outline-none placeholder:text-slate-400"
+                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F12 - search item name or barcode'}
+                  className="h-8 w-full bg-transparent text-sm font-black outline-none placeholder:text-slate-400"
                 />
                 {showDropdown && visibleItems.length > 0 && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                     {visibleItems.slice(0, 10).map((item, idx) => {
                       const st = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
+                      const flexibleStock = isSnbFlexibleStockItem(branch, item);
                       return (
                         <div
                           key={item.barcode}
                           onMouseDown={() => { openQtyPopup(item); setShowDropdown(false); setQuery(''); }}
-                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && 'opacity-50')}
+                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && !flexibleStock && 'opacity-50')}
                         >
                           <span>{item.name}</span>
-                          <span className="text-xs text-slate-500">{money(item.price)} - {st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
+                          <span className="text-xs text-slate-500">{money(item.price)} - {flexibleStock && st <= 0 ? 'Non-stock billing' : st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
                         </div>
                       );
                     })}
@@ -937,14 +967,15 @@ export default function BranchBillingProTab({
           </div>
           <div className="shrink-0 border-b border-slate-200 bg-white/80 px-2.5 py-1.5">
             <div className="flex flex-wrap gap-1.5">
-              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-lg px-2.5 py-1.5 text-[11px] font-black leading-none transition', category === c ? 'bg-slate-950 text-white shadow-md' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-1 text-[9px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
+              {['All', ...categories].map((c, idx) => <button key={c} onClick={()=>setCategory(c)} className={cn('rounded-lg px-3 py-2 text-xs font-black leading-none transition', category === c ? 'bg-slate-950 text-white shadow-md' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50')}><span className="mr-1 text-[9px] opacity-60">{idx === 0 ? 'A' : idx}</span>{c}</button>)}
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
-            <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2">
+            <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1.5">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-                const disabled = stock <= 0;
+                const flexibleStock = isSnbFlexibleStockItem(branch, item);
+                const disabled = stock <= 0 && !flexibleStock;
                 const inCart = cart.find((c)=>c.barcode===item.barcode || c.itemName===item.name);
                 return (
                   <div
@@ -957,15 +988,15 @@ export default function BranchBillingProTab({
                     onClick={() => !disabled && openQtyPopup(item)}
                     onMouseEnter={() => setSelectedIndex(idx)}
                     onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) openQtyPopup(item); }}
-                    className={cn('group rounded-lg border-2 bg-white p-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-orange-500 bg-amber-50 ring-2 ring-amber-300 shadow-md' : 'border-slate-200', inCart && idx !== selectedIndex && 'border-emerald-400 bg-emerald-50')}
+                    className={cn('group rounded-lg border-2 bg-white p-1.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg', disabled && 'cursor-not-allowed opacity-45', idx === selectedIndex ? 'border-orange-500 bg-amber-50 ring-2 ring-amber-300 shadow-md' : 'border-slate-200', inCart && idx !== selectedIndex && 'border-emerald-400 bg-emerald-50')}
                   >
                     <div className="flex items-start justify-between gap-1">
-                      <p className="line-clamp-2 text-sm font-black leading-tight text-slate-950">{item.name}</p>
+                      <p className="line-clamp-2 text-[12px] font-black leading-tight text-slate-950">{item.name}</p>
                       <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-black text-slate-500">{idx + 1}</span>
                     </div>
                     <div className="mt-1">
-                      <p className="text-base font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
-                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
+                      <p className="text-sm font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
+                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{flexibleStock && stock <= 0 ? 'Non-stock billing' : disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                     </div>
                     {inCart && <div className="mt-1.5 rounded-lg bg-emerald-600 px-2 py-0.5 text-center text-[9px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
@@ -977,7 +1008,7 @@ export default function BranchBillingProTab({
       </div>
 
       {showShortcuts && <Modal onClose={() => setShowShortcuts(false)} title="Keyboard shortcut help"><div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{shortcutHelp.map(([k,v])=><div key={k} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"><kbd className="rounded-lg bg-slate-950 px-2 py-1 text-sm font-black text-white">{k}</kbd><span className="text-sm font-bold text-slate-700">{v}</span></div>)}</div></Modal>}
-      {showHold && <Modal onClose={() => setShowHold(false)} title="Recall held bills"><div className="space-y-3">{branchHolds.length===0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No held bills.</p> : branchHolds.map((h)=><div key={h.id} className="flex items-center justify-between gap-3 rounded-2xl border p-4"><div><p className="font-black">{h.salesperson}</p><p className="text-sm text-slate-500">{h.items.length} items · {new Date(h.createdAt).toLocaleString('en-IN')}</p></div><button onClick={()=>recallHold(h.id)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Recall</button></div>)}</div></Modal>}
+      {showHold && <Modal onClose={() => setShowHold(false)} title="Recall held bills"><div className="space-y-3">{branchHolds.length===0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No held bills.</p> : branchHolds.map((h)=><div key={h.id} className="flex items-center justify-between gap-3 rounded-2xl border p-4"><div><p className="font-black">{requiresSalesperson ? `Salesperson: ${h.salesperson}` : `Cashier: ${h.salesperson}`}</p><p className="text-sm text-slate-500">{h.items.length} items · {new Date(h.createdAt).toLocaleString('en-IN')}</p></div><button onClick={()=>recallHold(h.id)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Recall</button></div>)}</div></Modal>}
       {showQtyPopup && qtyPopupItem && (
         <QuantityPopup
           item={qtyPopupItem}
@@ -985,6 +1016,7 @@ export default function BranchBillingProTab({
           existingQuantity={cart.find((line) => line.barcode === qtyPopupItem.barcode || line.itemName === qtyPopupItem.name)?.quantity}
           branchStock={branchStock}
           stockMap={stockMap}
+          allowInsufficientStock={isSnbFlexibleStockItem(branch, qtyPopupItem)}
           onValue={setQtyPopupValue}
           onClose={() => setShowQtyPopup(false)}
           onAdd={submitQtyPopup}
@@ -1006,6 +1038,7 @@ function QuantityPopup({
   existingQuantity,
   branchStock,
   stockMap,
+  allowInsufficientStock,
   onValue,
   onAdd,
   onClose,
@@ -1015,6 +1048,7 @@ function QuantityPopup({
   existingQuantity?: number;
   branchStock: StockItem[];
   stockMap: Map<string, number>;
+  allowInsufficientStock?: boolean;
   onValue: (value: string) => void;
   onAdd: () => void;
   onClose: () => void;
@@ -1026,7 +1060,7 @@ function QuantityPopup({
   const entered = normalizeQtyInput(value, unit);
   const validationMessage = entered <= 0
     ? `Enter a valid ${unit === 'kg' ? 'weight' : 'quantity'}.`
-    : entered > available
+    : !allowInsufficientStock && entered > available
       ? `Only ${formatQty(available, unit)} is available.`
       : '';
   const submit = () => {
@@ -1038,7 +1072,7 @@ function QuantityPopup({
     <Modal onClose={onClose} title={`${isEditingExisting ? 'Set' : 'Add'} ${item.name}`} stopGlobalKeys>
       <div className="space-y-4">
         <p className="text-sm font-bold text-slate-500">
-          Stock: {formatQty(available, unit)} · Price: {money(item.price)}/{unit}
+          Stock: {allowInsufficientStock && available <= 0 ? 'Not tracked (billing allowed)' : formatQty(available, unit)} · Price: {money(item.price)}/{unit}
         </p>
         {isEditingExisting && (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
