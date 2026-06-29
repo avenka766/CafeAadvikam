@@ -39,7 +39,7 @@ export default function BottomNav() {
   const { currentUser } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb' || currentUser?.role === 'billing';
+  const isBranchBillingRole = currentUser?.role === 'branch_snb' || currentUser?.role === 'branch_vrsnb';
   const [branchNavVisible, setBranchNavVisible] = useState(false);
   const branchNavRef = useRef<HTMLElement | null>(null);
   const branchNavHideTimerRef = useRef<number | null>(null);
@@ -147,6 +147,8 @@ export default function BottomNav() {
     : 0;
 
   if (!currentUser) return null;
+  // Cafe Biller navigation is rendered in the compact top command bar.
+  if (currentUser.role === 'billing') return null;
 
   const navItems: NavItem[] = [];
 

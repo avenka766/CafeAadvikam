@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import CafeBillerTopNav from '@/components/layout/CafeBillerTopNav';
 
 interface WorkspaceChromeProps {
   children: React.ReactNode;
@@ -434,6 +435,8 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
             </div>
           </section>
         )}
+
+        {isCafeBillerRoute && <CafeBillerTopNav />}
 
         <div className={cn('workspace-content-frame', isFullscreenBillingRoute && 'branch-billing-content-frame min-h-0 flex-1 overflow-hidden')}>
           {children}
