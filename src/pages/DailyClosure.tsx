@@ -743,8 +743,8 @@ export default function DailyClosure() {
   const paymentRows: PaymentKey[] = ['cash', 'upi', 'card'];
 
   return (
-    <div className="daily-closure-page flex flex-col bg-background" style={{ minHeight: 'calc(100dvh - var(--header-h, 3.5rem))', paddingBottom: 'var(--nav-h, 5.25rem)' }}>
-      <div className="print:hidden border-b border-border bg-background/95 backdrop-blur px-4 py-3 sticky top-0 z-10">
+    <div className="daily-closure-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <div className="print:hidden shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3 sticky top-0 z-10">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -776,7 +776,7 @@ export default function DailyClosure() {
         <p>Closed by: {currentUser?.displayName || currentUser?.username || 'Biller'} · Printed: {new Date().toLocaleString('en-IN')}</p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 print:overflow-visible print:p-4">
+      <div className="daily-closure-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4 print:overflow-visible print:p-4">
         <div className="grid gap-3 md:grid-cols-3">
           <div className={cn('rounded-3xl border p-4 shadow-soft', cafeCounterOpenRecord ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50')}>
             <div className="flex items-center justify-between gap-3">
