@@ -1039,7 +1039,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
-          <div className="px-2 py-2 border-b border-border bg-background shrink-0">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
                 className="flex-1 py-2.5 rounded-md text-sm font-body font-bold bg-card shadow text-foreground flex items-center justify-center gap-1.5">
@@ -1059,7 +1059,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-amber-500 text-white' : 'hover:bg-muted text-foreground')}>
                 <p className="text-sm font-bold leading-tight">{cat.name}</p>
                 <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-white/70' : 'text-muted-foreground')}>
@@ -1075,7 +1075,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
-            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
@@ -1093,7 +1093,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
@@ -1822,7 +1822,7 @@ function NewBillPanel() {
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
         <div className="biller-category-sidebar w-[25%] shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto">
-          <div className="px-2 py-2 border-b border-border bg-background shrink-0">
+          <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
                 className="flex-1 py-2.5 rounded-md text-sm font-body font-bold transition-all bg-card shadow text-foreground flex items-center justify-center gap-1.5">
@@ -1842,7 +1842,7 @@ function NewBillPanel() {
             return (
               <button key={cat.id}
                 onClick={() => { setSelectedCategory(cat.id); setSearch(''); }}
-                className={cn('w-full text-left px-3 py-3 border-b border-border/50 transition-all',
+                className={cn('biller-category-button w-full text-left px-3 py-3 border-b border-border/50 transition-all',
                   isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-foreground')}>
                 <p className="text-sm font-bold leading-tight">{cat.name}</p>
                 <p className={cn('text-xs mt-0.5 tabular-nums', isActive ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
@@ -1858,7 +1858,7 @@ function NewBillPanel() {
       <div className="biller-menu-panel flex-1 min-w-0 flex flex-col overflow-hidden">
         {itemMode === 'menu' ? (
           <>
-            <div className="px-3 py-2.5 border-b border-border bg-background shrink-0">
+            <div className="biller-search-shell px-3 py-2.5 border-b border-border bg-background shrink-0">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                 <input type="text" placeholder={`Search all ${enabledItems.length} items...`} value={search}
@@ -1876,7 +1876,7 @@ function NewBillPanel() {
                 </p>
               )}
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2">
+            <div className="biller-item-scroll flex-1 overflow-y-auto px-2 py-2">
               {filteredItems.length === 0 ? (
                 <EmptyState icon="" message="No items found" sub="Try a different category or clear your search" cta="Clear filters" onCta={() => { setSearch(''); setSelectedCategory('all'); }} />
               ) : (
@@ -2003,7 +2003,7 @@ function NewBillPanel() {
 
       {/* -- COL 3: Bill summary ------------------------ */}
       <div className="biller-cart-panel w-[30%] shrink-0 flex flex-col border-l border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
+        <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
             <h3 className="font-display font-bold text-lg text-foreground">New Bill</h3>
@@ -2527,9 +2527,8 @@ export default function BillingDashboard() {
     <div
       className="flex min-h-0 flex-col overflow-hidden bg-background"
       style={{
-        height: 'calc(100dvh - var(--header-h, 4rem))',
-        paddingTop: '.35rem',
-        paddingBottom: 'var(--branch-nav-reserved-h, 0px)',
+        height: '100%',
+        paddingTop: '.2rem',
       }}
       data-billing-dashboard
     >
@@ -2576,60 +2575,27 @@ export default function BillingDashboard() {
         </div>
       )}
 
-      {/* Original Cafe Biller status bar */}
-      <div className="biller-status-bar px-4 pt-3 pb-2 flex items-center justify-between gap-3 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
-          <span className="text-xs font-body font-medium text-muted-foreground">
-            {polling ? 'Live' : 'Offline'}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
+      {/* Compact live/order filter rail. Main Cafe navigation now lives above this page. */}
+      <div className="biller-status-bar shrink-0 border-b border-border bg-background px-3 py-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="mr-1 flex items-center gap-1.5">
+            <span className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
+            <span className="text-[11px] font-bold text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
+          </div>
+
           {([
             { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },
             { key: 'staff' as SourceFilter, label: `Staff: ${staffCount}`, icon: <UserCheck className="size-3" /> },
             { key: 'qr' as SourceFilter, label: `QR: ${qrCount}`, icon: <QrCode className="size-3" /> },
           ] as {key:SourceFilter;label:string;icon:React.ReactNode}[]).map(s => (
             <button key={s.key} onClick={() => setSourceFilter(s.key)}
-              className={cn('flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-body font-bold transition-all',
-                sourceFilter === s.key ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground active:scale-95')}>
+              className={cn('flex min-h-7 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black transition-all',
+                sourceFilter === s.key ? 'bg-foreground text-background' : 'border border-border bg-muted/60 text-muted-foreground active:scale-95')}>
               {s.icon}{s.label}
             </button>
           ))}
-        </div>
-      </div>
 
-      {/* Original Cafe Biller top tab rail. Bottom navigation remains enabled globally. */}
-      <div className="border-b border-border bg-background shrink-0">
-        <div className="biller-tab-rail flex gap-2 overflow-x-auto scrollbar-hide px-4 py-2.5">
-          <button onClick={() => switchTab('new_bill')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'new_bill'
-                ? 'text-white shadow-lifted'
-                : 'bg-emerald-50 border border-emerald-200 text-emerald-700')}
-            style={activeTab === 'new_bill' ? { background: 'linear-gradient(135deg,#1a7a50,#0f5436)', boxShadow: '0 4px 16px rgba(26,122,80,0.35)' } : {}}>
-            <Plus className="size-3.5" />New Bill
-          </button>
-
-          <button onClick={() => switchTab('advance')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-              activeTab === 'advance'
-                ? 'bg-amber-500 text-white shadow-md'
-                : 'bg-amber-50 border border-amber-200 text-amber-700')}>
-            <Wallet className="size-3.5" />Advance
-            {advanceOrders.length > 0 && (
-              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold',
-                activeTab === 'advance' ? 'bg-white/30 text-white' : 'bg-amber-200 text-amber-800')}>
-                {advanceOrders.length}
-              </span>
-            )}
-          </button>
-
-          <button onClick={() => switchTab('alerts')}
-            className={cn('flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95', activeTab === 'alerts' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
-            <Bell className="size-3.5" />Alerts
-            {todayDeliveryAlerts.length > 0 && <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold', activeTab === 'alerts' ? 'bg-white/30' : 'bg-red-200')}>{todayDeliveryAlerts.length}</span>}
-          </button>
+          <span className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden="true" />
 
           {STATUS_TABS.map(tab => {
             const isActive = activeTab === tab.key;
@@ -2638,17 +2604,11 @@ export default function BillingDashboard() {
               : regularOrders.filter(o => matchesStatusTab(o, tab.key) && o.orderSource === sourceFilter).length;
             return (
               <button key={tab.key} onClick={() => switchTab(tab.key)}
-                className={cn('flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-body font-bold whitespace-nowrap transition-all shrink-0 active:scale-95',
-                  isActive ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
-                style={isActive ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
-                <span className={cn('size-2 rounded-full shrink-0', isActive ? 'bg-white/80' : tab.dotColor)} />
+                className={cn('flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black whitespace-nowrap transition-all active:scale-95',
+                  isActive ? 'border-emerald-700 bg-emerald-700 text-white shadow-sm' : 'border-border bg-card text-foreground')}>
+                <span className={cn('size-1.5 rounded-full shrink-0', isActive ? 'bg-white/85' : tab.dotColor)} />
                 {tab.label}
-                {count > 0 && (
-                  <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-bold shrink-0',
-                    isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
-                    {count}
-                  </span>
-                )}
+                {count > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[9px] leading-none', isActive ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>{count}</span>}
               </button>
             );
           })}
