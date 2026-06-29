@@ -3319,6 +3319,23 @@
     touch-action: manipulation;
   }
 
+  /* Daily Closure uses its own touch-friendly vertical scroller inside the locked Cafe shell. */
+  .workspace-branch-billing .daily-closure-page {
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding-bottom: 0 !important;
+  }
+  .workspace-branch-billing .daily-closure-scroll {
+    min-height: 0 !important;
+    overflow-x: hidden;
+    overflow-y: auto !important;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    scrollbar-gutter: stable;
+  }
+
   /* Keep the Cafe biller page itself locked to the available viewport. */
   .workspace-branch-billing [data-billing-dashboard] {
     height: 100% !important;
