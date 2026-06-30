@@ -236,6 +236,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard Overview', path: '/admin-vrsnb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Sales & Returns', path: '/admin-vrsnb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'Low Stock / Stock', path: '/admin-vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Update Stock', path: '/admin-vrsnb?tab=update-stock', icon: <Settings2 className="size-4" />, group: 'Operations' },
         { label: 'Expenses', path: '/admin-vrsnb?tab=expenses', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Complaints', path: '/admin-vrsnb?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Waste Logs', path: '/admin-vrsnb?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },

@@ -352,6 +352,11 @@ export default function BottomNav() {
         path: "/admin-vrsnb?tab=stock",
       },
       {
+        label: "Update Stock",
+        icon: <Settings2 className="size-5" />,
+        path: "/admin-vrsnb?tab=update-stock",
+      },
+      {
         label: "Credit",
         icon: <WalletCards className="size-5" />,
         path: "/admin-vrsnb?tab=credit",
