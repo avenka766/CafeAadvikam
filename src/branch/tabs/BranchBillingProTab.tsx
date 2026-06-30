@@ -171,7 +171,7 @@ export default function BranchBillingProTab({
     bills, holds, salespeople, counterOpenings, addBill, addHold, removeHold, addNotification,
   } = useBranchOpsStore();
 
-  const userName = currentUser?.displayName || currentUser?.username || 'Branch Staff';
+  const userName = currentUser?.username || currentUser?.displayName || 'Branch Staff';
   const isAdmin = ['admin', 'admin_snb', 'admin_vrsnb', 'owner'].includes(currentUser?.role || '');
   const isVRSNB = branch === 'VRSNB';
   const catalogBranch = isVRSNB ? 'VRSNB' : 'SNB';
@@ -271,7 +271,8 @@ export default function BranchBillingProTab({
   }, [selectedIndex, visibleItems]);
 
   const todayKey = businessDate();
-  const counterOpenedToday = counterOpenings.some((record) => record.branch === branch && record.date === todayKey && record.active !== false);
+  const activeCounterRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayKey && record.active !== false && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === userName));
+  const counterOpenedToday = Boolean(activeCounterRecord);
   const isCounterOpen = useCallback(() => counterOpenedToday, [counterOpenedToday]);
   const openQtyPopup = (item: BillingItem) => {
     setQtyPopupItem(item);
@@ -525,6 +526,24 @@ export default function BranchBillingProTab({
     setError('');
     try {
       if (beforeCheckout) await beforeCheckout();
+      let counterSessionId = activeCounterRecord?.counterSessionId || null;
+      if (currentUser?.id) {
+        const { data: sessionRow, error: sessionError } = await supabase
+          .from('branch_counter_sessions')
+          .select('id,cashier_user_id,cashier_username,opened_at')
+          .eq('branch', branch)
+          .eq('cashier_user_id', currentUser.id)
+          .eq('status', 'open')
+          .order('opened_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const missingSessionTable = Boolean(sessionError && /branch_counter_sessions|does not exist|schema cache/i.test(sessionError.message || ''));
+        if (sessionError && !missingSessionTable) throw new Error(`Could not verify cashier counter: ${sessionError.message}`);
+        if (sessionRow?.id) counterSessionId = String(sessionRow.id);
+        if (!counterSessionId && !missingSessionTable) {
+          throw new Error(`No open counter found for ${userName}. Open this cashier's counter before billing.`);
+        }
+      }
       const checkoutSplit = { cash: roundMoney(Number(split.cash || 0)), upi: roundMoney(Number(split.upi || 0)), card: roundMoney(Number(split.card || 0)) };
       if (paymentMode === 'split' && roundMoney(checkoutSplit.cash + checkoutSplit.upi + checkoutSplit.card) !== roundMoney(total)) {
         throw new Error('Split payment must exactly match the bill total.');
@@ -599,6 +618,23 @@ export default function BranchBillingProTab({
       }
       const result = data as CheckoutRpcResult;
       if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
+      if (result.billId && currentUser?.id && counterSessionId) {
+        const cashierPatch = {
+          cashier_user_id: currentUser.id,
+          cashier_username: userName,
+          counter_session_id: counterSessionId,
+        };
+        const attributionResults = await Promise.all([
+          supabase.from('branch_bill_headers').update({ ...cashierPatch, biller: userName }).eq('id', result.billId),
+          supabase.from('branch_sale_payments').update(cashierPatch).eq('bill_id', result.billId),
+          supabase.from('branch_credit_sales').update(cashierPatch).eq('source_id', result.billId),
+          supabase.from('branch_credit_payments').update({ collector_user_id: currentUser.id, collector_username: userName, counter_session_id: counterSessionId }).eq('bill_no', result.billNo),
+        ]);
+        const attributionError = attributionResults.map((entry) => entry.error).find(Boolean);
+        if (attributionError) {
+          throw new Error(`Bill saved but cashier attribution failed: ${attributionError.message}`);
+        }
+      }
       // FIX (MD Bug #2): guard against dual-write desync. If the RPC succeeds but addBill()
       // fails (network drop, tab close), a retry would call addBill() again. By checking
       // for an existing bill with the same billNo first, the write is idempotent.
@@ -615,6 +651,8 @@ export default function BranchBillingProTab({
         split: paymentMode === 'credit' && creditPaid > 0 ? { [creditPaidMode]: creditPaid } : paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : undefined,
         salesperson: billingStaff,
         biller: userName,
+        cashierUserId: currentUser?.id,
+        counterSessionId: counterSessionId || undefined,
       });
       setLastBill(saved);
       let printWarning = '';

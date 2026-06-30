@@ -292,7 +292,7 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
 export function CreditSalesTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { creditSales, fetchCreditSales, fetchCreditPayments, settleCreditSale } = useBranchStore();
-  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const user = currentUser?.username || currentUser?.displayName || 'Cashier';
   const isVRSNB = branch === 'VRSNB';
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState('');
@@ -405,7 +405,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
   const requiresSalesperson = branch === 'SNB';
-  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const user = currentUser?.username || currentUser?.displayName || 'Cashier';
   const items = useOperationalCatalog(branch);
   const people = Array.from(new Set(salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name).filter(Boolean)));
   const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
@@ -428,7 +428,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
-  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false);
+  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const staff = requiresSalesperson ? common.salesperson : user;
@@ -902,15 +902,16 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
 export function PurchaseTab({ branch, branchStock }: ModuleProps) {
   const { currentUser } = useAuthStore(); const { addPurchase } = useBranchOpsStore(); const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const items = useOperationalCatalog(branch); const [f,setF] = useState({supplier:'',invoiceNo:'',itemName:items[0]?.name||'',quantity:'',cost:'',tax:'0'});
-  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.displayName||'Staff'}); const selectedItem = items.find((item) => item.name === f.itemName); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName,selectedItem?.barcode)+qty,currentUser?.displayName||'Staff',selectedItem?.barcode); await fetchBranchData(branch); setF({...f,quantity:'',cost:'',tax:'0'}); };
+  const save = async () => { const qty=Number(f.quantity), cost=Number(f.cost), tax=Number(f.tax||0), total=qty*cost+tax; if(!f.supplier||!f.invoiceNo||!qty||!cost) return; addPurchase({branch,supplier:f.supplier,invoiceNo:f.invoiceNo,itemName:f.itemName,quantity:qty,cost,tax,total,enteredBy:currentUser?.username||currentUser?.displayName||'Staff'}); const selectedItem = items.find((item) => item.name === f.itemName); await manualUpdateStock(branch,f.itemName,stockQty(branchStock,f.itemName,selectedItem?.barcode)+qty,currentUser?.username||currentUser?.displayName||'Staff',selectedItem?.barcode); await fetchBranchData(branch); setF({...f,quantity:'',cost:'',tax:'0'}); };
   return <Section title="Purchase Entry" icon={<Truck className="size-5"/>}><div className="grid gap-4 lg:grid-cols-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Supplier Invoice"><Input value={f.invoiceNo} onChange={(e)=>setF({...f,invoiceNo:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Cost"><Input type="number" value={f.cost} onChange={(e)=>setF({...f,cost:e.target.value})}/></Field><Field label="Tax"><Input type="number" value={f.tax} onChange={(e)=>setF({...f,tax:e.target.value})}/></Field></div><div className="mt-4 flex items-center justify-between rounded-3xl bg-slate-50 p-4"><p className="text-lg font-black">Total: {money(Number(f.quantity||0)*Number(f.cost||0)+Number(f.tax||0))}</p><PrimaryButton onClick={save}><Package className="size-4"/>Save Purchase & Update Stock</PrimaryButton></div></Section>;
 }
 
 export function PurchasePayTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { purchases, purchasePayments, addPurchasePayment } = useBranchOpsStore(); const branchPurchases = purchases.filter(p=>p.branch===branch); const [supplier,setSupplier]=useState(''); const [amount,setAmount]=useState(''); const [mode,setMode]=useState<'cash'|'upi'|'card'|'bank'>('cash'); const [ref,setRef]=useState(''); const [payError,setPayError]=useState('');
+  const { currentUser } = useAuthStore(); const { purchases, purchasePayments, counterOpenings, addPurchasePayment } = useBranchOpsStore(); const branchPurchases = purchases.filter(p=>p.branch===branch); const [supplier,setSupplier]=useState(''); const [amount,setAmount]=useState(''); const [mode,setMode]=useState<'cash'|'upi'|'card'|'bank'>('cash'); const [ref,setRef]=useState(''); const [payError,setPayError]=useState('');
+  const activeCounter = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false && (!currentUser?.id || record.cashierUserId === currentUser.id));
   const pending = branchPurchases.reduce((s,p)=>s+Math.max(0,p.total-p.paidAmount),0); const paid = purchasePayments.filter(p=>p.branch===branch).reduce((s,p)=>s+p.amount,0);
   const supplierDue = supplier.trim() ? branchPurchases.filter(p=>p.supplier.toLowerCase()===supplier.trim().toLowerCase()).reduce((s,p)=>s+Math.max(0,p.total-p.paidAmount),0) : pending;
-  const save=()=>{ const value=Number(amount); setPayError(''); if(!supplier||!value) return; if(value > supplierDue && supplierDue > 0){ setPayError(`Payment cannot exceed pending due ${money(supplierDue)} for this supplier.`); return; } try { addPurchasePayment({branch,supplier,amount:value,mode,reference:ref,remarks:'Supplier payment',paidBy:currentUser?.displayName||'Staff'}); setAmount(''); setRef(''); } catch (e) { setPayError(e instanceof Error ? e.message : 'Purchase payment failed.'); } };
+  const save=()=>{ const value=Number(amount); setPayError(''); if(!supplier||!value) return; if(value > supplierDue && supplierDue > 0){ setPayError(`Payment cannot exceed pending due ${money(supplierDue)} for this supplier.`); return; } try { addPurchasePayment({branch,supplier,amount:value,mode,reference:ref,remarks:'Supplier payment',paidBy:currentUser?.username||currentUser?.displayName||'Staff',cashierUserId:currentUser?.id,counterSessionId:activeCounter?.counterSessionId}); setAmount(''); setRef(''); } catch (e) { setPayError(e instanceof Error ? e.message : 'Purchase payment failed.'); } };
   return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Paid" value={money(paid)} icon={<CheckCircle2/>} tone="green"/><Kpi label="Pending" value={money(pending)} icon={<AlertTriangle/>} tone="amber"/><Kpi label="Purchases" value={branchPurchases.length} icon={<Receipt/>}/></div><Section title="Purchase Pay" icon={<WalletCards className="size-5"/>}><div className="grid gap-3 lg:grid-cols-5"><Field label="Supplier"><Input value={supplier} onChange={(e)=>{setSupplier(e.target.value); setPayError('');}}/></Field><Field label="Amount"><Input type="number" max={supplierDue || undefined} value={amount} onChange={(e)=>{setAmount(e.target.value); setPayError('');}}/></Field><Field label="Mode"><Select value={mode} onChange={(e)=>setMode(e.target.value as typeof mode)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank</option></Select></Field><Field label="Reference"><Input value={ref} onChange={(e)=>setRef(e.target.value)}/></Field><div className="flex items-end"><PrimaryButton onClick={save}>Pay</PrimaryButton></div></div>{payError && <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700">{payError}</p>}</Section></div>;
 }
 
@@ -926,20 +927,21 @@ export function CurrentCashTab({ branch }: ModuleProps) {
 }
 
 export function BankTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { bankDeposits, addBankDeposit } = useBranchOpsStore(); const [f,setF]=useState({depositDate:new Date().toISOString().split('T')[0],amount:'',bankAccount:'Main Current Account',paymentMode:'Cash Deposit',slipNo:'',transactionRef:'',remarks:''});
-  const save=()=>{ if(!Number(f.amount)) return; addBankDeposit({branch,depositDate:f.depositDate,amount:Number(f.amount),bankAccount:f.bankAccount,paymentMode:f.paymentMode as 'Cash Deposit' | 'UPI Transfer' | 'Card Settlement' | 'Bank Transfer',slipNo:f.slipNo,transactionRef:f.transactionRef,remarks:f.remarks,enteredBy:currentUser?.displayName||'Staff'}); setF({...f,amount:'',slipNo:'',transactionRef:'',remarks:''}); };
+  const { currentUser } = useAuthStore(); const { bankDeposits, counterOpenings, addBankDeposit } = useBranchOpsStore(); const [f,setF]=useState({depositDate:new Date().toISOString().split('T')[0],amount:'',bankAccount:'Main Current Account',paymentMode:'Cash Deposit',slipNo:'',transactionRef:'',remarks:''});
+  const activeCounter = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false && (!currentUser?.id || record.cashierUserId === currentUser.id));
+  const save=()=>{ if(!Number(f.amount)) return; addBankDeposit({branch,depositDate:f.depositDate,amount:Number(f.amount),bankAccount:f.bankAccount,paymentMode:f.paymentMode as 'Cash Deposit' | 'UPI Transfer' | 'Card Settlement' | 'Bank Transfer',slipNo:f.slipNo,transactionRef:f.transactionRef,remarks:f.remarks,enteredBy:currentUser?.username||currentUser?.displayName||'Staff',cashierUserId:currentUser?.id,counterSessionId:activeCounter?.counterSessionId}); setF({...f,amount:'',slipNo:'',transactionRef:'',remarks:''}); };
   const rows=bankDeposits.filter(d=>d.branch===branch); return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Deposited Today" value={money(rows.filter(r=>today(r.createdAt)).reduce((s,r)=>s+r.amount,0))} icon={<Landmark/>} tone="green"/><Kpi label="This Month" value={money(rows.filter(r=>month(r.createdAt)).reduce((s,r)=>s+r.amount,0))} icon={<CalendarClock/>} tone="blue"/><Kpi label="Entries" value={rows.length} icon={<FileText/>}/></div><Section title="Bank Deposit Entry" icon={<Landmark className="size-5"/>}><div className="grid gap-3 lg:grid-cols-4"><Field label="Deposit Date"><Input type="date" value={f.depositDate} onChange={(e)=>setF({...f,depositDate:e.target.value})}/></Field><Field label="Amount"><Input type="number" value={f.amount} onChange={(e)=>setF({...f,amount:e.target.value})}/></Field><Field label="Bank Account"><Input value={f.bankAccount} onChange={(e)=>setF({...f,bankAccount:e.target.value})}/></Field><Field label="Payment Mode"><Select value={f.paymentMode} onChange={(e)=>setF({...f,paymentMode:e.target.value})}><option>Cash Deposit</option><option>UPI Transfer</option><option>Card Settlement</option><option>Bank Transfer</option></Select></Field><Field label="Deposit Slip Number"><Input value={f.slipNo} onChange={(e)=>setF({...f,slipNo:e.target.value})}/></Field><Field label="Transaction Reference"><Input value={f.transactionRef} onChange={(e)=>setF({...f,transactionRef:e.target.value})}/></Field><Field label="Remarks"><Input value={f.remarks} onChange={(e)=>setF({...f,remarks:e.target.value})}/></Field><div className="flex items-end"><PrimaryButton onClick={save}>Save Deposit</PrimaryButton></div></div></Section></div>;
 }
 
 export function PurchaseOrderTab({ branch }: ModuleProps) {
-  const { currentUser } = useAuthStore(); const { purchaseOrders, addPurchaseOrder, updatePoStatus } = useBranchOpsStore(); const items=useOperationalCatalog(branch); const [f,setF]=useState({supplier:'',itemName:items[0]?.name||'',quantity:'',expectedRate:'',expectedDeliveryDate:'',remarks:''}); const user=currentUser?.displayName||'Staff';
+  const { currentUser } = useAuthStore(); const { purchaseOrders, addPurchaseOrder, updatePoStatus } = useBranchOpsStore(); const items=useOperationalCatalog(branch); const [f,setF]=useState({supplier:'',itemName:items[0]?.name||'',quantity:'',expectedRate:'',expectedDeliveryDate:'',remarks:''}); const user=currentUser?.username||currentUser?.displayName||'Staff';
   const create=()=>{ const qty=Number(f.quantity), rate=Number(f.expectedRate); if(!f.supplier||!qty||!rate) return; addPurchaseOrder({branch,supplier:f.supplier,itemName:f.itemName,quantity:qty,expectedRate:rate,totalAmount:qty*rate,expectedDeliveryDate:f.expectedDeliveryDate,remarks:f.remarks,createdBy:user}); };
   const rows=purchaseOrders.filter(p=>p.branch===branch); return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Create Purchase Order" icon={<ClipboardCheck className="size-5"/>}><div className="space-y-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><div className="grid grid-cols-2 gap-2"><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Expected Rate"><Input type="number" value={f.expectedRate} onChange={(e)=>setF({...f,expectedRate:e.target.value})}/></Field></div><Field label="Expected Delivery"><Input type="date" value={f.expectedDeliveryDate} onChange={(e)=>setF({...f,expectedDeliveryDate:e.target.value})}/></Field><Field label="Remarks"><Textarea value={f.remarks} onChange={(e)=>setF({...f,remarks:e.target.value})}/></Field><PrimaryButton onClick={create}>Create PO</PrimaryButton></div></Section><Section title="PO Workflow" icon={<Truck className="size-5"/>}><div className="space-y-3">{rows.map((p:PurchaseOrderRecord)=><div key={p.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-black">{p.poNo} · {p.supplier}</p><p className="text-sm text-slate-500">{p.itemName} · {p.quantity} × {money(p.expectedRate)} · {money(p.totalAmount)}</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black">{p.status}</span></div><div className="mt-3 flex flex-wrap gap-2">{(['Approved','Rejected','Ordered','Received','Closed'] as const).map(s=><SoftButton key={s} onClick={()=>updatePoStatus(p.id,s,user)}>{s}</SoftButton>)}</div></div>)}</div></Section></div>;
 }
 
 export function CashierClosureTab({ branch }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
+  const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, expenses, bankDeposits, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
   const [closing, setClosing] = useState('');
@@ -953,13 +955,64 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const [closeDenominations, setCloseDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
   const [openSavedMessage, setOpenSavedMessage] = useState('');
   const [ledgerLoading, setLedgerLoading] = useState(false);
-  const user = currentUser?.displayName || currentUser?.username || 'Cashier';
+  const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string }>(null);
+  const user = currentUser?.username || currentUser?.displayName || 'Cashier';
   const denominations = [500,200,100,50,20,10,5,2,1];
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
   const openTotal = denomTotal(openDenominations);
   const closeTotal = denomTotal(closeDenominations);
-  const branchCounterOpenRecord = counterOpenings.find((record) => record.branch === branch && record.date === todayIso() && record.active !== false);
-  const branchClosureRecord = cashierClosures.find((record) => record.branch === branch && today(record.createdAt));
+  const localCounterOpenRecord = counterOpenings.find((record) => record.branch === branch
+    && record.date === todayIso()
+    && record.active !== false
+    && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
+  const branchCounterOpenRecord = localCounterOpenRecord ?? (dbCounterSession ? {
+    id: dbCounterSession.id,
+    branch,
+    date: todayIso(),
+    cashier: dbCounterSession.cashier,
+    cashierUserId: dbCounterSession.cashierUserId,
+    counterSessionId: dbCounterSession.id,
+    openingCash: dbCounterSession.openingCash,
+    denominations: {},
+    openedBy: dbCounterSession.cashier,
+    openedAt: dbCounterSession.openedAt,
+    active: true,
+  } : undefined);
+  const branchClosureRecord = cashierClosures.find((record) => record.branch === branch
+    && today(record.createdAt)
+    && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
+
+  useEffect(() => {
+    let active = true;
+    const loadOpenSession = async () => {
+      if (!currentUser?.id) { setDbCounterSession(null); return; }
+      const { data, error } = await supabase
+        .from('branch_counter_sessions')
+        .select('id,opening_cash,opened_at,cashier_username,cashier_user_id')
+        .eq('branch', branch)
+        .eq('cashier_user_id', currentUser.id)
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!active) return;
+      if (error) {
+        const missing = /branch_counter_sessions|does not exist|schema cache/i.test(error.message || '');
+        if (!missing) setOpenSavedMessage(`Could not load cashier counter: ${error.message}`);
+        setDbCounterSession(null);
+        return;
+      }
+      setDbCounterSession(data ? {
+        id: String(data.id),
+        openingCash: Number(data.opening_cash || 0),
+        openedAt: String(data.opened_at),
+        cashier: String(data.cashier_username || user),
+        cashierUserId: String(data.cashier_user_id),
+      } : null);
+    };
+    void loadOpenSession();
+    return () => { active = false; };
+  }, [branch, currentUser?.id, user]);
 
   useEffect(() => {
     setOpenCashier(user);
@@ -1014,17 +1067,27 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // remains useful after closing, but using it for a reopened session would count
   // transactions from earlier closures again.
   const closureLedger = branchCounterOpenRecord ? null : ledgerToday;
-  const todayBills = bills.filter((b) => b.branch === branch && today(b.createdAt) && inCurrentSession(b.createdAt));
+  const activeSessionId = branchCounterOpenRecord?.counterSessionId;
+  const belongsToCashier = (cashierUserId?: string, cashierName?: string) => currentUser?.id
+    ? (cashierUserId ? cashierUserId === currentUser.id : cashierName === user)
+    : cashierName === user;
+  const todayBills = bills.filter((b) => b.branch === branch
+    && today(b.createdAt)
+    && inCurrentSession(b.createdAt)
+    && (activeSessionId ? b.counterSessionId === activeSessionId : belongsToCashier(b.cashierUserId, b.biller)));
   const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
-  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt) && inCurrentSession(r.createdAt));
-  const todayExpenses = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt) && inCurrentSession(p.createdAt));
+  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt) && inCurrentSession(r.createdAt) && r.returnedBy === user);
+  const todayPurchasePayments = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt) && inCurrentSession(p.createdAt) && p.paidBy === user);
+  const todayExpenseEntries = expenses.filter((e) => e.branch === branch && today(e.createdAt) && inCurrentSession(e.createdAt) && e.enteredBy === user);
+  const todayBankDeposits = bankDeposits.filter((d) => d.branch === branch && today(d.createdAt) && inCurrentSession(d.createdAt) && d.enteredBy === user);
   const branchCredits = creditSales[branch] || [];
   const branchCreditPayments = creditPayments[branch] || [];
-  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt) && inCurrentSession(c.createdAt));
-  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt) && inCurrentSession(m.createdAt));
-  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
+  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt) && inCurrentSession(c.createdAt) && c.soldBy === user);
+  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt) && inCurrentSession(m.createdAt) && m.collectedBy === user);
+  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.enteredBy === user && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
 
-  const grossBillSales = counterTodayBills.reduce((s, b) => s + b.total, 0);
+  const grossBillSales = counterTodayBills.reduce((sum, bill) => sum + bill.total, 0);
+  const grossSalesBeforeDiscount = counterTodayBills.reduce((sum, bill) => sum + bill.subtotal + bill.tax, 0);
   const advanceCollectedToday = closureLedger
     ? num(closureLedger.advance_collected) + num(closureLedger.advance_balance_collected)
     : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
@@ -1054,8 +1117,15 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
   const totalSales = closureLedger ? num(closureLedger.sales_total) : grossBillSales - refunds;
+  const netSales = grossSalesBeforeDiscount - discounts - refunds;
   const totalSalesIncAdvance = totalSales + advanceCollectedToday;
-  const expenses = todayExpenses.reduce((s, p) => s + p.amount, 0);
+  const expenseTotal = todayExpenseEntries.reduce((s, e) => s + e.amount, 0);
+  const supplierPaymentTotal = todayPurchasePayments.reduce((s, p) => s + p.amount, 0);
+  const bankDepositTotal = todayBankDeposits.reduce((s, d) => s + d.amount, 0);
+  const cashExpenseOut = todayExpenseEntries.filter((e) => e.mode === 'cash').reduce((s, e) => s + e.amount, 0);
+  const cashSupplierOut = todayPurchasePayments.filter((p) => p.mode === 'cash').reduce((s, p) => s + p.amount, 0);
+  const cashBankDepositOut = todayBankDeposits.filter((d) => d.paymentMode === 'Cash Deposit').reduce((s, d) => s + d.amount, 0);
+  const cashOutflows = cashExpenseOut + cashSupplierOut + cashBankDepositOut;
   const discounts = closureLedger ? num(closureLedger.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
   const duplicate = counterTodayBills.filter((b) => b.printCount > 1).length;
   // FIX (Bug #4): In ledger mode, cash = ledgerToday.cash_total. Verify that the
@@ -1065,7 +1135,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   // the non-ledger path is correct. The fix here adds creditCollectionCash explicitly
   // when in ledger mode to guard against RPCs that omit it from cash_total.
   // cash is already net of cash refunds; subtracting refunds here again caused double deduction.
-  const expected = Number(opening || 0) + cash - expenses;
+  const expected = Number(opening || 0) + cash - cashOutflows;
   const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
 
@@ -1075,7 +1145,14 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       branch,
       closure_date: todayIso(),
       cashier: user,
+      cashier_user_id: currentUser?.id || null,
+      cashier_username: user,
+      counter_session_id: activeSessionId || null,
       opening_cash: Number(opening || 0),
+      gross_sales: grossSalesBeforeDiscount,
+      net_sales: netSales,
+      opening_denominations: branchCounterOpenRecord.denominations || {},
+      closing_denominations: Object.fromEntries(Object.entries(closeDenominations).map(([denom, count]) => [String(denom), String(count || '')])),
       cash_total: cash,
       upi_total: upi,
       card_total: card,
@@ -1084,7 +1161,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       advance_collected: advancePaid,
       advance_balance_collected: advanceFull,
       refunds,
-      expenses,
+      expenses: expenseTotal,
+      purchase_payments: supplierPaymentTotal,
       discounts,
       tax_total: closureLedger ? num(closureLedger.tax_total) : counterTodayBills.reduce((s, b) => s + b.tax, 0),
       bill_count: closureLedger ? num(closureLedger.bill_count) : counterTodayBills.length,
@@ -1107,13 +1185,50 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         : `Failed to save closure in Supabase: ${error.message}`);
       return;
     }
-    addCashierClosure({ branch, cashier: user, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
+    if (activeSessionId) {
+      const { error: sessionCloseError } = await supabase
+        .from('branch_counter_sessions')
+        .update({
+          status: 'finalized',
+          gross_sales: grossSalesBeforeDiscount,
+          discounts,
+          returns: refunds,
+          net_sales: netSales,
+          cash_sales: cash,
+          upi_sales: upi,
+          card_sales: card,
+          credit_sales: creditSalesTotal,
+          credit_collected: creditCollectionTotal,
+          advance_collected: advanceCollectedToday,
+          refunds,
+          expenses: expenseTotal,
+          supplier_payments: supplierPaymentTotal,
+          bank_deposits: bankDepositTotal,
+          expected_cash: expected,
+          counted_cash: countedCash,
+          difference: diff,
+          bill_count: counterTodayBills.length,
+          closing_denominations: closurePayload.closing_denominations,
+          closed_at: new Date().toISOString(),
+          closed_by_user_id: currentUser?.id || null,
+          closed_by_username: user,
+          notes: notes || null,
+        })
+        .eq('id', activeSessionId)
+        .eq('status', 'open');
+      if (sessionCloseError) {
+        setSavedMessage(`Closure saved, but counter session finalization failed: ${sessionCloseError.message}`);
+        return;
+      }
+    }
+    addCashierClosure({ branch, cashier: user, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
     setSavedClosures((current) => {
       const saved = data as SavedClosureRow;
       return [saved, ...current.filter((row) => row.id !== saved.id)].slice(0, 30);
     });
-    closeCounter(branch, todayIso(), user);
-    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; difference ${money(diff)}.`, raisedBy: user });
+    closeCounter(branch, todayIso(), user, currentUser?.id);
+    setDbCounterSession(null);
+    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; cash outflows ${money(cashOutflows)}; difference ${money(diff)}.`, raisedBy: user });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setClosing('');
@@ -1121,21 +1236,47 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     setTimeout(() => setSavedMessage(''), 3000);
   };
 
-  const confirmCounterOpen = () => {
+  const confirmCounterOpen = async () => {
     if (branchCounterOpenRecord) {
-      setOpenSavedMessage('Counter is already opened today. Close the counter before opening again.');
+      setOpenSavedMessage('This cashier counter is already open. Close it before opening again.');
+      return;
+    }
+    if (!currentUser?.id) {
+      setOpenSavedMessage('A valid cashier login is required to open the counter.');
+      return;
+    }
+    const openingDenominations = Object.fromEntries(
+      Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
+    );
+    const { data: inserted, error: insertError } = await supabase
+      .from('branch_counter_sessions')
+      .insert({
+        branch,
+        business_date: todayIso(),
+        cashier_user_id: currentUser.id,
+        cashier_username: user,
+        cashier_display_name: currentUser.displayName || user,
+        opening_cash: openTotal,
+        opening_denominations: openingDenominations,
+        status: 'open',
+      })
+      .select('id,opening_cash,opened_at,cashier_username,cashier_user_id')
+      .single();
+    if (insertError || !inserted) {
+      setOpenSavedMessage(`Could not open cashier counter: ${insertError?.message || 'No session returned'}`);
       return;
     }
     const record = openCounter({
       branch,
       date: todayIso(),
-      cashier: openCashier || user,
-      openingCash: openTotal,
-      denominations: Object.fromEntries(
-        Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
-      ),
+      cashier: user,
+      cashierUserId: currentUser.id,
+      counterSessionId: String(inserted.id),
+      openingCash: Number(inserted.opening_cash || 0),
+      denominations: openingDenominations,
       openedBy: user,
     });
+    setDbCounterSession({ id: String(inserted.id), openingCash: Number(inserted.opening_cash || 0), openedAt: String(inserted.opened_at), cashier: String(inserted.cashier_username || user), cashierUserId: String(inserted.cashier_user_id) });
     setOpening(String(record.openingCash));
     setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${record.cashier}. Opening cash: ${money(record.openingCash)}`);
   };
@@ -1147,7 +1288,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
     cash, upi, card, splitTotal,
     creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
-    openingCash: Number(opening || 0), expenses, refunds,
+    openingCash: Number(opening || 0), expenses: cashOutflows, refunds,
     expected, counted: countedCash, difference: diff,
     notes,
     bills: counterTodayBills.map((b) => ({ billNo: b.billNo, createdAt: b.createdAt, customerName: b.creditCustomerName, paymentMode: b.paymentMode, total: b.total, biller: b.biller })),
@@ -1284,7 +1425,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               <p className="text-[10px] font-black uppercase text-white/60">Opening total</p>
               <p className="text-xl font-black tabular-nums">{money(openTotal)}</p>
             </div>
-            <button onClick={confirmCounterOpen} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
+            <button onClick={() => { void confirmCounterOpen(); }} disabled={Boolean(branchCounterOpenRecord)} className="rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
               {branchCounterOpenRecord ? 'Counter Already Open' : 'Confirm Counter Open'}
             </button>
           </div>
@@ -1439,7 +1580,7 @@ export function AdminNotificationsBranchTab({ branch }: ModuleProps) {
   const { notifications, updateNotificationStatus } = useBranchOpsStore();
   const { stockMismatches } = useBranchStore();
   const { currentUser } = useAuthStore();
-  const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
+  const adminName = currentUser?.username || currentUser?.displayName || 'Admin';
   const rows = notifications.filter(n=>n.branch===branch);
   const mismatches = stockMismatches.filter(m=>m.branch===branch);
   return <div className="space-y-5"><div className="grid gap-3 md:grid-cols-3"><Kpi label="Pending Notifications" value={rows.filter(r=>r.status==='Unread').length} icon={<Bell/>} tone="amber"/><Kpi label="Stock Disputes" value={rows.filter(r=>r.type==='Stock Dispute'&&r.status!=='Resolved').length + mismatches.length} icon={<AlertTriangle/>} tone="red"/><Kpi label="Resolved" value={rows.filter(r=>r.status==='Resolved').length} icon={<CheckCircle2/>} tone="green"/></div><Section title="Admin Notifications - Review / Clear / Resolve" icon={<Bell className="size-5"/>}><div className="space-y-3">{rows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No admin notifications.</p> : rows.map(n=><div key={n.id} className="rounded-3xl border p-4"><div className="flex flex-col justify-between gap-3 lg:flex-row"><div><p className="font-black">{n.type}: {n.title}</p><p className="text-sm text-slate-500">{n.details}</p><p className="mt-1 text-xs font-bold text-slate-400">{new Date(n.createdAt).toLocaleString('en-IN')} · {n.raisedBy}</p></div><div className="flex flex-wrap items-start gap-2"><SoftButton onClick={()=>updateNotificationStatus(n.id,'Seen',adminName)}>Review</SoftButton><SoftButton onClick={()=>updateNotificationStatus(n.id,'Resolved',adminName)} className="text-emerald-700">Clear / Resolve</SoftButton><Select value={n.status} onChange={(e)=>updateNotificationStatus(n.id,e.target.value as typeof n.status,adminName)} className="w-36"><option>Unread</option><option>Seen</option><option>Resolved</option></Select></div></div></div>)}</div></Section><Section title="Stock Mismatch / Dispute Reports" icon={<AlertTriangle className="size-5"/>}><div className="space-y-2">{mismatches.map(m=><div key={m.id} className="rounded-2xl bg-red-50 p-4 text-red-800"><p className="font-black">{m.itemName}</p><p className="text-sm">Sold {m.soldQty} · Shortage {m.shortage} · Raised by {m.soldBy} · {new Date(m.soldAt).toLocaleString('en-IN')}</p></div>)}</div></Section></div>;
