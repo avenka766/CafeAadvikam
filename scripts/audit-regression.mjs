@@ -71,6 +71,8 @@ const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_br
 const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix_admin_invoice_review_workflow.sql') ?? '';
 const branchPaymentStockCorrectionMigration = read('supabase/migrations/20260628224500_fix_branch_payment_edit_nav_and_mix_combo_stock.sql') ?? '';
 const completeBranchFixMigration = read('supabase/migrations/20260630030000_branch_snb_vrsnb_complete_fixes.sql') ?? '';
+const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013000_fix_snb_purchase_workflow_dropdowns.sql') ?? '';
+const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
 const branchStore = read('src/branch/branchStore.ts') ?? '';
@@ -360,6 +362,23 @@ check(
   adminSnb.includes("sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0))")
     && adminVrsnb.includes("sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0))"),
   'Duplicate stock rows must keep the latest database record instead of depending on response order.',
+);
+
+check(
+  'SNB purchase returns and supplier payments have a resilient database read path',
+  snbAdminReports.includes("rpc(\"get_snb_purchase_workflow_data\"")
+    && snbAdminReports.includes('const derivedOutstanding = purchaseInvoices.map')
+    && snbPurchaseWorkflowRepairMigration.includes('create or replace function public.get_snb_purchase_workflow_data')
+    && snbPurchaseWorkflowRepairMigration.includes("c.role not in ('admin_snb', 'admin', 'owner')"),
+  'Purchase-return invoices and supplier balances must load through a role-checked snapshot with a direct-table fallback.',
+);
+
+check(
+  'Supplier payment allocations survive invoice search filtering',
+  adminSnb.includes('const allocationRows = allSupplierRows')
+    && adminSnb.includes('allSupplierRows.forEach((row) =>')
+    && adminSnb.includes('const visibleSuppliers = useMemo'),
+  'Searching the invoice list must not remove already-entered allocations from the payment batch total.',
 );
 
 check(
