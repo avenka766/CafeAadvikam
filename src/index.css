@@ -3550,3 +3550,52 @@
   .order-receiver-workspace { min-height: calc(100dvh - var(--header-h, 4rem)); }
   .order-receiver-workspace table { font-size: .7rem; }
 }
+
+
+/* SNB Order: keep every workflow reachable on phone/tablet and compact on short counter screens. */
+.order-receiver-mobile-tabs {
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 1023px) {
+  .order-receiver-mobile-tabs {
+    position: sticky;
+    top: .35rem;
+    z-index: 25;
+  }
+}
+
+@media (max-width: 767px) {
+  .order-receiver-workspace {
+    height: auto !important;
+    min-height: calc(100dvh - var(--header-h, 4rem));
+    overflow: visible !important;
+    padding-bottom: calc(var(--staff-bottom-nav-h, 6.85rem) + 1rem) !important;
+  }
+  .order-receiver-workspace > .min-h-0.flex-1 {
+    min-height: 0;
+    overflow: visible !important;
+  }
+  .order-receiver-workspace .order-receiver-mobile-tabs button {
+    min-height: 2.65rem;
+    padding-inline: .85rem;
+    font-size: .68rem;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px), (min-width: 1024px) and (max-height: 900px) {
+  .order-receiver-workspace {
+    gap: .35rem;
+  }
+  .order-receiver-workspace .rounded-3xl {
+    border-radius: 1rem !important;
+  }
+  .order-receiver-workspace .p-4 {
+    padding: .7rem !important;
+  }
+  .order-receiver-workspace .gap-4 {
+    gap: .65rem !important;
+  }
+}
