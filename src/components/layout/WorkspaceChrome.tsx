@@ -178,6 +178,7 @@ function navForRole(role?: string): NavItem[] {
     case 'receiver_vrsnb':
       return [
         { label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'Live Status', path: '/bakery/receive/vrsnb?tab=live', icon: <Clock3 className="size-4" />, group: 'Main' },
         { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
