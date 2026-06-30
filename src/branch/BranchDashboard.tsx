@@ -28,6 +28,7 @@ import {
   PurchaseOrderTab,
   PurchasePayTab,
   PurchaseTab,
+  QuotationTab,
   ReturnsTab,
   SalespersonReportTab,
   StoreOrdersTab,
@@ -39,6 +40,7 @@ import { useBranchOpsStore, money } from './branchOpsStore';
 type TabId =
   | 'bill'
   | 'advance'
+  | 'quotation'
   | 'returns'
   | 'purchase'
   | 'purchase-pay'
@@ -59,6 +61,7 @@ type TabId =
 const BASE_TABS = [
   { id: 'bill' as const, label: 'New Bill', icon: Receipt, adminOnly: false },
   { id: 'advance' as const, label: 'Advance Orders', icon: FileClock, adminOnly: false },
+  { id: 'quotation' as const, label: 'Quotation', icon: FileText, adminOnly: false },
   { id: 'returns' as const, label: 'Returns', icon: RotateCcw, adminOnly: false },
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
   { id: 'payment-edit' as const, label: 'Payment Mode Edit', icon: CreditCard, adminOnly: false },
@@ -116,7 +119,7 @@ export default function BranchDashboard({ branch }: Props) {
   const { bills, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
 
   const initializedRef = useRef<Branch | null>(null);
-  const alertShownRef = useRef<string>('');
+  const alertedDeliveryIdsRef = useRef<Set<string>>(new Set());
   const [showDeliveryAlert, setShowDeliveryAlert] = useState(false);
 
   const branchStock = useMemo(() => stock[branch] || [], [stock, branch]);
@@ -225,10 +228,11 @@ export default function BranchDashboard({ branch }: Props) {
   const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
 
   useEffect(() => {
-    const deliveryIds = [...todayLegacyDeliveries, ...todayCakeDeliveries].map((d: any) => d.id).sort().join(',');
-    const key = `${branch}-${todayIso}-${deliveryIds}`;
-    if (todayDeliveryCount > 0 && alertShownRef.current !== key) {
-      alertShownRef.current = key;
+    const activeIds = [...todayLegacyDeliveries, ...todayCakeDeliveries]
+      .map((delivery: any) => `${branch}:${todayIso}:${String(delivery.id)}`);
+    const unseen = activeIds.filter((id) => !alertedDeliveryIdsRef.current.has(id));
+    if (unseen.length > 0) {
+      activeIds.forEach((id) => alertedDeliveryIdsRef.current.add(id));
       setShowDeliveryAlert(true);
     }
   }, [branch, todayDeliveryCount, todayIso, todayLegacyDeliveries, todayCakeDeliveries]);
@@ -268,12 +272,12 @@ export default function BranchDashboard({ branch }: Props) {
     () => counterTodayBills.reduce((s, b) => s + b.total, 0) + legacyTodaySalesLog.reduce((s, r) => s + (r.unitPrice ?? 0) * r.quantitySold, 0) + todayAdvanceIn,
     [counterTodayBills, legacyTodaySalesLog, todayAdvanceIn],
   );
-  const totalTodayRevenue = todayLedger
-    ? n(todayLedger.sales_total) + n(todayLedger.advance_collected) + n(todayLedger.advance_balance_collected)
-    : localTodayRevenue;
-  const currentCash = todayLedger ? n(todayLedger.cash_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
-  const currentUpi = todayLedger ? n(todayLedger.upi_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
-  const currentCard = todayLedger ? n(todayLedger.card_total) : cashMovements.filter((m) => m.branch === branch && m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0) + todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+  // Sales value and collection value are separate: advances are collections, not new sales.
+  const totalTodayRevenue = todayLedger ? n(todayLedger.sales_total) : localTodayRevenue - todayAdvanceIn;
+  const todayMovements = cashMovements.filter((m) => m.branch === branch && new Date(m.dateTime).toDateString() === todayString);
+  const currentCash = todayLedger ? n(todayLedger.cash_total) : todayMovements.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
+  const currentUpi = todayLedger ? n(todayLedger.upi_total) : todayMovements.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
+  const currentCard = todayLedger ? n(todayLedger.card_total) : todayMovements.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + (m.direction === 'in' ? m.amount : -m.amount), 0);
 
   if (!opsHydrated) {
     return (
@@ -293,9 +297,10 @@ export default function BranchDashboard({ branch }: Props) {
     <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
       <div className="grid h-full min-h-0 p-1.5 sm:p-2">
         <main className={cn('h-full min-h-0 min-w-0 overflow-hidden border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'rounded-[1.35rem]' : 'rounded-[1.6rem]')}>
-          <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'overflow-y-auto overscroll-contain px-2 py-2 sm:px-3 sm:py-3 md:px-4 space-y-4')}>
+          <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'branch-compact-tab overflow-hidden p-1.5 sm:p-2')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
+            {tab === 'quotation' && <QuotationTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase' && isAdminUser && <PurchaseTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase-pay' && isAdminUser && <PurchasePayTab branch={branch} branchStock={branchStock} />}

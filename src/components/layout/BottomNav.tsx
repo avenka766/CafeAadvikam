@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import {
   ClipboardList,
   Receipt,
+  RotateCcw,
   UtensilsCrossed,
   History,
   LayoutDashboard,
@@ -10,7 +11,6 @@ import {
   QrCode,
   ChefHat,
   CalendarCheck,
-  Inbox,
   Store,
   Flame,
   Package,
@@ -233,67 +233,6 @@ export default function BottomNav() {
         badge: unread || undefined,
       },
     );
-  } else if (currentUser.role === "receiver_vrsnb") {
-    navItems.push(
-      {
-        label: "Order",
-        icon: <Inbox className="size-5" />,
-        path: "/bakery/receive/vrsnb",
-      },
-      {
-        label: "Placed",
-        icon: <FileText className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=placed",
-      },
-      {
-        label: "Alerts",
-        icon: <Bell className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=alerts",
-      },
-      {
-        label: "Stock",
-        icon: <Package className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=stock",
-      },
-      {
-        label: "Count",
-        icon: <ClipboardList className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=stock-count",
-      },
-    );
-  } else if (currentUser.role === "receiver_snb") {
-    navItems.push(
-      {
-        label: "Order",
-        icon: <Inbox className="size-5" />,
-        path: "/bakery/receive/snb",
-      },
-      {
-        label: "Placed",
-        icon: <FileText className="size-5" />,
-        path: "/bakery/receive/snb?tab=placed",
-      },
-      {
-        label: "Alerts",
-        icon: <Bell className="size-5" />,
-        path: "/bakery/receive/snb?tab=alerts",
-      },
-      {
-        label: "Stock",
-        icon: <Package className="size-5" />,
-        path: "/bakery/receive/snb?tab=stock",
-      },
-      {
-        label: "PO",
-        icon: <ShoppingCart className="size-5" />,
-        path: "/bakery/receive/snb?tab=po",
-      },
-      {
-        label: "Count",
-        icon: <ClipboardList className="size-5" />,
-        path: "/bakery/receive/snb?tab=stock-count",
-      },
-    );
   } else if (currentUser.role === "store") {
     navItems.push(
       { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/store" },
@@ -364,6 +303,11 @@ export default function BottomNav() {
         path: "/admin-vrsnb?tab=stock",
       },
       {
+        label: "Update Stock",
+        icon: <Settings2 className="size-5" />,
+        path: "/admin-vrsnb?tab=update-stock",
+      },
+      {
         label: "Credit",
         icon: <WalletCards className="size-5" />,
         path: "/admin-vrsnb?tab=credit",
@@ -413,6 +357,11 @@ export default function BottomNav() {
         path: "/admin-snb?tab=stock",
       },
       {
+        label: "Update Stock",
+        icon: <Settings2 className="size-5" />,
+        path: "/admin-snb?tab=update-stock",
+      },
+      {
         label: "Suppliers",
         icon: <Truck className="size-5" />,
         path: "/admin-snb?tab=suppliers",
@@ -426,6 +375,11 @@ export default function BottomNav() {
         label: "Invoices",
         icon: <FileText className="size-5" />,
         path: "/admin-snb?tab=invoices",
+      },
+      {
+        label: "Returns",
+        icon: <RotateCcw className="size-5" />,
+        path: "/admin-snb?tab=purchase-returns",
       },
       {
         label: "Payments",

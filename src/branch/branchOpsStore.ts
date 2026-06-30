@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit";
+const roundMoney = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 type PoStatus =
   | "Draft"
   | "Approved"
@@ -58,6 +59,8 @@ export interface BranchBillRecord {
   printCount: number;
   status: "Original Bill" | "Duplicate Bill" | "Returned";
   source?: "counter" | "advance-final";
+  cashierUserId?: string;
+  counterSessionId?: string;
   creditCustomerName?: string;
   creditCustomerMobile?: string;
   creditDueDate?: string;
@@ -65,6 +68,8 @@ export interface BranchBillRecord {
 }
 
 export interface BranchCreditPayment {
+  collectorUserId?: string;
+  counterSessionId?: string;
   id: string;
   amount: number;
   mode: "cash" | "upi" | "card" | "bank";
@@ -92,6 +97,8 @@ export interface BranchCreditSale {
   payments: BranchCreditPayment[];
   createdAt: string;
   updatedAt: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
 }
 
 export interface HoldBill {
@@ -166,6 +173,9 @@ export interface CakeAdvanceOrder {
   storeStatusHistory?: Array<{ status: string; by: string; at: string }>;
   sentToStoreAt?: string;
   finalInvoiceBillNo?: string;
+  createdBy?: string;
+  collectionSource?: string;
+  skipLocalCashMovement?: boolean;
   createdAt: string;
 }
 
@@ -191,21 +201,26 @@ export interface QuotationRecord {
 }
 
 export interface ReturnRecord {
+  cashierUserId?: string;
+  counterSessionId?: string;
   id: string;
   branch: Branch;
   returnNo: string;
   originalBillNo: string;
-  originalPaymentMode?: "cash" | "upi" | "card";
+  originalPaymentMode?: "cash" | "upi" | "card" | "credit" | "credit_adjustment";
   items: BranchBillItem[];
   total: number;
   returnedBy: string;
   reason: string;
   returnPayMode?: string;
+  refundAmount?: number;
+  creditAdjusted?: number;
   createdAt: string;
 }
 
 export interface PurchaseRecord {
   id: string;
+  dbId?: string;
   branch: Branch;
   supplier: string;
   invoiceNo: string;
@@ -241,6 +256,11 @@ export interface PurchaseRecord {
 
 export interface PurchasePayment {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
+  paymentBatchId?: string;
+  batchTotal?: number;
+  allocationOrder?: number;
   branch: Branch;
   purchaseId?: string;
   supplier: string;
@@ -280,6 +300,8 @@ export interface PurchaseOrderRecord {
 
 export interface CashMovement {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
   branch: Branch;
   dateTime: string;
   amount: number;
@@ -293,6 +315,8 @@ export interface CashMovement {
 
 export interface CounterOpenRecord {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
   branch: Branch;
   date: string;
   cashier: string;
@@ -307,6 +331,8 @@ export interface CounterOpenRecord {
 
 export interface BankDeposit {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
   branch: Branch;
   depositDate: string;
   amount: number;
@@ -325,6 +351,11 @@ export interface BankDeposit {
 
 export interface CashierClosure {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
+  grossSales?: number;
+  netSales?: number;
+  denominations?: Record<string, string>;
   branch: Branch;
   cashier: string;
   openingCash: number;
@@ -401,6 +432,8 @@ export interface SupplierRecord {
 
 export interface ExpenseRecord {
   id: string;
+  cashierUserId?: string;
+  counterSessionId?: string;
   branch: Branch;
   expenseDate: string;
   category: string;
@@ -622,7 +655,7 @@ interface BranchOpsState {
   openCounter: (
     opening: Omit<CounterOpenRecord, "id" | "openedAt" | "active" | "closedAt" | "closedBy">,
   ) => CounterOpenRecord;
-  closeCounter: (branch: Branch, date: string, closedBy: string) => CounterOpenRecord | undefined;
+  closeCounter: (branch: Branch, date: string, closedBy: string, cashierUserId?: string) => CounterOpenRecord | undefined;
   addBankDeposit: (
     deposit: Omit<BankDeposit, "id" | "createdAt">,
   ) => BankDeposit;
@@ -817,8 +850,8 @@ function getSessionBranch(): Branch | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { state?: { currentUser?: { role?: string } } };
     const role = parsed?.state?.currentUser?.role ?? '';
-    if (role === 'branch_snb') return 'SNB';
-    if (role === 'branch_vrsnb') return 'VRSNB';
+    if (role === 'branch_snb' || role === 'admin_snb' || role === 'receiver_snb') return 'SNB';
+    if (role === 'branch_vrsnb' || role === 'admin_vrsnb' || role === 'receiver_vrsnb') return 'VRSNB';
     if (role === 'branch_hosur') return 'Hosur';
     return null; // admin/owner roles load all branches — handled below
   } catch {
@@ -852,10 +885,17 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
 
+    let complaintQuery = supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 200 : 1000);
+
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
+      complaintQuery = complaintQuery.eq("branch", sessionBranch);
     }
 
     const [
@@ -863,6 +903,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       { data: opRows, error: opError },
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
+      { data: complaintRows, error: complaintError },
     ] = await Promise.all([
       supabase
         .from("app_state")
@@ -872,6 +913,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       opQuery,
       stockCountQuery,
       varianceQuery,
+      complaintQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -885,6 +927,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     }
     if (varianceError && !/branch_stock_variance_records|does not exist|schema cache/i.test(varianceError.message)) {
       console.error("[branchOpsStore] Supabase stock variance load failed:", varianceError.message);
+    }
+    if (complaintError && !/branch_complaint_tickets|does not exist|schema cache/i.test(complaintError.message)) {
+      console.error("[branchOpsStore] Supabase complaint load failed:", complaintError.message);
     }
     const dedicatedRows: BranchOperationRecordRow[] = [
       ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
@@ -922,6 +967,22 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
           confirmedBy: String(row.confirmed_by ?? ""),
           createdAt: String(row.created_at),
         } satisfies BranchStockVarianceRecord),
+      })),
+      ...((complaintRows || []) as Array<Record<string, unknown>>).map((row) => ({
+        record_type: "complaint",
+        record_id: String(row.id),
+        created_at: String(row.created_at),
+        payload: ({
+          id: String(row.id),
+          branch: row.branch as Branch,
+          complaintArea: String(row.complaint_area ?? ""),
+          title: String(row.subject ?? ""),
+          details: String(row.description ?? ""),
+          raisedBy: String(row.created_by_username ?? ""),
+          status: (row.status as ComplaintRecord["status"]) ?? "Open",
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at ?? row.created_at),
+        } satisfies ComplaintRecord),
       })),
     ];
     return mergeOperationRecordsIntoState(
@@ -1170,6 +1231,19 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => {
           const prev = s.complaints.find((c) => c.id === id);
           if (prev) {
+            void supabase
+              .from("branch_complaint_tickets")
+              .update({
+                status,
+                resolution: status === "Resolved" ? `Resolved by ${user}` : null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", id)
+              .then(({ error }) => {
+                if (error && !/branch_complaint_tickets|does not exist|schema cache/i.test(error.message)) {
+                  console.error("[branchOpsStore] Complaint status save failed:", error.message);
+                }
+              });
             mirrorOperationRecord(prev.branch, "complaint", id, { ...prev, status, updatedAt: new Date().toISOString() }, {
               status,
               actor: user,
@@ -1370,16 +1444,31 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         let updatedBill: BranchBillRecord | undefined;
         set((state) => {
           const previous = state.bills.find((bill) => bill.id === billId || bill.billNo === billId);
-          if (!previous || previous.paymentMode === "credit" || previous.paymentMode === "split") return state;
+          if (!previous || previous.paymentMode === "credit") return state;
           const oldMode = previous.paymentMode;
-          updatedBill = { ...previous, paymentMode: newMode, split: undefined };
-          const cashMovements = state.cashMovements.map((movement) =>
+          updatedBill = { ...previous, paymentMode: newMode, split: undefined, tendered: previous.total, balance: 0 };
+          const replacesBillCollection = (movement: CashMovement) =>
             movement.referenceNumber === previous.billNo
             && movement.direction === "in"
-            && movement.purpose === "Bill collection"
-              ? { ...movement, paymentMode: newMode }
-              : movement,
-          );
+            && (movement.purpose === "Bill collection" || movement.purpose === "Bill collection - split");
+          const remainingMovements = state.cashMovements.filter((movement) => !replacesBillCollection(movement));
+          const cashMovements: CashMovement[] = [
+            {
+              id: uid("cash"),
+              branch: previous.branch,
+              cashierUserId: previous.cashierUserId,
+              counterSessionId: previous.counterSessionId,
+              dateTime: new Date().toISOString(),
+              amount: previous.total,
+              paymentMode: newMode,
+              direction: "in",
+              purpose: "Bill collection",
+              enteredBy: user,
+              referenceNumber: previous.billNo,
+              remarks: `Payment mode edited from ${oldMode.toUpperCase()} to ${newMode.toUpperCase()}`,
+            },
+            ...remainingMovements,
+          ];
           mirrorOperationRecord(previous.branch, previous.source === "advance-final" ? "advance_final_bill" : "bill", previous.id, updatedBill, {
             recordNo: previous.billNo,
             amount: previous.total,
@@ -1691,11 +1780,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: "Pending Store Confirmation",
           createdAt: newOrder.createdAt,
         };
+        const actor = order.createdBy || order.salesperson;
         set((s) => ({
           advanceCakeOrders: [newOrder, ...s.advanceCakeOrders],
           storeOrders: s.storeOrders,
           notifications: s.notifications,
-          cashMovements: [
+          cashMovements: order.skipLocalCashMovement ? s.cashMovements : [
             {
               id: uid("cash"),
               branch: order.branch,
@@ -1704,16 +1794,16 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               paymentMode: order.paymentMode,
               direction: "in",
               purpose: "Cake advance received",
-              enteredBy: order.salesperson,
+              enteredBy: actor,
               referenceNumber: orderNo,
-              remarks: order.customerName,
+              remarks: order.collectionSource || order.customerName,
             },
             ...s.cashMovements,
           ],
           auditLogs: [
             audit(
               order.branch,
-              order.salesperson,
+              actor,
               "Advance Order",
               "-",
               `${orderNo} ${order.advanceAmount}`,
@@ -1725,7 +1815,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           recordNo: orderNo,
           amount: order.orderValue,
           status: newOrder.status,
-          actor: order.salesperson,
+          actor,
         });
         return newOrder;
       },
@@ -1911,68 +2001,85 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         }),
       addReturn: async (ret) => {
         const returnNo = `${ret.branch}-RET-${String(seq(`return-${ret.branch}`)).padStart(4, "0")}`;
-        const newRet = {
-          ...ret,
-          id: uid("ret"),
-          returnNo,
-          createdAt: new Date().toISOString(),
-        };
-        // FIX (MD Bug #3): use the original bill's payment mode for the refund cash movement,
-        // not always 'cash'. A UPI/card return previously created a cash outflow with no
-        // matching cash inflow, directly distorting Expected Cash at Daily Closure.
-        const refundMode = ret.originalPaymentMode ?? "cash";
+        const requestedRefundMode = ret.originalPaymentMode === "credit" || ret.originalPaymentMode === "credit_adjustment"
+          ? (ret.returnPayMode === "cash" || ret.returnPayMode === "upi" || ret.returnPayMode === "card" ? ret.returnPayMode : "credit_adjustment")
+          : (ret.returnPayMode || ret.originalPaymentMode || "cash");
 
-        // FIX (MD Bug #3 continued): call the ledger RPC so branch_daily_closure_ledger
-        // totals (cash_total, upi_total, card_total, sales_total) are reduced by the return
-        // amount. Without this, the ledger still shows the pre-return revenue figures and
-        // Expected Cash at closure is overstated by the refund amount.
+        let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string } | null = null;
         try {
-          const { error: returnError } = await supabase.rpc('process_branch_return', {
+          let result = await supabase.rpc('process_branch_return_credit_safe', {
             p_branch: ret.branch,
             p_bill_no: ret.originalBillNo,
             p_return_no: returnNo,
             p_amount: ret.total,
-            p_payment_mode: refundMode,
+            p_payment_mode: requestedRefundMode,
             p_returned_by: ret.returnedBy,
             p_reason: ret.reason,
             p_items: ret.items ?? [],
           });
-          if (returnError) throw returnError;
+          if (result.error && /process_branch_return_credit_safe|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
+            if (requestedRefundMode === 'credit_adjustment') {
+              throw new Error('Credit-safe return workflow is not installed. Apply the latest branch return migration.');
+            }
+            result = await supabase.rpc('process_branch_return', {
+              p_branch: ret.branch,
+              p_bill_no: ret.originalBillNo,
+              p_return_no: returnNo,
+              p_amount: ret.total,
+              p_payment_mode: requestedRefundMode,
+              p_returned_by: ret.returnedBy,
+              p_reason: ret.reason,
+              p_items: ret.items ?? [],
+            });
+          }
+          if (result.error) throw result.error;
+          ledgerResult = (result.data ?? null) as typeof ledgerResult;
         } catch (rpcErr) {
           console.error('[addReturn] process_branch_return failed; return was not recorded in ledger:', rpcErr);
           throw new Error('Return could not be recorded in Supabase ledger. Please run the branch returns migration and try again.');
         }
 
-        set((s) => ({
-          returns: [newRet, ...s.returns],
-          cashMovements: [
-            {
-              id: uid("cash"),
-              branch: ret.branch,
-              dateTime: newRet.createdAt,
-              amount: ret.total,
-              paymentMode: refundMode,
-              direction: "out",
-              purpose: "Return refund",
-              enteredBy: ret.returnedBy,
-              referenceNumber: returnNo,
-              remarks: ret.reason,
-            },
-            ...s.cashMovements,
-          ],
+        const refundAmount = roundMoney(Number(ledgerResult?.refundAmount ?? (requestedRefundMode === 'credit_adjustment' ? 0 : ret.total)));
+        const effectiveMode = refundAmount > 0
+          ? (ledgerResult?.refundMode || requestedRefundMode)
+          : 'credit_adjustment';
+        const newRet: ReturnRecord = {
+          ...ret,
+          id: uid("ret"),
+          returnNo,
+          returnPayMode: effectiveMode,
+          refundAmount,
+          creditAdjusted: roundMoney(Number(ledgerResult?.creditAdjusted ?? 0)),
+          createdAt: new Date().toISOString(),
+        };
+
+        set((state) => ({
+          returns: [newRet, ...state.returns],
+          cashMovements: refundAmount > 0 && (effectiveMode === 'cash' || effectiveMode === 'upi' || effectiveMode === 'card')
+            ? [{
+                id: uid("cash"),
+                branch: ret.branch,
+                dateTime: newRet.createdAt,
+                amount: refundAmount,
+                paymentMode: effectiveMode,
+                direction: "out",
+                purpose: "Return refund",
+                enteredBy: ret.returnedBy,
+                referenceNumber: returnNo,
+                remarks: ret.reason,
+              }, ...state.cashMovements]
+            : state.cashMovements,
           auditLogs: [
             audit(
               ret.branch,
               ret.returnedBy,
               "Return Bill",
               ret.originalBillNo,
-              `${returnNo} ${ret.total}`,
+              `${returnNo} ${ret.total}; credit adjusted ${roundMoney(Number(ledgerResult?.creditAdjusted ?? 0))}; refund ${refundAmount}`,
             ),
-            ...s.auditLogs,
+            ...state.auditLogs,
           ],
         }));
-        // process_branch_return already writes the canonical operation record.
-        // Mirroring it again created a duplicate return entry in reports and closure views.
         return newRet;
       },
       addPurchase: (purchase) => {
@@ -2105,7 +2212,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ...s.auditLogs,
           ],
         }));
-        mirrorOperationRecord(payment.branch, "purchase_payment", newPayment.id, newPayment, {
+        mirrorOperationRecord(payment.branch, "supplier_payment", newPayment.id, newPayment, {
           recordNo: payment.reference,
           amount: payment.amount,
           actor: payment.paidBy,
@@ -2239,7 +2346,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
       openCounter: (opening) => {
         const now = new Date().toISOString();
         const existing = get().counterOpenings.find(
-          (record) => record.branch === opening.branch && record.date === opening.date,
+          (record) => record.branch === opening.branch && record.date === opening.date && (opening.cashierUserId ? record.cashierUserId === opening.cashierUserId : record.cashier === opening.cashier),
         );
         const newOpening: CounterOpenRecord = {
           ...opening,
@@ -2255,7 +2362,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           counterOpenings: [
             newOpening,
             ...s.counterOpenings.filter(
-              (record) => !(record.branch === opening.branch && record.date === opening.date),
+              (record) => !(record.branch === opening.branch && record.date === opening.date && (opening.cashierUserId ? record.cashierUserId === opening.cashierUserId : record.cashier === opening.cashier)),
             ),
           ],
           auditLogs: [
@@ -2277,9 +2384,9 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         });
         return newOpening;
       },
-      closeCounter: (branch, date, closedBy) => {
+      closeCounter: (branch, date, closedBy, cashierUserId) => {
         const current = get().counterOpenings.find(
-          (record) => record.branch === branch && record.date === date && record.active !== false,
+          (record) => record.branch === branch && record.date === date && record.active !== false && (cashierUserId ? record.cashierUserId === cashierUserId : true),
         );
         if (!current) return undefined;
         const closed: CounterOpenRecord = {

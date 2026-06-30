@@ -7,6 +7,7 @@ import { money, useBranchOpsStore } from '../branchOpsStore';
 import type { Branch } from '../types';
 
 type EditableMode = 'cash' | 'upi' | 'card';
+type Allocation = Record<EditableMode, string>;
 
 type PaymentRow = {
   id: string;
@@ -29,18 +30,27 @@ type BillPayment = {
   total: number;
   createdAt: string;
   mode: EditableMode | 'split' | 'credit' | 'unknown';
+  allocation: Record<EditableMode, number>;
   editable: boolean;
 };
 
 const editableModes: EditableMode[] = ['cash', 'upi', 'card'];
+const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
-function modeFromRow(row: PaymentRow): BillPayment['mode'] {
+function allocationFromRow(row: PaymentRow) {
+  const allocation = { cash: 0, upi: 0, card: 0 };
+  for (const payment of row.branch_sale_payments || []) {
+    const mode = payment.payment_mode.toLowerCase() as EditableMode;
+    if (editableModes.includes(mode)) allocation[mode] = roundMoney(allocation[mode] + Number(payment.amount || 0));
+  }
+  return allocation;
+}
+
+function modeFromAllocation(row: PaymentRow, allocation: Record<EditableMode, number>): BillPayment['mode'] {
   if (row.bill_type === 'credit') return 'credit';
-  const modes = Array.from(new Set((row.branch_sale_payments || [])
-    .filter((payment) => Number(payment.amount || 0) > 0)
-    .map((payment) => payment.payment_mode.toLowerCase())));
+  const modes = editableModes.filter((mode) => allocation[mode] > 0);
   if (modes.length > 1) return 'split';
-  return editableModes.includes(modes[0] as EditableMode) ? modes[0] as EditableMode : 'unknown';
+  return modes[0] || 'unknown';
 }
 
 export function PaymentModeEditTab({ branch }: { branch: Branch }) {
@@ -49,7 +59,7 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
   const { updateBillPaymentMode } = useBranchOpsStore();
   const [rows, setRows] = useState<BillPayment[]>([]);
   const [query, setQuery] = useState('');
-  const [drafts, setDrafts] = useState<Record<string, EditableMode>>({});
+  const [drafts, setDrafts] = useState<Record<string, Allocation>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -74,7 +84,8 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
     }
 
     const mapped = ((data || []) as PaymentRow[]).map((row) => {
-      const mode = modeFromRow(row);
+      const allocation = allocationFromRow(row);
+      const mode = modeFromAllocation(row, allocation);
       return {
         id: row.id,
         billNo: row.bill_no,
@@ -84,11 +95,16 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
         total: Number(row.total || 0),
         createdAt: row.created_at,
         mode,
-        editable: editableModes.includes(mode as EditableMode) && row.status !== 'returned',
+        allocation,
+        editable: row.bill_type !== 'credit' && row.status !== 'returned',
       };
     });
     setRows(mapped);
-    setDrafts(Object.fromEntries(mapped.filter((row) => row.editable).map((row) => [row.id, row.mode as EditableMode])));
+    setDrafts(Object.fromEntries(mapped.map((row) => [row.id, {
+      cash: row.allocation.cash ? String(row.allocation.cash) : '',
+      upi: row.allocation.upi ? String(row.allocation.upi) : '',
+      card: row.allocation.card ? String(row.allocation.card) : '',
+    }])));
     setLoading(false);
   }, [branch]);
 
@@ -102,78 +118,82 @@ export function PaymentModeEditTab({ branch }: { branch: Branch }) {
       || row.biller.toLowerCase().includes(value));
   }, [isVRSNB, query, rows]);
 
+  const draftTotal = (id: string) => {
+    const draft = drafts[id] || { cash: '', upi: '', card: '' };
+    return roundMoney(editableModes.reduce((sum, mode) => sum + Number(draft[mode] || 0), 0));
+  };
+
+  const fillRemaining = (row: BillPayment, field: EditableMode) => {
+    setDrafts((current) => {
+      const draft = current[row.id] || { cash: '', upi: '', card: '' };
+      const other = editableModes.filter((mode) => mode !== field).reduce((sum, mode) => sum + Number(draft[mode] || 0), 0);
+      return { ...current, [row.id]: { ...draft, [field]: String(roundMoney(Math.max(0, row.total - other))) } };
+    });
+  };
+
   const save = async (row: BillPayment) => {
-    const nextMode = drafts[row.id];
-    if (!row.editable || !nextMode || nextMode === row.mode) return;
+    const draft = drafts[row.id];
+    if (!row.editable || !draft) return;
+    const allocations = editableModes.map((mode) => ({ mode, amount: roundMoney(Number(draft[mode] || 0)) })).filter((entry) => entry.amount > 0);
+    if (!allocations.length || draftTotal(row.id) !== roundMoney(row.total)) {
+      setMessage(`Split allocation for ${row.billNo} must equal ${money(row.total)} exactly.`);
+      return;
+    }
     setSavingId(row.id);
     setMessage('');
-    const actor = currentUser?.displayName || currentUser?.username || 'Branch Staff';
-    const { error } = await supabase.rpc('edit_branch_bill_payment_mode', {
+    const actor = currentUser?.username || currentUser?.displayName || 'Branch Staff';
+    let { error } = await supabase.rpc('edit_branch_bill_payment_allocations', {
       p_branch: branch,
       p_bill_id: row.id,
-      p_new_mode: nextMode,
+      p_allocations: allocations,
       p_changed_by: actor,
     });
+    if (error && allocations.length === 1 && /edit_branch_bill_payment_allocations|could not find the function|does not exist|schema cache/i.test(error.message)) {
+      const legacy = await supabase.rpc('edit_branch_bill_payment_mode', {
+        p_branch: branch,
+        p_bill_id: row.id,
+        p_new_mode: allocations[0].mode,
+        p_changed_by: actor,
+      });
+      error = legacy.error;
+    }
     if (error) {
-      setMessage(/edit_branch_bill_payment_mode|could not find the function|does not exist|schema cache/i.test(error.message)
-        ? 'Payment Mode Edit migration is not installed. Run the latest Supabase migration before using this tab.'
-        : `Payment mode was not changed: ${error.message}`);
+      setMessage(/edit_branch_bill_payment_allocations|could not find the function|does not exist|schema cache/i.test(error.message)
+        ? 'The split-payment edit migration is not installed. Apply the latest Supabase migration before using this tab.'
+        : `Payment allocation was not changed: ${error.message}`);
       setSavingId(null);
       return;
     }
-    updateBillPaymentMode(row.billNo, nextMode, actor);
-    setRows((current) => current.map((bill) => bill.id === row.id ? { ...bill, mode: nextMode } : bill));
-    setMessage(`${row.billNo} changed from ${row.mode.toUpperCase()} to ${nextMode.toUpperCase()}.`);
+    const nextAllocation = { cash: 0, upi: 0, card: 0 };
+    allocations.forEach((entry) => { nextAllocation[entry.mode] = entry.amount; });
+    const nextMode = allocations.length > 1 ? 'split' : allocations[0].mode;
+    if (allocations.length === 1) updateBillPaymentMode(row.billNo, allocations[0].mode, actor);
+    setRows((current) => current.map((bill) => bill.id === row.id ? { ...bill, mode: nextMode, allocation: nextAllocation } : bill));
+    setMessage(`${row.billNo} payment allocation was updated and audited.`);
     setSavingId(null);
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center gap-3">
+    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.25rem] border border-slate-200 bg-white shadow-sm">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
+        <div className="flex items-center gap-2">
           <div className="rounded-xl bg-blue-50 p-2 text-blue-700"><CreditCard className="size-5" /></div>
-          <div>
-            <h2 className="text-lg font-black text-slate-950">Payment Mode Edit</h2>
-            <p className="text-xs font-bold text-slate-500">Only the payment mode can be corrected. Bill amount and items stay locked.</p>
-          </div>
+          <div><h2 className="text-base font-black text-slate-950 sm:text-lg">Payment Mode Edit</h2><p className="text-[11px] font-bold text-slate-500">Cash, UPI, Card and split allocations can be corrected; bill items and amount remain locked.</p></div>
         </div>
-        <div className="relative min-w-[240px] flex-1 sm:max-w-sm">
-          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400" />
-        </div>
+        <div className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isVRSNB ? 'Search bill or cashier' : 'Search bill, salesperson or cashier'} className="h-9 w-full rounded-xl border-2 border-slate-200 bg-slate-50 pl-9 pr-3 text-sm font-bold outline-none focus:border-blue-400" /></div>
       </div>
-      {message && <p className={cn('mx-4 mt-3 rounded-xl px-3 py-2 text-sm font-black', message.includes(' changed ') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</p>}
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        <table className={cn('w-full text-sm', isVRSNB ? 'min-w-[780px]' : 'min-w-[900px]')}>
-          <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
-            <tr><th className="p-3">Bill</th><th className="p-3">Date</th>{!isVRSNB && <th className="p-3">Salesperson</th>}<th className="p-3">Cashier</th><th className="p-3 text-right">Amount</th><th className="p-3">Current Mode</th><th className="p-3">Correct Mode</th><th className="p-3 text-right">Action</th></tr>
-          </thead>
-          <tbody>
-            {loading ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">Loading bill history...</td></tr>
-              : filtered.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">No bills found.</td></tr>
-                : filtered.map((row) => (
-                  <tr key={row.id} className="border-t border-slate-100">
-                    <td className="p-3 font-black text-slate-950">{row.billNo}</td>
-                    <td className="p-3 text-slate-600">{new Date(row.createdAt).toLocaleString('en-IN')}</td>
-                    {!isVRSNB && <td className="p-3 font-bold">{row.salesperson}</td>}
-                    <td className="p-3">{row.biller}</td>
-                    <td className="p-3 text-right font-black">{money(row.total)}</td>
-                    <td className="p-3"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-700">{row.mode}</span></td>
-                    <td className="p-3">
-                      {row.editable ? (
-                        <select value={drafts[row.id] || row.mode} onChange={(event) => setDrafts((current) => ({ ...current, [row.id]: event.target.value as EditableMode }))} className="h-9 w-40 rounded-xl border-2 border-slate-200 bg-white px-3 text-sm font-black uppercase outline-none focus:border-blue-400">
-                          <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
-                        </select>
-                      ) : <span className="inline-flex items-center gap-1 text-xs font-black text-slate-400"><Lock className="size-3.5" /> Split, credit or returned bill</span>}
-                    </td>
-                    <td className="p-3 text-right">
-                      <button onClick={() => void save(row)} disabled={!row.editable || !drafts[row.id] || drafts[row.id] === row.mode || savingId === row.id} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-40">
-                        <CheckCircle2 className="size-4" />{savingId === row.id ? 'Saving' : 'Update'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-          </tbody>
+      {message && <p className={cn('mx-3 mt-2 shrink-0 rounded-xl px-3 py-2 text-sm font-black', message.includes('updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800')}>{message}</p>}
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        <table className={cn('w-full text-sm', isVRSNB ? 'min-w-[920px]' : 'min-w-[1040px]')}>
+          <thead className="sticky top-0 z-10 bg-slate-50 text-left text-[10px] font-black uppercase tracking-wide text-slate-500"><tr><th className="p-2">Bill</th><th className="p-2">Date</th>{!isVRSNB && <th className="p-2">Salesperson</th>}<th className="p-2">Cashier</th><th className="p-2 text-right">Amount</th><th className="p-2">Current</th><th className="p-2">Correct Allocation</th><th className="p-2 text-right">Action</th></tr></thead>
+          <tbody>{loading ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">Loading bill history...</td></tr> : filtered.length === 0 ? <tr><td colSpan={isVRSNB ? 7 : 8} className="p-8 text-center font-bold text-slate-500">No bills found.</td></tr> : filtered.map((row) => {
+            const valid = draftTotal(row.id) === roundMoney(row.total);
+            return <tr key={row.id} className="border-t border-slate-100 align-middle">
+              <td className="p-2 font-black text-slate-950">{row.billNo}</td><td className="p-2 text-xs text-slate-600">{new Date(row.createdAt).toLocaleString('en-IN')}</td>{!isVRSNB && <td className="p-2 font-bold">{row.salesperson}</td>}<td className="p-2">{row.biller}</td><td className="p-2 text-right font-black">{money(row.total)}</td><td className="p-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black uppercase text-slate-700">{row.mode}</span></td>
+              <td className="p-2">{row.editable ? <div><div className="grid grid-cols-3 gap-1">{editableModes.map((mode) => <div key={mode} className="flex overflow-hidden rounded-lg border"><input type="number" min="0" max={row.total} value={drafts[row.id]?.[mode] || ''} onChange={(event) => setDrafts((current) => ({ ...current, [row.id]: { ...(current[row.id] || { cash:'',upi:'',card:'' }), [mode]: event.target.value } }))} placeholder={mode.toUpperCase()} className="h-8 min-w-0 flex-1 px-2 text-xs font-black outline-none"/><button type="button" onClick={() => fillRemaining(row, mode)} className="border-l bg-slate-100 px-1 text-[8px] font-black">REST</button></div>)}</div><p className={cn('mt-1 text-[10px] font-black', valid ? 'text-emerald-600' : 'text-red-600')}>{money(draftTotal(row.id))} / {money(row.total)}</p></div> : <span className="inline-flex items-center gap-1 text-xs font-black text-slate-400"><Lock className="size-3.5" /> Credit or returned bill</span>}</td>
+              <td className="p-2 text-right"><button onClick={() => void save(row)} disabled={!row.editable || !valid || savingId === row.id} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-3 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-40"><CheckCircle2 className="size-4" />{savingId === row.id ? 'Saving' : 'Update'}</button></td>
+            </tr>;
+          })}</tbody>
         </table>
       </div>
     </section>

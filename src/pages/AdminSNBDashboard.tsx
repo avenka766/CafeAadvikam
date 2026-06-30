@@ -1,6 +1,7 @@
 // src/pages/AdminSNBDashboard.tsx
 // SNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
+  isValidElement,
   useEffect,
   useMemo,
   useState,
@@ -10,6 +11,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useBranchLedger } from "@/hooks/useBranchLedger";
+import { asNumber, useSnbAdminReports } from "@/hooks/useSnbAdminReports";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
@@ -21,7 +23,7 @@ import {
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printHtml } from "@/branch/printUtils";
-import { downloadExcel } from "@/lib/excelDownload";
+import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -38,12 +40,15 @@ import {
   Activity,
   AlertTriangle,
   Banknote,
+  ArrowUpDown,
   BarChart3,
   Bell,
   BookOpenCheck,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
   CreditCard,
   Database,
@@ -81,6 +86,7 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "update-stock"
   | "suppliers"
   | "expenses"
   | "complaints"
@@ -88,6 +94,7 @@ type TabId =
   | "quotations"
   | "credit"
   | "invoices"
+  | "purchase-returns"
   | "payments"
   | "bank"
   | "current-cash"
@@ -109,6 +116,7 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "update-stock", label: "Update Stock", icon: Pencil, adminOnly: true },
   { id: "suppliers", label: "Suppliers", icon: Truck, adminOnly: true },
   { id: "expenses", label: "Expenses", icon: Banknote, adminOnly: true },
   { id: "complaints", label: "Complaints", icon: MessageSquareWarning, adminOnly: true },
@@ -119,6 +127,12 @@ const TABS: Array<{
     id: "invoices",
     label: "Purchase Invoices",
     icon: ShoppingCart,
+    adminOnly: true,
+  },
+  {
+    id: "purchase-returns",
+    label: "Purchase Returns",
+    icon: RotateCcw,
     adminOnly: true,
   },
   {
@@ -242,9 +256,9 @@ function purchaseUnitFromCatalog(uom?: string): NonNullable<PurchaseRecord["unit
   return uom === "Kgs" ? "kg" : "nos";
 }
 
-function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number }>(rows: T[]) {
+function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number; updatedAt?: string; lastUpdatedAt?: string }>(rows: T[]) {
   const map = new Map<string, T>();
-  rows.forEach((row) => {
+  [...rows].sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0)) - Number(new Date(b.updatedAt || b.lastUpdatedAt || 0))).forEach((row) => {
     const key = normal(row.itemName);
     // Duplicate rows for the same item are a data sync artifact, not separate
     // stock batches — keep the latest record instead of summing quantities
@@ -256,26 +270,11 @@ function dedupeStockRows<T extends { itemName: string; quantity?: number; minThr
 
 function csvDownload(
   filename: string,
-  rows: Array<Record<string, string | number | null | undefined>>,
+  rows: Array<Record<string, string | number | boolean | null | undefined>>,
 ) {
-  const safeRows = rows.length
-    ? rows
-    : [{ Note: "No data for selected filters" }];
-  const headers = Object.keys(safeRows[0]);
-  const csv = [
-    headers.join(","),
-    ...safeRows.map((row) =>
-      headers
-        .map((h) => `"${String(row[h] ?? "").replace(/"/g, '""')}"`)
-        .join(","),
-    ),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const base = filename.replace(/\.(csv|xlsx?|xls)$/i, "");
+  const title = base.replace(/[_-]+/g, " ").trim() || "SNB Report";
+  downloadExcel(`${base}.xls`, title, rows);
 }
 
 function amountForLegacyPayment(
@@ -466,9 +465,10 @@ export default function AdminSNBDashboard() {
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
   const adminLedger = useBranchLedger(fromDate, toDate, [BRANCH]);
+  const dbReports = useSnbAdminReports(fromDate, toDate);
 
   const userName =
-    currentUser?.displayName || currentUser?.username || "SNB Admin";
+    currentUser?.username || currentUser?.displayName || "SNB Admin";
   const role = currentUser?.role || "";
   const canManage = ["admin_snb", "admin", "owner"].includes(role);
   const selectTab = (next: TabId) => {
@@ -477,10 +477,9 @@ export default function AdminSNBDashboard() {
   };
 
   useEffect(() => {
-    if (requestedTab && TABS.some((item) => item.id === requestedTab) && requestedTab !== tab) {
-      setTab(requestedTab);
-    }
-  }, [requestedTab, tab]);
+    const nextTab = requestedTab && TABS.some((item) => item.id === requestedTab) ? requestedTab : "overview";
+    setTab((current) => current === nextTab ? current : nextTab);
+  }, [requestedTab]);
 
   useEffect(() => {
     void loadCatalog('SNB');
@@ -592,7 +591,15 @@ export default function AdminSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === BRANCH);
   const hasLedgerRows = ledgerRows.length > 0;
-  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
+  const ledgerGrossSales = ledgerRows.reduce(
+    (sum, row) => sum + Math.max(
+      0,
+      adminLedger.toNumber(row.sales_total)
+        - adminLedger.toNumber(row.advance_collected)
+        - adminLedger.toNumber(row.advance_balance_collected),
+    ),
+    0,
+  );
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
   const ledgerUpiSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
   const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
@@ -603,7 +610,7 @@ export default function AdminSNBDashboard() {
   const grossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
   const netSales = Math.max(0, grossSales - returnAmount);
   const billsCount = hasLedgerRows ? ledgerBillsCount : rawBillsCount;
-  const avgBillValue = billsCount > 0 ? netSales / billsCount : rawAvgBillValue;
+  const avgBillValue = billsCount > 0 ? grossSales / billsCount : rawAvgBillValue;
   const finalCashSales = hasLedgerRows ? ledgerCashSales : cashSales;
   const finalUpiSales = hasLedgerRows ? ledgerUpiSales : upiSales;
   const finalCardSales = hasLedgerRows ? ledgerCardSales : cardSales;
@@ -622,9 +629,7 @@ export default function AdminSNBDashboard() {
   const expenseAmount = expenses
     .filter((e) => e.branch === BRANCH && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
     .reduce((sum, e) => sum + e.amount, 0);
-  const transparentGrossSales = hasLedgerRows
-    ? ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0)
-    : rawGrossSales;
+  const transparentGrossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
   const salesBreakdown = {
     billSales: transparentGrossSales,
     advanceCollected,
@@ -638,8 +643,7 @@ export default function AdminSNBDashboard() {
       finalCashSales +
       finalUpiSales +
       finalCardSales +
-      advanceCollected +
-      advanceBalanceCollected,
+      (hasLedgerRows ? 0 : advanceCollected + advanceBalanceCollected),
   };
 
   const lowStockRows = useMemo(() => {
@@ -664,7 +668,7 @@ export default function AdminSNBDashboard() {
     [movementRows, fromDate, toDate],
   );
   const balanceByMode = (mode: "cash" | "upi" | "card" | "bank") =>
-    movementRows
+    movementInRange
       .filter((m) => m.paymentMode === mode)
       .reduce(
         (sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount),
@@ -678,7 +682,7 @@ export default function AdminSNBDashboard() {
   // the matching cash-movement outflow, otherwise Bank Transfer deposits
   // cancel themselves and show an incorrect zero/negative balance.
   const bankBalance = bankDeposits
-    .filter((d) => d.branch === BRANCH)
+    .filter((d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate))
     .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
@@ -688,13 +692,24 @@ export default function AdminSNBDashboard() {
   const creditPaymentsInRange = (dbCreditPayments[BRANCH] || []).filter((p) => inRange(p.createdAt, fromDate, toDate));
   const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
-  const purchasePaymentsInRange = purchasePayments.filter(
+  if (!hasLedgerRows) salesBreakdown.totalCollections += clearedCredit;
+  const localPurchasePaymentsInRange = purchasePayments.filter(
     (p) => p.branch === BRANCH && inRange(p.createdAt, fromDate, toDate),
   );
-  const purchasePaid = purchasePaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
-  const purchaseCashPaid = purchasePaymentsInRange
-    .filter((p) => p.mode === "cash")
-    .reduce((sum, p) => sum + p.amount, 0);
+  const databasePurchasePaymentsInRange = dbReports.supplierPayments.filter((payment) =>
+    inRange(payment.payment_date, fromDate, toDate),
+  );
+  const useDatabasePurchasePayments = dbReports.refreshedAt !== null && !dbReports.error.includes("snb_supplier_payments");
+  const purchasePaid = useDatabasePurchasePayments
+    ? databasePurchasePaymentsInRange.reduce((sum, payment) => sum + asNumber(payment.amount), 0)
+    : localPurchasePaymentsInRange.reduce((sum, payment) => sum + payment.amount, 0);
+  const purchaseCashPaid = useDatabasePurchasePayments
+    ? databasePurchasePaymentsInRange
+        .filter((payment) => payment.payment_method === "cash")
+        .reduce((sum, payment) => sum + asNumber(payment.amount), 0)
+    : localPurchasePaymentsInRange
+        .filter((payment) => payment.mode === "cash")
+        .reduce((sum, payment) => sum + payment.amount, 0);
   const depositsInRange = bankDeposits.filter(
     (d) => d.branch === BRANCH && inRange(d.createdAt, fromDate, toDate),
   );
@@ -819,6 +834,7 @@ export default function AdminSNBDashboard() {
         cash: 0,
         upi: 0,
         card: 0,
+        credit: 0,
       };
       row.grossSales += bill.total;
       row.bills += 1;
@@ -840,6 +856,7 @@ export default function AdminSNBDashboard() {
           : bill.paymentMode === "split"
             ? (bill.split?.card ?? 0)
             : 0;
+      row.credit += bill.paymentMode === "credit" ? bill.total : 0;
       map.set(bill.salesperson, row);
     });
     legacySalesRows.forEach((sale) => {
@@ -852,6 +869,7 @@ export default function AdminSNBDashboard() {
         cash: 0,
         upi: 0,
         card: 0,
+        credit: 0,
       };
       const line = (sale.unitPrice ?? 0) * sale.quantitySold;
       row.grossSales += line;
@@ -859,6 +877,7 @@ export default function AdminSNBDashboard() {
       if (amountForLegacyPayment(sale.paymentMethod, "cash")) row.cash += line;
       if (amountForLegacyPayment(sale.paymentMethod, "upi")) row.upi += line;
       if (amountForLegacyPayment(sale.paymentMethod, "card")) row.card += line;
+      if (amountForLegacyPayment(sale.paymentMethod, "credit")) row.credit += line;
       map.set(sale.soldBy, row);
     });
     branchReturns.forEach((ret) => {
@@ -875,6 +894,7 @@ export default function AdminSNBDashboard() {
         cash: 0,
         upi: 0,
         card: 0,
+        credit: 0,
       };
       row.returns += ret.total;
       map.set(person, row);
@@ -941,6 +961,7 @@ export default function AdminSNBDashboard() {
     movementInRange,
     notice,
     setNotice,
+    dbReports,
   };
 
   if (!canManage) {
@@ -961,7 +982,7 @@ export default function AdminSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      {!["stock", "suppliers", "complaints", "quotations", "salespersons"].includes(tab) && (
+      {!["stock", "update-stock", "suppliers", "quotations", "salespersons"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -989,12 +1010,21 @@ export default function AdminSNBDashboard() {
           {...commonProps}
         />
       )}
+      {tab === "update-stock" && (
+        <UpdateStockTab
+          userName={userName}
+          branchStock={branchStock}
+          catalogItems={catalogItems}
+          fetchBranchData={fetchBranchData}
+          setNotice={setNotice}
+        />
+      )}
       {tab === "suppliers" && <SuppliersTab userName={userName} />}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
-      {tab === "credit" && <CreditTab />}
+      {tab === "credit" && <CreditTab userName={userName} role={role} fromDate={fromDate} toDate={toDate} />}
       {tab === "invoices" && (
         <PurchaseInvoicesTab
           userName={userName}
@@ -1002,9 +1032,19 @@ export default function AdminSNBDashboard() {
           manualUpdateStock={manualUpdateStock}
           fetchBranchData={fetchBranchData}
           setNotice={setNotice}
+          dbReports={dbReports}
         />
       )}
-      {tab === "payments" && <SupplierPaymentsTab userName={userName} />}
+      {tab === "purchase-returns" && (
+        <PurchaseReturnsTab
+          userName={userName}
+          branchStock={branchStock}
+          fetchBranchData={fetchBranchData}
+          dbReports={dbReports}
+          setNotice={setNotice}
+        />
+      )}
+      {tab === "payments" && <SupplierPaymentsTab userName={userName} dbReports={dbReports} setNotice={setNotice} />}
       {tab === "bank" && (
         <BankDepositsTab
           userName={userName}
@@ -1080,13 +1120,19 @@ function DateFilters({
   setToDate: (v: string) => void;
 }) {
   const today = dateInput();
-  const seven = new Date();
-  seven.setDate(seven.getDate() - 6);
-  const thirty = new Date();
-  thirty.setDate(thirty.getDate() - 29);
-  const isToday = fromDate === today && toDate === today;
-  const isSeven = fromDate === dateInput(seven) && toDate === today;
-  const isThirty = fromDate === dateInput(thirty) && toDate === today;
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = dateInput(yesterdayDate);
+  const sevenDate = new Date();
+  sevenDate.setDate(sevenDate.getDate() - 6);
+  const seven = dateInput(sevenDate);
+  const preset = fromDate === today && toDate === today
+    ? "today"
+    : fromDate === yesterday && toDate === yesterday
+      ? "yesterday"
+      : fromDate === seven && toDate === today
+        ? "seven"
+        : "custom";
   const quickCls = (active: boolean) =>
     cn(
       btnCls,
@@ -1096,56 +1142,18 @@ function DateFilters({
         : "bg-white text-slate-700 ring-slate-200",
     );
   return (
-    <Panel title="Filters" icon={<Filter className="size-4" />}>
-      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto_auto]">
+    <Panel title="Date & Report Filters" icon={<Filter className="size-4" />}>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(170px,1fr)_minmax(170px,1fr)_auto_auto_auto_auto]">
         <Field label="From Date">
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className={inputCls}
-          />
+          <input type="date" value={fromDate} max={toDate || undefined} onChange={(e) => setFromDate(e.target.value)} className={inputCls} />
         </Field>
         <Field label="To Date">
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className={inputCls}
-          />
+          <input type="date" value={toDate} min={fromDate || undefined} onChange={(e) => setToDate(e.target.value)} className={inputCls} />
         </Field>
-        <button
-          className={quickCls(isToday)}
-          onClick={() => {
-            const t = dateInput();
-            setFromDate(t);
-            setToDate(t);
-          }}
-        >
-          Today
-        </button>
-        <button
-          className={quickCls(isSeven)}
-          onClick={() => {
-            const d = new Date();
-            d.setDate(d.getDate() - 6);
-            setFromDate(dateInput(d));
-            setToDate(dateInput());
-          }}
-        >
-          7 Days
-        </button>
-        <button
-          className={quickCls(isThirty)}
-          onClick={() => {
-            const d = new Date();
-            d.setDate(d.getDate() - 29);
-            setFromDate(dateInput(d));
-            setToDate(dateInput());
-          }}
-        >
-          30 Days
-        </button>
+        <button className={quickCls(preset === "today")} onClick={() => { setFromDate(today); setToDate(today); }}>Today</button>
+        <button className={quickCls(preset === "yesterday")} onClick={() => { setFromDate(yesterday); setToDate(yesterday); }}>Yesterday</button>
+        <button className={quickCls(preset === "seven")} onClick={() => { setFromDate(seven); setToDate(today); }}>7 Days</button>
+        <button className={quickCls(preset === "custom")} type="button">Custom</button>
       </div>
     </Panel>
   );
@@ -1505,7 +1513,7 @@ function SalesReturnsTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                `SNB_Sales_Returns_${dateInput()}.csv`,
+                `SNB_Sales_Returns_${dateInput()}.xls`,
                 salesRows.map((r) => ({
                   Type: r.type,
                   Number: r.no,
@@ -1575,33 +1583,109 @@ function SalesReturnsTab(props: any) {
 
 function StockTab(props: any) {
   const catalogItems = useSNBCatalog();
+  const [stockSearch, setStockSearch] = useState("");
+  const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
+  const [unit, setUnit] = useState("All");
+  const [minQty, setMinQty] = useState("");
+  const [maxQty, setMaxQty] = useState("");
+  const categories = useMemo(() => Array.from(new Set(catalogItems.map((item) => item.category || "Uncategorized"))).sort(), [catalogItems]);
+  const units = useMemo(() => Array.from(new Set(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
+  const enrichedRows = useMemo(() => {
+    const query = stockSearch.trim().toLowerCase();
+    return props.branchStock
+      .map((item: any) => {
+        const catalog = catalogItems.find((candidate) => normal(candidate.name) === normal(item.itemName));
+        const current = Number(item.quantity || 0);
+        const minimum = Number(item.minThreshold ?? 10);
+        const shortage = Math.max(0, minimum - current);
+        const rowStatus = current <= 0 ? "Out of Stock" : current <= minimum * 0.5 ? "Critical" : current <= minimum ? "Low" : "OK";
+        const rowUnit = item.unit || catalog?.uom || "pcs";
+        const price = Number(item.price ?? catalog?.price ?? 0);
+        return {
+          ...item,
+          category: catalog?.category || "Uncategorized",
+          unit: rowUnit,
+          price,
+          stockValue: Math.max(0, current) * price,
+          current,
+          minimum,
+          shortage,
+          status: rowStatus,
+          reorder: shortage > 0 ? Math.max(shortage, minimum) : 0,
+          lastChange: item.lastUpdatedAt || item.updatedAt || "",
+        };
+      })
+      .filter((item: any) => !query || item.itemName.toLowerCase().includes(query) || String(item.itemBarcode || "").includes(query))
+      .filter((item: any) => category === "All" || item.category === category)
+      .filter((item: any) => status === "All" || item.status === status)
+      .filter((item: any) => unit === "All" || item.unit === unit)
+      .filter((item: any) => minQty === "" || item.current >= Number(minQty))
+      .filter((item: any) => maxQty === "" || item.current <= Number(maxQty))
+      .sort((a: any, b: any) => a.status.localeCompare(b.status) || a.itemName.localeCompare(b.itemName));
+  }, [props.branchStock, catalogItems, stockSearch, category, status, unit, minQty, maxQty]);
+  const stockValue = enrichedRows.reduce((sum: number, item: any) => sum + item.stockValue, 0);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Kpi
           label="Total Stock Items"
-          value={props.branchStock.length}
+          value={enrichedRows.length}
           icon={<Package className="size-5" />}
         />
         <Kpi
           label="Low Stock Alerts"
-          value={props.lowStockRows.length}
+          value={enrichedRows.filter((item: any) => item.status !== "OK").length}
           icon={<AlertTriangle className="size-5" />}
-          tone={props.lowStockRows.length ? "red" : "green"}
+          tone={enrichedRows.some((item: any) => item.status !== "OK") ? "red" : "green"}
         />
         <Kpi
           label="Stock Value"
-          value={money(
-            props.branchStock.reduce(
-              (s: number, i: any) =>
-                s + Math.max(0, i.quantity) * (i.price ?? 0),
-              0,
-            ),
-          )}
+          value={money(stockValue)}
           icon={<Database className="size-5" />}
           tone="blue"
         />
       </div>
+      <Panel title="Stock Register" icon={<Package className="size-4" />}>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
+            <Search className="size-4 text-slate-400" />
+            <input value={stockSearch} onChange={(event) => setStockSearch(event.target.value)} placeholder="Search item or barcode" className="w-full bg-transparent text-sm font-black outline-none" />
+          </div>
+          <select className={inputCls} value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option>All</option>
+            {categories.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={status} onChange={(event) => setStatus(event.target.value)}>
+            {["All", "OK", "Low", "Critical", "Out of Stock"].map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={unit} onChange={(event) => setUnit(event.target.value)}>
+            <option>All</option>
+            {units.map((value: string) => <option key={value}>{value}</option>)}
+          </select>
+          <input className={inputCls} type="number" min="0" placeholder="Min qty" value={minQty} onChange={(event) => setMinQty(event.target.value)} />
+          <input className={inputCls} type="number" min="0" placeholder="Max qty" value={maxQty} onChange={(event) => setMaxQty(event.target.value)} />
+        </div>
+        <div className="mt-3">
+          <DataTable
+            headers={["Item", "Category", "Barcode", "Current", "Minimum", "Shortage", "Unit", "Value", "Status", "Reorder Suggestion", "Last Change"]}
+            rows={enrichedRows.map((item: any) => [
+              item.itemName,
+              item.category,
+              item.itemBarcode || "-",
+              <span key="q" className="font-black tabular-nums">{item.current}</span>,
+              item.minimum,
+              item.shortage ? <span key="s" className="font-black text-red-600">{item.shortage}</span> : "-",
+              item.unit,
+              money(item.stockValue),
+              <StatusBadge key="status" tone={item.status === "OK" ? "green" : item.status === "Low" ? "amber" : "red"}>{item.status}</StatusBadge>,
+              item.reorder ? `${item.reorder} ${item.unit}` : "-",
+              item.lastChange ? fmtDateTime(item.lastChange) : "-",
+            ])}
+            empty="No stock items match the selected filters."
+          />
+        </div>
+      </Panel>
       <Panel
         title="Low Stock Alerts"
         icon={<AlertTriangle className="size-4" />}
@@ -1655,6 +1739,134 @@ function StockTab(props: any) {
             empty="No low stock items found."
           />
         )}
+      </Panel>
+    </div>
+  );
+}
+
+function UpdateStockTab({
+  userName,
+  branchStock,
+  catalogItems,
+  fetchBranchData,
+  setNotice,
+}: {
+  userName: string;
+  branchStock: any[];
+  catalogItems: Array<{ name: string; barcode?: number; category?: string; uom?: string }>;
+  fetchBranchData: (branch: Branch) => Promise<void>;
+  setNotice: (message: string) => void;
+}) {
+  const [selectedItem, setSelectedItem] = useState(catalogItems[0]?.name || "");
+  const [quantity, setQuantity] = useState("");
+  const [reason, setReason] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const selectedCatalog = catalogItems.find((item) => item.name === selectedItem);
+  const current = branchStock.find((row) => normal(row.itemName) === normal(selectedItem));
+
+  useEffect(() => {
+    if (!selectedItem && catalogItems[0]?.name) setSelectedItem(catalogItems[0].name);
+  }, [catalogItems, selectedItem]);
+
+  const save = async () => {
+    const nextQty = Number(quantity);
+    setError("");
+    if (!selectedItem) return setError("Select an item.");
+    if (!Number.isFinite(nextQty) || nextQty < 0) return setError("Enter a valid stock quantity of zero or more.");
+    if (reason.trim().length < 3) return setError("Enter a clear reason for the stock adjustment.");
+    if (!password) return setError("Enter your login password to authorize this stock update.");
+    if (!window.confirm(`Set ${selectedItem} stock from ${current?.quantity ?? 0} to ${nextQty}?`)) return;
+
+    setSaving(true);
+    const { data, error: rpcError } = await supabase.rpc("admin_update_snb_stock_secure", {
+      p_item_barcode: selectedCatalog?.barcode ?? current?.itemBarcode ?? null,
+      p_item_name: selectedItem,
+      p_new_quantity: Math.round(nextQty * 1000) / 1000,
+      p_password: password,
+      p_reason: reason.trim(),
+    });
+    setSaving(false);
+    setPassword("");
+    if (rpcError) {
+      setError(/password|credential|secret/i.test(rpcError.message)
+        ? "Authorization failed. Check your login password and try again."
+        : `Stock update failed: ${rpcError.message}`);
+      return;
+    }
+    await fetchBranchData(BRANCH);
+    setQuantity("");
+    setReason("");
+    setNotice(`${selectedItem} stock updated securely by ${userName}.`);
+    if (data && typeof data === "object" && "warning" in (data as Record<string, unknown>)) {
+      setError(String((data as Record<string, unknown>).warning || ""));
+    }
+  };
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title="Secure Stock Update" icon={<ShieldCheck className="size-4" />}>
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+            Every adjustment is password-authorized and written to the stock audit trail. Use this only for verified physical corrections.
+          </div>
+          <Field label="Item">
+            <select
+              className={inputCls}
+              value={selectedItem}
+              onChange={(e) => {
+                setSelectedItem(e.target.value);
+                setQuantity("");
+                setError("");
+              }}
+            >
+              {catalogItems.map((item) => <option key={`${item.barcode ?? item.name}-${item.name}`} value={item.name}>{item.name}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-200">
+              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Current Stock</p>
+              <p className="mt-1 text-2xl font-black">{current?.quantity ?? 0} <span className="text-sm text-slate-500">{current?.unit || selectedCatalog?.uom || ""}</span></p>
+            </div>
+            <Field label="New Quantity">
+              <input type="number" min="0" step="0.001" className={inputCls} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Reason for Adjustment">
+            <textarea className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Physical count correction, damaged stock correction, opening balance correction..." />
+          </Field>
+          <Field label="Admin Login Password">
+            <input type="password" autoComplete="current-password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
+          <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-60")}>
+            {saving ? <RefreshCcw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+            {saving ? "Updating..." : "Authorize & Update Stock"}
+          </button>
+        </div>
+      </Panel>
+      <Panel
+        title="Current SNB Stock"
+        icon={<Package className="size-4" />}
+        action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH)}><RefreshCcw className="size-4" /> Refresh</button>}
+      >
+        <DataTable
+          headers={["Item", "Category", "Barcode", "Quantity", "Unit", "Minimum", "Action"]}
+          rows={branchStock.map((row) => {
+            const item = catalogItems.find((candidate) => normal(candidate.name) === normal(row.itemName));
+            return [
+              row.itemName,
+              item?.category || "-",
+              item?.barcode ?? row.itemBarcode ?? "-",
+              row.quantity,
+              row.unit || item?.uom || "-",
+              row.minThreshold ?? 0,
+              <button key="select" className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => { setSelectedItem(row.itemName); setQuantity(String(row.quantity)); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Select</button>,
+            ];
+          })}
+          empty="No stock records found."
+        />
       </Panel>
     </div>
   );
@@ -1744,7 +1956,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.csv", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
         </Panel>
       </div>
@@ -1753,14 +1965,66 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
 }
 
 function ComplaintsTab({ userName }: { userName: string }) {
-  const { complaints, addComplaint, updateComplaintStatus } = useBranchOpsStore();
   const [form, setForm] = useState({ complaintArea: "SNB", title: "", details: "" });
-  const rows = complaints.filter((c) => c.branch === BRANCH);
-  const save = () => {
-    if (!form.title.trim() || !form.details.trim()) return;
-    addComplaint({ branch: BRANCH, complaintArea: form.complaintArea, title: form.title, details: form.details, raisedBy: userName });
-    setForm({ ...form, title: "", details: "" });
+  const [rows, setRows] = useState<any[]>([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const { data, error: loadError } = await supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .eq("branch", BRANCH)
+      .order("created_at", { ascending: false });
+    if (loadError) {
+      setError(loadError.message);
+      return;
+    }
+    setRows(data || []);
   };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const save = async () => {
+    if (!form.title.trim() || !form.details.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const { error: rpcError } = await supabase.rpc("create_branch_complaint_ticket", {
+        p_branch: BRANCH,
+        p_complaint_area: form.complaintArea,
+        p_category: "General",
+        p_subject: form.title.trim(),
+        p_description: form.details.trim(),
+        p_priority: "Medium",
+      });
+      if (rpcError) {
+        const missingRpc = /create_branch_complaint_ticket|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_complaint_tickets").insert({
+          ticket_no: "",
+          branch: BRANCH,
+          complaint_area: form.complaintArea,
+          category: "General",
+          subject: form.title.trim(),
+          description: form.details.trim(),
+          priority: "Medium",
+          status: "Open",
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      setForm({ ...form, title: "", details: "" });
+      await load();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Unable to submit complaint");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
       <Panel title="Raise Complaint" icon={<MessageSquareWarning className="size-4" />}>
@@ -1772,25 +2036,28 @@ function ComplaintsTab({ userName }: { userName: string }) {
           </Field>
           <Field label="Title"><input className={inputCls} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
           <Field label="Details"><textarea className={inputCls} value={form.details} onChange={(e) => setForm({ ...form, details: e.target.value })} /></Field>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Submit Complaint</button>
+          {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{error}</p>}
+          <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:opacity-50")}>
+            {saving ? "Submitting..." : "Submit Complaint"}
+          </button>
         </div>
       </Panel>
-      <Panel title="Complaint Register" icon={<Bell className="size-4" />}>
+      <Panel title="Complaint Ticket Register" icon={<Bell className="size-4" />}>
+        <p className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 ring-1 ring-blue-200">
+          SNB Admin can raise tickets and add branch details. Review, resolution and closure are restricted to Owner and Main Admin.
+        </p>
         <DataTable
-          headers={["Date", "Area", "Title", "Details", "Raised By", "Status", "Action"]}
+          headers={["Ticket", "Date", "Area", "Subject", "Details", "Raised By", "Status"]}
           rows={rows.map((c) => [
-            fmtDateTime(c.createdAt),
-            c.complaintArea,
-            c.title,
-            c.details,
-            c.raisedBy,
-            <StatusBadge key="s" tone={c.status === "Resolved" ? "green" : c.status === "In Review" ? "blue" : "amber"}>{c.status}</StatusBadge>,
-            <div key="a" className="flex gap-2">
-              <button className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => updateComplaintStatus(c.id, "In Review", userName)}>Review</button>
-              <button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateComplaintStatus(c.id, "Resolved", userName)}>Resolve</button>
-            </div>,
+            c.ticket_no,
+            fmtDateTime(c.created_at),
+            c.complaint_area,
+            c.subject,
+            c.description,
+            c.created_by_username,
+            <StatusBadge key="s" tone={c.status === "Resolved" || c.status === "Closed" ? "green" : c.status === "Under Review" || c.status === "In Progress" ? "blue" : "amber"}>{c.status}</StatusBadge>,
           ])}
-          empty="No complaints raised."
+          empty="No complaint tickets raised."
         />
       </Panel>
     </div>
@@ -1820,7 +2087,7 @@ function printWasteLog(entry: any, branchLabel: string) {
 function WasteLogsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
-  const { stock, manualUpdateStock } = useBranchStore();
+  const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
@@ -1864,14 +2131,41 @@ function WasteLogsTab({ userName }: { userName: string }) {
       setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
       return;
     }
-    addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
-    // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
-    // this branch's inventory, so deduct it from current stock immediately.
-    const newQty = currentQty - qty;
-    await manualUpdateStock(BRANCH, currentRow?.itemName || form.itemName, newQty, userName, catalogItem?.barcode);
-    // Print the waste log along with its checklist in one go.
-    printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
-    setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    try {
+      const { error: rpcError } = await supabase.rpc("record_branch_waste_secure", {
+        p_branch: BRANCH,
+        p_log_type: subTab,
+        p_item_barcode: catalogItem?.barcode ?? null,
+        p_item_name: currentRow?.itemName || form.itemName,
+        p_quantity: qty,
+        p_unit: form.unit,
+        p_reason: form.reason.trim(),
+        p_verified_by: form.verifiedBy.trim(),
+        p_checklist: form.checklist,
+      });
+      if (rpcError) {
+        const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_waste_logs").insert({
+          branch: BRANCH,
+          log_type: subTab,
+          item_barcode: catalogItem?.barcode ?? null,
+          item_name: currentRow?.itemName || form.itemName,
+          quantity: qty,
+          unit: form.unit,
+          reason: form.reason.trim(),
+          verified_by: form.verifiedBy.trim(),
+          checklist: form.checklist,
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
+      printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
+      setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    } catch (saveError) {
+      setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
+    }
   };
   return (
     <div className="space-y-4">
@@ -1900,7 +2194,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>
@@ -1969,19 +2263,130 @@ function QuotationsTab({ userName }: { userName: string }) {
   );
 }
 
-function CreditTab() {
-  const { creditSales, creditPayments } = useBranchStore();
+function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
+  const { creditSales, creditPayments, settleCreditSale, fetchBranchData, fetchCreditPayments } = useBranchStore();
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
+  const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
+  const pending = credits.filter((credit) => credit.status !== "settled" && credit.creditAmount > 0);
+  const [selectedId, setSelectedId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [mode, setMode] = useState<"cash" | "upi" | "card" | "bank">("cash");
+  const [reference, setReference] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const selected = pending.find((credit) => credit.id === selectedId);
+
+  useEffect(() => {
+    if (selectedId && !pending.some((credit) => credit.id === selectedId)) {
+      setSelectedId("");
+      setAmount("");
+    }
+  }, [pending, selectedId]);
+
+  const collect = async () => {
+    const value = Number(amount);
+    setMessage("");
+    if (!selected) return setMessage("Select a pending credit bill.");
+    if (!Number.isFinite(value) || value <= 0) return setMessage("Enter a valid collection amount.");
+    if (value > selected.creditAmount + 0.001) return setMessage(`Collection cannot exceed ${money(selected.creditAmount)}.`);
+    if (mode !== "cash" && !reference.trim()) return setMessage(`Enter the ${mode.toUpperCase()} reference number.`);
+    setSaving(true);
+    const error = await settleCreditSale(BRANCH, selected.id, value, {
+      mode,
+      reference: reference.trim(),
+      remarks: remarks.trim() || "SNB Admin credit collection",
+      collectedBy: userName,
+      collectedRole: role,
+    });
+    setSaving(false);
+    if (error) return setMessage(error);
+    await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+    setMessage(`Collected ${money(value)} against ${selected.billNo}.`);
+    setSelectedId("");
+    setAmount("");
+    setReference("");
+    setRemarks("");
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
-        <Kpi label="Open Credit" value={money(credits.filter((c) => c.status !== "settled").reduce((s, c) => s + c.creditAmount, 0))} icon={<WalletCards className="size-5" />} tone="red" />
-        <Kpi label="Collected" value={money(payments.reduce((s, p) => s + p.amount, 0))} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Open Credit" value={money(pending.reduce((sum, credit) => sum + credit.creditAmount, 0))} icon={<WalletCards className="size-5" />} tone="red" />
+        <Kpi label="Collected (Selected Dates)" value={money(paymentsInRange.reduce((sum, payment) => sum + payment.amount, 0))} icon={<CheckCircle2 className="size-5" />} tone="green" />
         <Kpi label="Credit Bills" value={credits.length} icon={<Receipt className="size-5" />} tone="amber" />
       </div>
-      <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.csv", credits.map((c) => ({ Bill: c.billNo, Customer: c.customerName, Mobile: c.customerPhone || "-", Total: c.subtotal, Paid: c.amountPaid, Balance: c.creditAmount, Due: c.dueDate || "-", Status: c.status })))}><Download className="size-4" /> Excel</button>}>
-        <DataTable headers={["Bill", "Customer", "Mobile", "Total", "Paid", "Balance", "Due", "Status"]} rows={credits.map((c) => [c.billNo, c.customerName, c.customerPhone || "-", money(c.subtotal), money(c.amountPaid), money(c.creditAmount), c.dueDate || "-", c.status])} empty="No SNB credit sales found." />
+      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <Panel title="Collect Credit Payment" icon={<IndianRupee className="size-4" />}>
+          <div className="space-y-3">
+            <Field label="Pending Credit Bill">
+              <select
+                className={inputCls}
+                value={selectedId}
+                onChange={(e) => {
+                  const credit = pending.find((row) => row.id === e.target.value);
+                  setSelectedId(e.target.value);
+                  setAmount(credit ? String(credit.creditAmount) : "");
+                  setMessage("");
+                }}
+              >
+                <option value="">Select bill</option>
+                {pending.map((credit) => (
+                  <option key={credit.id} value={credit.id}>
+                    {credit.billNo} · {credit.customerName} · Due {money(credit.creditAmount)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {selected && (
+              <div className="rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-700 ring-1 ring-slate-200">
+                <div className="flex justify-between gap-3"><span>Customer</span><b>{selected.customerName}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Mobile</span><b>{selected.customerPhone || "-"}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Due date</span><b>{selected.dueDate || "-"}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Balance</span><b className="text-red-600">{money(selected.creditAmount)}</b></div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Amount">
+                <input type="number" min="0.01" max={selected?.creditAmount || undefined} step="0.01" className={inputCls} value={amount} onChange={(e) => { setAmount(e.target.value); setMessage(""); }} />
+              </Field>
+              <Field label="Collection Mode">
+                <select className={inputCls} value={mode} onChange={(e) => { setMode(e.target.value as typeof mode); setMessage(""); }}>
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="card">Card</option>
+                  <option value="bank">Bank</option>
+                </select>
+              </Field>
+            </div>
+            <Field label={mode === "cash" ? "Reference (optional)" : `${mode.toUpperCase()} Reference *`}>
+              <input className={inputCls} value={reference} onChange={(e) => setReference(e.target.value)} />
+            </Field>
+            <Field label="Remarks">
+              <textarea className={inputCls} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+            </Field>
+            {message && <p className={cn("rounded-2xl p-3 text-sm font-black ring-1", message.startsWith("Collected") ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : "bg-red-50 text-red-700 ring-red-100")}>{message}</p>}
+            <button disabled={saving || !selected} onClick={collect} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>
+              {saving ? <RefreshCcw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              {saving ? "Saving…" : "Save Credit Collection"}
+            </button>
+          </div>
+        </Panel>
+        <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", credits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable
+            headers={["Bill", "Customer", "Mobile", "Total", "Paid", "Balance", "Due", "Status"]}
+            rows={credits.map((credit) => [credit.billNo, credit.customerName, credit.customerPhone || "-", money(credit.subtotal), money(credit.amountPaid), money(credit.creditAmount), credit.dueDate || "-", <StatusBadge key="status" tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge>])}
+            empty="No SNB credit sales found."
+          />
+        </Panel>
+      </div>
+      <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
+        <DataTable
+          headers={["Date", "Bill", "Amount", "Mode", "Reference", "Collected By", "Remarks"]}
+          rows={paymentsInRange.map((payment) => [fmtDateTime(payment.createdAt), payment.billNo, money(payment.amount), payment.paymentMode.toUpperCase(), payment.reference || "-", payment.collectedBy, payment.remarks || "-"])}
+          empty="No credit collections found."
+        />
       </Panel>
     </div>
   );
@@ -2015,17 +2420,44 @@ function CashierManagementTab({ userName }: { userName: string }) {
 }
 
 function CurrentCashTab(props: any) {
+  const openingCash = (props.dbReports.counterSessions || [])
+    .filter((row: any) => row.branch === BRANCH || !row.branch)
+    .reduce((sum: number, row: any) => sum + asNumber(row.opening_cash), 0);
+  const creditCash = props.creditPaymentsInRange
+    .filter((payment: any) => payment.paymentMode === "cash")
+    .reduce((sum: number, payment: any) => sum + payment.amount, 0);
+  const advanceCash = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && /advance/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashRefunds = props.branchReturns
+    .filter((row: any) => (row.returnPayMode || row.originalPaymentMode || "cash") === "cash")
+    .reduce((sum: number, row: any) => sum + Number(row.refundAmount ?? row.total ?? 0), 0);
+  const cashExpenses = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashAdjustIn = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && !/advance|credit/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashAdjustOut = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && !/expense|purchase|supplier|bank/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const expectedPhysicalCash = openingCash + props.cashSales + creditCash + advanceCash + cashAdjustIn - cashRefunds - cashExpenses - props.purchaseCashPaid - props.depositAmount - cashAdjustOut;
   const rows = [
+    { label: "Opening cash", amount: openingCash, kind: "in" },
     { label: "Cash sales", amount: props.cashSales, kind: "in" },
-    { label: "Cash received / adjustments", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "in").reduce((sum: number, m: any) => sum + m.amount, 0), kind: "in" },
-    { label: "Expenses paid by cash", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || "")).reduce((sum: number, m: any) => sum + m.amount, 0), kind: "out" },
+    { label: "Cash credit collections", amount: creditCash, kind: "in" },
+    { label: "Cash advance collections", amount: advanceCash, kind: "in" },
+    { label: "Other approved cash in", amount: cashAdjustIn, kind: "in" },
+    { label: "Cash refunds", amount: cashRefunds, kind: "out" },
+    { label: "Expenses paid by cash", amount: cashExpenses, kind: "out" },
     { label: "Cash purchase / supplier payments", amount: props.purchaseCashPaid, kind: "out" },
-    { label: "Bank deposits", amount: props.depositAmount, kind: "out" },
+    { label: "Cash bank deposits", amount: props.depositAmount, kind: "out" },
+    { label: "Other approved cash out", amount: cashAdjustOut, kind: "out" },
   ];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Current Cash" value={money(props.cashBalance)} icon={<Banknote className="size-5" />} tone="green" />
+        <Kpi label="Expected Physical Cash" value={money(expectedPhysicalCash)} icon={<Banknote className="size-5" />} tone={expectedPhysicalCash >= 0 ? "green" : "red"} />
         <Kpi label="Bank Balance" value={money(props.bankBalance)} icon={<Landmark className="size-5" />} tone="blue" />
         <Kpi label="Expenses" value={money(props.expenseAmount)} icon={<WalletCards className="size-5" />} tone="red" />
         <Kpi label="Bank Deposits" value={money(props.depositAmount)} icon={<ShieldCheck className="size-5" />} tone="purple" />
@@ -2038,26 +2470,49 @@ function CurrentCashTab(props: any) {
           <div className="space-y-2">{rows.map((row) => <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3"><span className="text-sm font-bold text-slate-600">{row.label}</span><span className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{row.kind === "out" ? "−" : "+"}{money(row.amount)}</span></div>)}</div>
         </div>
       </Panel>
+      <Panel title="Source Transactions" icon={<History className="size-4" />}>
+        <DataTable
+          headers={["Source", "Direction", "Amount", "Meaning"]}
+          rows={rows.map((row) => [
+            row.label,
+            row.kind === "in" ? "In" : "Out",
+            <span key="amount" className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{money(row.amount)}</span>,
+            row.kind === "in" ? "Adds to expected physical cash" : "Reduces expected physical cash",
+          ])}
+          empty="No cash source rows found."
+        />
+      </Panel>
     </div>
   );
 }
 
 function CashierReportTab(props: any) {
   const rows = useMemo(() => {
+    if (props.dbReports.counterTotals.length) {
+      const map = new Map<string, any>();
+      props.dbReports.counterTotals.forEach((entry: any) => {
+        const name = entry.cashier_username || "Legacy / Unattributed";
+        const row = map.get(name) || { name, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
+        row.grossSales += asNumber(entry.gross_sales);
+        row.returns += asNumber(entry.returns);
+        row.netSales += asNumber(entry.net_sales);
+        row.bills += asNumber(entry.bill_count);
+        row.cash += asNumber(entry.cash_sales);
+        row.upi += asNumber(entry.upi_sales);
+        row.card += asNumber(entry.card_sales);
+        row.credit += asNumber(entry.credit_sales);
+        row.creditCollected += asNumber(entry.credit_collected);
+        row.advance += asNumber(entry.advance_collected);
+        row.sessions += 1;
+        map.set(name, row);
+      });
+      return Array.from(map.values()).sort((a: any, b: any) => b.netSales - a.netSales);
+    }
+
     const map = new Map<string, any>();
     const ensure = (name: string) => {
-      const key = name || "Unknown";
-      const row = map.get(key) ?? {
-        name: key,
-        grossSales: 0,
-        returns: 0,
-        netSales: 0,
-        bills: 0,
-        cash: 0,
-        upi: 0,
-        card: 0,
-        credit: 0,
-      };
+      const key = name || "Legacy / Unattributed";
+      const row = map.get(key) ?? { name: key, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
       map.set(key, row);
       return row;
     };
@@ -2075,38 +2530,27 @@ function CashierReportTab(props: any) {
         row.card += bill.split?.card ?? 0;
       }
     });
-    props.legacySalesRows.forEach((sale: any) => {
-      const row = ensure(sale.biller || sale.soldBy);
-      const line = (sale.unitPrice ?? 0) * sale.quantitySold;
-      row.grossSales += line;
-      row.bills += 1;
-      if (amountForLegacyPayment(sale.paymentMethod, "cash")) row.cash += line;
-      if (amountForLegacyPayment(sale.paymentMethod, "upi")) row.upi += line;
-      if (amountForLegacyPayment(sale.paymentMethod, "card")) row.card += line;
-      if (amountForLegacyPayment(sale.paymentMethod, "credit")) row.credit += line;
-    });
     props.branchReturns.forEach((ret: any) => {
       const original = props.branchBills.find((bill: any) => bill.billNo === ret.originalBillNo);
-      const row = ensure(original?.biller || ret.returnedBy);
-      row.returns += ret.total;
+      ensure(original?.biller || ret.returnedBy).returns += ret.total;
     });
-    return Array.from(map.values())
-      .map((row) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) }))
-      .sort((a, b) => b.netSales - a.netSales);
-  }, [props.branchBills, props.branchReturns, props.legacySalesRows]);
-  const totalNet = rows.reduce((sum: number, r: any) => sum + r.netSales, 0);
-  const totalBills = rows.reduce((sum: number, r: any) => sum + r.bills, 0);
+    return Array.from(map.values()).map((row: any) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) })).sort((a: any, b: any) => b.netSales - a.netSales);
+  }, [props.branchBills, props.branchReturns, props.dbReports.counterTotals]);
+
+  const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
+  const totalBills = rows.reduce((sum: number, row: any) => sum + row.bills, 0);
   const best = rows[0];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Cashiers" value={rows.length} icon={<UserRound className="size-5" />} />
+        <Kpi label="Cashier Logins" value={rows.length} icon={<UserRound className="size-5" />} />
         <Kpi label="Total Bills" value={totalBills} icon={<Receipt className="size-5" />} tone="blue" />
         <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
-      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.csv", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
-        <DataTable headers={["Rank", "Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any, idx: number) => [`#${idx + 1}`, r.name, money(r.grossSales), money(r.returns), <span key="n" className="font-black text-emerald-700">{money(r.netSales)}</span>, r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
+      {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
+      <Panel title="Cashier Accountability Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Report.xls", rows.map((row: any) => ({ CashierLogin: row.name, Sessions: row.sessions, GrossSales: row.grossSales, Returns: row.returns, NetSales: row.netSales, Bills: row.bills, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, CreditCollected: row.creditCollected, AdvanceCollected: row.advance })))}><Download className="size-4" /> Excel</button>}>
+        <DataTable headers={["Rank", "Cashier Login", "Sessions", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance"]} rows={rows.map((row: any, index: number) => [`#${index + 1}`, row.name, row.sessions || "-", money(row.grossSales), money(row.returns), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, row.bills, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(row.creditCollected), money(row.advance)])} empty="No cashier sales data found for the selected date range." />
       </Panel>
     </div>
   );
@@ -2114,70 +2558,77 @@ function CashierReportTab(props: any) {
 
 function CashierClosureTab(props: any) {
   const { cashierClosures } = useBranchOpsStore();
-  const rows = cashierClosures.filter((c) => c.branch === BRANCH);
-  const totalDifference = rows.reduce((sum, c) => sum + c.difference, 0);
-  const mismatches = rows.filter((c) => c.difference !== 0).length;
+  const databaseRows = props.dbReports.counterSessions as any[];
+  const useDatabase = props.dbReports.refreshedAt !== null && !props.dbReports.error.includes("branch_counter_sessions");
+  const rows = useDatabase
+    ? databaseRows
+    : cashierClosures.filter((closure) => closure.branch === BRANCH).map((closure) => ({
+        id: closure.id,
+        business_date: localDateKey(closure.createdAt),
+        cashier_username: closure.cashier,
+        opened_at: closure.createdAt,
+        closed_at: closure.createdAt,
+        status: "closed",
+        opening_cash: closure.openingCash,
+        gross_sales: closure.totalSales,
+        discounts: 0,
+        returns: closure.returns,
+        net_sales: closure.totalSales - closure.returns,
+        cash_sales: closure.cash,
+        upi_sales: closure.upi,
+        card_sales: closure.card,
+        credit_sales: closure.creditSales || 0,
+        credit_collected: closure.creditCollections || 0,
+        advance_collected: closure.advanceCollections || 0,
+        expenses: closure.expenses,
+        supplier_payments: closure.purchasePayments,
+        bank_deposits: closure.bankDeposits,
+        expected_cash: closure.expectedCash,
+        counted_cash: closure.closingCash,
+        difference: closure.difference,
+        bill_count: closure.billsCount,
+        notes: closure.notes,
+      }));
+  const closedRows = rows.filter((row: any) => row.status === "closed");
+  const totalDifference = closedRows.reduce((sum: number, row: any) => sum + asNumber(row.difference), 0);
+  const mismatches = closedRows.filter((row: any) => Math.abs(asNumber(row.difference)) > 0.009).length;
+  const openCounters = rows.filter((row: any) => row.status === "open").length;
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Closures Logged" value={rows.length} icon={<CalendarClock className="size-5" />} />
-        <Kpi label="Matched Closures" value={rows.length - mismatches} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Closed Sessions" value={closedRows.length} icon={<CalendarClock className="size-5" />} />
+        <Kpi label="Open Counters" value={openCounters} icon={<Activity className="size-5" />} tone={openCounters ? "amber" : "green"} />
         <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
-        <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={totalDifference === 0 ? "green" : "red"} />
+        <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
       </div>
-      <Panel
-        title="All Cashier Closure Data"
-        icon={<CalendarClock className="size-4" />}
-        action={
-          <button
-            className={cn(btnCls, "bg-slate-950 text-white")}
-            onClick={() =>
-              csvDownload(
-                "SNB_All_Cashier_Closures.csv",
-                rows.map((c) => ({
-                  Date: fmtDateTime(c.createdAt),
-                  Cashier: c.cashier,
-                  Opening: c.openingCash,
-                  Expected: c.expectedCash,
-                  Closing: c.closingCash,
-                  Difference: c.difference,
-                  Bills: c.billsCount,
-                  Cash: c.cash,
-                  UPI: c.upi,
-                  Card: c.card,
-                  Returns: c.returns,
-                  CreditSales: c.creditSales ?? 0,
-                  CreditCollections: c.creditCollections ?? 0,
-                  Notes: c.notes,
-                })),
-              )
-            }
-          >
-            <Download className="size-4" />
-            Export
-          </button>
-        }
-      >
+      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
-          headers={["Date", "Cashier", "Opening", "Expected", "Closing", "Difference", "Status", "Bills", "Cash", "UPI", "Card", "Returns", "Credit Sales", "Credit Collections", "Notes"]}
-          rows={rows.map((c) => [
-            fmtDateTime(c.createdAt),
-            c.cashier,
-            money(c.openingCash),
-            money(c.expectedCash),
-            money(c.closingCash),
-            <span key="d" className={cn("font-black", c.difference === 0 ? "text-emerald-700" : "text-red-600")}>{money(c.difference)}</span>,
-            <StatusBadge key="s" tone={c.difference === 0 ? "green" : "red"}>{c.difference === 0 ? "Matched" : "Mismatch"}</StatusBadge>,
-            c.billsCount,
-            money(c.cash),
-            money(c.upi),
-            money(c.card),
-            money(c.returns),
-            money(c.creditSales ?? 0),
-            money(c.creditCollections ?? 0),
-            c.notes || "-",
+          headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]}
+          rows={rows.map((row: any) => [
+            row.business_date,
+            row.cashier_username || "Legacy / Unattributed",
+            `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
+            <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>,
+            money(asNumber(row.opening_cash)),
+            money(asNumber(row.gross_sales)),
+            money(asNumber(row.returns)),
+            money(asNumber(row.net_sales)),
+            money(asNumber(row.expected_cash)),
+            row.status === "closed" ? money(asNumber(row.counted_cash)) : "-",
+            <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{row.status === "closed" ? money(asNumber(row.difference)) : "-"}</span>,
+            asNumber(row.bill_count),
+            money(asNumber(row.cash_sales)),
+            money(asNumber(row.upi_sales)),
+            money(asNumber(row.card_sales)),
+            money(asNumber(row.credit_collected)),
+            money(asNumber(row.advance_collected)),
+            money(asNumber(row.expenses)),
+            money(asNumber(row.supplier_payments)),
+            money(asNumber(row.bank_deposits)),
+            row.notes || "-",
           ])}
-          empty="No cashier closures saved."
+          empty="No cashier counter sessions found for the selected date range."
         />
       </Panel>
     </div>
@@ -2338,7 +2789,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
             )}
             onClick={() =>
               csvDownload(
-                "SNB_Purchase_Orders.csv",
+                "SNB_Purchase_Orders.xls",
                 rows.map((p) => ({
                   PONumber: p.poNo,
                   Supplier: p.supplier,
@@ -2421,12 +2872,14 @@ function PurchaseInvoicesTab({
   manualUpdateStock,
   fetchBranchData,
   setNotice,
+  dbReports,
 }: {
   userName: string;
   branchStock: any[];
   manualUpdateStock: any;
   fetchBranchData: any;
   setNotice: (v: string) => void;
+  dbReports: ReturnType<typeof useSnbAdminReports>;
 }) {
   type PurchaseUnit = NonNullable<PurchaseRecord["unit"]>;
   type PurchaseLine = NonNullable<PurchaseRecord["items"]>[number];
@@ -2496,13 +2949,67 @@ function PurchaseInvoicesTab({
     ? [selectedCatalogItem, ...filteredCatalogItems]
     : filteredCatalogItems;
 
-  const rows = useMemo(
-    () =>
-      purchases
-        .filter((purchase) => purchase.branch === BRANCH)
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [purchases],
-  );
+  const rows = useMemo(() => {
+    const localRows = purchases.filter((purchase) => purchase.branch === BRANCH);
+    const localByDatabaseId = new Map(
+      localRows.filter((purchase) => purchase.dbId).map((purchase) => [purchase.dbId as string, purchase]),
+    );
+    const databaseRows: PurchaseRecord[] = dbReports.purchaseInvoices.map((invoice) => {
+      const local = localByDatabaseId.get(invoice.id) || localRows.find(
+        (purchase) => normal(purchase.supplier) === normal(invoice.supplier_name) && normal(purchase.invoiceNo) === normal(invoice.invoice_number),
+      );
+      if (local) {
+        return {
+          ...local,
+          dbId: invoice.id,
+          supplier: invoice.supplier_name,
+          invoiceNo: invoice.invoice_number,
+          invoiceDate: invoice.invoice_date,
+          total: asNumber(invoice.total_amount),
+          paidAmount: asNumber(invoice.paid_amount),
+          paymentMethod: ((invoice.payment_method || "credit").toLowerCase() as PurchaseRecord["paymentMethod"]),
+          remarks: invoice.remarks || local.remarks,
+          syncStatus: (invoice.sync_status || "Not Synced") as PurchaseRecord["syncStatus"],
+          syncedToStock: invoice.sync_status === "Synced",
+          syncedAt: invoice.synced_at || undefined,
+          syncedBy: invoice.synced_by || undefined,
+          createdAt: invoice.created_at || local.createdAt,
+        };
+      }
+      return {
+        id: `db:${invoice.id}`,
+        dbId: invoice.id,
+        branch: BRANCH,
+        supplier: invoice.supplier_name,
+        invoiceNo: invoice.invoice_number,
+        invoiceDate: invoice.invoice_date,
+        itemName: "Database purchase invoice",
+        quantity: 0,
+        unit: "nos",
+        cost: 0,
+        tax: 0,
+        discount: 0,
+        total: asNumber(invoice.total_amount),
+        createdAt: invoice.created_at,
+        enteredBy: invoice.created_by || "SNB Admin",
+        paidAmount: asNumber(invoice.paid_amount),
+        paymentMethod: ((invoice.payment_method || "credit").toLowerCase() as PurchaseRecord["paymentMethod"]),
+        remarks: invoice.remarks || undefined,
+        syncStatus: (invoice.sync_status || "Not Synced") as PurchaseRecord["syncStatus"],
+        syncedToStock: invoice.sync_status === "Synced",
+        syncedAt: invoice.synced_at || undefined,
+        syncedBy: invoice.synced_by || undefined,
+      };
+    });
+    const databaseIds = new Set(databaseRows.map((purchase) => purchase.dbId).filter(Boolean));
+    const databaseKeys = new Set(databaseRows.map((purchase) => `${normal(purchase.supplier)}|${normal(purchase.invoiceNo)}`));
+    const localOnly = localRows.filter((purchase) =>
+      !(purchase.dbId && databaseIds.has(purchase.dbId)) &&
+      !databaseKeys.has(`${normal(purchase.supplier)}|${normal(purchase.invoiceNo)}`),
+    );
+    return [...databaseRows, ...localOnly]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [dbReports.purchaseInvoices, purchases]);
 
   const visibleRows = useMemo(() => {
     const query = invoiceSearch.trim().toLowerCase();
@@ -2529,11 +3036,75 @@ function PurchaseInvoicesTab({
     ? rows.find((purchase) => purchase.id === editingPurchaseId)
     : undefined;
 
+  const findDatabaseInvoiceId = async (purchase?: PurchaseRecord) => {
+    if (purchase?.dbId) return purchase.dbId;
+    if (!purchase) return null;
+    const { data, error } = await supabase
+      .from("snb_purchase_invoices")
+      .select("id")
+      .eq("supplier_name", purchase.supplier)
+      .eq("invoice_number", purchase.invoiceNo)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to locate purchase invoice: ${error.message}`);
+    return data?.id ? String(data.id) : null;
+  };
+
+  const persistDatabaseInvoice = async (
+    purchase: PurchaseRecord | undefined,
+    invoiceData: {
+      supplier: string;
+      invoiceNo: string;
+      invoiceDate?: string;
+      total: number;
+      paymentMethod?: string;
+      remarks?: string;
+    },
+    normalizedLines: PurchaseLine[],
+  ) => {
+    const databaseId = await findDatabaseInvoiceId(purchase);
+    const rpcItems = normalizedLines.map((line) => ({
+      item_name: line.itemName,
+      quantity: Number(line.quantity || 0),
+      unit: line.unit || "pcs",
+      rate: Number(line.cost || 0),
+      tax: Number(line.tax || 0),
+      discount: Number(line.discount || 0),
+      total_amount: lineTotal(line),
+    }));
+    const { data, error } = await supabase.rpc("save_snb_purchase_invoice_secure", {
+      p_invoice_id: databaseId,
+      p_supplier_name: invoiceData.supplier,
+      p_invoice_number: invoiceData.invoiceNo,
+      p_invoice_date: invoiceData.invoiceDate || dateInput(),
+      p_items: rpcItems,
+      p_payment_method: invoiceData.paymentMethod || "credit",
+      p_remarks: invoiceData.remarks || null,
+    });
+    if (error) {
+      const missingRpc = /save_snb_purchase_invoice_secure|could not find the function|does not exist|schema cache/i.test(error.message);
+      if (missingRpc) {
+        throw new Error("The secure purchase-invoice database migration is missing. Apply the included SNB workflow migrations before using this screen.");
+      }
+      throw new Error(`Failed to save purchase invoice: ${error.message}`);
+    }
+    const result = data as Record<string, unknown> | null;
+    const invoiceId = String(result?.invoiceId || result?.invoice_id || databaseId || "");
+    if (!invoiceId) throw new Error("Purchase invoice saved without a database ID.");
+    return invoiceId;
+  };
+
+  const databaseInvoiceFor = (purchase: PurchaseRecord) =>
+    dbReports.supplierOutstanding.find((row) =>
+      (purchase.dbId && row.purchase_invoice_id === purchase.dbId) ||
+      (normal(row.supplier_name) === normal(purchase.supplier) && normal(row.invoice_number) === normal(purchase.invoiceNo)),
+    );
+  const paidFor = (purchase: PurchaseRecord) =>
+    databaseInvoiceFor(purchase) ? asNumber(databaseInvoiceFor(purchase)?.paid_amount) : Number(purchase.paidAmount || 0);
+  const balanceFor = (purchase: PurchaseRecord) =>
+    databaseInvoiceFor(purchase) ? asNumber(databaseInvoiceFor(purchase)?.balance_amount) : Math.max(0, Number(purchase.total || 0) - Number(purchase.paidAmount || 0));
+
   const totalInvoiceValue = rows.reduce((sum, purchase) => sum + Number(purchase.total || 0), 0);
-  const totalOutstanding = rows.reduce(
-    (sum, purchase) => sum + Math.max(0, Number(purchase.total || 0) - Number(purchase.paidAmount || 0)),
-    0,
-  );
+  const totalOutstanding = rows.reduce((sum, purchase) => sum + balanceFor(purchase), 0);
   const pendingSyncCount = rows.filter(
     (purchase) => !(purchase.syncedToStock || purchase.syncStatus === "Synced"),
   ).length;
@@ -2588,7 +3159,34 @@ function PurchaseInvoicesTab({
           },
         ];
 
-  const openEdit = (purchase: PurchaseRecord) => {
+  const openEdit = async (purchase: PurchaseRecord) => {
+    if (purchase.syncedToStock || purchase.syncStatus === "Synced") {
+      setNotice("Synced invoices are locked to protect stock integrity. Use Purchase Return for damaged goods or Update Stock for separately verified corrections.");
+      return;
+    }
+    let editableLines = purchaseLines(purchase);
+    if (purchase.dbId) {
+      const { data, error } = await supabase
+        .from("snb_purchase_invoice_items")
+        .select("item_name,quantity,unit,rate,tax,discount,total_amount")
+        .eq("purchase_invoice_id", purchase.dbId)
+        .order("item_name", { ascending: true });
+      if (error) {
+        setNotice(`Unable to load invoice items: ${error.message}`);
+        return;
+      }
+      if (data?.length) {
+        editableLines = data.map((line) => ({
+          itemName: String(line.item_name),
+          quantity: asNumber(line.quantity),
+          unit: (String(line.unit || "nos").toLowerCase() as PurchaseUnit),
+          cost: asNumber(line.rate),
+          tax: asNumber(line.tax),
+          discount: asNumber(line.discount),
+          total: asNumber(line.total_amount),
+        }));
+      }
+    }
     const first = catalogItems[0];
     setEditingPurchaseId(purchase.id);
     setForm({
@@ -2603,7 +3201,7 @@ function PurchaseInvoicesTab({
       discount: "0",
       remarks: purchase.remarks || "",
     });
-    setLines(purchaseLines(purchase));
+    setLines(editableLines);
     setItemSearch("");
     setEditorOpen(true);
   };
@@ -2782,8 +3380,8 @@ function PurchaseInvoicesTab({
       return;
     }
     const total = normalizedLines.reduce((sum, line) => sum + line.total, 0);
-    if (selectedPurchase && total + 0.001 < Number(selectedPurchase.paidAmount || 0)) {
-      setNotice(`Invoice total cannot be below the already paid amount of ${money(selectedPurchase.paidAmount)}.`);
+    if (selectedPurchase && total + 0.001 < paidFor(selectedPurchase)) {
+      setNotice(`Invoice total cannot be below the already paid amount of ${money(paidFor(selectedPurchase))}.`);
       return;
     }
 
@@ -2806,29 +3404,31 @@ function PurchaseInvoicesTab({
 
     setSaving(true);
     try {
-      if (selectedPurchase) {
-        const reconciliationError = await reconcileSyncedStock();
-        if (reconciliationError) {
-          setNotice(reconciliationError);
-          return;
-        }
-        updatePurchase(selectedPurchase.id, invoiceData, userName);
-        setNotice(
-          stockAdjustments.length
-            ? `${form.invoiceNo.trim()} updated and stock reconciled successfully.`
-            : `${form.invoiceNo.trim()} updated successfully.`,
-        );
+      const dbId = await persistDatabaseInvoice(selectedPurchase, invoiceData, normalizedLines);
+      if (!dbId) throw new Error("Purchase invoice saved without a database ID.");
+      const localPurchase = selectedPurchase
+        ? purchases.find((purchase) => purchase.id === selectedPurchase.id || purchase.dbId === dbId)
+        : undefined;
+      if (localPurchase) {
+        updatePurchase(localPurchase.id, { ...invoiceData, dbId }, userName);
+        setNotice(`${form.invoiceNo.trim()} updated in the SNB purchase ledger.`);
       } else {
         addPurchase({
           branch: BRANCH,
+          dbId,
           ...invoiceData,
           enteredBy: userName,
         });
-        setNotice(`${form.invoiceNo.trim()} saved. Stock sync is pending.`);
+        setNotice(selectedPurchase
+          ? `${form.invoiceNo.trim()} updated and synchronized to this device.`
+          : `${form.invoiceNo.trim()} saved in the SNB purchase ledger. Stock sync is pending.`);
       }
+      await dbReports.refresh();
       setEditorOpen(false);
       setEditingPurchaseId(null);
       setLines([]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Purchase invoice save failed.");
     } finally {
       setSaving(false);
     }
@@ -2839,37 +3439,31 @@ function PurchaseInvoicesTab({
       setNotice("This purchase invoice is already synced to stock. Duplicate sync prevented.");
       return;
     }
-    const syncLines = purchaseLines(purchase);
-    for (const line of syncLines) {
-      const catalogItem = itemFromCatalog(line.itemName);
-      const existing = branchStock.find((stockItem) =>
-        catalogItem?.barcode != null && stockItem.itemBarcode != null
-          ? Number(stockItem.itemBarcode) === Number(catalogItem.barcode)
-          : normal(stockItem.itemName) === normal(line.itemName),
-      );
-      const currentQty = Number(existing?.quantity ?? 0);
-      const error = await manualUpdateStock(
-        BRANCH,
-        existing?.itemName || line.itemName,
-        currentQty + Number(line.quantity),
-        userName,
-        catalogItem?.barcode,
-      );
-      if (error) {
-        setNotice(error);
-        return;
-      }
+    setSaving(true);
+    try {
+      const invoiceId = await findDatabaseInvoiceId(purchase);
+      if (!invoiceId) throw new Error("This invoice is not present in the SNB database ledger. Edit and save it once before stock sync.");
+      const { error } = await supabase.rpc("snb_sync_purchase_invoice_to_stock", {
+        p_invoice_id: invoiceId,
+        p_synced_by: userName,
+      });
+      if (error) throw new Error(`Stock sync failed: ${error.message}`);
+      const localPurchase = purchases.find((entry) => entry.id === purchase.id || entry.dbId === invoiceId);
+      if (localPurchase) markPurchaseSynced(localPurchase.id, userName, "Synced");
+      addAuditLog({
+        branch: BRANCH,
+        user: userName,
+        action: "SNB Purchase Sync To Stock",
+        previousValue: purchase.itemName,
+        newValue: `${purchaseLines(purchase).length} item(s) synced from ${purchase.invoiceNo}`,
+      });
+      await Promise.all([fetchBranchData(BRANCH), dbReports.refresh()]);
+      setNotice(`${purchase.invoiceNo} synced to SNB stock successfully.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Purchase stock sync failed.");
+    } finally {
+      setSaving(false);
     }
-    markPurchaseSynced(purchase.id, userName, "Synced");
-    addAuditLog({
-      branch: BRANCH,
-      user: userName,
-      action: "SNB Purchase Sync To Stock",
-      previousValue: purchase.itemName,
-      newValue: `${syncLines.length} item(s) synced from ${purchase.invoiceNo}`,
-    });
-    await fetchBranchData(BRANCH);
-    setNotice(`${purchase.invoiceNo} synced to SNB stock successfully.`);
   };
 
   return (
@@ -2914,15 +3508,15 @@ function PurchaseInvoicesTab({
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
                 csvDownload(
-                  "SNB_Purchase_Invoices.csv",
+                  "SNB_Purchase_Invoices.xls",
                   visibleRows.map((purchase) => ({
                     Invoice: purchase.invoiceNo,
                     Date: purchase.invoiceDate || localDateKey(purchase.createdAt),
                     Supplier: purchase.supplier,
                     Items: purchase.items?.length || 1,
                     Total: purchase.total,
-                    Paid: purchase.paidAmount,
-                    Balance: Math.max(0, purchase.total - purchase.paidAmount),
+                    Paid: paidFor(purchase),
+                    Balance: balanceFor(purchase),
                     SyncStatus: purchase.syncStatus ?? "Not Synced",
                     LastEditedBy: purchase.lastEditedBy || "",
                   })),
@@ -2978,8 +3572,9 @@ function PurchaseInvoicesTab({
         <DataTable
           headers={["Invoice", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
           rows={visibleRows.map((purchase) => {
-            const balance = Math.max(0, purchase.total - purchase.paidAmount);
-            const paymentStatus = balance <= 0 ? "Cleared" : purchase.paidAmount > 0 ? "Partial" : "Pending";
+            const balance = balanceFor(purchase);
+            const paidAmount = paidFor(purchase);
+            const paymentStatus = balance <= 0 ? "Cleared" : paidAmount > 0 ? "Partial" : "Pending";
             const isSynced = purchase.syncedToStock || purchase.syncStatus === "Synced";
             const invoiceLines = purchaseLines(purchase);
             return [
@@ -3009,7 +3604,7 @@ function PurchaseInvoicesTab({
               <div key="total" className="font-black tabular-nums text-slate-950">{money(purchase.total)}</div>,
               <div key="balance" className="tabular-nums">
                 <p className="font-black text-slate-800">{money(balance)}</p>
-                <p className="mt-1 text-xs text-slate-500">Paid {money(purchase.paidAmount)}</p>
+                <p className="mt-1 text-xs text-slate-500">Paid {money(paidAmount)}</p>
               </div>,
               <StatusBadge key="payment" tone={paymentStatus === "Cleared" ? "green" : paymentStatus === "Partial" ? "blue" : "amber"}>
                 {paymentStatus}
@@ -3019,7 +3614,7 @@ function PurchaseInvoicesTab({
               </StatusBadge>,
               <div key="actions" className="flex min-w-[210px] flex-wrap gap-2">
                 <button
-                  onClick={() => openEdit(purchase)}
+                  onClick={() => void openEdit(purchase)}
                   className={cn(btnCls, "bg-blue-50 px-3 py-1.5 text-blue-700 ring-1 ring-blue-100")}
                 >
                   <Pencil className="size-3.5" /> Edit
@@ -3375,8 +3970,8 @@ function PurchaseInvoicesTab({
               <div>
                 <p className="text-xs font-black uppercase tracking-wide text-slate-400">Invoice Total</p>
                 <p className="text-2xl font-black tabular-nums text-slate-950">{money(invoiceTotal)}</p>
-                {selectedPurchase && selectedPurchase.paidAmount > 0 && (
-                  <p className="text-xs font-bold text-slate-500">Already paid: {money(selectedPurchase.paidAmount)}</p>
+                {selectedPurchase && paidFor(selectedPurchase) > 0 && (
+                  <p className="text-xs font-bold text-slate-500">Already paid: {money(paidFor(selectedPurchase))}</p>
                 )}
               </div>
               <div className="flex gap-2">
@@ -3414,179 +4009,483 @@ function PurchaseInvoicesTab({
     </div>
   );
 }
-function SupplierPaymentsTab({ userName }: { userName: string }) {
-  const { purchases, purchasePayments, addPurchasePayment } =
-    useBranchOpsStore();
-  const pendingPurchases = purchases.filter(
-    (p) => p.branch === BRANCH && p.total > p.paidAmount,
-  );
-  const [form, setForm] = useState({
-    purchaseId: "",
-    supplier: "",
-    amount: "",
-    mode: "cash",
-    reference: "",
-    chequeNo: "",
-    chequeDate: dateInput(),
-    chequeBank: "",
-    remarks: "",
-  });
-  const selected = pendingPurchases.find((p) => p.id === form.purchaseId);
-  const save = () => {
-    const amount = Number(form.amount);
-    const supplier = selected?.supplier || form.supplier;
-    if (!supplier.trim() || !amount) return;
-    const due = selected ? Math.max(0, Number(selected.total || 0) - Number(selected.paidAmount || 0)) : 0;
-    if (selected && amount > due) {
-      window.alert(`Payment cannot exceed pending due ${money(due)}.`);
-      return;
-    }
-    try {
-      addPurchasePayment({
-        branch: BRANCH,
-        purchaseId: selected?.id,
-        supplier,
-        amount,
-        mode: form.mode as any,
-        reference: form.reference,
-        chequeNo: form.mode === "cheque" ? form.chequeNo : undefined,
-        chequeDate: form.mode === "cheque" ? form.chequeDate : undefined,
-        chequeBank: form.mode === "cheque" ? form.chequeBank : undefined,
-        remarks: form.remarks || "Supplier payment",
-        paidBy: userName,
-      });
-    } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Purchase payment failed.');
-      return;
-    }
-    setForm({
-        purchaseId: "",
-        supplier: "",
-        amount: "",
-        mode: "cash",
-        reference: "",
-        chequeNo: "",
-        chequeDate: dateInput(),
-        chequeBank: "",
-        remarks: "",
-      });
+function PurchaseReturnsTab({
+  userName,
+  branchStock,
+  fetchBranchData,
+  dbReports,
+  setNotice,
+}: {
+  userName: string;
+  branchStock: any[];
+  fetchBranchData: (branch: Branch) => Promise<void>;
+  dbReports: ReturnType<typeof useSnbAdminReports>;
+  setNotice: (message: string) => void;
+}) {
+  type InvoiceItemRow = {
+    id: string;
+    purchase_invoice_id: string;
+    item_name: string;
+    quantity: number | string;
+    unit: string;
+    rate: number | string;
+    tax: number | string;
+    discount: number | string;
+    total_amount: number | string;
+    synced_quantity: number | string;
   };
-  const rows = purchasePayments.filter((p) => p.branch === BRANCH);
+  type ReturnLine = InvoiceItemRow & {
+    returnable: number;
+    stockAvailable: number;
+    returnQuantity: string;
+    itemReason: string;
+    batchNo: string;
+    expiryDate: string;
+  };
+
+  const [invoiceId, setInvoiceId] = useState("");
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [returnDate, setReturnDate] = useState(dateInput());
+  const [reasonType, setReasonType] = useState("Damaged");
+  const [settlementType, setSettlementType] = useState("Credit Note");
+  const [creditNoteNo, setCreditNoteNo] = useState("");
+  const [referenceNo, setReferenceNo] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [lines, setLines] = useState<ReturnLine[]>([]);
+  const [loadingItems, setLoadingItems] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const syncedInvoices = useMemo(() => {
+    const query = invoiceSearch.trim().toLowerCase();
+    return dbReports.purchaseInvoices
+      .filter((invoice) => invoice.sync_status !== "Not Synced")
+      .filter((invoice) =>
+        !query ||
+        invoice.invoice_number.toLowerCase().includes(query) ||
+        invoice.supplier_name.toLowerCase().includes(query),
+      )
+      .sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime());
+  }, [dbReports.purchaseInvoices, invoiceSearch]);
+
+  const selectedInvoice = dbReports.purchaseInvoices.find((invoice) => invoice.id === invoiceId);
+  const returnedQtyByItem = useMemo(() => {
+    const map = new Map<string, number>();
+    dbReports.purchaseReturnItems.forEach((item) => {
+      map.set(item.purchase_invoice_item_id, (map.get(item.purchase_invoice_item_id) || 0) + asNumber(item.quantity));
+    });
+    return map;
+  }, [dbReports.purchaseReturnItems]);
+
+  useEffect(() => {
+    if (!invoiceId) {
+      setLines([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setLoadingItems(true);
+      setError("");
+      const { data, error: queryError } = await supabase
+        .from("snb_purchase_invoice_items")
+        .select("*")
+        .eq("purchase_invoice_id", invoiceId)
+        .order("item_name", { ascending: true });
+      if (cancelled) return;
+      setLoadingItems(false);
+      if (queryError) {
+        setLines([]);
+        setError(`Unable to load invoice items: ${queryError.message}`);
+        return;
+      }
+      const next = ((data || []) as InvoiceItemRow[]).map((item) => {
+        const stockRow = branchStock.find((stock) => normal(stock.itemName) === normal(item.item_name));
+        const returnable = Math.max(0, asNumber(item.synced_quantity) - (returnedQtyByItem.get(item.id) || 0));
+        return {
+          ...item,
+          returnable,
+          stockAvailable: asNumber(stockRow?.quantity),
+          returnQuantity: "",
+          itemReason: "",
+          batchNo: "",
+          expiryDate: "",
+        };
+      });
+      setLines(next);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [invoiceId, branchStock, returnedQtyByItem]);
+
+  const selectedLines = lines.filter((line) => asNumber(line.returnQuantity) > 0);
+  const lineValue = (line: ReturnLine) => {
+    const quantity = asNumber(line.returnQuantity);
+    const originalQty = asNumber(line.quantity);
+    const ratio = originalQty > 0 ? quantity / originalQty : 0;
+    return Math.max(0, quantity * asNumber(line.rate) + asNumber(line.tax) * ratio - asNumber(line.discount) * ratio);
+  };
+  const totalQuantity = selectedLines.reduce((sum, line) => sum + asNumber(line.returnQuantity), 0);
+  const estimatedTotal = selectedLines.reduce((sum, line) => sum + lineValue(line), 0);
+
+  const updateLine = (id: string, patch: Partial<ReturnLine>) => {
+    setLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
+    setError("");
+  };
+
+  const clearForm = () => {
+    setInvoiceId("");
+    setReturnDate(dateInput());
+    setReasonType("Damaged");
+    setSettlementType("Credit Note");
+    setCreditNoteNo("");
+    setReferenceNo("");
+    setRemarks("");
+    setConfirmed(false);
+    setLines([]);
+    setError("");
+  };
+
+  const submitReturn = async () => {
+    setError("");
+    if (!selectedInvoice) return setError("Select a synced purchase invoice.");
+    if (!returnDate) return setError("Return date is required.");
+    if (returnDate > dateInput()) return setError("Return date cannot be in the future.");
+    if (!selectedLines.length) return setError("Enter a return quantity for at least one item.");
+    if (remarks.trim().length < 5) return setError("Enter clear return remarks with at least 5 characters.");
+    if (settlementType === "Credit Note" && !creditNoteNo.trim()) return setError("Credit note number is mandatory for a credit-note return.");
+    if (["Cash Refund", "Bank Refund"].includes(settlementType) && !referenceNo.trim()) return setError("Refund reference number is mandatory.");
+    for (const line of selectedLines) {
+      const qty = asNumber(line.returnQuantity);
+      if (qty <= 0) return setError(`Enter a valid return quantity for ${line.item_name}.`);
+      if (qty > line.returnable + 0.0001) return setError(`${line.item_name} can return only ${line.returnable} ${line.unit}.`);
+      if (qty > line.stockAvailable + 0.0001) return setError(`${line.item_name} has only ${line.stockAvailable} ${line.unit} in live SNB stock.`);
+      if (line.itemReason.trim().length < 3) return setError(`Enter damage/quality details for ${line.item_name}.`);
+      if (reasonType === "Expired" && !line.expiryDate) return setError(`Expiry date is required for ${line.item_name}.`);
+    }
+    if (!confirmed) return setError("Confirm that the returned items were physically verified and removed from usable stock.");
+    if (!window.confirm(`Post purchase return for ${selectedInvoice.invoice_number}? ${totalQuantity.toFixed(3)} item units will be deducted from SNB stock.`)) return;
+
+    setSaving(true);
+    const { data, error: rpcError } = await supabase.rpc("create_snb_purchase_return_secure", {
+      p_purchase_invoice_id: selectedInvoice.id,
+      p_return_date: returnDate,
+      p_reason_type: reasonType,
+      p_settlement_type: settlementType,
+      p_credit_note_no: creditNoteNo.trim() || null,
+      p_reference_no: referenceNo.trim() || null,
+      p_remarks: remarks.trim(),
+      p_items: selectedLines.map((line) => ({
+        purchase_invoice_item_id: line.id,
+        quantity: asNumber(line.returnQuantity),
+        item_reason: line.itemReason.trim(),
+        batch_no: line.batchNo.trim() || null,
+        expiry_date: line.expiryDate || null,
+      })),
+    });
+    setSaving(false);
+    if (rpcError) {
+      setError(`Purchase return failed: ${rpcError.message}`);
+      return;
+    }
+    const result = (data || {}) as Record<string, unknown>;
+    await Promise.all([fetchBranchData(BRANCH), dbReports.refresh()]);
+    setNotice(`${String(result.returnNo || "Purchase return")} posted by ${userName}. Damaged stock was deducted${asNumber(result.financialAdjustment) > 0 ? " and supplier payable was adjusted" : " without changing supplier payable"}.`);
+    clearForm();
+  };
+
+  const historyRows = dbReports.purchaseReturns.map((entry) => {
+    const items = dbReports.purchaseReturnItems.filter((item) => item.purchase_return_id === entry.id);
+    return {
+      entry,
+      items,
+      summary: items.map((item) => `${item.item_name} ${asNumber(item.quantity)} ${item.unit}`).join(", "),
+    };
+  });
+
+  const printReturn = (entry: (typeof historyRows)[number]) => {
+    printHtml(
+      `Purchase Return ${entry.entry.return_no}`,
+      `<div class="stamp">PURCHASE RETURN</div>
+       <div class="section"><div class="row"><span>Return No</span><b>${entry.entry.return_no}</b></div><div class="row"><span>Date</span><b>${entry.entry.return_date}</b></div><div class="row"><span>Supplier</span><b>${entry.entry.supplier_name}</b></div><div class="row"><span>Invoice</span><b>${entry.entry.invoice_number}</b></div><div class="row"><span>Reason</span><b>${entry.entry.reason_type}</b></div><div class="row"><span>Settlement</span><b>${entry.entry.settlement_type}</b></div><div class="row"><span>Credit / Reference</span><b>${entry.entry.credit_note_no || entry.entry.reference_no || "-"}</b></div></div>
+       <table><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Damage / Return Details</th><th>Stock Before</th><th>Stock After</th><th>Value</th></tr></thead><tbody>${entry.items.map((item) => `<tr><td>${item.item_name}</td><td>${asNumber(item.quantity)}</td><td>${item.unit}</td><td>${item.item_reason}${item.batch_no ? `<br/>Batch: ${item.batch_no}` : ""}</td><td>${asNumber(item.stock_before)}</td><td>${asNumber(item.stock_after)}</td><td>${money(asNumber(item.line_total))}</td></tr>`).join("")}</tbody></table>
+       <div class="section"><div class="row"><span>Total Return Value</span><b>${money(asNumber(entry.entry.total_amount))}</b></div><div class="row"><span>Remarks</span><b>${entry.entry.remarks}</b></div><div class="row"><span>Entered By</span><b>${entry.entry.entered_by}</b></div></div>`,
+    );
+  };
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
-      <Panel title="Pay Supplier" icon={<WalletCards className="size-4" />}>
-        <div className="space-y-3">
-          <Field label="Pending Invoice">
-            <select
-              className={inputCls}
-              value={form.purchaseId}
-              onChange={(e) => {
-                const p = pendingPurchases.find((x) => x.id === e.target.value);
-                setForm({
-                  ...form,
-                  purchaseId: e.target.value,
-                  supplier: p?.supplier || "",
-                  amount: p ? String(Math.max(0, p.total - p.paidAmount)) : "",
-                });
-              }}
-            >
-              <option value="">Manual / Select invoice</option>
-              {pendingPurchases.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.invoiceNo} · {p.supplier} · Due{" "}
-                  {money(Math.max(0, p.total - p.paidAmount))}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Supplier">
-            <input
-              className={inputCls}
-              value={form.supplier}
-              onChange={(e) => setForm({ ...form, supplier: e.target.value })}
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Amount">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.amount}
-                onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              />
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Purchase Returns" value={dbReports.purchaseReturns.length} icon={<RotateCcw className="size-5" />} tone="amber" />
+        <Kpi label="Returned Quantity" value={dbReports.purchaseReturnItems.reduce((sum, item) => sum + asNumber(item.quantity), 0).toFixed(3)} icon={<Package className="size-5" />} tone="red" />
+        <Kpi label="Return Value" value={money(dbReports.purchaseReturns.reduce((sum, entry) => sum + asNumber(entry.total_amount), 0))} icon={<IndianRupee className="size-5" />} tone="purple" />
+        <Kpi label="Synced Invoices" value={syncedInvoices.length} sub="Eligible for purchase return" icon={<CheckCircle2 className="size-5" />} tone="green" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
+        <Panel title="Purchase Return Details" icon={<RotateCcw className="size-4" />}>
+          <div className="space-y-3">
+            <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+              Posting a return permanently removes the selected damaged quantity from live SNB stock and reduces the supplier payable balance.
+            </div>
+            <Field label="Find Invoice">
+              <input className={inputCls} value={invoiceSearch} onChange={(event) => setInvoiceSearch(event.target.value)} placeholder="Search invoice or supplier" />
             </Field>
-            <Field label="Mode">
-              <select
-                className={inputCls}
-                value={form.mode}
-                onChange={(e) => setForm({ ...form, mode: e.target.value })}
-              >
-                <option value="cash">Cash</option>
-                <option value="upi">UPI</option>
-                <option value="card">Card</option>
-                <option value="bank">Bank</option>
-                <option value="cheque">Cheque</option>
+            <Field label="Synced Purchase Invoice *">
+              <select className={inputCls} value={invoiceId} onChange={(event) => { setInvoiceId(event.target.value); setError(""); }}>
+                <option value="">Select invoice</option>
+                {syncedInvoices.map((invoice) => (
+                  <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name} · {invoice.invoice_date}</option>
+                ))}
               </select>
             </Field>
+            {selectedInvoice && (
+              <div className="rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-700 ring-1 ring-slate-200">
+                <div className="flex justify-between gap-3"><span>Supplier</span><b>{selectedInvoice.supplier_name}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Invoice total</span><b>{money(asNumber(selectedInvoice.total_amount))}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Supplier adjustments</span><b>{money(asNumber(selectedInvoice.return_amount))}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Current payable</span><b className="text-amber-700">{money(asNumber(selectedInvoice.balance_amount))}</b></div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Return Date *"><input type="date" max={dateInput()} className={inputCls} value={returnDate} onChange={(event) => setReturnDate(event.target.value)} /></Field>
+              <Field label="Reason Type *"><select className={inputCls} value={reasonType} onChange={(event) => setReasonType(event.target.value)}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field>
+            </div>
+            <Field label="Supplier Settlement *"><select className={inputCls} value={settlementType} onChange={(event) => setSettlementType(event.target.value)}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>Pending</option></select></Field>
+            {settlementType === "Credit Note" && <Field label="Credit Note Number *"><input className={inputCls} value={creditNoteNo} onChange={(event) => setCreditNoteNo(event.target.value)} /></Field>}
+            <Field label={["Cash Refund", "Bank Refund"].includes(settlementType) ? "Refund Reference *" : "Reference Number"}><input className={inputCls} value={referenceNo} onChange={(event) => setReferenceNo(event.target.value)} placeholder="Supplier reference, LR number, refund transaction…" /></Field>
+            <Field label="Mandatory Remarks *"><textarea className={cn(inputCls, "min-h-24")} value={remarks} onChange={(event) => setRemarks(event.target.value)} placeholder="Explain the damage, supplier communication and return handling." /></Field>
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-200">
+              <input type="checkbox" className="mt-1 size-4" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+              <span className="text-sm font-bold text-slate-700">I physically verified these items and confirm they must be removed from usable SNB stock.</span>
+            </label>
+            {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
+            <button disabled={saving || loadingItems} onClick={submitReturn} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>
+              {saving ? <RefreshCcw className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+              {saving ? "Posting Return…" : `Post Return · ${money(estimatedTotal)}`}
+            </button>
           </div>
-          {form.mode === "cheque" && (
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Cheque No">
-                <input className={inputCls} value={form.chequeNo} onChange={(e) => setForm({ ...form, chequeNo: e.target.value })} />
-              </Field>
-              <Field label="Cheque Date">
-                <input type="date" className={inputCls} value={form.chequeDate} onChange={(e) => setForm({ ...form, chequeDate: e.target.value })} />
-              </Field>
-              <Field label="Bank">
-                <input className={inputCls} value={form.chequeBank} onChange={(e) => setForm({ ...form, chequeBank: e.target.value })} />
-              </Field>
+        </Panel>
+
+        <Panel title="Damaged / Return Items" icon={<Package className="size-4" />}>
+          {loadingItems ? (
+            <div className="flex min-h-64 items-center justify-center"><RefreshCcw className="size-6 animate-spin text-slate-400" /></div>
+          ) : !invoiceId ? (
+            <div className="rounded-3xl bg-slate-50 p-10 text-center font-black text-slate-400">Select a synced purchase invoice to load its items.</div>
+          ) : !lines.length ? (
+            <div className="rounded-3xl bg-red-50 p-10 text-center font-black text-red-600">No returnable invoice items were found.</div>
+          ) : (
+            <div className="space-y-3">
+              {lines.map((line) => {
+                const qty = asNumber(line.returnQuantity);
+                const invalid = qty > line.returnable || qty > line.stockAvailable;
+                return (
+                  <div key={line.id} className={cn("rounded-3xl border p-4", qty > 0 ? "border-orange-200 bg-orange-50/40" : "border-slate-200 bg-white")}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div><p className="font-black text-slate-950">{line.item_name}</p><p className="text-xs font-bold text-slate-500">Purchased {asNumber(line.quantity)} {line.unit} · Returnable {line.returnable} · Live stock {line.stockAvailable}</p></div>
+                      <p className="font-black text-slate-950">{money(lineValue(line))}</p>
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <Field label="Return Qty *"><input type="number" min="0" max={Math.min(line.returnable, line.stockAvailable)} step="0.001" className={cn(inputCls, invalid && "border-red-400 bg-red-50")} value={line.returnQuantity} onChange={(event) => updateLine(line.id, { returnQuantity: event.target.value })} /></Field>
+                      <Field label="Damage / Item Details *"><input className={inputCls} value={line.itemReason} onChange={(event) => updateLine(line.id, { itemReason: event.target.value })} placeholder="Broken pack, leakage, fungus…" /></Field>
+                      <Field label="Batch Number"><input className={inputCls} value={line.batchNo} onChange={(event) => updateLine(line.id, { batchNo: event.target.value })} /></Field>
+                      <Field label={reasonType === "Expired" ? "Expiry Date *" : "Expiry Date"}><input type="date" className={inputCls} value={line.expiryDate} onChange={(event) => updateLine(line.id, { expiryDate: event.target.value })} /></Field>
+                    </div>
+                    {invalid && <p className="mt-2 text-xs font-black text-red-600">Quantity cannot exceed both returnable invoice quantity and current live stock.</p>}
+                  </div>
+                );
+              })}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl bg-slate-950 p-4 text-white"><p className="text-[10px] font-black uppercase text-white/60">Selected Items</p><p className="mt-1 text-2xl font-black">{selectedLines.length}</p></div>
+                <div className="rounded-2xl bg-slate-950 p-4 text-white"><p className="text-[10px] font-black uppercase text-white/60">Return Quantity</p><p className="mt-1 text-2xl font-black">{totalQuantity.toFixed(3)}</p></div>
+                <div className="rounded-2xl bg-orange-500 p-4 text-white"><p className="text-[10px] font-black uppercase text-white/70">Estimated Value</p><p className="mt-1 text-2xl font-black">{money(estimatedTotal)}</p></div>
+              </div>
             </div>
           )}
-          <Field label="Reference">
-            <input
-              className={inputCls}
-              value={form.reference}
-              onChange={(e) => setForm({ ...form, reference: e.target.value })}
-            />
-          </Field>
-          <Field label="Remarks">
-            <input
-              className={inputCls}
-              value={form.remarks}
-              onChange={(e) => setForm({ ...form, remarks: e.target.value })}
-            />
-          </Field>
-          <button
-            onClick={save}
-            className={cn(btnCls, "w-full bg-slate-950 text-white")}
-          >
-            <WalletCards className="size-4" />
-            Save Payment
-          </button>
-        </div>
-      </Panel>
-      <Panel title="Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Supplier_Payments.csv", rows.map((p) => ({ Date: p.createdAt, Supplier: p.supplier, Amount: p.amount, Mode: p.mode, Reference: p.reference || "-", PaidBy: p.paidBy })))}><Download className="size-4" /> Excel</button>}>
+        </Panel>
+      </div>
+
+      <Panel
+        title="Purchase Return History"
+        icon={<History className="size-4" />}
+        action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Purchase_Returns.xls", historyRows.map(({ entry, summary }) => ({ ReturnNo: entry.return_no, Date: entry.return_date, Supplier: entry.supplier_name, Invoice: entry.invoice_number, Items: summary, Reason: entry.reason_type, Settlement: entry.settlement_type, CreditNote: entry.credit_note_no || "", Reference: entry.reference_no || "", Total: asNumber(entry.total_amount), EnteredBy: entry.entered_by, Remarks: entry.remarks })))}><Download className="size-4" /> Excel</button>}
+      >
         <DataTable
-          headers={[
-            "Date",
-            "Supplier",
-            "Amount",
-            "Mode",
-            "Reference",
-            "Paid By",
-            "Remarks",
-          ]}
-          rows={rows.map((p) => [
-            fmtDateTime(p.createdAt),
-            p.supplier,
-            money(p.amount),
-            p.mode.toUpperCase(),
-            p.reference,
-            p.paidBy,
-            p.remarks,
-          ])}
-          empty="No supplier payments yet."
+          headers={["Return No", "Date", "Supplier", "Invoice", "Items", "Reason", "Settlement", "Value", "Entered By", "Action"]}
+          rows={historyRows.map((row) => [row.entry.return_no, row.entry.return_date, row.entry.supplier_name, row.entry.invoice_number, row.summary || "-", row.entry.reason_type, row.entry.settlement_type, money(asNumber(row.entry.total_amount)), row.entry.entered_by, <button key="print" className={cn(btnCls, "bg-slate-100 text-slate-700")} onClick={() => printReturn(row)}><Printer className="size-4" /> Print</button>])}
+          empty="No purchase returns found for the selected date range."
         />
+      </Panel>
+    </div>
+  );
+}
+
+function SupplierPaymentsTab({
+  userName,
+  dbReports,
+  setNotice,
+}: {
+  userName: string;
+  dbReports: ReturnType<typeof useSnbAdminReports>;
+  setNotice: (message: string) => void;
+}) {
+  const [supplier, setSupplier] = useState("");
+  const [search, setSearch] = useState("");
+  const [allocations, setAllocations] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState<"cash" | "upi" | "card" | "bank" | "cheque">("cash");
+  const [reference, setReference] = useState("");
+  const [chequeNo, setChequeNo] = useState("");
+  const [chequeDate, setChequeDate] = useState(dateInput());
+  const [chequeBank, setChequeBank] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const pendingRows = useMemo(() => dbReports.supplierOutstanding
+    .filter((row) => asNumber(row.balance_amount) > 0.0001)
+    .sort((a, b) => new Date(a.invoice_date || a.created_at).getTime() - new Date(b.invoice_date || b.created_at).getTime()), [dbReports.supplierOutstanding]);
+  const suppliers = useMemo(() => Array.from(new Set(pendingRows.map((row) => row.supplier_name))).sort(), [pendingRows]);
+  const supplierRows = pendingRows.filter((row) =>
+    row.supplier_name === supplier &&
+    (!search.trim() || row.invoice_number.toLowerCase().includes(search.trim().toLowerCase())),
+  );
+  const allocationRows = supplierRows
+    .map((row) => ({ row, amount: asNumber(allocations[row.purchase_invoice_id]) }))
+    .filter(({ amount }) => amount > 0);
+  const total = allocationRows.reduce((sum, entry) => sum + entry.amount, 0);
+
+  useEffect(() => {
+    if (supplier && !suppliers.includes(supplier)) {
+      setSupplier("");
+      setAllocations({});
+    }
+  }, [supplier, suppliers]);
+
+  const selectAllDue = () => {
+    const next: Record<string, string> = {};
+    supplierRows.forEach((row) => { next[row.purchase_invoice_id] = String(asNumber(row.balance_amount)); });
+    setAllocations(next);
+    setError("");
+  };
+
+  const clearAllocations = () => {
+    setAllocations({});
+    setError("");
+  };
+
+  const save = async () => {
+    setError("");
+    if (!supplier) return setError("Select a supplier.");
+    if (!allocationRows.length) return setError("Enter a payment amount against at least one invoice.");
+    for (const { row, amount } of allocationRows) {
+      if (amount <= 0 || amount > asNumber(row.balance_amount) + 0.001) {
+        return setError(`Allocation for ${row.invoice_number} cannot exceed ${money(asNumber(row.balance_amount))}.`);
+      }
+    }
+    if (mode !== "cash" && mode !== "cheque" && !reference.trim()) return setError(`${mode.toUpperCase()} reference number is mandatory.`);
+    if (mode === "cheque" && (!chequeNo.trim() || !chequeDate || !chequeBank.trim())) return setError("Cheque number, cheque date and bank are mandatory.");
+    if (remarks.trim().length < 3) return setError("Enter payment remarks.");
+    const paymentReference = mode === "cheque"
+      ? `${chequeNo.trim()} | ${chequeDate} | ${chequeBank.trim()}`
+      : reference.trim();
+    if (!window.confirm(`Post ${money(total)} to ${supplier} across ${allocationRows.length} invoice(s)?`)) return;
+
+    setSaving(true);
+    const { data, error: rpcError } = await supabase.rpc("post_snb_supplier_payment_batch", {
+      p_supplier_name: supplier,
+      p_allocations: allocationRows.map(({ row, amount }) => ({ invoice_id: row.purchase_invoice_id, amount })),
+      p_payment_method: mode,
+      p_reference_no: paymentReference || null,
+      p_remarks: remarks.trim(),
+    });
+    setSaving(false);
+    if (rpcError) {
+      setError(`Supplier payment failed: ${rpcError.message}`);
+      return;
+    }
+    const result = (data || {}) as Record<string, unknown>;
+    await dbReports.refresh();
+    setNotice(`Supplier payment batch ${String(result.batchId || "")} saved by ${userName}: ${money(total)} to ${supplier}.`);
+    setAllocations({});
+    setReference("");
+    setChequeNo("");
+    setChequeDate(dateInput());
+    setChequeBank("");
+    setRemarks("");
+  };
+
+  const paymentRows = dbReports.supplierPayments;
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Outstanding Suppliers" value={suppliers.length} icon={<Truck className="size-5" />} tone="amber" />
+        <Kpi label="Pending Invoices" value={pendingRows.length} icon={<Receipt className="size-5" />} tone="red" />
+        <Kpi label="Total Outstanding" value={money(pendingRows.reduce((sum, row) => sum + asNumber(row.balance_amount), 0))} icon={<IndianRupee className="size-5" />} tone="purple" />
+        <Kpi label="Selected Payment" value={money(total)} sub={`${allocationRows.length} invoice allocation(s)`} icon={<WalletCards className="size-5" />} tone="green" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <Panel title="Supplier Payment Batch" icon={<WalletCards className="size-4" />}>
+          <div className="space-y-3">
+            <div className="rounded-2xl bg-blue-50 p-3 text-sm font-bold text-blue-800 ring-1 ring-blue-100">
+              Select one supplier and distribute a single payment across any number of pending invoices. The server prevents overpayment and records one auditable batch.
+            </div>
+            <Field label="Supplier *">
+              <select className={inputCls} value={supplier} onChange={(event) => { setSupplier(event.target.value); setAllocations({}); setError(""); }}>
+                <option value="">Select supplier</option>
+                {suppliers.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Payment Mode *"><select className={inputCls} value={mode} onChange={(event) => { setMode(event.target.value as typeof mode); setError(""); }}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option></select></Field>
+              <Field label="Batch Total"><div className="flex min-h-11 items-center rounded-xl bg-slate-950 px-3 font-black text-white">{money(total)}</div></Field>
+            </div>
+            {mode === "cheque" ? (
+              <div className="space-y-3 rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-200">
+                <Field label="Cheque Number *"><input className={inputCls} value={chequeNo} onChange={(event) => setChequeNo(event.target.value)} /></Field>
+                <div className="grid grid-cols-2 gap-3"><Field label="Cheque Date *"><input type="date" className={inputCls} value={chequeDate} onChange={(event) => setChequeDate(event.target.value)} /></Field><Field label="Bank *"><input className={inputCls} value={chequeBank} onChange={(event) => setChequeBank(event.target.value)} /></Field></div>
+              </div>
+            ) : (
+              <Field label={mode === "cash" ? "Reference (optional)" : `${mode.toUpperCase()} Reference *`}><input className={inputCls} value={reference} onChange={(event) => setReference(event.target.value)} /></Field>
+            )}
+            <Field label="Remarks *"><textarea className={cn(inputCls, "min-h-20")} value={remarks} onChange={(event) => setRemarks(event.target.value)} placeholder="Purpose, approval or payment notes" /></Field>
+            {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
+            <button disabled={saving || total <= 0} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>
+              {saving ? <RefreshCcw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              {saving ? "Posting Batch…" : `Post ${money(total)}`}
+            </button>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Allocate Pending Invoices"
+          icon={<Receipt className="size-4" />}
+          action={<div className="flex gap-2"><button disabled={!supplierRows.length} className={cn(btnCls, "bg-emerald-50 text-emerald-700 disabled:opacity-40")} onClick={selectAllDue}>Pay All Due</button><button disabled={!Object.keys(allocations).length} className={cn(btnCls, "bg-slate-100 text-slate-700 disabled:opacity-40")} onClick={clearAllocations}>Clear</button></div>}
+        >
+          <div className="mb-3"><input className={inputCls} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search invoice number" /></div>
+          {!supplier ? (
+            <div className="rounded-3xl bg-slate-50 p-10 text-center font-black text-slate-400">Select a supplier to view pending invoices.</div>
+          ) : !supplierRows.length ? (
+            <div className="rounded-3xl bg-emerald-50 p-10 text-center font-black text-emerald-700">No outstanding invoices for this supplier.</div>
+          ) : (
+            <div className="space-y-2">
+              {supplierRows.map((row) => {
+                const amount = allocations[row.purchase_invoice_id] || "";
+                const invalid = asNumber(amount) > asNumber(row.balance_amount);
+                return (
+                  <div key={row.purchase_invoice_id} className={cn("grid gap-3 rounded-2xl border p-3 md:grid-cols-[minmax(0,1fr)_140px]", asNumber(amount) > 0 ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-white")}>
+                    <div><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-950">{row.invoice_number}</p><StatusBadge tone={row.sync_status === "Synced" ? "green" : "amber"}>{row.sync_status || "-"}</StatusBadge></div><p className="mt-1 text-xs font-bold text-slate-500">Invoice {row.invoice_date || "-"} · Total {money(asNumber(row.total_amount))} · Paid {money(asNumber(row.paid_amount))}</p><p className="mt-1 font-black text-red-600">Due {money(asNumber(row.balance_amount))}</p></div>
+                    <Field label="Pay Amount"><input type="number" min="0" max={asNumber(row.balance_amount)} step="0.01" className={cn(inputCls, invalid && "border-red-400 bg-red-50")} value={amount} onChange={(event) => setAllocations((current) => ({ ...current, [row.purchase_invoice_id]: event.target.value }))} /></Field>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <Panel title="Supplier Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Supplier_Payments.xls", paymentRows.map((payment) => ({ Date: payment.payment_date, Supplier: payment.supplier_name, InvoiceId: payment.purchase_invoice_id || "", Amount: asNumber(payment.amount), Mode: payment.payment_method, Reference: payment.reference_no || "", BatchId: payment.payment_batch_id || "", BatchTotal: asNumber(payment.batch_total), PaidBy: payment.paid_by || "", Remarks: payment.remarks || "" })))}><Download className="size-4" /> Excel</button>}>
+        <DataTable headers={["Date", "Supplier", "Amount", "Mode", "Reference", "Batch Total", "Paid By", "Remarks"]} rows={paymentRows.map((payment) => [fmtDateTime(payment.payment_date), payment.supplier_name, money(asNumber(payment.amount)), payment.payment_method.toUpperCase(), payment.reference_no || "-", money(asNumber(payment.batch_total || payment.amount)), payment.paid_by || "-", payment.remarks || "-"])} empty="No supplier payments found for the selected date range." />
       </Panel>
     </div>
   );
@@ -3755,7 +4654,7 @@ function BankDepositsTab({
         <Panel
           title="Bank Deposit History"
           icon={<History className="size-4" />}
-          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.csv", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
+          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.xls", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
         >
           <DataTable
             headers={[
@@ -3987,48 +4886,78 @@ function SalespersonManagementTab({ userName }: { userName: string }) {
 
 function SalespersonReportTab(props: any) {
   const [selectedPerson, setSelectedPerson] = useState("All");
-  const sortedRows = [...props.salespersonRows].sort((a: any, b: any) => b.netSales - a.netSales);
-  const filteredRows = selectedPerson === "All"
-    ? sortedRows
-    : sortedRows.filter((r: any) => r.name === selectedPerson);
-  const topPerformer = sortedRows[0];
+  const paymentByPerson = useMemo(() => {
+    const map = new Map<string, { cash: number; upi: number; card: number; credit: number }>();
+    const ensure = (name: string) => {
+      const current = map.get(name) ?? { cash: 0, upi: 0, card: 0, credit: 0 };
+      map.set(name, current);
+      return current;
+    };
+    (props.branchBills || []).forEach((bill: any) => {
+      const row = ensure(bill.salesperson || "Unassigned");
+      if (bill.paymentMode === "cash") row.cash += asNumber(bill.total);
+      else if (bill.paymentMode === "upi") row.upi += asNumber(bill.total);
+      else if (bill.paymentMode === "card") row.card += asNumber(bill.total);
+      else if (bill.paymentMode === "credit") row.credit += asNumber(bill.total);
+      else if (bill.paymentMode === "split") {
+        row.cash += asNumber(bill.split?.cash);
+        row.upi += asNumber(bill.split?.upi);
+        row.card += asNumber(bill.split?.card);
+      }
+    });
+    (props.legacySalesRows || []).forEach((sale: any) => {
+      const row = ensure(sale.soldBy || "Unassigned");
+      const value = asNumber(sale.unitPrice) * asNumber(sale.quantitySold);
+      const mode = String(sale.paymentMethod || "").toLowerCase();
+      if (mode.includes("cash")) row.cash += value;
+      else if (mode.includes("upi")) row.upi += value;
+      else if (mode.includes("card")) row.card += value;
+      else if (mode.includes("credit")) row.credit += value;
+    });
+    return map;
+  }, [props.branchBills, props.legacySalesRows]);
+
+  const rows = useMemo(() => {
+    if (props.dbReports.salespersonBills.length) {
+      const map = new Map<string, any>();
+      props.dbReports.salespersonBills.forEach((bill: any) => {
+        const name = bill.salesperson || "Unassigned";
+        const allocations = paymentByPerson.get(name) ?? { cash: 0, upi: 0, card: 0, credit: 0 };
+        const row = map.get(name) || { name, grossSales: 0, discounts: 0, netSales: 0, bills: 0, outstanding: 0, cashierLogins: new Set<string>(), ...allocations };
+        row.grossSales += asNumber(bill.subtotal);
+        row.discounts += asNumber(bill.discount);
+        row.netSales += asNumber(bill.total);
+        row.outstanding += asNumber(bill.balance);
+        row.bills += 1;
+        if (bill.cashier_username) row.cashierLogins.add(bill.cashier_username);
+        map.set(name, row);
+      });
+      return Array.from(map.values()).map((row: any) => ({ ...row, avgBillValue: row.bills ? row.netSales / row.bills : 0, cashierCount: row.cashierLogins.size })).sort((a: any, b: any) => b.netSales - a.netSales);
+    }
+    return [...props.salespersonRows].map((row: any) => ({ ...row, discounts: Math.max(0, row.grossSales - row.netSales - row.returns), outstanding: 0, cashierCount: 0, credit: asNumber(row.credit) })).sort((a: any, b: any) => b.netSales - a.netSales);
+  }, [props.dbReports.salespersonBills, props.salespersonRows, paymentByPerson]);
+  const filteredRows = selectedPerson === "All" ? rows : rows.filter((row: any) => row.name === selectedPerson);
+  const topPerformer = rows[0];
+  const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
+  const totalDiscount = rows.reduce((sum: number, row: any) => sum + row.discounts, 0);
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi
-          label="Active Salespersons"
-          value={props.salespersonRows.length}
-          icon={<UserRound className="size-5" />}
-        />
-        <Kpi
-          label="Top Performer"
-          value={topPerformer ? topPerformer.name : "-"}
-          sub={topPerformer ? money(topPerformer.netSales) : undefined}
-          icon={<BarChart3 className="size-5" />}
-          tone="amber"
-        />
-        <Kpi
-          label="Net Sales"
-          value={money(props.netSales)}
-          icon={<IndianRupee className="size-5" />}
-          tone="green"
-        />
-        <Kpi
-          label="Return Amount"
-          value={money(props.returnAmount)}
-          icon={<RotateCcw className="size-5" />}
-          tone="red"
-        />
+        <Kpi label="Salespersons" value={rows.length} icon={<UserRound className="size-5" />} />
+        <Kpi label="Top Performer" value={topPerformer ? topPerformer.name : "-"} sub={topPerformer ? money(topPerformer.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
+        <Kpi label="Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Discounts" value={money(totalDiscount)} icon={<RotateCcw className="size-5" />} tone="red" />
       </div>
-      {sortedRows.length > 0 && (
+      {rows.length > 0 && (
         <Panel title="Net Sales by Salesperson" icon={<Activity className="size-4" />}>
-          <div className="h-[260px]">
+          <div className="h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={sortedRows} layout="vertical">
+              <BarChart data={rows} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" tickFormatter={(v) => `₹${Number(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
-                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: number) => money(Number(v))} />
+                <XAxis type="number" tickFormatter={(value) => `₹${Number(value / 1000).toFixed(0)}k`} tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(value: number) => money(Number(value))} />
                 <Bar dataKey="netSales" fill="#C5973E" radius={[0, 8, 8, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -4040,64 +4969,15 @@ function SalespersonReportTab(props: any) {
         icon={<BarChart3 className="size-4" />}
         action={
           <div className="flex flex-wrap gap-2">
-            <select className={inputCls} value={selectedPerson} onChange={(e) => setSelectedPerson(e.target.value)}>
+            <select className={inputCls} value={selectedPerson} onChange={(event) => setSelectedPerson(event.target.value)}>
               <option value="All">All Salespersons</option>
-              {sortedRows.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
+              {rows.map((row: any) => <option key={row.name} value={row.name}>{row.name}</option>)}
             </select>
-            <button
-              className={cn(btnCls, "bg-slate-950 text-white")}
-              onClick={() =>
-                csvDownload(
-                  "SNB_Salesperson_Report.csv",
-                  filteredRows.map((r: any) => ({
-                    Salesperson: r.name,
-                    GrossSales: r.grossSales,
-                    ReturnAmount: r.returns,
-                    NetSales: r.netSales,
-                    Bills: r.bills,
-                    AvgBill: r.avgBillValue,
-                    Cash: r.cash,
-                    UPI: r.upi,
-                    Card: r.card,
-                  })),
-                )
-              }
-            >
-              <Download className="size-4" />
-              Export
-            </button>
+            <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Salesperson_Report.xls", filteredRows.map((row: any) => ({ Salesperson: row.name, GrossSales: row.grossSales, Discounts: row.discounts, NetSales: row.netSales, Cash: row.cash, UPI: row.upi, Card: row.card, CreditSales: row.credit, Reconciliation: row.cash + row.upi + row.card + row.credit, Bills: row.bills, AverageBill: row.avgBillValue, Outstanding: row.outstanding, CashierLogins: row.cashierCount })))}><Download className="size-4" /> Excel</button>
           </div>
         }
       >
-        <DataTable
-          headers={[
-            "Rank",
-            "Salesperson",
-            "Gross Sales",
-            "Return Amount",
-            "Net Sales",
-            "Bills",
-            "Avg Bill",
-            "Cash",
-            "UPI",
-            "Card",
-          ]}
-          rows={filteredRows.map((r: any, idx: number) => [
-            `#${sortedRows.indexOf(r) + 1}`,
-            r.name,
-            money(r.grossSales),
-            money(r.returns),
-            <span key="n" className="font-black text-emerald-700">
-              {money(r.netSales)}
-            </span>,
-            r.bills,
-            money(r.avgBillValue),
-            money(r.cash),
-            money(r.upi),
-            money(r.card),
-          ])}
-          empty="No salesperson sales data for selected period."
-        />
+        <DataTable headers={["Rank", "Salesperson", "Gross", "Discounts", "Net", "Cash", "UPI", "Card", "Credit", "Payment Reconciliation", "Bills", "Avg Bill", "Outstanding", "Cashier Logins"]} rows={filteredRows.map((row: any) => [`#${rows.indexOf(row) + 1}`, row.name, money(row.grossSales), money(row.discounts), <span key="net" className="font-black text-emerald-700">{money(row.netSales)}</span>, money(row.cash), money(row.upi), money(row.card), money(row.credit), money(asNumber(row.cash) + asNumber(row.upi) + asNumber(row.card) + asNumber(row.credit)), row.bills, money(row.avgBillValue), money(row.outstanding), row.cashierCount || "-"])} empty="No salesperson sales data for the selected period." />
       </Panel>
     </div>
   );
@@ -4140,283 +5020,50 @@ function printDailyClosure(props: any, branchLabel: string) {
 }
 
 function DailyClosureTab({ userName, ...props }: any) {
-  const { cashierClosures, addCashierClosure } = useBranchOpsStore();
-  const [form, setForm] = useState({
-    openingCash: "0",
-    closingCash: "",
-    remarks: "",
-  });
-  const cashMovementsNet = props.movementInRange
-    .filter((m: any) => m.paymentMode === "cash")
-    .reduce(
-      (s: number, m: any) => s + (m.direction === "in" ? m.amount : -m.amount),
-      0,
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
+  const dailyRows = db.dailySummary;
+  const sessionRows = db.counterSessions as any[];
+  const totalGross = dailyRows.reduce((sum, row) => sum + asNumber(row.gross_sales), 0);
+  const totalNet = dailyRows.reduce((sum, row) => sum + asNumber(row.net_sales), 0);
+  const totalExpected = dailyRows.reduce((sum, row) => sum + asNumber(row.expected_cash), 0);
+  const totalCounted = dailyRows.reduce((sum, row) => sum + asNumber(row.counted_cash), 0);
+  const totalDifference = dailyRows.reduce((sum, row) => sum + asNumber(row.difference), 0);
+  const openCounters = dailyRows.reduce((sum, row) => sum + asNumber(row.open_counter_count), 0);
+  const closedCounters = dailyRows.reduce((sum, row) => sum + asNumber(row.closed_counter_count), 0);
+
+  const printClosureReport = () => {
+    printHtml(
+      `SNB Daily Closure ${props.fromDate} to ${props.toDate}`,
+      `<div class="stamp">DAILY CLOSURE REPORT</div>
+       <div class="section"><div class="row"><span>Date Range</span><b>${props.fromDate} to ${props.toDate}</b></div><div class="row"><span>Prepared By</span><b>${userName}</b></div><div class="row"><span>Closed Counters</span><b>${closedCounters}</b></div><div class="row"><span>Open Counters</span><b>${openCounters}</b></div></div>
+       <table><thead><tr><th>Date</th><th>Gross</th><th>Discounts</th><th>Returns</th><th>Net</th><th>Expected Cash</th><th>Counted Cash</th><th>Difference</th></tr></thead><tbody>${dailyRows.map((row) => `<tr><td>${row.business_date}</td><td>${money(asNumber(row.gross_sales))}</td><td>${money(asNumber(row.discounts))}</td><td>${money(asNumber(row.returns))}</td><td>${money(asNumber(row.net_sales))}</td><td>${money(asNumber(row.expected_cash))}</td><td>${money(asNumber(row.counted_cash))}</td><td>${money(asNumber(row.difference))}</td></tr>`).join("")}</tbody></table>
+       <div class="section"><div class="row"><span>Total Gross</span><b>${money(totalGross)}</b></div><div class="row"><span>Total Net</span><b>${money(totalNet)}</b></div><div class="row"><span>Expected Cash</span><b>${money(totalExpected)}</b></div><div class="row"><span>Counted Cash</span><b>${money(totalCounted)}</b></div><div class="row"><span>Difference</span><b>${money(totalDifference)}</b></div></div>`,
     );
-  const expectedCash = Number(form.openingCash || 0) + cashMovementsNet;
-  const diff = Number(form.closingCash || 0) - expectedCash;
-  const save = async () => {
-    const closureDate = dateInput();
-    const payload = {
-      branch: BRANCH,
-      closure_date: closureDate,
-      cashier: userName,
-      opening_cash: Number(form.openingCash || 0),
-      cash_total: props.cashSales,
-      upi_total: props.upiSales,
-      card_total: props.cardSales,
-      credit_billed: props.creditBillAmount,
-      credit_collected: props.clearedCredit,
-      advance_collected: props.advanceCollected,
-      advance_balance_collected: props.advanceBalanceCollected,
-      refunds: props.returnAmount,
-      expenses: props.expenseAmount,
-      purchase_payments: props.purchasePaid,
-      discounts: 0,
-      bill_count: props.billsCount,
-      duplicate_prints: 0,
-      expected_cash: expectedCash,
-      actual_cash: Number(form.closingCash || 0),
-      difference: diff,
-      notes: form.remarks || null,
-      status: "finalized",
-    };
-    const { data: existingClosure, error: lookupError } = await supabase
-      .from("branch_daily_closures")
-      .select("id,status,cashier")
-      .eq("branch", BRANCH)
-      .eq("closure_date", closureDate)
-      .maybeSingle();
-    if (lookupError) {
-      window.alert(`Failed to check closure status: ${lookupError.message}`);
-      return;
-    }
-    if (existingClosure?.status === "finalized") {
-      window.alert(`The ${BRANCH} closure for ${closureDate} is already finalized by ${existingClosure.cashier}. Reopen it with admin approval before making changes.`);
-      return;
-    }
-    const saveQuery = existingClosure?.id
-      ? supabase.from("branch_daily_closures").update(payload).eq("id", existingClosure.id)
-      : supabase.from("branch_daily_closures").insert(payload);
-    const { error } = await saveQuery;
-    if (error) {
-      window.alert(`Failed to save closure in Supabase: ${error.message}`);
-      return;
-    }
-    addCashierClosure({
-      branch: BRANCH,
-      cashier: userName,
-      openingCash: Number(form.openingCash || 0),
-      closingCash: Number(form.closingCash || 0),
-      expectedCash,
-      difference: diff,
-      cash: props.cashSales,
-      upi: props.upiSales,
-      card: props.cardSales,
-      returns: props.returnAmount,
-      discounts: 0,
-      billsCount: props.billsCount,
-      duplicateBills: 0,
-      creditSales: props.creditBillAmount,
-      creditCollections: props.clearedCredit,
-      notes: form.remarks,
-    });
-    setForm({ openingCash: "0", closingCash: "", remarks: "" });
   };
-  const rows = cashierClosures.filter((c) => c.branch === BRANCH);
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
-        <Kpi
-          label="Gross Sales"
-          value={money(props.grossSales)}
-          icon={<Receipt className="size-5" />}
-          tone="amber"
-        />
-        <Kpi
-          label="Return Amount"
-          value={money(props.returnAmount)}
-          icon={<RotateCcw className="size-5" />}
-          tone="red"
-        />
-        <Kpi
-          label="Net Sales"
-          value={money(props.netSales)}
-          icon={<IndianRupee className="size-5" />}
-          tone="green"
-        />
-        <Kpi
-          label="Pending Credit"
-          value={money(props.pendingCredit)}
-          icon={<WalletCards className="size-5" />}
-          tone="purple"
-        />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Closed Counters" value={closedCounters} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Open Counters" value={openCounters} icon={<Activity className="size-5" />} tone={openCounters ? "amber" : "green"} />
+        <Kpi label="Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="blue" />
+        <Kpi label="Cash Difference" value={money(totalDifference)} icon={<AlertTriangle className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
       </div>
+
+      <div className="rounded-2xl bg-blue-50 p-3 text-sm font-bold text-blue-900 ring-1 ring-blue-100">
+        Daily closure is consolidated from each cashier's individual counter session. SNB Admin cannot overwrite a cashier's closure, which preserves accountability.
+      </div>
+
       <Panel
-        title="Daily Closure Summary"
+        title="Consolidated Daily Closure"
         icon={<CalendarClock className="size-4" />}
-        action={
-          <div className="flex gap-2">
-            <button
-              onClick={() =>
-                printDailyClosure(
-                  {
-                    openingCash: Number(form.openingCash || 0),
-                    closingCash: Number(form.closingCash || 0),
-                    expectedCash,
-                    diff,
-                    remarks: form.remarks,
-                    userName,
-                    ...props,
-                  },
-                  "SNB",
-                )
-              }
-              className={cn(
-                btnCls,
-                "bg-white text-slate-700 ring-1 ring-slate-200",
-              )}
-            >
-              <Printer className="size-4" />
-              Print
-            </button>
-            <button
-              onClick={() =>
-                csvDownload("SNB_Daily_Closure.csv", [
-                  {
-                    OpeningBalance: form.openingCash,
-                    GrossSales: props.grossSales,
-                    ReturnAmount: props.returnAmount,
-                    NetSales: props.netSales,
-                    CashSales: props.cashSales,
-                    UPISales: props.upiSales,
-                    CardSales: props.cardSales,
-                    CreditSales: props.creditBillAmount,
-                    CreditCollections: props.clearedCredit,
-                    AdvanceCollected: props.advanceCollected,
-                    AdvanceBalanceCollected: props.advanceBalanceCollected,
-                    PurchasePayments: props.purchasePaid,
-                    Expenses: props.expenseAmount,
-                    BankDeposits: props.depositAmount,
-                    ClosingBalance: form.closingCash,
-                    Difference: diff,
-                    Remarks: form.remarks,
-                  },
-                ])
-              }
-              className={cn(btnCls, "bg-slate-950 text-white")}
-            >
-              <Download className="size-4" />
-              Export
-            </button>
-          </div>
-        }
+        action={<div className="flex flex-wrap gap-2"><button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}><RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={printClosureReport}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure.xls", dailyRows.map((row) => ({ Date: row.business_date, ClosedCounters: asNumber(row.closed_counter_count), OpenCounters: asNumber(row.open_counter_count), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference) })))}><Download className="size-4" /> Excel</button></div>}
       >
-        <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
-          <div className="space-y-3">
-            <Field label="Opening Balance">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.openingCash}
-                onChange={(e) =>
-                  setForm({ ...form, openingCash: e.target.value })
-                }
-              />
-            </Field>
-            <Field label="Closing Cash Counted">
-              <input
-                type="number"
-                className={inputCls}
-                value={form.closingCash}
-                onChange={(e) =>
-                  setForm({ ...form, closingCash: e.target.value })
-                }
-              />
-            </Field>
-            <Field label="Remarks">
-              <textarea
-                className={inputCls}
-                value={form.remarks}
-                onChange={(e) => setForm({ ...form, remarks: e.target.value })}
-              />
-            </Field>
-            <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
-              <p className="text-xs font-black uppercase text-slate-500">
-                Expected Cash
-              </p>
-              <p className="text-2xl font-black">{money(expectedCash)}</p>
-              <p
-                className={cn(
-                  "text-sm font-black",
-                  diff === 0 ? "text-emerald-700" : "text-red-600",
-                )}
-              >
-                Difference {money(diff)}
-              </p>
-            </div>
-            <button
-              className={cn(btnCls, "w-full bg-slate-950 text-white")}
-              onClick={save}
-            >
-              Save Closure
-            </button>
-          </div>
-          <DataTable
-            headers={["Field", "Amount"]}
-            rows={[
-              ["Opening balance", money(Number(form.openingCash || 0))],
-              ["Total gross sales", money(props.grossSales)],
-              ["Return amount", money(props.returnAmount)],
-              ["Net sales", money(props.netSales)],
-              ["Cash sales", money(props.cashSales)],
-              ["UPI sales", money(props.upiSales)],
-              ["Card sales", money(props.cardSales)],
-              ["Credit sales", money(props.creditBillAmount)],
-              ["Credit collections", money(props.clearedCredit)],
-              ["Advance collected", money(props.advanceCollected)],
-              ["Advance balance collected", money(props.advanceBalanceCollected)],
-              ["Purchase payments", money(props.purchasePaid)],
-              ["Expenses", money(props.expenseAmount)],
-              ["Bank deposits", money(props.depositAmount)],
-              ["Pending credit", money(props.pendingCredit)],
-              ["Closing balance", money(Number(form.closingCash || 0))],
-              ["Difference", money(diff)],
-            ]}
-          />
-        </div>
+        <DataTable headers={["Date", "Closed Counters", "Open Counters", "Gross", "Discounts", "Returns", "Net", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Expected Cash", "Counted Cash", "Difference"]} rows={dailyRows.map((row) => [row.business_date, asNumber(row.closed_counter_count), asNumber(row.open_counter_count), money(asNumber(row.gross_sales)), money(asNumber(row.discounts)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.cash_sales)), money(asNumber(row.upi_sales)), money(asNumber(row.card_sales)), money(asNumber(row.credit_sales)), money(asNumber(row.credit_collected)), money(asNumber(row.advance_collected)), money(asNumber(row.expected_cash)), money(asNumber(row.counted_cash)), <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{money(asNumber(row.difference))}</span>])} empty="No consolidated daily closure data found for the selected date range." />
       </Panel>
-      <Panel title="Closure History" icon={<History className="size-4" />}>
-        <DataTable
-          headers={[
-            "Date",
-            "Cashier",
-            "Opening",
-            "Expected",
-            "Closing",
-            "Difference",
-            "Bills",
-            "Cash",
-            "UPI",
-            "Card",
-            "Returns",
-            "Remarks",
-          ]}
-          rows={rows.map((c) => [
-            fmtDateTime(c.createdAt),
-            c.cashier,
-            money(c.openingCash),
-            money(c.expectedCash),
-            money(c.closingCash),
-            money(c.difference),
-            c.billsCount,
-            money(c.cash),
-            money(c.upi),
-            money(c.card),
-            money(c.returns),
-            c.notes,
-          ])}
-          empty="No daily closures saved."
-        />
+
+      <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: row.cashier_username || "Legacy / Unattributed", Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
+        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
       </Panel>
     </div>
   );
@@ -4424,246 +5071,265 @@ function DailyClosureTab({ userName, ...props }: any) {
 
 function ReportsTab(props: any) {
   const { creditSales } = useBranchStore();
-  const { purchases, purchasePayments, expenses, bankDeposits, wasteLogs, quotations, cashierClosures } =
-    useBranchOpsStore();
-  const dueCredits = (creditSales[BRANCH] || []).filter((c) => c.status !== "settled");
-  const branchPurchases = purchases.filter((p) => p.branch === BRANCH);
-  const supplierDue = branchPurchases.reduce((sum, p) => sum + Math.max(0, p.total - p.paidAmount), 0);
-  const purchaseTotal = branchPurchases.reduce((sum, p) => sum + p.total, 0);
-  const branchExpenses = expenses.filter((e) => e.branch === BRANCH);
-  const branchDeposits = bankDeposits.filter((d) => d.branch === BRANCH);
-  const branchWaste = wasteLogs.filter((w) => w.branch === BRANCH);
-  const branchQuotes = quotations.filter((q) => q.branch === BRANCH);
-  const branchClosures = cashierClosures.filter((c) => c.branch === BRANCH);
-  const collectionTotal = props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
-  const rupeeRows = [
-    ["Regular bill sales", props.salesBreakdown.billSales, "Bill value before advances and credit recovery"],
-    ["Cash sales collected", props.cashSales, "Cash received from bill payments"],
-    ["UPI sales collected", props.upiSales, "UPI received from bill payments"],
-    ["Card sales collected", props.cardSales, "Card received from bill payments"],
-    ["Advance collected", props.salesBreakdown.advanceCollected, "New advance money collected"],
-    ["Advance balance collected", props.salesBreakdown.advanceBalanceCollected, "Pending advance balance collected"],
-    ["Credit billed", props.salesBreakdown.creditBilled, "Credit value created"],
-    ["Credit collected", props.salesBreakdown.creditCollected, "Old credit recovered"],
-    ["Returns deducted", -props.salesBreakdown.returns, "Refund / return impact"],
-    ["Expenses deducted", -props.salesBreakdown.expenses, "Admin expenses impact"],
-    ["Total collections", collectionTotal, "Cash + UPI + card + credit recovery + advances"],
-    ["Net sales shown", props.salesBreakdown.netSales, "Sales after returns"],
-  ];
+  const { expenses, bankDeposits, wasteLogs, quotations } = useBranchOpsStore();
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
+  const dueCredits = (creditSales[BRANCH] || []).filter((credit) => credit.status !== "settled");
+  const branchExpenses = expenses.filter((entry) => entry.branch === BRANCH && inRange(entry.expenseDate || entry.createdAt, props.fromDate, props.toDate));
+  const branchDeposits = bankDeposits.filter((entry) => entry.branch === BRANCH && inRange(entry.createdAt, props.fromDate, props.toDate));
+  const branchWaste = wasteLogs.filter((entry) => entry.branch === BRANCH && inRange(entry.createdAt, props.fromDate, props.toDate));
+  const branchQuotes = quotations.filter((entry) => entry.branch === BRANCH && inRange(entry.createdAt, props.fromDate, props.toDate));
+
+  const databaseGross = db.dailySummary.reduce((sum, row) => sum + asNumber(row.gross_sales), 0);
+  const databaseNet = db.dailySummary.reduce((sum, row) => sum + asNumber(row.net_sales), 0);
+  const databaseReturns = db.dailySummary.reduce((sum, row) => sum + asNumber(row.returns), 0);
+  const databaseDiscounts = db.dailySummary.reduce((sum, row) => sum + asNumber(row.discounts), 0);
+  const grossSales = db.dailySummary.length ? databaseGross : props.grossSales;
+  const netSales = db.dailySummary.length ? databaseNet : props.netSales;
+  const returnAmount = db.dailySummary.length ? databaseReturns : props.returnAmount;
+  const discountAmount = db.dailySummary.length ? databaseDiscounts : db.discountBills.reduce((sum, row) => sum + asNumber(row.discount), 0);
+  const supplierDue = db.supplierOutstanding.reduce((sum, row) => sum + asNumber(row.balance_amount), 0);
+  const purchaseTotal = db.supplierOutstanding.reduce((sum, row) => sum + asNumber(row.total_amount), 0);
+  const purchaseReturnValue = db.purchaseReturns.reduce((sum, row) => sum + asNumber(row.total_amount), 0);
+  const supplierPaymentTotal = db.supplierPayments.reduce((sum, row) => sum + asNumber(row.amount), 0);
+  const collectionTotal = db.dailySummary.length
+    ? db.dailySummary.reduce((sum, row) => sum + asNumber(row.cash_sales) + asNumber(row.upi_sales) + asNumber(row.card_sales) + asNumber(row.credit_collected) + asNumber(row.advance_collected), 0)
+    : props.cashSales + props.upiSales + props.cardSales + props.clearedCredit + props.advanceCollected + props.advanceBalanceCollected;
+
+  const refreshButton = (
+    <button disabled={db.loading} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")} onClick={() => void db.refresh()}>
+      <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh Database
+    </button>
+  );
+  const downloadBranchWorkbook = () => downloadExcelWorkbook("SNB_Branch_Report_Workbook.xls", [
+    {
+      name: "Summary",
+      rows: [{
+        FromDate: props.fromDate,
+        ToDate: props.toDate,
+        GeneratedBy: props.userName,
+        GrossSales: grossSales,
+        Discounts: discountAmount,
+        SalesReturns: returnAmount,
+        NetSales: netSales,
+        TotalCollections: collectionTotal,
+        PendingCredit: props.pendingCredit,
+        PurchaseInvoiceValue: purchaseTotal,
+        PurchaseReturns: purchaseReturnValue,
+        SupplierPayments: supplierPaymentTotal,
+        SupplierDue: supplierDue,
+        Expenses: props.expenseAmount,
+        BankDeposits: props.depositAmount,
+      }],
+    },
+    {
+      name: "Item Sales",
+      rows: db.itemSales.map((row) => ({
+        Date: row.business_date,
+        Item: row.item_name,
+        Unit: row.unit || "",
+        Quantity: asNumber(row.quantity_sold),
+        Gross: asNumber(row.gross_sales),
+        Discount: asNumber(row.item_discount),
+        Tax: asNumber(row.tax),
+        Net: asNumber(row.net_item_sales),
+        Bills: asNumber(row.bill_count),
+      })),
+    },
+    {
+      name: "Category Sales",
+      rows: db.categorySales.map((row) => ({
+        Date: row.business_date,
+        Category: row.category,
+        Quantity: asNumber(row.quantity_sold),
+        Gross: asNumber(row.gross_sales),
+        Discount: asNumber(row.item_discount),
+        Net: asNumber(row.net_item_sales),
+        Bills: asNumber(row.bill_count),
+      })),
+    },
+    {
+      name: "Discounts",
+      rows: db.discountBills.map((row) => ({
+        Bill: row.bill_no,
+        DateTime: row.bill_datetime,
+        Cashier: row.cashier || "",
+        Salesperson: row.salesperson || "",
+        Customer: row.customer_name || "",
+        Subtotal: asNumber(row.subtotal),
+        Discount: asNumber(row.discount),
+        DiscountPercent: asNumber(row.effective_discount_percent),
+        Tax: asNumber(row.tax),
+        RoundOff: asNumber(row.round_off),
+        Total: asNumber(row.total),
+      })),
+    },
+    {
+      name: "Daily Closure",
+      rows: db.dailySummary.map((row) => ({
+        Date: row.business_date,
+        ClosedCounters: asNumber(row.closed_counter_count),
+        OpenCounters: asNumber(row.open_counter_count),
+        Gross: asNumber(row.gross_sales),
+        Discounts: asNumber(row.discounts),
+        Returns: asNumber(row.returns),
+        Net: asNumber(row.net_sales),
+        Cash: asNumber(row.cash_sales),
+        UPI: asNumber(row.upi_sales),
+        Card: asNumber(row.card_sales),
+        CreditSales: asNumber(row.credit_sales),
+        CreditCollected: asNumber(row.credit_collected),
+        Advance: asNumber(row.advance_collected),
+        ExpectedCash: asNumber(row.expected_cash),
+        CountedCash: asNumber(row.counted_cash),
+        Difference: asNumber(row.difference),
+      })),
+    },
+    {
+      name: "Supplier Outstanding",
+      rows: db.supplierOutstanding.map((row) => ({
+        Supplier: row.supplier_name,
+        Invoice: row.invoice_number,
+        InvoiceDate: row.invoice_date || "",
+        Total: asNumber(row.total_amount),
+        Returned: asNumber(row.return_amount),
+        Paid: asNumber(row.paid_amount),
+        Balance: asNumber(row.balance_amount),
+        PaymentMethod: row.payment_method || "",
+        SyncStatus: row.sync_status || "",
+      })),
+    },
+    {
+      name: "Supplier Payments",
+      rows: db.supplierPayments.map((row) => ({
+        Date: row.payment_date,
+        Supplier: row.supplier_name,
+        Amount: asNumber(row.amount),
+        Mode: row.payment_method,
+        Reference: row.reference_no || "",
+        Batch: row.payment_batch_id || "",
+        PaidBy: row.paid_by || "",
+      })),
+    },
+    {
+      name: "Purchase Returns",
+      rows: db.purchaseReturns.map((row) => ({
+        Return: row.return_no,
+        Date: row.return_date,
+        Supplier: row.supplier_name,
+        Invoice: row.invoice_number,
+        Reason: row.reason_type,
+        Settlement: row.settlement_type,
+        Value: asNumber(row.total_amount),
+        EnteredBy: row.entered_by,
+      })),
+    },
+    {
+      name: "Credit",
+      rows: dueCredits.map((credit) => ({
+        Customer: credit.customerName,
+        Bill: credit.billNo,
+        Total: credit.subtotal,
+        Paid: credit.amountPaid,
+        Balance: credit.creditAmount,
+        DueDate: credit.dueDate || "",
+        Status: credit.status,
+      })),
+    },
+    {
+      name: "Expenses Deposits",
+      rows: [
+        ...branchExpenses.map((entry) => ({ Type: "Expense", Date: entry.expenseDate, Details: `${entry.category} - ${entry.description}`, Amount: entry.amount, ModeOrBank: entry.mode.toUpperCase() })),
+        ...branchDeposits.map((entry) => ({ Type: "Bank Deposit", Date: entry.depositDate, Details: entry.remarks || entry.transactionRef || entry.slipNo || "", Amount: entry.amount, ModeOrBank: entry.bankAccount })),
+      ],
+    },
+    {
+      name: "Waste Quotations",
+      rows: [
+        ...branchWaste.map((entry) => ({ Type: "Waste", Date: entry.createdAt, Reference: entry.logType, Details: `${entry.itemName} - ${entry.reason}`, ValueOrQty: `${entry.quantity} ${entry.unit}`, Status: entry.verifiedBy })),
+        ...branchQuotes.map((entry) => ({ Type: "Quotation", Date: entry.createdAt, Reference: entry.quoteNo, Details: entry.customerName, ValueOrQty: entry.total, Status: entry.status })),
+      ],
+    },
+  ]);
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
-        <Kpi
-          label="Total Collections"
-          value={money(collectionTotal)}
-          icon={<IndianRupee className="size-5" />}
-          tone="green"
-        />
-        <Kpi
-          label="Pending Credit"
-          value={money(props.pendingCredit)}
-          icon={<WalletCards className="size-5" />}
-          tone="red"
-        />
-        <Kpi
-          label="Supplier Due"
-          value={money(supplierDue)}
-          icon={<Truck className="size-5" />}
-          tone="amber"
-        />
-        <Kpi
-          label="Expenses"
-          value={money(props.expenseAmount)}
-          icon={<Banknote className="size-5" />}
-          tone="red"
-        />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Net Sales" value={money(netSales)} sub={`${props.fromDate} to ${props.toDate}`} icon={<IndianRupee className="size-5" />} tone="green" />
+        <Kpi label="Returns + Discounts" value={money(returnAmount + discountAmount)} icon={<RotateCcw className="size-5" />} tone="red" />
+        <Kpi label="Supplier Due" value={money(supplierDue)} icon={<Truck className="size-5" />} tone="amber" />
+        <Kpi label="Purchase Returns" value={money(purchaseReturnValue)} icon={<Package className="size-5" />} tone="purple" />
       </div>
+
+      {db.error && <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">Some database report sources could not load. Available reports are still shown. {db.error}</div>}
+
       <Panel
-        title="Complete Branch Reports"
+        title="SNB Branch Report Summary"
         icon={<FileSpreadsheet className="size-4" />}
-        action={
-          <div className="flex gap-2">
-            <button
-              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
-              onClick={() => printOverview(props, "SNB")}
-            >
-              <Printer className="size-4" />
-              Print Summary
-            </button>
-            <button
-              className={cn(btnCls, "bg-slate-950 text-white")}
-              onClick={() =>
-                csvDownload("SNB_Branch_Report.csv", [
-                  {
-                    BillSales: props.salesBreakdown.billSales,
-                    GrossSales: props.grossSales,
-                    ReturnAmount: props.returnAmount,
-                    NetSales: props.netSales,
-                    CashSales: props.cashSales,
-                    UPISales: props.upiSales,
-                    CardSales: props.cardSales,
-                    CreditSales: props.creditBillAmount,
-                    CreditCollections: props.clearedCredit,
-                    AdvanceCollected: props.advanceCollected,
-                    AdvanceBalanceCollected: props.advanceBalanceCollected,
-                    TotalCollections: collectionTotal,
-                    PurchaseTotal: purchaseTotal,
-                    SupplierDue: supplierDue,
-                    SupplierPayments: props.purchasePaid,
-                    Expenses: props.expenseAmount,
-                    BankDeposits: props.depositAmount,
-                    PendingCredit: props.pendingCredit,
-                  },
-                ])
-              }
-            >
-              <Download className="size-4" />
-              Export Summary
-            </button>
-          </div>
-        }
+        action={<div className="flex flex-wrap gap-2">{refreshButton}<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => printOverview({ ...props, grossSales, netSales, returnAmount }, "SNB")}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={downloadBranchWorkbook}><Download className="size-4" /> Excel Workbook</button></div>}
       >
-        <div className="grid gap-4 xl:grid-cols-2">
-          <div className="xl:col-span-2">
-            <div className="mb-3 rounded-[2rem] border border-orange-100 bg-gradient-to-br from-orange-50 via-white to-emerald-50 p-4">
-              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-600">Rupee Story</p>
-                  <h3 className="font-serif text-2xl font-black text-slate-950">Where the money came from</h3>
-                </div>
-                <p className="text-xs font-bold text-slate-500">Every rupee is split by source before totals.</p>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                {rupeeRows.map(([label, value, note]) => (
-                  <div key={String(label)} className={cn("rounded-2xl border bg-white p-3 shadow-sm", Number(value) < 0 ? "border-red-100" : "border-slate-100")}>
-                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
-                    <p className={cn("mt-1 text-xl font-black tabular-nums", Number(value) < 0 ? "text-red-600" : "text-slate-950")}>{money(Number(value))}</p>
-                    <p className="mt-1 text-[11px] font-bold text-slate-500">{note}</p>
-                  </div>
-                ))}
-              </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            ["Gross sales", grossSales, "Before discounts and returns"],
+            ["Discounts", -discountAmount, "Bill and item discounts"],
+            ["Sales returns", -returnAmount, "Customer return impact"],
+            ["Net sales", netSales, "Final sales value"],
+            ["Collections", collectionTotal, "Cash, UPI, card, credit and advance"],
+            ["Purchase invoices", purchaseTotal, "Supplier invoice value"],
+            ["Purchase returns", -purchaseReturnValue, "Damaged/returned purchase value"],
+            ["Supplier due", supplierDue, "Current payable after payments and returns"],
+          ].map(([label, value, note]) => (
+            <div key={String(label)} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
+              <p className={cn("mt-1 text-xl font-black tabular-nums", Number(value) < 0 ? "text-red-600" : "text-slate-950")}>{money(Number(value))}</p>
+              <p className="mt-1 text-[11px] font-bold text-slate-500">{note}</p>
             </div>
-            <DataTable
-              headers={["Source", "Amount", "Meaning"]}
-              rows={rupeeRows.map(([label, value, note]) => [label, money(Number(value)), note])}
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Item-wise Sales</h3>
-            <DataTable
-              headers={["Item", "Qty", "Gross", "Returns", "Net"]}
-              rows={props.topItems.map((i: any) => [
-                i.name,
-                i.qty,
-                money(i.gross),
-                money(i.returns),
-                money(i.net),
-              ])}
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Due Payment Report</h3>
-            <DataTable
-              headers={[
-                "Customer",
-                "Bill",
-                "Total",
-                "Paid",
-                "Balance",
-                "Due Date",
-                "Status",
-              ]}
-              rows={dueCredits.map((c) => [
-                c.customerName,
-                c.billNo,
-                money(c.subtotal),
-                money(c.amountPaid),
-                money(c.creditAmount),
-                c.dueDate,
-                c.status,
-              ])}
-              empty="No due credit records."
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Supplier Purchase Position</h3>
-            <DataTable
-              headers={["Invoice", "Supplier", "Total", "Paid", "Due", "Status"]}
-              rows={branchPurchases.map((p) => {
-                const due = Math.max(0, p.total - p.paidAmount);
-                return [
-                  p.invoiceNo,
-                  p.supplier,
-                  money(p.total),
-                  money(p.paidAmount),
-                  money(due),
-                  due <= 0 ? "Cleared" : p.paidAmount > 0 ? "Partial" : "Pending",
-                ];
-              })}
-              empty="No purchase invoices."
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Supplier Payments</h3>
-            <DataTable
-              headers={["Date", "Supplier", "Amount", "Mode", "Reference"]}
-              rows={purchasePayments.filter((p) => p.branch === BRANCH).map((p) => [
-                fmtDateTime(p.createdAt),
-                p.supplier,
-                money(p.amount),
-                p.mode.toUpperCase(),
-                p.reference || "-",
-              ])}
-              empty="No supplier payments."
-            />
-          </div>
-          <div className="xl:col-span-2">
-            <h3 className="mb-2 font-black">Expenses And Bank Deposits</h3>
-            <DataTable
-              headers={["Type", "Date", "Details", "Amount", "Mode / Bank"]}
-              rows={[
-                ...branchExpenses.map((e) => ["Expense", fmtDate(e.expenseDate), `${e.category} - ${e.description}`, money(e.amount), e.mode.toUpperCase()]),
-                ...branchDeposits.map((d) => ["Bank Deposit", fmtDate(d.depositDate), d.remarks || d.transactionRef || d.slipNo || "-", money(d.amount), d.bankAccount]),
-              ]}
-              empty="No expenses or deposits."
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Waste Logs</h3>
-            <DataTable
-              headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By"]}
-              rows={branchWaste.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy])}
-              empty="No waste logs."
-            />
-          </div>
-          <div>
-            <h3 className="mb-2 font-black">Quotations</h3>
-            <DataTable
-              headers={["Quote", "Customer", "Mobile", "Items", "Total", "Status"]}
-              rows={branchQuotes.map((q) => [q.quoteNo, q.customerName, q.mobile || "-", q.items.length, money(q.total), q.status])}
-              empty="No quotations."
-            />
-          </div>
-          <div className="xl:col-span-2">
-            <h3 className="mb-2 font-black">Cashier Closure Reconciliation</h3>
-            <DataTable
-              headers={["Date", "Cashier", "Expected", "Closing", "Difference", "Cash", "UPI", "Card", "Credit Collections"]}
-              rows={branchClosures.map((c) => [
-                fmtDateTime(c.createdAt),
-                c.cashier,
-                money(c.expectedCash),
-                money(c.closingCash),
-                money(c.difference),
-                money(c.cash),
-                money(c.upi),
-                money(c.card),
-                money(c.creditCollections ?? 0),
-              ])}
-              empty="No cashier closures."
-            />
-          </div>
+          ))}
         </div>
       </Panel>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Item-wise Sales" icon={<Package className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Item_Wise_Sales.xls", db.itemSales.map((row) => ({ Date: row.business_date, Item: row.item_name, Unit: row.unit || "", Quantity: asNumber(row.quantity_sold), Gross: asNumber(row.gross_sales), Discount: asNumber(row.item_discount), Tax: asNumber(row.tax), Net: asNumber(row.net_item_sales), Bills: asNumber(row.bill_count) })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Date", "Item", "Unit", "Qty", "Gross", "Discount", "Tax", "Net", "Bills"]} rows={db.itemSales.map((row) => [row.business_date, row.item_name, row.unit || "-", asNumber(row.quantity_sold), money(asNumber(row.gross_sales)), money(asNumber(row.item_discount)), money(asNumber(row.tax)), money(asNumber(row.net_item_sales)), asNumber(row.bill_count)])} empty="No item-wise database sales for this date range." />
+        </Panel>
+
+        <Panel title="Category-wise Sales" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Category_Wise_Sales.xls", db.categorySales.map((row) => ({ Date: row.business_date, Category: row.category, Quantity: asNumber(row.quantity_sold), Gross: asNumber(row.gross_sales), Discount: asNumber(row.item_discount), Net: asNumber(row.net_item_sales), Bills: asNumber(row.bill_count) })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Date", "Category", "Qty", "Gross", "Discount", "Net", "Bills"]} rows={db.categorySales.map((row) => [row.business_date, row.category, asNumber(row.quantity_sold), money(asNumber(row.gross_sales)), money(asNumber(row.item_discount)), money(asNumber(row.net_item_sales)), asNumber(row.bill_count)])} empty="No category-wise database sales for this date range." />
+        </Panel>
+
+        <Panel title="Discount Report" icon={<Receipt className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Discount_Report.xls", db.discountBills.map((row) => ({ Bill: row.bill_no, DateTime: row.bill_datetime, Cashier: row.cashier || "", Salesperson: row.salesperson || "", Customer: row.customer_name || "", Subtotal: asNumber(row.subtotal), Discount: asNumber(row.discount), DiscountPercent: asNumber(row.effective_discount_percent), Tax: asNumber(row.tax), RoundOff: asNumber(row.round_off), Total: asNumber(row.total) })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Bill", "Date", "Cashier", "Salesperson", "Customer", "Subtotal", "Discount", "%", "Tax", "Total"]} rows={db.discountBills.map((row) => [row.bill_no, fmtDateTime(row.bill_datetime), row.cashier || "Legacy / Unattributed", row.salesperson || "-", row.customer_name || "Walk-in", money(asNumber(row.subtotal)), money(asNumber(row.discount)), `${asNumber(row.effective_discount_percent).toFixed(2)}%`, money(asNumber(row.tax)), money(asNumber(row.total))])} empty="No discounted bills for this date range." />
+        </Panel>
+
+        <Panel title="Daily Counter Summary" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Counter_Summary.xls", db.dailySummary.map((row) => ({ Date: row.business_date, ClosedCounters: asNumber(row.closed_counter_count), OpenCounters: asNumber(row.open_counter_count), Gross: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), Net: asNumber(row.net_sales), Cash: asNumber(row.cash_sales), UPI: asNumber(row.upi_sales), Card: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), Advance: asNumber(row.advance_collected), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference) })))}><Download className="size-4" /> Excel</button>}>
+          <DataTable headers={["Date", "Closed", "Open", "Gross", "Discounts", "Returns", "Net", "Cash", "UPI", "Card", "Credit", "Credit Collected", "Advance", "Expected", "Counted", "Difference"]} rows={db.dailySummary.map((row) => [row.business_date, asNumber(row.closed_counter_count), asNumber(row.open_counter_count), money(asNumber(row.gross_sales)), money(asNumber(row.discounts)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.cash_sales)), money(asNumber(row.upi_sales)), money(asNumber(row.card_sales)), money(asNumber(row.credit_sales)), money(asNumber(row.credit_collected)), money(asNumber(row.advance_collected)), money(asNumber(row.expected_cash)), money(asNumber(row.counted_cash)), money(asNumber(row.difference))])} empty="No daily counter summaries for this date range." />
+        </Panel>
+      </div>
+
+      <Panel title="Supplier Outstanding Position" icon={<Truck className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Supplier_Outstanding.xls", db.supplierOutstanding.map((row) => ({ Supplier: row.supplier_name, Invoice: row.invoice_number, InvoiceDate: row.invoice_date || "", Total: asNumber(row.total_amount), Returned: asNumber(row.return_amount), Paid: asNumber(row.paid_amount), Balance: asNumber(row.balance_amount), PaymentMethod: row.payment_method || "", SyncStatus: row.sync_status || "" })))}><Download className="size-4" /> Excel</button>}>
+        <DataTable headers={["Supplier", "Invoice", "Date", "Total", "Returned", "Paid", "Balance", "Payment", "Stock Sync"]} rows={db.supplierOutstanding.map((row) => [row.supplier_name, row.invoice_number, row.invoice_date || "-", money(asNumber(row.total_amount)), money(asNumber(row.return_amount)), money(asNumber(row.paid_amount)), <span key="balance" className="font-black text-red-600">{money(asNumber(row.balance_amount))}</span>, row.payment_method || "-", row.sync_status || "-"])} empty="No supplier invoices found." />
+      </Panel>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Supplier Payments" icon={<WalletCards className="size-4" />}>
+          <DataTable headers={["Date", "Supplier", "Amount", "Mode", "Reference", "Batch", "Paid By"]} rows={db.supplierPayments.map((row) => [fmtDateTime(row.payment_date), row.supplier_name, money(asNumber(row.amount)), row.payment_method.toUpperCase(), row.reference_no || "-", row.payment_batch_id || "-", row.paid_by || "-"])} empty="No supplier payments for this date range." />
+        </Panel>
+        <Panel title="Purchase Returns" icon={<RotateCcw className="size-4" />}>
+          <DataTable headers={["Return", "Date", "Supplier", "Invoice", "Reason", "Settlement", "Value", "Entered By"]} rows={db.purchaseReturns.map((row) => [row.return_no, row.return_date, row.supplier_name, row.invoice_number, row.reason_type, row.settlement_type, money(asNumber(row.total_amount)), row.entered_by])} empty="No purchase returns for this date range." />
+        </Panel>
+      </div>
+
+      <Panel title="Due Customer Credits" icon={<WalletCards className="size-4" />}>
+        <DataTable headers={["Customer", "Bill", "Total", "Paid", "Balance", "Due Date", "Status"]} rows={dueCredits.map((credit) => [credit.customerName, credit.billNo, money(credit.subtotal), money(credit.amountPaid), money(credit.creditAmount), credit.dueDate || "-", credit.status])} empty="No due credit records." />
+      </Panel>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Expenses & Bank Deposits" icon={<Landmark className="size-4" />}>
+          <DataTable headers={["Type", "Date", "Details", "Amount", "Mode / Bank"]} rows={[...branchExpenses.map((entry) => ["Expense", fmtDate(entry.expenseDate), `${entry.category} - ${entry.description}`, money(entry.amount), entry.mode.toUpperCase()]), ...branchDeposits.map((entry) => ["Bank Deposit", fmtDate(entry.depositDate), entry.remarks || entry.transactionRef || entry.slipNo || "-", money(entry.amount), entry.bankAccount])]} empty="No expenses or deposits for this date range." />
+        </Panel>
+        <Panel title="Waste & Quotations" icon={<Trash2 className="size-4" />}>
+          <DataTable headers={["Type", "Date", "Reference", "Details", "Value / Qty", "Status"]} rows={[...branchWaste.map((entry) => ["Waste", fmtDateTime(entry.createdAt), entry.logType, `${entry.itemName} - ${entry.reason}`, `${entry.quantity} ${entry.unit}`, entry.verifiedBy]), ...branchQuotes.map((entry) => ["Quotation", fmtDateTime(entry.createdAt), entry.quoteNo, entry.customerName, money(entry.total), entry.status])]} empty="No waste or quotations for this date range." />
+        </Panel>
+      </div>
     </div>
   );
 }
@@ -4686,6 +5352,8 @@ function StockAuditTab({
   const [savingId, setSavingId] = useState("");
   const [savingLine, setSavingLine] = useState("");
   const [physicalDrafts, setPhysicalDrafts] = useState<Record<string, string>>({});
+  const [reversingId, setReversingId] = useState("");
+  const [reportReversals, setReportReversals] = useState<Record<string, { by: string; reason: string; at: string }>>({});
   const [sort, setSort] = useState<{ field: "difference" | "value"; direction: "asc" | "desc" }>({
     field: "difference",
     direction: "desc",
@@ -4694,6 +5362,29 @@ function StockAuditTab({
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
   const pending = reports.filter((report) => report.status === "Pending Admin Review");
+
+  useEffect(() => {
+    let mounted = true;
+    void supabase
+      .from("branch_operation_records")
+      .select("record_id, actor, payload, created_at")
+      .eq("branch", BRANCH)
+      .eq("record_type", "stock_count_reversal")
+      .then(({ data }) => {
+        if (!mounted) return;
+        const next: Record<string, { by: string; reason: string; at: string }> = {};
+        ((data || []) as Array<Record<string, unknown>>).forEach((row) => {
+          const payload = (row.payload || {}) as Record<string, unknown>;
+          next[String(row.record_id)] = {
+            by: String(row.actor || payload.reversedBy || "Admin"),
+            reason: String(payload.reason || ""),
+            at: String(payload.reversedAt || row.created_at || ""),
+          };
+        });
+        setReportReversals(next);
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const itemMeta = useMemo(() => {
     const map = new Map<string, { price: number; category: string }>();
@@ -4786,6 +5477,9 @@ function StockAuditTab({
           "Reported Date": fmtDateTime(report.createdAt),
           "Reported By": report.reportedBy,
           "Confirmed By": report.confirmedBy || "",
+          "Reversed By": reportReversals[report.id]?.by || "",
+          "Reversal Reason": reportReversals[report.id]?.reason || "",
+          "Reversed At": reportReversals[report.id]?.at ? fmtDateTime(reportReversals[report.id].at) : "",
           Category: itemMeta.get(normal(line.itemName))?.category ?? "-",
           Item: line.itemName,
           Unit: line.unit || "",
@@ -4854,6 +5548,39 @@ function StockAuditTab({
     }
   };
 
+  const reverseReport = async (reportId: string) => {
+    const report = reports.find((row) => row.id === reportId);
+    if (!report || report.status !== "Confirmed") return;
+    if (reportReversals[report.id]) {
+      setNotice(`${report.reportNo} was already reversed.`);
+      return;
+    }
+    const reason = window.prompt(`Reason for reversing ${report.reportNo}?`)?.trim() || "";
+    if (!reason) {
+      setNotice("A reversal reason is mandatory.");
+      return;
+    }
+    if (!window.confirm(`Reverse ${report.reportNo} and restore the exact pre-confirmation quantities? This is blocked if stock changed after confirmation.`)) return;
+    setReversingId(report.id);
+    try {
+      const { data, error } = await supabase.rpc("reverse_branch_stock_count_report", {
+        p_report_id: report.id,
+        p_reversed_by: userName,
+        p_reason: reason,
+      });
+      if (error) {
+        setNotice(`Stock audit reversal failed: ${error.message}`);
+        return;
+      }
+      const payload = (data || {}) as Record<string, unknown>;
+      setReportReversals((current) => ({ ...current, [report.id]: { by: userName, reason, at: new Date().toISOString() } }));
+      await fetchBranchData(BRANCH);
+      setNotice(`${String(payload.reportNo || report.reportNo)} reversed. Pre-confirmation stock was restored.`);
+    } finally {
+      setReversingId("");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -4893,8 +5620,17 @@ function StockAuditTab({
                 >
                   {savingId === report.id ? "Saving..." : "Confirm & Save"}
                 </button>
+              ) : reportReversals[report.id] ? (
+                <StatusBadge tone="amber">Reversed</StatusBadge>
               ) : (
-                <StatusBadge tone="green">Confirmed</StatusBadge>
+                <button
+                  type="button"
+                  disabled={reversingId === report.id}
+                  onClick={() => void reverseReport(report.id)}
+                  className={cn(btnCls, "bg-red-600 text-white shadow-lg shadow-red-100 disabled:opacity-50")}
+                >
+                  <RotateCcw className="size-4" /> {reversingId === report.id ? "Reversing..." : "Reverse Confirmation"}
+                </button>
               )
             }
           >
@@ -4902,6 +5638,7 @@ function StockAuditTab({
               <span>Reported by: <b className="text-slate-900">{report.reportedBy}</b></span>
               <span>Date: <b className="text-slate-900">{fmtDateTime(report.createdAt)}</b></span>
               <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
+              {reportReversals[report.id] && <span className="sm:col-span-3 rounded-xl bg-red-50 p-2 text-red-700">Reversed by <b>{reportReversals[report.id].by}</b> · {reportReversals[report.id].at ? fmtDateTime(reportReversals[report.id].at) : ""} · {reportReversals[report.id].reason}</span>}
             </div>
             <div className="overflow-x-auto rounded-3xl border border-slate-200">
               <table className="w-full min-w-[1100px] text-sm">
@@ -5246,36 +5983,112 @@ function DataTable({
   empty?: string;
 }) {
   const safeRows = rows || [];
+  const [query, setQuery] = useState("");
+  const [sortIndex, setSortIndex] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(1);
+  const pageSize = safeRows.length > 150 ? 50 : 25;
+
+  const cellText = (node: ReactNode): string => {
+    if (node == null || typeof node === "boolean") return "";
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(cellText).join(" ");
+    if (isValidElement(node)) return cellText((node.props as { children?: ReactNode }).children);
+    return "";
+  };
+
+  const preparedRows = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const filtered = !search
+      ? [...safeRows]
+      : safeRows.filter((row) => row.some((cell) => cellText(cell).toLowerCase().includes(search)));
+    if (sortIndex == null) return filtered;
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return filtered.sort((a, b) => {
+      const left = cellText(a[sortIndex]).trim();
+      const right = cellText(b[sortIndex]).trim();
+      const leftNumber = Number(left.replace(/[₹,%\s,]/g, ""));
+      const rightNumber = Number(right.replace(/[₹,%\s,]/g, ""));
+      const bothNumbers = left !== "" && right !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+      if (bothNumbers) return (leftNumber - rightNumber) * direction;
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) * direction;
+    });
+  }, [query, safeRows, sortDirection, sortIndex]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, sortDirection, sortIndex, safeRows.length]);
+
   if (!safeRows.length)
     return (
       <div className="rounded-3xl bg-slate-50 p-8 text-center text-sm font-black text-slate-400 ring-1 ring-slate-100">
         {empty}
       </div>
     );
+
+  const totalPages = Math.max(1, Math.ceil(preparedRows.length / pageSize));
+  const activePage = Math.min(page, totalPages);
+  const pageRows = preparedRows.slice((activePage - 1) * pageSize, activePage * pageSize);
+  const toggleSort = (index: number) => {
+    if (sortIndex === index) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else {
+      setSortIndex(index);
+      setSortDirection("asc");
+    }
+  };
+
   return (
-    <div className="overflow-x-auto rounded-3xl border border-slate-200">
-      <table className="w-full min-w-[850px] text-sm">
-        <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
-          <tr>
-            {headers.map((h) => (
-              <th key={h} className="px-4 py-3">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 bg-white">
-          {safeRows.map((row, i) => (
-            <tr key={i} className="align-top hover:bg-slate-50/70">
-              {row.map((cell, j) => (
-                <td key={j} className="px-4 py-3 font-semibold text-slate-700">
-                  {cell}
-                </td>
+    <div className="space-y-3">
+      {safeRows.length > 5 && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <label className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              className={cn(inputCls, "pl-10")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Filter this table…"
+            />
+          </label>
+          <p className="text-xs font-black text-slate-500">{preparedRows.length} of {safeRows.length} records</p>
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-3xl border border-slate-200">
+        <table className="w-full min-w-[850px] text-sm">
+          <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
+            <tr>
+              {headers.map((header, index) => (
+                <th key={`${header}-${index}`} className="px-4 py-3">
+                  <button type="button" className="flex w-full items-center gap-1 text-left hover:text-slate-950" onClick={() => toggleSort(index)}>
+                    <span>{header}</span>
+                    <ArrowUpDown className={cn("size-3", sortIndex === index ? "text-orange-500" : "text-slate-300")} />
+                  </button>
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100 bg-white">
+            {pageRows.map((row, rowIndex) => (
+              <tr key={`${activePage}-${rowIndex}`} className="align-top hover:bg-slate-50/70">
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex} className="px-4 py-3 font-semibold text-slate-700">
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {preparedRows.length > pageSize && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+          <p className="text-xs font-black text-slate-500">Page {activePage} of {totalPages}</p>
+          <div className="flex items-center gap-2">
+            <button disabled={activePage <= 1} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="size-4" /> Previous</button>
+            <button disabled={activePage >= totalPages} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Next <ChevronRight className="size-4" /></button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

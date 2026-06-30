@@ -22,6 +22,7 @@ import { useAuthStore } from "@/stores/authStore";
 import { parseWeightGrams, pcsToKg } from "./itemMatcher";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 import { useRecipeStore } from "./recipeStore";
+import { useBranchStore } from "@/branch/branchStore";
 import type { BakeryOrderItem, Branch } from "./types";
 import { BRANCH_COLOR } from "./receiverConstants";
 import { cn } from "@/lib/utils";
@@ -69,6 +70,7 @@ const ALL = "All";
 export default function BranchStockForm({ branch, onSubmitted }: Props) {
   const { submitOrder } = useBakeryStore();
   const { currentUser } = useAuthStore();
+  const { stock, fetchBranchData, subscribeToStock } = useBranchStore();
 
   const { items: branchItems, categories } = useOperationalBranchCatalog(branch);
   const { recipes, loadRecipes, subscribe: subscribeRecipes, getRecipe } = useRecipeStore();
@@ -76,12 +78,17 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     void loadRecipes();
     return subscribeRecipes();
   }, [loadRecipes, subscribeRecipes]);
+  useEffect(() => {
+    void fetchBranchData(branch);
+    return subscribeToStock(branch);
+  }, [branch, fetchBranchData, subscribeToStock]);
   const defaultItem = branchItems[0];
 
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedCat, setSelectedCat] = useState<string>(ALL);
+  const [orderNote, setOrderNote] = useState("");
 
   const [lines, setLines] = useState<LineItem[]>([
     defaultItem
@@ -188,7 +195,8 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
     customLines.every(
       (l) => l.name.trim() !== "" && l.qty !== "" && Number(l.qty) > 0,
     ) &&
-    (filledLines.length > 0 || customLines.length > 0);
+    (filledLines.length > 0 || customLines.length > 0) &&
+    orderNote.trim().length >= 3;
 
   // ── Submit ─────────────────────────────────────────────────────────────────
 
@@ -243,11 +251,12 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
 
     setSubmitError(null);
     try {
-      await submitOrder(items, label, branch);
+      await submitOrder(items, label, branch, orderNote.trim());
       setSuccess(true);
       setLines([defaultItem ? makeLine(branch, defaultItem) : lines[0]]);
       setCustomLines([]);
       setSelectedCat(ALL);
+      setOrderNote("");
       successTimerRef.current = setTimeout(() => {
         setSuccess(false);
         onSubmitted();
@@ -273,14 +282,23 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         : "bg-emerald-600 text-white border-emerald-600";
   const pillInactive = "bg-background text-muted-foreground border-border";
 
+
+  const branchStock = stock[branch] || [];
+  const availableForLine = (line: LineItem) => {
+    const barcode = Number(line.itemId.split("-").at(-1));
+    const row = branchStock.find((item) => item.itemBarcode === barcode)
+      ?? branchStock.find((item) => item.itemName.trim().toLowerCase() === line.itemName.trim().toLowerCase());
+    return row ? Number(row.availableQuantity ?? Math.max(0, row.quantity - row.reservedQuantity)) : 0;
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Branch banner */}
       <div
         className={cn(
-          "mx-4 mt-4 mb-4 rounded-xl border px-3 py-2.5 flex items-center gap-2.5",
+          "mx-3 mt-3 mb-2 shrink-0 rounded-xl border px-3 py-2.5 flex items-center gap-2.5",
           colors.banner,
         )}
       >
@@ -299,7 +317,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         </span>
       </div>
 
-      <div className="px-4 space-y-4">
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto px-3 pb-2">
         {/* VRSNB pcs info banner */}
         {branch === "VRSNB" && (
           <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-blue-50 border border-blue-200">
@@ -418,7 +436,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                                       value={toItemId(branch, item.barcode)}
                                     >
                                       {item.name}
-                                      {item.uom === "Nos" ? " (pcs)" : " /kg"}
+                                      {item.uom === "Nos" ? " (pcs)" : " /kg"} · Stock {Number((branchStock.find((row) => row.itemBarcode === item.barcode)?.availableQuantity ?? branchStock.find((row) => row.itemBarcode === item.barcode)?.quantity ?? 0)).toFixed(item.uom === "Nos" ? 0 : 2)}
                                     </option>
                                   ))}
                                 </optgroup>
@@ -431,7 +449,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                                 value={toItemId(branch, item.barcode)}
                               >
                                 {item.name}
-                                {item.uom === "Nos" ? " (pcs)" : " /kg"}
+                                {item.uom === "Nos" ? " (pcs)" : " /kg"} · Stock {Number((branchStock.find((row) => row.itemBarcode === item.barcode)?.availableQuantity ?? branchStock.find((row) => row.itemBarcode === item.barcode)?.quantity ?? 0)).toFixed(item.uom === "Nos" ? 0 : 2)}
                               </option>
                             ))
                           )}
@@ -470,8 +488,10 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                   </div>
 
                   {/* Status chips */}
-                  {line.qty !== "" && (
-                    <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
+                  <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
+                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold", availableForLine(line) > 0 ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700")}>Live stock: {availableForLine(line).toFixed(line.uom === "Nos" ? 0 : 2)} {line.uom === "Nos" ? "pcs" : "kg"}</span>
+                      {line.qty !== "" && (
+                        <>
                       {line.uom === "Nos" && convertedKg !== null && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
                           <Scale className="size-2.5" />
@@ -498,8 +518,9 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                             : "– No recipe · will be custom"}
                         </span>
                       )}
+                        </>
+                      )}
                     </div>
-                  )}
                 </div>
               );
             })}
@@ -576,8 +597,14 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         </div>
       </div>
 
+      <div className="shrink-0 border-t border-border bg-card px-3 py-2">
+        <label className="text-[10px] font-black uppercase tracking-wide text-muted-foreground">Complete Order Note <span className="text-red-500">*</span></label>
+        <textarea value={orderNote} onChange={(event) => setOrderNote(event.target.value)} rows={2} maxLength={500} placeholder="Mention packing, delivery, item specification or any instruction for this complete order." className="mt-1 w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-primary/30" />
+        <p className="mt-1 text-[10px] font-bold text-muted-foreground">This note is shared with Store, Packing and the live order-status view.</p>
+      </div>
+
       {/* Submit */}
-      <div className="px-4 py-3 border-t border-border mt-2">
+      <div className="shrink-0 border-t border-border px-3 py-2">
         {submitError && (
           <p className="text-xs font-body text-destructive text-center mb-2">
             {submitError}

@@ -70,6 +70,18 @@ const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair
 const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
 const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix_admin_invoice_review_workflow.sql') ?? '';
 const branchPaymentStockCorrectionMigration = read('supabase/migrations/20260628224500_fix_branch_payment_edit_nav_and_mix_combo_stock.sql') ?? '';
+const completeBranchFixMigration = read('supabase/migrations/20260630030000_branch_snb_vrsnb_complete_fixes.sql') ?? '';
+const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
+const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
+const branchStore = read('src/branch/branchStore.ts') ?? '';
+const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
+const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
+const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
+const adminDashboard = read('src/pages/AdminDashboard.tsx') ?? '';
+const ownerDashboard = read('src/pages/OwnerDashboard.tsx') ?? '';
+const snbHistory = read('src/pages/SNBHistoryPage.tsx') ?? '';
+const vrsnbHistory = read('src/pages/VRSNBHistoryPage.tsx') ?? '';
+const globalCss = read('src/index.css') ?? '';
 const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
@@ -116,12 +128,12 @@ check(
 );
 
 check(
-  'Flexible zero-stock billing is restricted to exact SNB Mix & Combo category',
-  branchBilling.includes("category === 'mix & combo' || category === 'mix and combo'")
-    && !branchBilling.includes("category.includes('mix')")
-    && branchPaymentStockCorrectionMigration.includes("in ('mix & combo', 'mix and combo')")
-    && !branchPaymentStockCorrectionMigration.includes("like '%mix%'"),
-  'Namkeens & Mixtures must use normal stock validation; only exact Mix & Combo may bill through zero stock.',
+  'Zero-stock items are disabled for both SNB and VRSNB',
+  branchBilling.includes('const disabled = stock <= 0;')
+    && branchBilling.includes('if (available <= 0)')
+    && !branchBilling.includes('Non-stock billing')
+    && !branchBilling.includes('isSnbFlexibleStockItem'),
+  'Every item must pass normal live-stock validation; no zero-stock category exception is allowed.',
 );
 
 
@@ -249,6 +261,165 @@ check(
   existsSync(join(projectRoot, 'supabase/migrations/20260626173000_hosur_counter_reopen_same_day.sql'))
     && existsSync(join(projectRoot, 'supabase/migrations/20260626213000_vrsnb_customer_booking_tracking.sql')),
   'Critical counter and customer-order migrations must remain committed.',
+);
+
+check(
+  'Billing supports percentage and fixed-value discounts',
+  branchBilling.includes("useState<DiscountMode>('percent')")
+    && branchBilling.includes("discountMode === 'percent'")
+    && branchBilling.includes("discountMode === 'value'")
+    && branchBilling.includes('Discount value cannot exceed the subtotal'),
+  'The branch billing screen must support validated percentage and fixed-value discounts.',
+);
+
+check(
+  'Billing keyboard shortcuts match the requested workflow',
+  [
+    "e.key === 'F3'", "e.key === 'F5'", "e.key === 'F8'", "e.key === 'F9'",
+    "e.key === 'F10'", "e.key === 'F11'", "e.key === 'F12'",
+    "e.ctrlKey && key === 'b'", "e.ctrlKey && key === 'i'", "e.ctrlKey && key === 'c'",
+    "e.ctrlKey && key === 'd'", "e.ctrlKey && key === 'r'", "e.ctrlKey && key === 'p'",
+  ].every((token) => branchBilling.includes(token)),
+  'Hold, payment, print, advance, quotation, return, closure and Ctrl shortcuts must remain wired.',
+);
+
+check(
+  'Payment edit supports full split allocations through a secure RPC',
+  paymentModeEdit.includes("rpc('edit_branch_bill_payment_allocations'")
+    && paymentModeEdit.includes("const editableModes: EditableMode[] = ['cash', 'upi', 'card']")
+    && completeBranchFixMigration.includes('edit_branch_bill_payment_allocations')
+    && completeBranchFixMigration.includes("old_mode in ('cash','upi','card','split')"),
+  'Payment Edit must preserve and replace Cash/UPI/Card split allocations atomically.',
+);
+
+check(
+  'Advance orders reserve stock and recognise revenue only on completion',
+  branchStore.includes("rpc('create_branch_advance_order_reserved'")
+    && branchStore.includes("rpc('complete_branch_advance_order_reserved'")
+    && branchStore.includes('Do not write branch_sales until the reserved order is completed')
+    && completeBranchFixMigration.includes('branch_stock_reservations')
+    && completeBranchFixMigration.includes('record_completed_branch_advance_sale'),
+  'Part-paid advance orders must reserve stock and must not be counted as completed sales before fulfilment.',
+);
+
+check(
+  'Credit returns reduce outstanding before issuing a refund',
+  branchOpsStore.includes("rpc('process_branch_return_credit_safe'")
+    && completeBranchFixMigration.includes('process_branch_return_credit_safe')
+    && completeBranchFixMigration.includes("'creditAdjusted'")
+    && completeBranchFixMigration.includes("'refundAmount'"),
+  'Credit returns must first reduce the unpaid balance and refund only the excess amount.',
+);
+
+check(
+  'Branch operational tabs use compact split workspaces and today-only closure data',
+  branchBusinessModules.includes('branch-split-workspace')
+    && branchBusinessModules.includes("eq('closure_date', date)")
+    && branchBusinessModules.includes("closure_date: todayIso()")
+    && branchBusinessModules.includes("Today's Bills"),
+  'Advance, Return, History, Payment Edit and Closure screens must fit compact displays and Closure must be today-only.',
+);
+
+check(
+  'Responsive rules cover compact branch and receiver screens',
+  globalCss.includes('.branch-command-screen')
+    && globalCss.includes('.branch-split-workspace')
+    && globalCss.includes('.order-receiver-workspace')
+    && globalCss.includes('@media (max-height: 900px)'),
+  'The branch and receiver dashboards must remain usable on the 30×23 display, tablets and phones.',
+);
+
+check(
+  'Order entry shows live stock and requires a complete-order note',
+  branchStockForm.includes('Live stock:')
+    && branchStockForm.includes('complete order')
+    && branchStockForm.includes('orderNote.trim()')
+    && branchStockForm.includes('subscribeToStock'),
+  'SNB/VRSNB Order users must see current branch stock and provide a complete-order note.',
+);
+
+check(
+  'Order receiver shows shared operations, advance orders and live status',
+  orderReceiverDashboard.includes('rpc("get_branch_receiver_shared_operations"')
+    && orderReceiverDashboard.includes('rpc("get_branch_receiver_advance_orders"')
+    && orderReceiverDashboard.includes('Live Status')
+    && orderReceiverDashboard.includes('Purchase Return')
+    && orderReceiverDashboard.includes('Transfer Out'),
+  'SNB Order must receive Admin purchase/return/dump/damage/transfer data and Branch advance-order status.',
+);
+
+check(
+  'VRSNB Admin includes all requested parity tabs',
+  ['Sales & Returns','Low Stock / Stock','Expenses','Complaints','Waste Logs','Credit','Cashier Report','Cashier Closure','Daily Closure Report','Branch Report','Stock Audit']
+    .every((label) => adminVrsnb.includes(label)),
+  'VRSNB Admin must expose the requested SNB Admin-equivalent operational and reporting tabs.',
+);
+
+check(
+  'SNB and VRSNB stock rows are deterministically deduplicated',
+  adminSnb.includes("sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0))")
+    && adminVrsnb.includes("sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0))"),
+  'Duplicate stock rows must keep the latest database record instead of depending on response order.',
+);
+
+check(
+  'Admin balance cards and credit collections respect the selected date range',
+  adminSnb.includes('movementInRange')
+    && adminVrsnb.includes('movementInRange')
+    && adminSnb.includes('paymentsInRange')
+    && adminVrsnb.includes('creditPaymentsInRange'),
+  'Balance and collection KPIs must be scoped to the active date range.',
+);
+
+check(
+  'Advance collections are not counted as branch revenue twice',
+  adminSnb.includes("- adminLedger.toNumber(row.advance_collected)")
+    && adminVrsnb.includes("- adminLedger.toNumber(row.advance_collected)")
+    && adminDashboard.includes("- adminLedger.toNumber(ledger.advance_collected)")
+    && ownerDashboard.includes("- ownerLedger.toNumber(row.advance_collected)")
+    && ownerDashboard.includes("- salesLedger.toNumber(row.advance_collected)")
+    && branchBusinessModules.includes("- num(closureLedger.advance_collected)"),
+  'Ledger sales totals must exclude advance receipts before they are presented as completed revenue.',
+);
+
+check(
+  'History shows unit price, line revenue and pagination',
+  snbHistory.includes('Unit Price') && snbHistory.includes('Line Revenue') && snbHistory.includes('PAGE_SIZE')
+    && vrsnbHistory.includes('Unit Price') && vrsnbHistory.includes('Line Revenue') && vrsnbHistory.includes('PAGE_SIZE'),
+  'SNB and VRSNB history must remain reconcilable and bounded for large datasets.',
+);
+
+check(
+  'Stock audit confirmation can be safely reversed',
+  adminSnb.includes('rpc("reverse_branch_stock_count_report"')
+    && adminVrsnb.includes('rpc("reverse_branch_stock_count_report"')
+    && completeBranchFixMigration.includes('reverse_branch_stock_count_report')
+    && completeBranchFixMigration.includes('changed after confirmation'),
+  'Confirmed stock audits need a guarded, audited reversal path.',
+);
+
+check(
+  'Barcode namespaces are separated and collision-checked',
+  completeBranchFixMigration.includes("p_branch='SNB' then 1000 else 2000")
+    && completeBranchFixMigration.includes("p_branch='SNB' then 1999 else 2999")
+    && completeBranchFixMigration.includes('validate_branch_item_barcode_namespace'),
+  'SNB and VRSNB must use separate barcode ranges and reject collisions.',
+);
+
+check(
+  'Waste, damage, dump, transfer-out and complaints support VRSNB securely',
+  completeBranchFixMigration.includes("new.branch='VRSNB'")
+    && completeBranchFixMigration.includes('record_branch_waste_secure')
+    && completeBranchFixMigration.includes('create_branch_complaint_ticket')
+    && completeBranchFixMigration.includes('vrsnb_complaint_select'),
+  'VRSNB Admin must use the same atomic waste and complaint workflows as SNB Admin.',
+);
+
+check(
+  'Owner and main admin polling is bounded',
+  ownerDashboard.includes('startPolling(60)')
+    && !ownerDashboard.includes('startPolling(7)'),
+  'Owner reporting must not issue heavy database polling every few seconds.',
 );
 
 const exposedSecretPatterns = [

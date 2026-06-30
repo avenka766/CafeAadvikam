@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  Clock3,
   FileText,
   Flame,
   History,
@@ -18,6 +19,7 @@ import {
   Package,
   QrCode,
   Receipt,
+  RotateCcw,
   CreditCard,
   Settings2,
   ShoppingCart,
@@ -176,6 +178,7 @@ function navForRole(role?: string): NavItem[] {
     case 'receiver_vrsnb':
       return [
         { label: 'VRSNB Order', path: '/bakery/receive/vrsnb', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'Live Status', path: '/bakery/receive/vrsnb?tab=live', icon: <Clock3 className="size-4" />, group: 'Main' },
         { label: 'History', path: '/bakery/receive/vrsnb?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Alert', path: '/bakery/receive/vrsnb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
@@ -184,11 +187,16 @@ function navForRole(role?: string): NavItem[] {
     case 'receiver_snb':
       return [
         { label: 'SNB Order', path: '/bakery/receive/snb', icon: <Inbox className="size-4" />, group: 'Main' },
-        { label: 'History', path: '/bakery/receive/snb?tab=history', icon: <History className="size-4" />, group: 'Main' },
-        { label: 'Alert', path: '/bakery/receive/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+        { label: 'Live Status', path: '/bakery/receive/snb?tab=live', icon: <Clock3 className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/receive/snb?tab=placed', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Alert', path: '/bakery/receive/snb?tab=notifications', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Purchase Order', path: '/bakery/receive/snb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
-        { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Invoice', path: '/bakery/receive/snb?tab=purchase-invoice', icon: <Receipt className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Return', path: '/bakery/receive/snb?tab=purchase-return', icon: <RotateCcw className="size-4" />, group: 'Operations' },
+        { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Sales' },
+        { label: 'Dump / Damage / Transfer Out', path: '/bakery/receive/snb?tab=stock-movements', icon: <Truck className="size-4" />, group: 'Stock' },
+        { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
       ];
     case 'branch_vrsnb':
       return [
@@ -229,6 +237,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard Overview', path: '/admin-vrsnb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Sales & Returns', path: '/admin-vrsnb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'Low Stock / Stock', path: '/admin-vrsnb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Update Stock', path: '/admin-vrsnb?tab=update-stock', icon: <Settings2 className="size-4" />, group: 'Operations' },
         { label: 'Expenses', path: '/admin-vrsnb?tab=expenses', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Complaints', path: '/admin-vrsnb?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Waste Logs', path: '/admin-vrsnb?tab=waste', icon: <Trash2 className="size-4" />, group: 'Reports' },
@@ -247,6 +256,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Dashboard Overview', path: '/admin-snb?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Sales & Returns', path: '/admin-snb?tab=sales', icon: <Receipt className="size-4" />, group: 'Main' },
         { label: 'Low Stock / Stock', path: '/admin-snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
+        { label: 'Update Stock', path: '/admin-snb?tab=update-stock', icon: <Settings2 className="size-4" />, group: 'Operations' },
         { label: 'Suppliers', path: '/admin-snb?tab=suppliers', icon: <Truck className="size-4" />, group: 'Operations' },
         { label: 'Expenses', path: '/admin-snb?tab=expenses', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Complaints', path: '/admin-snb?tab=complaints', icon: <Bell className="size-4" />, group: 'Reports' },
@@ -254,6 +264,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Quotations', path: '/admin-snb?tab=quotations', icon: <FileText className="size-4" />, group: 'Operations' },
         { label: 'Credit', path: '/admin-snb?tab=credit', icon: <CreditCard className="size-4" />, group: 'Reports' },
         { label: 'Purchase Invoices', path: '/admin-snb?tab=invoices', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Returns', path: '/admin-snb?tab=purchase-returns', icon: <RotateCcw className="size-4" />, group: 'Operations' },
         { label: 'Supplier Payments', path: '/admin-snb?tab=payments', icon: <WalletCards className="size-4" />, group: 'Operations' },
         { label: 'Bank Deposits', path: '/admin-snb?tab=bank', icon: <ShieldCheck className="size-4" />, group: 'Operations' },
         { label: 'Current Cash', path: '/admin-snb?tab=current-cash', icon: <WalletCards className="size-4" />, group: 'Reports' },
@@ -283,6 +294,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  const isReceiverOrderRole = currentUser?.role === 'receiver_snb' || currentUser?.role === 'receiver_vrsnb';
   const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
   const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
@@ -339,7 +351,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   ));
 
   return (
-    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isFullscreenBillingRoute && 'workspace-branch-billing')}>
+    <div className={cn(
+      'workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]',
+      isFullscreenBillingRoute && 'workspace-branch-billing',
+      isReceiverOrderRole && 'workspace-receiver-order',
+    )}>
       {items.length > 0 && !isFullscreenBillingRoute && (
         <>
           <button

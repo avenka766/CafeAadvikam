@@ -27,6 +27,11 @@ import {
   Store,
   X,
   Trash2,
+  RefreshCw,
+  Receipt,
+  RotateCcw,
+  ArrowRightLeft,
+  Clock3,
 } from "lucide-react";
 import { useBakeryStore } from "./bakeryStore";
 import { useAuthStore } from "@/stores/authStore";
@@ -36,11 +41,18 @@ import BranchStockForm from "./BranchStockForm";
 import PurchaseOrderTab from "./PurchaseOrderTab";
 import { useBranchStore, type StockItem } from "@/branch/branchStore";
 import { StockTab } from "@/branch/tabs/StockTab";
+import { AdvanceCakeOrdersTab } from "@/branch/tabs/BranchBusinessModules";
 import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
+import {
+  LiveOrderStatusPanel,
+  SnbPurchaseInvoicePanel,
+  SnbPurchaseReturnPanel,
+  SnbStockOperationsPanel,
+} from "./SnbReceiverSharedTabs";
 
 // ── Branch config ──────────────────────────────────────────────────────────────
 
@@ -78,8 +90,44 @@ const BRANCH_META: Record<string, BranchMeta> = {
   },
 };
 
-type TabKey = "order" | "placed" | "notifications" | "stock" | "po" | "stock-count";
+type TabKey =
+  | "order"
+  | "live"
+  | "placed"
+  | "notifications"
+  | "stock"
+  | "po"
+  | "purchase-invoice"
+  | "purchase-return"
+  | "stock-movements"
+  | "stock-count"
+  | "advance";
 type DatePreset = "today" | "yesterday" | "7d" | "15d" | "1m" | "custom";
+
+interface SharedOperationRow {
+  id: string;
+  type: "Purchase Invoice" | "Purchase Return" | "Dump" | "Damage" | "Transfer Out";
+  reference: string;
+  party: string;
+  details: string;
+  amount?: number;
+  status: string;
+  createdAt: string;
+}
+
+interface SharedAdvanceRow {
+  id: string;
+  reference: string;
+  customer: string;
+  items: string;
+  total: number;
+  advance: number;
+  balance: number;
+  status: string;
+  deliveryDate?: string;
+  notes?: string;
+  createdAt: string;
+}
 
 interface HosurShop {
   id: string;
@@ -515,6 +563,270 @@ function orderAcceptedBy(order: BakeryOrder) {
   return order.acceptedBy || order.approvedBy || legacy.accepted_by || legacy.approved_by || "";
 }
 
+
+function SharedBranchOperationsPanel({ branch }: { branch: Branch }) {
+  const [rows, setRows] = useState<SharedOperationRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState<"All" | SharedOperationRow["type"]>("All");
+  const [query, setQuery] = useState("");
+
+  const loadRows = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [invoiceRes, returnRes, wasteRes, operationRes] = await Promise.all([
+        supabase
+          .from("snb_purchase_invoices")
+          .select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,sync_status,created_at")
+          .order("created_at", { ascending: false })
+          .limit(500),
+        supabase
+          .from("snb_purchase_returns")
+          .select("id,return_no,supplier_name,invoice_number,return_date,reason_type,settlement_type,total_amount,status,created_at")
+          .order("created_at", { ascending: false })
+          .limit(500),
+        supabase
+          .from("branch_waste_logs")
+          .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at")
+          .eq("branch", branch)
+          .order("created_at", { ascending: false })
+          .limit(500),
+        supabase.rpc("get_branch_receiver_shared_operations", { p_branch: branch }),
+      ]);
+      if ([invoiceRes, returnRes, wasteRes, operationRes].every((result) => Boolean(result.error))) {
+        throw invoiceRes.error || returnRes.error || wasteRes.error || operationRes.error || new Error("Shared records are unavailable.");
+      }
+      const next: SharedOperationRow[] = [];
+      for (const raw of invoiceRes.error ? [] : invoiceRes.data ?? []) {
+        const row = raw as Record<string, unknown>;
+        next.push({
+          id: String(row.id),
+          type: "Purchase Invoice",
+          reference: String(row.invoice_number || "-"),
+          party: String(row.supplier_name || "-"),
+          details: `Invoice ${String(row.invoice_date || "-")} · Outstanding ₹${Number(row.balance_amount || 0).toFixed(2)}`,
+          amount: Number(row.total_amount || 0),
+          status: String(row.sync_status || "Not Synced"),
+          createdAt: String(row.created_at || row.invoice_date || ""),
+        });
+      }
+      for (const raw of returnRes.error ? [] : returnRes.data ?? []) {
+        const row = raw as Record<string, unknown>;
+        next.push({
+          id: String(row.id),
+          type: "Purchase Return",
+          reference: String(row.return_no || "-"),
+          party: String(row.supplier_name || "-"),
+          details: `${String(row.reason_type || "Return")} · Invoice ${String(row.invoice_number || "-")} · ${String(row.settlement_type || "Pending")}`,
+          amount: Number(row.total_amount || 0),
+          status: String(row.status || "Posted"),
+          createdAt: String(row.created_at || row.return_date || ""),
+        });
+      }
+      for (const raw of wasteRes.error ? [] : wasteRes.data ?? []) {
+        const row = raw as Record<string, unknown>;
+        const logType = String(row.log_type || "Damage");
+        const type: SharedOperationRow["type"] = logType === "Trans Out" ? "Transfer Out" : logType === "Dump" ? "Dump" : "Damage";
+        next.push({
+          id: String(row.id),
+          type,
+          reference: `${type}-${String(row.id).slice(0, 8)}`,
+          party: String(row.item_name || "-"),
+          details: `${Number(row.quantity || 0)} ${String(row.unit || "")} · ${String(row.reason || "-")} · Verified by ${String(row.verified_by || "-")}`,
+          status: "Posted",
+          createdAt: String(row.created_at || ""),
+        });
+      }
+      for (const raw of operationRes.error ? [] : Array.isArray(operationRes.data) ? operationRes.data : []) {
+        const row = raw as Record<string, unknown>;
+        const payload = (row.payload || {}) as Record<string, unknown>;
+        const recordType = String(row.record_type || "");
+        const operationLogType = String(payload.logType || payload.log_type || "").toLowerCase();
+        const type: SharedOperationRow["type"] = recordType === "purchase_invoice"
+          ? "Purchase Invoice"
+          : recordType === "purchase_return"
+            ? "Purchase Return"
+            : recordType === "transfer_out" || operationLogType.includes("trans")
+              ? "Transfer Out"
+              : recordType === "dump" || operationLogType === "dump"
+                ? "Dump"
+                : "Damage";
+        next.push({
+          id: `operation-${String(row.id)}`,
+          type,
+          reference: String(row.record_no || payload.invoiceNo || payload.invoiceNumber || payload.returnNo || payload.reference || "-"),
+          party: String(payload.supplier || payload.supplierName || payload.itemName || payload.item_name || "-"),
+          details: String(payload.reason || payload.reasonType || payload.remarks || payload.notes || payload.settlementType || "Shared branch record"),
+          amount: Number(row.amount || payload.total || 0),
+          status: String(row.status || payload.status || "Posted"),
+          createdAt: String(row.created_at || payload.createdAt || payload.updatedAt || ""),
+        });
+      }
+      const unique = new Map<string, SharedOperationRow>();
+      next.forEach((row) => unique.set(`${row.type}|${row.reference}`, row));
+      setRows([...unique.values()].sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt))));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load shared operations");
+    } finally {
+      setLoading(false);
+    }
+  }, [branch]);
+
+  useEffect(() => {
+    void loadRows();
+  }, [loadRows]);
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return rows.filter((row) => (filter === "All" || row.type === filter) && (!needle || `${row.type} ${row.reference} ${row.party} ${row.details} ${row.status}`.toLowerCase().includes(needle)));
+  }, [rows, filter, query]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Shared from SNB Admin</p>
+            <h2 className="font-display text-xl font-black">Purchase, return and stock-out records</h2>
+          </div>
+          <button type="button" onClick={() => void loadRows()} className="inline-flex h-9 items-center justify-center gap-2 rounded-xl border border-border px-3 text-xs font-black">
+            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> Refresh
+          </button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(["All", "Purchase Invoice", "Purchase Return", "Dump", "Damage", "Transfer Out"] as const).map((name) => (
+            <button key={name} type="button" onClick={() => setFilter(name)} className={cn("rounded-full px-3 py-1.5 text-[11px] font-black", filter === name ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-700")}>{name}</button>
+          ))}
+          <label className="ml-auto flex h-9 min-w-[220px] items-center gap-2 rounded-xl border border-border bg-background px-3">
+            <Search className="size-3.5 text-muted-foreground" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search shared records" className="w-full bg-transparent text-xs font-bold outline-none" />
+          </label>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-border bg-white shadow-sm">
+        {error ? <p className="m-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
+        {loading ? (
+          <div className="flex h-full items-center justify-center"><Loader2 className="size-5 animate-spin" /></div>
+        ) : visible.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center p-8 text-center"><ClipboardList className="mb-2 size-8 text-muted-foreground" /><p className="text-sm font-black">No shared records found.</p></div>
+        ) : (
+          <table className="w-full min-w-[820px] text-left text-xs">
+            <thead className="sticky top-0 z-10 bg-slate-950 text-white"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Supplier / Item</th><th className="px-3 py-2">Details</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2">Status</th></tr></thead>
+            <tbody>{visible.map((row) => <tr key={`${row.type}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{row.createdAt ? new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "-"}</td><td className="px-3 py-2"><span className="rounded-full bg-amber-50 px-2 py-1 font-black text-amber-800">{row.type}</span></td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.party}</td><td className="max-w-[360px] px-3 py-2 text-slate-600">{row.details}</td><td className="px-3 py-2 text-right font-black">{row.amount == null ? "-" : `₹${row.amount.toFixed(2)}`}</td><td className="px-3 py-2 font-bold">{row.status}</td></tr>)}</tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SharedAdvanceOrdersPanel({ branch }: { branch: Branch }) {
+  const { advanceCakeOrders } = useBranchOpsStore();
+  const [databaseRows, setDatabaseRows] = useState<SharedAdvanceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+
+  const loadRows = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [advanceResult, operationResult] = await Promise.all([
+        supabase.rpc("get_branch_receiver_advance_orders", { p_branch: branch }),
+        supabase
+          .from("branch_operation_records")
+          .select("id,record_no,amount,status,payload,created_at")
+          .eq("branch", branch)
+          .eq("record_type", "advance_order")
+          .order("created_at", { ascending: false })
+          .limit(1000),
+      ]);
+      if (advanceResult.error && operationResult.error) throw advanceResult.error || operationResult.error;
+      const directRows: SharedAdvanceRow[] = (advanceResult.error ? [] : Array.isArray(advanceResult.data) ? advanceResult.data : []).map((raw) => {
+        const row = raw as Record<string, unknown>;
+        const items = Array.isArray(row.items) ? row.items as Array<Record<string, unknown>> : [];
+        return {
+          id: String(row.id),
+          reference: `ADV-${String(row.id).slice(0, 8).toUpperCase()}`,
+          customer: String(row.customer_name || "Walk-in"),
+          items: items.map((item) => `${String(item.itemName || item.item_name || "Item")} × ${Number(item.quantity || 0)}`).join(", ") || "-",
+          total: Number(row.subtotal || 0),
+          advance: Number(row.advance_amount || 0),
+          balance: Number(row.balance_due || 0),
+          status: String(row.status || "pending"),
+          deliveryDate: row.delivery_date ? String(row.delivery_date) : undefined,
+          notes: row.notes ? String(row.notes) : undefined,
+          createdAt: String(row.created_at || ""),
+        };
+      });
+      const operationRows: SharedAdvanceRow[] = (operationResult.error ? [] : operationResult.data ?? []).map((raw) => {
+        const row = raw as Record<string, unknown>;
+        const payload = (row.payload || {}) as Record<string, unknown>;
+        const items = Array.isArray(payload.items) ? payload.items as Array<Record<string, unknown>> : [];
+        return {
+          id: `operation-${String(row.id)}`,
+          reference: String(row.record_no || payload.orderNo || `ADV-${String(row.id).slice(0, 8).toUpperCase()}`),
+          customer: String(payload.customerName || payload.customer_name || "Walk-in"),
+          items: items.map((item) => `${String(item.itemName || item.item_name || "Item")} × ${Number(item.quantity || 0)}`).join(", ") || String(payload.flavor || "-"),
+          total: Number(row.amount || payload.orderValue || payload.subtotal || 0),
+          advance: Number(payload.advanceAmount || payload.advance_amount || 0),
+          balance: Number(payload.balanceAmount || payload.balance_due || 0),
+          status: String(row.status || payload.status || "pending"),
+          deliveryDate: payload.deliveryDate ? String(payload.deliveryDate) : undefined,
+          notes: String(payload.designNotes || payload.messageOnCake || payload.notes || "") || undefined,
+          createdAt: String(row.created_at || payload.createdAt || ""),
+        };
+      });
+      const merged = new Map<string, SharedAdvanceRow>();
+      [...operationRows, ...directRows].forEach((row) => merged.set(row.reference, row));
+      setDatabaseRows([...merged.values()]);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load advance orders");
+    } finally {
+      setLoading(false);
+    }
+  }, [branch]);
+
+  useEffect(() => { void loadRows(); }, [loadRows]);
+
+  const localRows = useMemo<SharedAdvanceRow[]>(() => advanceCakeOrders.filter((order) => order.branch === branch).map((order) => ({
+    id: order.id,
+    reference: order.orderNo,
+    customer: order.customerName,
+    items: order.items?.map((item) => `${item.itemName} × ${item.quantity}`).join(", ") || `${order.cakeKg || "-"} kg ${order.flavor || "Cake"}`,
+    total: order.orderValue,
+    advance: order.advanceAmount,
+    balance: order.balanceAmount,
+    status: order.storeStatus ? `${order.status} · ${order.storeStatus}` : order.status,
+    deliveryDate: order.deliveryDate,
+    notes: order.designNotes || order.messageOnCake,
+    createdAt: order.createdAt,
+  })), [advanceCakeOrders, branch]);
+
+  const rows = useMemo(() => {
+    const byKey = new Map<string, SharedAdvanceRow>();
+    [...databaseRows, ...localRows].forEach((row) => byKey.set(`${row.reference}-${row.customer}`, row));
+    const needle = query.trim().toLowerCase();
+    return [...byKey.values()].filter((row) => !needle || `${row.reference} ${row.customer} ${row.items} ${row.status} ${row.notes || ""}`.toLowerCase().includes(needle)).sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
+  }, [databaseRows, localRows, query]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Shared from {branch} Branch</p><h2 className="font-display text-xl font-black">Advance order pipeline</h2></div>
+          <div className="flex gap-2"><label className="flex h-9 min-w-[220px] items-center gap-2 rounded-xl border border-border px-3"><Search className="size-3.5"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Customer, order or item" className="w-full bg-transparent text-xs font-bold outline-none"/></label><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")}/></button></div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-border bg-white shadow-sm">
+        {error ? <p className="m-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
+        {loading && rows.length === 0 ? <div className="flex h-full items-center justify-center"><Loader2 className="size-5 animate-spin"/></div> : rows.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8"><Clock3 className="mb-2 size-8 text-muted-foreground"/><p className="text-sm font-black">No advance orders found.</p></div> : <table className="w-full min-w-[980px] text-left text-xs"><thead className="sticky top-0 z-10 bg-slate-950 text-white"><tr><th className="px-3 py-2">Created</th><th className="px-3 py-2">Order</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Items / Cake</th><th className="px-3 py-2">Delivery</th><th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Advance</th><th className="px-3 py-2 text-right">Balance</th><th className="px-3 py-2">Live Status</th><th className="px-3 py-2">Note</th></tr></thead><tbody>{rows.map((row) => <tr key={`${row.reference}-${row.id}`} className="border-b border-border/60 align-top"><td className="whitespace-nowrap px-3 py-2 font-bold">{new Date(row.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</td><td className="px-3 py-2 font-black">{row.reference}</td><td className="px-3 py-2 font-bold">{row.customer}</td><td className="max-w-[280px] px-3 py-2">{row.items}</td><td className="px-3 py-2 font-bold">{row.deliveryDate || "-"}</td><td className="px-3 py-2 text-right font-black">₹{row.total.toFixed(2)}</td><td className="px-3 py-2 text-right font-black text-emerald-700">₹{row.advance.toFixed(2)}</td><td className="px-3 py-2 text-right font-black text-amber-700">₹{row.balance.toFixed(2)}</td><td className="px-3 py-2"><span className="rounded-full bg-blue-50 px-2 py-1 font-black text-blue-700">{row.status}</span></td><td className="max-w-[260px] px-3 py-2 text-slate-600">{row.notes || "-"}</td></tr>)}</tbody></table>}
+      </div>
+    </div>
+  );
+}
+
 function PlacedOrdersPanel({
   branch,
   orders,
@@ -652,6 +964,7 @@ function PlacedOrdersPanel({
         "Quantity",
         "Unit",
         "Created By",
+        "Order Note",
       ],
       ...filteredOrders.flatMap((order) => {
         const created = new Date(order.createdAt);
@@ -670,6 +983,7 @@ function PlacedOrdersPanel({
           displayQty(item),
           displayUnit(item),
           order.createdBy,
+          order.notes || "-",
         ]);
       }),
     ];
@@ -691,8 +1005,8 @@ function PlacedOrdersPanel({
 
   return (
     <>
-    <div className="space-y-4">
-      <div className="rounded-3xl border border-border bg-white/95 p-4 shadow-soft">
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 rounded-2xl border border-border bg-white/95 p-3 shadow-soft">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-3">
             <div className="size-11 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
@@ -702,7 +1016,7 @@ function PlacedOrdersPanel({
               <p className="text-[11px] font-body font-black uppercase tracking-[0.18em] text-muted-foreground">
                 Downloadable history
               </p>
-              <h2 className="font-display text-2xl font-black leading-tight text-foreground">
+              <h2 className="font-display text-xl font-black leading-tight text-foreground">
                 Placed Orders
               </h2>
               <p className="text-sm font-body font-bold text-muted-foreground mt-1">
@@ -767,7 +1081,7 @@ function PlacedOrdersPanel({
           </div>
         )}
 
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <div className="mt-3 grid grid-cols-3 gap-2">
           <div className="rounded-2xl border border-border bg-background p-3">
             <p className="font-display text-2xl font-black leading-none text-foreground">
               {filteredOrders.length}
@@ -810,7 +1124,7 @@ function PlacedOrdersPanel({
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-3xl border border-border bg-white shadow-soft">
+        <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-border bg-white shadow-soft">
           <div className="divide-y divide-border/60">
             {filteredOrders.map((order) => (
               <div
@@ -850,6 +1164,24 @@ function PlacedOrdersPanel({
                       : "Awaiting approval"}
                   </span>
                 </div>
+                <div className="mt-3 grid grid-cols-5 gap-1" aria-label={`Live order status: ${orderLocationLabel(order.status)}`}>
+                  {(["pending", "processing", "baking", "packed", "dispatched"] as const).map((stage, index, stages) => {
+                    const currentIndex = stages.indexOf(order.status);
+                    const complete = index <= currentIndex;
+                    return (
+                      <div key={stage} className="min-w-0">
+                        <div className={cn("h-1.5 rounded-full", complete ? "bg-emerald-500" : "bg-slate-200")} />
+                        <p className={cn("mt-1 truncate text-[9px] font-black uppercase", complete ? "text-emerald-700" : "text-slate-400")}>{orderLocationLabel(stage)}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+                {order.notes ? (
+                  <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-blue-500">Complete Order Note</p>
+                    <p className="mt-0.5 text-xs font-bold text-blue-900">{order.notes}</p>
+                  </div>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {order.items.map((item, i) => {
                     const removedItems = (order as unknown as { removed_items?: Array<{ itemName: string }> }).removed_items ?? [];
@@ -1276,6 +1608,7 @@ function HosurHistoryPanel({ orders, orderItems, loading }: { orders: HosurOrder
           item.unitPrice,
           item.lineTotal,
           order.createdBy,
+          order.notes || "-",
         ]);
       }),
     ];
@@ -1959,11 +2292,17 @@ function StockCountPanel({
 }
 
 function tabFromParams(value: string | null): TabKey {
+  if (value === "live" || value === "live-status" || value === "tracking") return "live";
   if (value === "history" || value === "placed" || value === "orders") return "placed";
   if (value === "alert" || value === "alerts" || value === "notifications") return "notifications";
   if (value === "stock" || value === "incoming") return "stock";
   if (value === "po" || value === "purchase" || value === "purchase-order") return "po";
   if (value === "stock-count" || value === "count" || value === "daily-stock-take") return "stock-count";
+  if (value === "purchase-invoice" || value === "purchase-invoices" || value === "invoice") return "purchase-invoice";
+  if (value === "purchase-return" || value === "purchase-returns" || value === "return") return "purchase-return";
+  if (value === "dump" || value === "damage" || value === "transfer-out" || value === "transfer" || value === "stock-movements" || value === "waste") return "stock-movements";
+  if (value === "shared" || value === "admin-shared" || value === "shared-data") return "purchase-invoice";
+  if (value === "advance" || value === "advance-orders") return "advance";
   return "order";
 }
 
@@ -1998,7 +2337,8 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const requestedTab = tabFromParams(searchParams.get("tab"));
-  const tab = branch !== "SNB" && requestedTab === "po" ? "order" : requestedTab;
+  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "stock-movements", "advance"];
+  const tab = branch !== "SNB" && snbOnlyTabs.includes(requestedTab) ? "order" : requestedTab;
   const userName =
     currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
 
@@ -2103,44 +2443,53 @@ export default function OrderReceiverDashboard() {
   const unreadCount = branchNotifications.filter((n) => !n.isRead).length;
 
   const heading =
-    tab === "placed"
-      ? "Placed Orders"
-      : tab === "notifications"
-        ? "Packing Alerts"
-        : tab === "stock"
-          ? "Stock / Incoming"
-          : tab === "po"
-            ? "Purchase Order"
-            : tab === "stock-count"
-              ? "Daily Stock Take"
-              : "Place New Order";
+    tab === "live"
+      ? "Live Order Status"
+      : tab === "placed"
+        ? "Placed Orders"
+        : tab === "notifications"
+          ? "Packing Alerts"
+          : tab === "stock"
+            ? "Stock / Incoming"
+            : tab === "po"
+              ? "Purchase Order"
+              : tab === "purchase-invoice"
+                ? "Purchase Invoice"
+                : tab === "purchase-return"
+                  ? "Purchase Return"
+                  : tab === "stock-movements"
+                    ? "Dump / Damage / Transfer Out"
+                    : tab === "stock-count"
+                      ? "Daily Stock Take"
+                      : tab === "advance"
+                        ? "Advance Orders"
+                        : "Place New Order";
   const subheading =
-    tab === "placed"
-      ? "Filter by date range and download your branch order history."
-      : tab === "notifications"
-        ? "Shortage, excess and remainder alerts from packing are shown here."
-        : tab === "stock"
-          ? `Confirm incoming stock, update stock manually and maintain thresholds for ${branch}.`
-          : tab === "po"
-            ? `Create and track ${branch} purchase orders from the receiver dashboard.`
-            : tab === "stock-count"
-              ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
-              : "Create today’s bakery requirement without the old history/search clutter.";
-  const receiverTabs: Array<{ key: TabKey; label: string }> = [
-    { key: "order", label: "Order" },
-    { key: "placed", label: "Placed Orders" },
-    { key: "notifications", label: "Notifications" },
-    ...(branch === "SNB" || branch === "VRSNB"
-      ? ([
-          { key: "stock", label: "Stock / Incoming" },
-          { key: "stock-count", label: "Stock Count" },
-          ...(branch === "SNB" ? [{ key: "po", label: "Purchase Order" } as { key: TabKey; label: string }] : []),
-        ] as Array<{ key: TabKey; label: string }>)
-      : []),
-  ];
+    tab === "live"
+      ? "See each order move live through store, baker, packing and dispatch."
+      : tab === "placed"
+        ? "Filter by date range and download your branch order history."
+        : tab === "notifications"
+          ? "Shortage, excess and remainder alerts from packing are shown here."
+          : tab === "stock"
+            ? `Confirm incoming stock, update stock manually and maintain thresholds for ${branch}.`
+            : tab === "po"
+              ? `Create and track ${branch} purchase orders with current store stock beside every item.`
+              : tab === "purchase-invoice"
+                ? "Create purchase invoices and view the same shared records available to SNB Admin."
+                : tab === "purchase-return"
+                  ? "Post verified purchase returns with live stock deduction and shared Admin history."
+                  : tab === "stock-movements"
+                    ? "Record dump, damage and transfer-out activity with live stock deduction and operation-specific history."
+                    : tab === "stock-count"
+                      ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
+                      : tab === "advance"
+                        ? "Use the same advance-order workflow as SNB Branch, with SNB Order collection attribution."
+                        : "Create today’s bakery requirement with live branch stock and a complete-order note.";
+
 
   return (
-    <div className="dashboard-screen min-h-screen bg-transparent pb-6 font-semibold">
+    <div className="order-receiver-workspace dashboard-screen flex h-full min-h-0 flex-col overflow-hidden bg-transparent pb-2 font-semibold">
       {/* Receiver header */}
       <div
         className={cn(
@@ -2242,26 +2591,10 @@ export default function OrderReceiverDashboard() {
         </div>
       </div>
 
-      <div className="mb-4 hidden flex-wrap gap-2 rounded-3xl border border-border bg-white/90 p-2 shadow-soft">
-        {receiverTabs.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setSearchParams({ tab: item.key })}
-            className={cn(
-              "rounded-2xl px-4 py-2 text-xs font-body font-black transition-all",
-              tab === item.key
-                ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
-                : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      {/* Mobile navigation is provided only by the WorkspaceChrome Menu drawer. */}
 
       {/* Content */}
-      <div>
+      <div className="min-h-0 flex-1 overflow-hidden">
         {tab === "order" && (
           branch === "Hosur" ? (
             <HosurOrderPanel
@@ -2279,11 +2612,19 @@ export default function OrderReceiverDashboard() {
                 branch={branch}
                 onSubmitted={() => {
                   setRefreshKey((k) => k + 1);
-                  setSearchParams({ tab: "history" });
+                  setSearchParams({ tab: "placed" });
                 }}
               />
             </div>
           )
+        )}
+
+        {tab === "live" && (
+          <LiveOrderStatusPanel
+            orders={branchOrders}
+            loading={loading}
+            onRefresh={() => fetchOrders(true)}
+          />
         )}
 
         {tab === "placed" && (
@@ -2377,10 +2718,21 @@ export default function OrderReceiverDashboard() {
             branchThresholds={thresholds[branch]}
             loading={branchLoading}
             stockMismatches={stockMismatches}
+            allowManualUpdate={false}
           />
         )}
 
         {tab === "po" && branch === "SNB" && <PurchaseOrderTab branchScope="SNB" />}
+
+        {tab === "purchase-invoice" && branch === "SNB" && <SnbPurchaseInvoicePanel />}
+
+        {tab === "purchase-return" && branch === "SNB" && <SnbPurchaseReturnPanel />}
+
+        {tab === "stock-movements" && branch === "SNB" && <SnbStockOperationsPanel />}
+
+        {tab === "advance" && branch === "SNB" && (
+          <AdvanceCakeOrdersTab branch="SNB" branchStock={stock.SNB} source="snb-order" />
+        )}
 
         {tab === "stock-count" && (branch === "SNB" || branch === "VRSNB") && (
           <StockCountPanel branch={branch} branchStock={stock[branch]} userName={userName} />

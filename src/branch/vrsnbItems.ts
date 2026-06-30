@@ -171,7 +171,7 @@ export const VRSNB_ITEMS: VrsnbItem[] = [
 
   // ── COOKIES ───────────────────────────────────────────────────────────────
   { barcode: 2090, name: 'Badam sticks',                     price: 130,  uom: 'Nos', category: 'COOKIES' },
-  { barcode: 2091, name: 'Bournvita biscuit',                 price: 130,  uom: 'Nos', category: 'COOKIES' },
+  { barcode: 2091, name: 'Bournvita Biscuit',                 price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2092, name: 'Butter biscuit',                   price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2093, name: 'Coconut biscuit',                  price: 130,  uom: 'Nos', category: 'COOKIES' },
   { barcode: 2094, name: 'Coconut crunch',                   price: 130,  uom: 'Nos', category: 'COOKIES' },

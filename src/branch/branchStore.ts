@@ -4,8 +4,16 @@ import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
 import { BAKERY_ITEMS } from '@/bakery/types';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
+import { useAuthStore } from '@/stores/authStore';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+type BranchRealtimeSubscription = {
+  channel: ReturnType<typeof supabase.channel>;
+  subscribers: number;
+};
+
+const branchRealtimeSubscriptions = new Map<string, BranchRealtimeSubscription>();
 
 const isMissingRpcError = (message: string) =>
   /could not find the function|function .* does not exist|schema cache/i.test(message);
@@ -73,6 +81,10 @@ export interface StockItem {
   itemBarcode?: number;
   itemName: string;
   quantity: number;
+  reservedQuantity: number;
+  availableQuantity: number;
+  updatedAt?: string;
+  lastUpdatedAt?: string;
   /** Unit in which quantity is stored — 'pcs' for piece items, 'kg' for weight items. */
   unit?: 'pcs' | 'kg';
   minThreshold: number;
@@ -115,7 +127,9 @@ export interface BranchAdvanceOrder {
   createdAt: string;
   fullyPaidAt: string | null;
   balanceMethod: string | null;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'cancelled';
+  notes?: string | null;
+  reservationStatus?: 'none' | 'reserved' | 'consumed' | 'released';
   /** ISO date string (YYYY-MM-DD) — the date the customer wants delivery */
   deliveryDate: string | null;
 }
@@ -125,6 +139,10 @@ export interface IncomingStock {
   itemBarcode?: number;
   itemName: string;
   quantity: number;
+  reservedQuantity: number;
+  availableQuantity: number;
+  updatedAt?: string;
+  lastUpdatedAt?: string;
   /** Unit in which quantity is expressed — 'pcs' or 'kg'. Defaults to 'kg' for legacy rows. */
   unit: 'pcs' | 'kg';
   receivedAt: string;
@@ -296,7 +314,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: advanceData },
         { data: creditData },
       ] = await Promise.all([
-        supabase.from('branch_stock').select('*').eq('branch', branch),
+        supabase.from('branch_stock').select('*').eq('branch', branch).order('updated_at', { ascending: false }).limit(2000),
         supabase.from('branch_sales').select('*').eq('branch', branch)
           .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
@@ -306,10 +324,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         supabase.from('bakery_items').select('name, price'),
         supabase.from('branch_advance_orders').select('*')
           .eq('branch', branch)
-          .order('created_at', { ascending: false }),
+          .order('created_at', { ascending: false })
+          .limit(1000),
         supabase.from('branch_credit_sales').select('*')
           .eq('branch', branch)
-          .order('created_at', { ascending: false }),
+          .order('created_at', { ascending: false })
+          .limit(1000),
       ]);
 
       // Build a name → price lookup from bakery_items
@@ -328,15 +348,25 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         const advanceOrders = { ...s.advanceOrders };
         const creditSales   = { ...s.creditSales };
 
-        stock[branch] = (stockData || []).map((d) => ({
+        const latestStockRows = new Map<string, (typeof stockData extends (infer R)[] | null ? R : never)>();
+        for (const row of stockData || []) {
+          const key = row.item_barcode != null
+            ? `barcode:${Number(row.item_barcode)}`
+            : `name:${normalizeStockName(String(row.item_name || ''))}`;
+          if (!latestStockRows.has(key)) latestStockRows.set(key, row);
+        }
+        stock[branch] = Array.from(latestStockRows.values()).map((d) => ({
           itemBarcode:  d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:     d.item_name,
-          quantity:     d.quantity,
-          // Persist the unit stored in DB so pcs items always display as pcs
+          quantity:     Number(d.quantity ?? 0),
+          reservedQuantity: Number(d.reserved_quantity ?? 0),
+          availableQuantity: Math.max(0, Number(d.quantity ?? 0) - Number(d.reserved_quantity ?? 0)),
+          updatedAt: d.updated_at ? String(d.updated_at) : undefined,
+          lastUpdatedAt: d.last_updated_at ? String(d.last_updated_at) : undefined,
           unit:         (d.unit === 'pcs' ? 'pcs' : d.unit === 'kg' ? 'kg' : undefined) as 'pcs' | 'kg' | undefined,
           minThreshold: d.min_threshold ?? 10,
           price:        d.item_barcode != null ? (priceByBarcode.get(Number(d.item_barcode)) ?? priceMap[d.item_name] ?? null) : (priceMap[d.item_name] ?? null),
-        }));
+        })).sort((a, b) => a.itemName.localeCompare(b.itemName));
 
         sales[branch] = (salesData || []).map((d) => ({
           id:            d.id,
@@ -379,8 +409,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           createdAt:      d.created_at,
           fullyPaidAt:    d.fully_paid_at ?? null,
           balanceMethod:  d.balance_method ?? null,
-          status:         d.status as 'pending' | 'completed',
+          status:         d.status as 'pending' | 'completed' | 'cancelled',
           deliveryDate:   d.delivery_date ?? null,
+          notes:          d.notes ?? null,
+          reservationStatus: (d.reservation_status ?? 'none') as BranchAdvanceOrder['reservationStatus'],
         }));
 
         const tMap: Record<string, number> = {};
@@ -506,8 +538,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const sales = { ...s.sales };
       stock[branch] = stock[branch].map((stockItem) =>
         resolvedBarcode != null && stockItem.itemBarcode != null
-          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty } : stockItem
-          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty } : stockItem,
+          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(stockItem.reservedQuantity || 0)) } : stockItem
+          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(stockItem.reservedQuantity || 0)) } : stockItem,
       );
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
@@ -534,17 +566,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   //   duplicate counting on Owner Dashboard.
   // ─────────────────────────────────────────────────────────────────────────────
   recordAdvanceOrder: async (branch, order) => {
-    if (process.env.NODE_ENV === 'development') {
-      console.warn(
-        '[DEPRECATION] recordAdvanceOrder (System 1) will be merged into '
-        + 'addAdvanceCakeOrder (System 2) in a future release. '
-        + 'See MD Bug #11 and migration 20260613_0006_unify_advance_orders.sql.'
-      );
-    }
     const now = new Date().toISOString();
     const balanceDue = Math.max(0, order.subtotal - order.advanceAmount);
-    // BUGFIX: if full amount collected upfront, mark as completed immediately
-    const status = balanceDue <= 0 ? 'completed' : 'pending';
 
     for (const item of order.items) {
       if (item.isCustom) continue;
@@ -554,157 +577,91 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           ? stockItem.itemBarcode === item.barcode
           : normalizeStockName(stockItem.itemName) === requestedStockName,
       ) ?? null;
-      const availableQty = Number(currentStock?.quantity ?? 0);
-      if (!currentStock) return `${item.itemName} has no stock entry and cannot be billed. Add stock before creating the advance order.`;
-      if (availableQty <= 0) return `${item.itemName} is out of stock and cannot be billed.`;
+      const availableQty = Number(currentStock?.availableQuantity ?? currentStock?.quantity ?? 0);
+      if (!currentStock) return `${item.itemName} has no stock entry and cannot be reserved.`;
+      if (availableQty <= 0) return `${item.itemName} is out of stock and cannot be reserved.`;
       if (item.quantity > availableQty) return `Only ${availableQty} available for ${item.itemName}. Requested ${item.quantity}.`;
     }
 
-    const { data, error } = await supabase
-      .from('branch_advance_orders')
-      .insert({
-        branch,
-        customer_name:  order.customerName ?? null,
-        items:          order.items,
-        subtotal:       order.subtotal,
-        advance_amount: order.advanceAmount,
-        advance_method: order.advanceMethod,
-        balance_due:    balanceDue,
-        sold_by:        order.soldBy,
-        created_at:     now,
-        status,
-        delivery_date:  order.deliveryDate ?? null,
-      })
-      .select()
-      .single();
-
-    if (error) return `Failed to save advance order: ${error.message}`;
-
+    const rpc = await supabase.rpc('create_branch_advance_order_reserved', {
+      p_branch: branch,
+      p_customer_name: order.customerName ?? null,
+      p_items: order.items,
+      p_subtotal: order.subtotal,
+      p_advance_amount: order.advanceAmount,
+      p_advance_method: order.advanceMethod,
+      p_sold_by: order.soldBy,
+      p_delivery_date: order.deliveryDate ?? null,
+      p_notes: order.notes ?? null,
+    });
+    if (rpc.error) {
+      const missing = /create_branch_advance_order_reserved|could not find the function|does not exist|schema cache/i.test(rpc.error.message || '');
+      if (!missing) return `Failed to reserve advance-order stock: ${rpc.error.message}`;
+      return 'Advance-order reservation RPC is not installed. Apply the branch reservation migration before taking advance orders.';
+    }
+    const data = rpc.data as Record<string, unknown>;
     const newOrder: BranchAdvanceOrder = {
-      id:            data.id,
+      id: String(data.id),
       branch,
-      customerName:  order.customerName ?? null,
-      items:         order.items,
-      subtotal:      order.subtotal,
-      advanceAmount: order.advanceAmount,
-      advanceMethod: order.advanceMethod,
-      balanceDue,
-      soldBy:        order.soldBy,
-      createdAt:     now,
-      fullyPaidAt:   status === 'completed' ? now : null,
-      balanceMethod: null,
-      status,
-      deliveryDate:  order.deliveryDate ?? null,
+      customerName: data.customer_name != null ? String(data.customer_name) : null,
+      items: (data.items || order.items) as BranchAdvanceItem[],
+      subtotal: Number(data.subtotal ?? order.subtotal),
+      advanceAmount: Number(data.advance_amount ?? order.advanceAmount),
+      advanceMethod: String(data.advance_method ?? order.advanceMethod),
+      balanceDue: Number(data.balance_due ?? balanceDue),
+      soldBy: String(data.sold_by ?? order.soldBy),
+      createdAt: String(data.created_at ?? now),
+      fullyPaidAt: data.fully_paid_at ? String(data.fully_paid_at) : null,
+      balanceMethod: data.balance_method ? String(data.balance_method) : null,
+      status: String(data.status || 'pending') as BranchAdvanceOrder['status'],
+      deliveryDate: data.delivery_date ? String(data.delivery_date) : order.deliveryDate ?? null,
+      notes: data.notes ? String(data.notes) : order.notes ?? null,
+      reservationStatus: String(data.reservation_status || 'reserved') as BranchAdvanceOrder['reservationStatus'],
     };
 
-    // ADVANCE-HISTORY FIX: record the advance payment itself into branch_sales so it
-    // appears in History and SalesTab immediately. payment_method='advance' marks it clearly.
-    // quantity_sold=0 for custom items (no inventory); for stock items we record qty so
-    // the admin sees what was ordered. Stock is NOT deducted here — that happens at delivery.
-    const advanceSalesRows = order.items.map(item => ({
-      branch,
-      item_name:      item.itemName ?? 'Custom item',
-      item_barcode:   item.barcode ?? null,
-      quantity_sold:  item.quantity ?? 0,
-      sold_at:        now,
-      sold_by:        order.soldBy,
-      payment_method: `advance:${order.advanceMethod}`,
-      unit_price:     item.price ?? 0,
-      bill_no:        null,
-    }));
-    if (advanceSalesRows.length > 0) {
-      await supabase.from('branch_sales').insert(advanceSalesRows);
-    }
+    // Do not write branch_sales until the reserved order is completed. Recording
+    // it here would recognise revenue and quantity sold before fulfilment.
 
-    set((s) => {
-      const advanceOrders = { ...s.advanceOrders };
+    set((state) => {
+      const advanceOrders = { ...state.advanceOrders };
       advanceOrders[branch] = [newOrder, ...advanceOrders[branch]];
       return { advanceOrders };
     });
-
+    await get().fetchBranchData(branch);
     return null;
   },
 
   // ── Collect remaining balance — NOW deduct stock and record sales ──────────
   collectAdvanceBalance: async (branch, orderId, balanceMethod) => {
-    const order = get().advanceOrders[branch].find((o) => o.id === orderId);
+    const order = get().advanceOrders[branch].find((entry) => entry.id === orderId);
     if (!order) return 'Advance order not found';
     if (order.status === 'completed') return null;
-
-    const now = new Date().toISOString();
-
-    // ADVANCE-STOCK FIX: strict stock validation prevents completing delivery when
-    // branch stock is missing or insufficient. Custom items skip inventory RPC.
-
-    // M-10 FIX: deduct stock BEFORE marking order completed.
-    // Previously: mark completed → deduct stock → if deduction fails, order is
-    // completed but stock was never reduced (silent inventory corruption).
-    // Now: deduct all stock first, then mark completed atomically.
-
-    // B3 FIX: each item uses the atomic RPC decrement instead of reading stale local state.
-    const decremented: Array<{ itemName: string; qty: number; barcode?: number }> = [];
-
-    for (const item of order.items) {
-      if (item.isCustom) continue;
-
-      // Atomic stock decrement via RPC
-      const { data: newQtyRpc, error: stockRpcErr } = await decrementBranchStockStrict(branch, item.itemName, item.quantity, item.barcode);
-
-      if (stockRpcErr) {
-        // Hard DB error: roll back and surface to operator
-        const msg = `Failed to deduct stock for "${item.itemName}": ${stockRpcErr.message}`;
-        for (const d of decremented) {
-          await incrementBranchStock(branch, d.itemName, d.qty, d.barcode);
-        }
-        await get().fetchBranchData(branch);
-        return msg;
-      }
-
-      if (newQtyRpc === null) {
-        for (const d of decremented) {
-          await incrementBranchStock(branch, d.itemName, d.qty, d.barcode);
-        }
-        await get().fetchBranchData(branch);
-        return `Insufficient stock for "${item.itemName}". Refresh stock and try again before completing this advance order.`;
-      }
-
-      decremented.push({ itemName: item.itemName, qty: item.quantity, barcode: item.barcode });
-
-      // FIX (MD Bug #1): removed duplicate branch_sales insert here.
-      // recordAdvanceOrder() already wrote a branch_sales row with payment_method='advance:<method>'
-      // when the order was placed. Writing a second row here at delivery caused every completed
-      // advance order's revenue and quantity to be counted twice across all owner/admin reports.
-      // Stock deduction (above) is still correct and unchanged — only the duplicate sales row is removed.
+    const completedBy = useAuthStore.getState().currentUser?.username || useAuthStore.getState().currentUser?.displayName || order.soldBy || 'Branch Staff';
+    const { data, error } = await supabase.rpc('complete_branch_advance_order_reserved', {
+      p_branch: branch,
+      p_order_id: orderId,
+      p_balance_method: balanceMethod,
+      p_completed_by: completedBy,
+    });
+    if (error) {
+      const missing = /complete_branch_advance_order_reserved|could not find the function|does not exist|schema cache/i.test(error.message || '');
+      if (missing) return 'Advance completion RPC is not installed. Apply the branch reservation migration.';
+      return `Advance order could not be completed: ${error.message}`;
     }
-
-    // All stock deductions succeeded — now mark the order as completed
-    const { error: updateErr } = await supabase
-      .from('branch_advance_orders')
-      .update({ status: 'completed', fully_paid_at: now, balance_method: balanceMethod, balance_due: 0 })
-      .eq('id', orderId);
-    if (updateErr) {
-      // Restore every successful deduction so a status-write failure cannot corrupt inventory.
-      for (const deducted of decremented) {
-        await incrementBranchStock(branch, deducted.itemName, deducted.qty, deducted.barcode);
-      }
-      await get().fetchBranchData(branch);
-      return `Failed to mark order complete: ${updateErr.message}. Stock changes were rolled back.`;
-    }
-
-    // B3 FIX: refresh from DB after all mutations instead of computing from stale local state
+    const row = data as Record<string, unknown>;
     await get().fetchBranchData(branch);
-
-    // Update advance order status in local state only (stock already refreshed above)
-    set((s) => {
-      const advanceOrders = { ...s.advanceOrders };
-      advanceOrders[branch] = advanceOrders[branch].map((o) =>
-        o.id === orderId
-          ? { ...o, status: 'completed', fullyPaidAt: now, balanceMethod, balanceDue: 0 }
-          : o
-      );
+    set((state) => {
+      const advanceOrders = { ...state.advanceOrders };
+      advanceOrders[branch] = advanceOrders[branch].map((entry) => entry.id === orderId ? {
+        ...entry,
+        status: 'completed',
+        fullyPaidAt: String(row.fully_paid_at || new Date().toISOString()),
+        balanceMethod,
+        balanceDue: 0,
+        reservationStatus: 'consumed',
+      } : entry);
       return { advanceOrders };
     });
-
     return null;
   },
 
@@ -992,8 +949,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const sales = { ...s.sales };
       stock[branch] = stock[branch].map((stockItem) =>
         resolvedBarcode != null && stockItem.itemBarcode != null
-          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty } : stockItem
-          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty } : stockItem,
+          ? stockItem.itemBarcode === resolvedBarcode ? { ...stockItem, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(stockItem.reservedQuantity || 0)) } : stockItem
+          : normalizeStockName(stockItem.itemName) === requestedStockName ? { ...stockItem, quantity: newQty, availableQuantity: Math.max(0, newQty - Number(stockItem.reservedQuantity || 0)) } : stockItem,
       );
       sales[branch] = [newSale, ...sales[branch]];
       return { stock, sales };
@@ -1357,6 +1314,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // Returns an unsubscribe function — call it in the component's cleanup.
   subscribeToStock: (branch) => {
     const channelName = `branch-live-${branch}`;
+    const existing = branchRealtimeSubscriptions.get(channelName);
+    if (existing) {
+      existing.subscribers += 1;
+      return () => {
+        existing.subscribers -= 1;
+        if (existing.subscribers <= 0) {
+          branchRealtimeSubscriptions.delete(channelName);
+          void supabase.removeChannel(existing.channel);
+        }
+      };
+    }
 
     const channel = supabase
       .channel(channelName)
@@ -1380,8 +1348,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       )
       .subscribe();
 
+    branchRealtimeSubscriptions.set(channelName, { channel, subscribers: 1 });
+
     // Return cleanup function
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      const current = branchRealtimeSubscriptions.get(channelName);
+      if (!current) return;
+      current.subscribers -= 1;
+      if (current.subscribers <= 0) {
+        branchRealtimeSubscriptions.delete(channelName);
+        void supabase.removeChannel(current.channel);
+      }
+    };
   },
 }));
-
