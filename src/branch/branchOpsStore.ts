@@ -882,10 +882,17 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
 
+    let complaintQuery = supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 200 : 1000);
+
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
+      complaintQuery = complaintQuery.eq("branch", sessionBranch);
     }
 
     const [
@@ -893,6 +900,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       { data: opRows, error: opError },
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
+      { data: complaintRows, error: complaintError },
     ] = await Promise.all([
       supabase
         .from("app_state")
@@ -902,6 +910,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       opQuery,
       stockCountQuery,
       varianceQuery,
+      complaintQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -915,6 +924,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     }
     if (varianceError && !/branch_stock_variance_records|does not exist|schema cache/i.test(varianceError.message)) {
       console.error("[branchOpsStore] Supabase stock variance load failed:", varianceError.message);
+    }
+    if (complaintError && !/branch_complaint_tickets|does not exist|schema cache/i.test(complaintError.message)) {
+      console.error("[branchOpsStore] Supabase complaint load failed:", complaintError.message);
     }
     const dedicatedRows: BranchOperationRecordRow[] = [
       ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
@@ -952,6 +964,22 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
           confirmedBy: String(row.confirmed_by ?? ""),
           createdAt: String(row.created_at),
         } satisfies BranchStockVarianceRecord),
+      })),
+      ...((complaintRows || []) as Array<Record<string, unknown>>).map((row) => ({
+        record_type: "complaint",
+        record_id: String(row.id),
+        created_at: String(row.created_at),
+        payload: ({
+          id: String(row.id),
+          branch: row.branch as Branch,
+          complaintArea: String(row.complaint_area ?? ""),
+          title: String(row.subject ?? ""),
+          details: String(row.description ?? ""),
+          raisedBy: String(row.created_by_username ?? ""),
+          status: (row.status as ComplaintRecord["status"]) ?? "Open",
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at ?? row.created_at),
+        } satisfies ComplaintRecord),
       })),
     ];
     return mergeOperationRecordsIntoState(
@@ -1200,6 +1228,19 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => {
           const prev = s.complaints.find((c) => c.id === id);
           if (prev) {
+            void supabase
+              .from("branch_complaint_tickets")
+              .update({
+                status,
+                resolution: status === "Resolved" ? `Resolved by ${user}` : null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", id)
+              .then(({ error }) => {
+                if (error && !/branch_complaint_tickets|does not exist|schema cache/i.test(error.message)) {
+                  console.error("[branchOpsStore] Complaint status save failed:", error.message);
+                }
+              });
             mirrorOperationRecord(prev.branch, "complaint", id, { ...prev, status, updatedAt: new Date().toISOString() }, {
               status,
               actor: user,
@@ -1400,16 +1441,31 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         let updatedBill: BranchBillRecord | undefined;
         set((state) => {
           const previous = state.bills.find((bill) => bill.id === billId || bill.billNo === billId);
-          if (!previous || previous.paymentMode === "credit" || previous.paymentMode === "split") return state;
+          if (!previous || previous.paymentMode === "credit") return state;
           const oldMode = previous.paymentMode;
-          updatedBill = { ...previous, paymentMode: newMode, split: undefined };
-          const cashMovements = state.cashMovements.map((movement) =>
+          updatedBill = { ...previous, paymentMode: newMode, split: undefined, tendered: previous.total, balance: 0 };
+          const replacesBillCollection = (movement: CashMovement) =>
             movement.referenceNumber === previous.billNo
             && movement.direction === "in"
-            && movement.purpose === "Bill collection"
-              ? { ...movement, paymentMode: newMode }
-              : movement,
-          );
+            && (movement.purpose === "Bill collection" || movement.purpose === "Bill collection - split");
+          const remainingMovements = state.cashMovements.filter((movement) => !replacesBillCollection(movement));
+          const cashMovements: CashMovement[] = [
+            {
+              id: uid("cash"),
+              branch: previous.branch,
+              cashierUserId: previous.cashierUserId,
+              counterSessionId: previous.counterSessionId,
+              dateTime: new Date().toISOString(),
+              amount: previous.total,
+              paymentMode: newMode,
+              direction: "in",
+              purpose: "Bill collection",
+              enteredBy: user,
+              referenceNumber: previous.billNo,
+              remarks: `Payment mode edited from ${oldMode.toUpperCase()} to ${newMode.toUpperCase()}`,
+            },
+            ...remainingMovements,
+          ];
           mirrorOperationRecord(previous.branch, previous.source === "advance-final" ? "advance_final_bill" : "bill", previous.id, updatedBill, {
             recordNo: previous.billNo,
             amount: previous.total,
