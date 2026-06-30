@@ -293,6 +293,7 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const meta = routeMeta(location.pathname);
   const isBranchBillingRoute = /^\/branch\/(snb|vrsnb)/.test(location.pathname);
+  const isReceiverOrderRole = currentUser?.role === 'receiver_snb' || currentUser?.role === 'receiver_vrsnb';
   const isCafeBillerRoute = currentUser?.role === 'billing' && /^\/(billing|daily-closure|order-history)/.test(location.pathname);
   const isFullscreenBillingRoute = isBranchBillingRoute || isCafeBillerRoute;
   // CHANGE 1: also hide workspace hero for /admin-dashboard
@@ -349,7 +350,11 @@ export default function WorkspaceChrome({ children }: WorkspaceChromeProps) {
   ));
 
   return (
-    <div className={cn('workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]', isFullscreenBillingRoute && 'workspace-branch-billing')}>
+    <div className={cn(
+      'workspace-redesign min-h-[100dvh] bg-[hsl(var(--background))]',
+      isFullscreenBillingRoute && 'workspace-branch-billing',
+      isReceiverOrderRole && 'workspace-receiver-order',
+    )}>
       {items.length > 0 && !isFullscreenBillingRoute && (
         <>
           <button

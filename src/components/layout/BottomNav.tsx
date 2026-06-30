@@ -11,7 +11,6 @@ import {
   QrCode,
   ChefHat,
   CalendarCheck,
-  Inbox,
   Store,
   Flame,
   Package,
@@ -23,9 +22,6 @@ import {
   WalletCards,
   CreditCard,
   Truck,
-  Clock3,
-  Trash2,
-  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNotificationStore } from "@/bakery/notificationStore";
@@ -236,51 +232,6 @@ export default function BottomNav() {
         path: "/admin/alerts",
         badge: unread || undefined,
       },
-    );
-  } else if (currentUser.role === "receiver_vrsnb") {
-    navItems.push(
-      {
-        label: "Order",
-        icon: <Inbox className="size-5" />,
-        path: "/bakery/receive/vrsnb",
-      },
-      {
-        label: "Placed",
-        icon: <FileText className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=placed",
-      },
-      {
-        label: "Alerts",
-        icon: <Bell className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=alerts",
-      },
-      {
-        label: "Stock",
-        icon: <Package className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=stock",
-      },
-      {
-        label: "Count",
-        icon: <ClipboardList className="size-5" />,
-        path: "/bakery/receive/vrsnb?tab=stock-count",
-      },
-    );
-  } else if (currentUser.role === "receiver_snb") {
-    navItems.push(
-      { label: "Order", icon: <Inbox className="size-5" />, path: "/bakery/receive/snb" },
-      { label: "Live", icon: <Clock3 className="size-5" />, path: "/bakery/receive/snb?tab=live" },
-      { label: "History", icon: <History className="size-5" />, path: "/bakery/receive/snb?tab=placed" },
-      { label: "Alerts", icon: <Bell className="size-5" />, path: "/bakery/receive/snb?tab=notifications" },
-      { label: "Stock", icon: <Package className="size-5" />, path: "/bakery/receive/snb?tab=stock" },
-      { label: "PO", icon: <ShoppingCart className="size-5" />, path: "/bakery/receive/snb?tab=po" },
-      { label: "Invoice", icon: <Receipt className="size-5" />, path: "/bakery/receive/snb?tab=purchase-invoice" },
-      { label: "P.Return", icon: <RotateCcw className="size-5" />, path: "/bakery/receive/snb?tab=purchase-return" },
-      { label: "Dump", icon: <Trash2 className="size-5" />, path: "/bakery/receive/snb?tab=dump" },
-      { label: "Damage", icon: <AlertTriangle className="size-5" />, path: "/bakery/receive/snb?tab=damage" },
-      { label: "Transfer", icon: <Truck className="size-5" />, path: "/bakery/receive/snb?tab=transfer-out" },
-      { label: "Advance", icon: <WalletCards className="size-5" />, path: "/bakery/receive/snb?tab=advance" },
-      { label: "Count", icon: <ClipboardList className="size-5" />, path: "/bakery/receive/snb?tab=stock-count" },
-      { label: "Shared", icon: <FileText className="size-5" />, path: "/bakery/receive/snb?tab=shared" },
     );
   } else if (currentUser.role === "store") {
     navItems.push(
