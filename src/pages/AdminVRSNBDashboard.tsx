@@ -83,6 +83,13 @@ import {
 } from "lucide-react";
 
 const BRANCH: Branch = "VRSNB";
+const VRSNB_ADMIN_BRANCHES: Branch[] = ["Cafe", "VRSNB"];
+type VrsnbAdminScope = "overall" | "Cafe" | "VRSNB";
+const SCOPE_LABEL: Record<VrsnbAdminScope, string> = {
+  overall: "Cafe + VRSNB Branch",
+  Cafe: "Cafe / Biller",
+  VRSNB: "VRSNB Branch",
+};
 const CHART_COLORS = [
   "#C5973E",
   "#10B981",
@@ -91,7 +98,7 @@ const CHART_COLORS = [
   "#8B5CF6",
   "#F59E0B",
 ];
-const CREDIT_BRANCHES: Branch[] = ["VRSNB"];
+const CREDIT_BRANCHES: Branch[] = ["Cafe", "VRSNB"];
 const CREDIT_BRANCH_LABEL: Record<Branch, string> = {
   Cafe: "Cafe / Biller",
   VRSNB: "VRSNB Branch",
@@ -445,9 +452,14 @@ export default function AdminVRSNBDashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
-  const viewBranch: Branch = BRANCH;
-  const viewBranchLabel = "VRSNB Branch";
-  const adminLedger = useBranchLedger(fromDate, toDate, [viewBranch]);
+  const [viewScope, setViewScope] = useState<VrsnbAdminScope>("overall");
+  const viewBranches = useMemo<Branch[]>(
+    () => (viewScope === "overall" ? VRSNB_ADMIN_BRANCHES : [viewScope]),
+    [viewScope],
+  );
+  const viewBranch: Branch = viewScope === "Cafe" ? "Cafe" : BRANCH;
+  const viewBranchLabel = SCOPE_LABEL[viewScope];
+  const adminLedger = useBranchLedger(fromDate, toDate, viewBranches);
 
   const userName =
     currentUser?.displayName || currentUser?.username || "VRSNB Admin";
@@ -469,42 +481,62 @@ export default function AdminVRSNBDashboard() {
   }, [loadCatalog, subscribe]);
 
   useEffect(() => {
-    fetchBranchData(BRANCH);
-    fetchCreditPayments(BRANCH);
+    VRSNB_ADMIN_BRANCHES.forEach((branch) => {
+      fetchBranchData(branch);
+      fetchCreditPayments(branch);
+    });
   }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = useMemo(() => {
+    const catalogueNames = new Set(catalogItems.map((item) => normal(item.name)));
+    return viewBranches
+      .flatMap((branch) => {
+        const sourceRows = dedupeStockRows(stock[branch] || []);
+        const filteredRows = branch === "VRSNB"
+          ? sourceRows.filter((item) => catalogueNames.has(normal(item.itemName)))
+          : sourceRows;
+        return filteredRows.map((item) => ({
+          ...item,
+          itemName: viewScope === "overall" ? `${CREDIT_BRANCH_LABEL[branch]} - ${item.itemName}` : item.itemName,
+        }));
+      })
+      .sort((a, b) => a.itemName.localeCompare(b.itemName));
+  }, [stock, catalogItems, viewBranches, viewScope]);
+  const vrsnbStockRows = useMemo(() => {
     const catalogueNames = new Set(catalogItems.map((item) => normal(item.name)));
     return dedupeStockRows(stock[BRANCH] || []).filter((item) =>
       catalogueNames.has(normal(item.itemName)),
     );
   }, [stock, catalogItems]);
-  const branchSalesRows = useMemo(() => sales[viewBranch] || [], [sales, viewBranch]);
+  const branchSalesRows = useMemo(
+    () => viewBranches.flatMap((branch) => sales[branch] || []),
+    [sales, viewBranches],
+  );
   const branchBills = useMemo(
     () =>
       bills.filter(
-        (b) => b.branch === viewBranch && inRange(b.createdAt, fromDate, toDate),
+        (b) => viewBranches.includes(b.branch) && inRange(b.createdAt, fromDate, toDate),
       ),
-    [bills, fromDate, toDate, viewBranch],
+    [bills, fromDate, toDate, viewBranches],
   );
   const branchReturns = useMemo(
     () =>
       returns.filter(
-        (r) => r.branch === viewBranch && inRange(r.createdAt, fromDate, toDate),
+        (r) => viewBranches.includes(r.branch) && inRange(r.createdAt, fromDate, toDate),
       ),
-    [returns, fromDate, toDate, viewBranch],
+    [returns, fromDate, toDate, viewBranches],
   );
   const billedBillNos = useMemo(
     () =>
-      new Set(bills.filter((b) => b.branch === viewBranch).map((b) => b.billNo)),
-    [bills, viewBranch],
+      new Set(bills.filter((b) => viewBranches.includes(b.branch)).map((b) => `${b.branch}|${b.billNo}`)),
+    [bills, viewBranches],
   );
   const legacySalesRows = useMemo(
     () =>
       branchSalesRows.filter(
         (s) =>
           inRange(s.soldAt, fromDate, toDate) &&
-          (!s.billNo || !billedBillNos.has(s.billNo)),
+          (!s.billNo || !billedBillNos.has(`${s.branch}|${s.billNo}`)),
       ),
     [branchSalesRows, fromDate, toDate, billedBillNos],
   );
@@ -571,7 +603,7 @@ export default function AdminVRSNBDashboard() {
     legacySalesRows
       .filter((s) => amountForLegacyPayment(s.paymentMethod, "credit"))
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
-  const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === viewBranch);
+  const ledgerRows = adminLedger.closureRows.filter((row) => viewBranches.includes(row.branch));
   const hasLedgerRows = ledgerRows.length > 0;
   const ledgerGrossSales = ledgerRows.reduce(
     (sum, row) => sum + Math.max(
@@ -600,7 +632,7 @@ export default function AdminVRSNBDashboard() {
   const advanceCollectionsFallback = cashMovements
     .filter(
       (m) =>
-        m.branch === viewBranch &&
+        viewBranches.includes(m.branch) &&
         inRange(m.dateTime, fromDate, toDate) &&
         m.direction === "in" &&
         /advance/i.test(m.purpose || ""),
@@ -639,8 +671,8 @@ export default function AdminVRSNBDashboard() {
   }, [branchStock, lowSearch]);
 
   const movementRows = useMemo(
-    () => cashMovements.filter((m) => m.branch === viewBranch),
-    [cashMovements, viewBranch],
+    () => cashMovements.filter((m) => viewBranches.includes(m.branch)),
+    [cashMovements, viewBranches],
   );
   const movementInRange = useMemo(
     () => movementRows.filter((m) => inRange(m.dateTime, fromDate, toDate)),
@@ -661,31 +693,31 @@ export default function AdminVRSNBDashboard() {
   // the matching cash-movement outflow, otherwise Bank Transfer deposits
   // cancel themselves and show an incorrect zero/negative balance.
   const bankBalance = bankDeposits
-    .filter((d) => d.branch === viewBranch && inRange(d.createdAt, fromDate, toDate))
+    .filter((d) => viewBranches.includes(d.branch) && inRange(d.createdAt, fromDate, toDate))
     .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
   const cardBalance = balanceByMode("card");
   const expenseAmount = expenses
-    .filter((e) => e.branch === viewBranch && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
+    .filter((e) => viewBranches.includes(e.branch) && inRange(`${e.expenseDate}T12:00:00`, fromDate, toDate))
     .reduce((sum, e) => sum + e.amount, 0);
 
-  const scopedCredits = dbCreditSales[viewBranch] || [];
-  const scopedCreditPayments = dbCreditPayments[viewBranch] || [];
+  const scopedCredits = viewBranches.flatMap((branch) => dbCreditSales[branch] || []);
+  const scopedCreditPayments = viewBranches.flatMap((branch) => dbCreditPayments[branch] || []);
   const pendingCredit = scopedCredits.filter((c) => c.status !== "settled").reduce((sum, c) => sum + c.creditAmount, 0);
   const creditPaymentsInRange = scopedCreditPayments.filter((p) => inRange(p.createdAt, fromDate, toDate));
   const clearedCredit = creditPaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   salesBreakdown.creditCollected = clearedCredit;
   salesBreakdown.expenses = expenseAmount;
   const purchasePaymentsInRange = purchasePayments.filter(
-    (p) => p.branch === viewBranch && inRange(p.createdAt, fromDate, toDate),
+    (p) => viewBranches.includes(p.branch) && inRange(p.createdAt, fromDate, toDate),
   );
   const purchasePaid = purchasePaymentsInRange.reduce((sum, p) => sum + p.amount, 0);
   const purchaseCashPaid = purchasePaymentsInRange
     .filter((p) => p.mode === "cash")
     .reduce((sum, p) => sum + p.amount, 0);
   const depositsInRange = bankDeposits.filter(
-    (d) => d.branch === viewBranch && inRange(d.createdAt, fromDate, toDate),
+    (d) => viewBranches.includes(d.branch) && inRange(d.createdAt, fromDate, toDate),
   );
   const depositAmount = depositsInRange.reduce((sum, d) => sum + d.amount, 0);
 
@@ -852,7 +884,7 @@ export default function AdminVRSNBDashboard() {
     });
     branchReturns.forEach((ret) => {
       const original = bills.find(
-        (b) => b.billNo === ret.originalBillNo && b.branch === BRANCH,
+        (b) => b.billNo === ret.originalBillNo && viewBranches.includes(b.branch),
       );
       const person = original?.salesperson || ret.returnedBy;
       const row = map.get(person) ?? {
@@ -878,7 +910,7 @@ export default function AdminVRSNBDashboard() {
             : 0,
       }))
       .sort((a, b) => b.netSales - a.netSales);
-  }, [branchBills, legacySalesRows, branchReturns, bills]);
+  }, [branchBills, legacySalesRows, branchReturns, bills, viewBranches]);
 
   const paymentPie = [
     { name: "Cash", value: finalCashSales, color: CHART_COLORS[1] },
@@ -891,20 +923,22 @@ export default function AdminVRSNBDashboard() {
     (item) => !item.adminOnly || canManage,
   );
   const unreadNotifications = notifications.filter(
-    (n) => n.branch === BRANCH && n.status === "Unread",
+    (n) => viewBranches.includes(n.branch) && n.status === "Unread",
   ).length;
   const pendingSync = purchases.filter(
     (p) =>
-      p.branch === BRANCH && !(p.syncedToStock || p.syncStatus === "Synced"),
+      viewBranches.includes(p.branch) && !(p.syncedToStock || p.syncStatus === "Synced"),
   ).length;
   const pendingPO = purchaseOrders.filter(
     (p) =>
-      p.branch === BRANCH &&
+      viewBranches.includes(p.branch) &&
       !["Received", "Closed", "Cancelled", "Rejected"].includes(p.status),
   ).length;
 
   const commonProps = {
     reportBranch: viewBranch,
+    reportBranches: viewBranches,
+    viewScope,
     reportLabel: viewBranchLabel,
     fromDate,
     toDate,
@@ -966,9 +1000,28 @@ export default function AdminVRSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      <div className="flex items-center justify-between rounded-[2rem] bg-slate-950 p-3 text-white shadow-lg">
-        <div><p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p><p className="text-sm font-bold">Showing {viewBranchLabel} data only</p></div>
-        <span className="rounded-full bg-orange-500 px-3 py-1.5 text-xs font-black">Branch Scoped</span>
+      <div className="flex flex-col gap-3 rounded-[2rem] bg-slate-950 p-3 text-white shadow-lg lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-xs font-black uppercase tracking-wider text-white/50">Overall Control</p>
+          <p className="text-sm font-bold">Showing {viewBranchLabel}</p>
+        </div>
+        <div className="flex flex-wrap gap-2 rounded-2xl bg-white/10 p-1">
+          {(["overall", "Cafe", "VRSNB"] as const).map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              onClick={() => setViewScope(scope)}
+              className={cn(
+                "rounded-xl px-4 py-2 text-xs font-black transition",
+                viewScope === scope
+                  ? "bg-orange-500 text-white shadow-lg shadow-orange-950/20"
+                  : "text-white/70 hover:bg-white/10 hover:text-white",
+              )}
+            >
+              {SCOPE_LABEL[scope]}
+            </button>
+          ))}
+        </div>
       </div>
       {!["stock", "quotations"].includes(tab) && (
         <DateFilters
@@ -1012,7 +1065,7 @@ export default function AdminVRSNBDashboard() {
       {tab === "audit-stock" && (
         <StockAuditTab
           userName={userName}
-          branchStock={branchStock}
+          branchStock={vrsnbStockRows}
           manualUpdateStock={manualUpdateStock}
           fetchBranchData={fetchBranchData}
           setNotice={setNotice}
