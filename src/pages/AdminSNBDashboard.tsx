@@ -1753,14 +1753,66 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
 }
 
 function ComplaintsTab({ userName }: { userName: string }) {
-  const { complaints, addComplaint, updateComplaintStatus } = useBranchOpsStore();
   const [form, setForm] = useState({ complaintArea: "SNB", title: "", details: "" });
-  const rows = complaints.filter((c) => c.branch === BRANCH);
-  const save = () => {
-    if (!form.title.trim() || !form.details.trim()) return;
-    addComplaint({ branch: BRANCH, complaintArea: form.complaintArea, title: form.title, details: form.details, raisedBy: userName });
-    setForm({ ...form, title: "", details: "" });
+  const [rows, setRows] = useState<any[]>([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const { data, error: loadError } = await supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .eq("branch", BRANCH)
+      .order("created_at", { ascending: false });
+    if (loadError) {
+      setError(loadError.message);
+      return;
+    }
+    setRows(data || []);
   };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const save = async () => {
+    if (!form.title.trim() || !form.details.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const { error: rpcError } = await supabase.rpc("create_branch_complaint_ticket", {
+        p_branch: BRANCH,
+        p_complaint_area: form.complaintArea,
+        p_category: "General",
+        p_subject: form.title.trim(),
+        p_description: form.details.trim(),
+        p_priority: "Medium",
+      });
+      if (rpcError) {
+        const missingRpc = /create_branch_complaint_ticket|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_complaint_tickets").insert({
+          ticket_no: "",
+          branch: BRANCH,
+          complaint_area: form.complaintArea,
+          category: "General",
+          subject: form.title.trim(),
+          description: form.details.trim(),
+          priority: "Medium",
+          status: "Open",
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      setForm({ ...form, title: "", details: "" });
+      await load();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Unable to submit complaint");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
       <Panel title="Raise Complaint" icon={<MessageSquareWarning className="size-4" />}>
@@ -1772,25 +1824,28 @@ function ComplaintsTab({ userName }: { userName: string }) {
           </Field>
           <Field label="Title"><input className={inputCls} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
           <Field label="Details"><textarea className={inputCls} value={form.details} onChange={(e) => setForm({ ...form, details: e.target.value })} /></Field>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Submit Complaint</button>
+          {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{error}</p>}
+          <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:opacity-50")}>
+            {saving ? "Submitting..." : "Submit Complaint"}
+          </button>
         </div>
       </Panel>
-      <Panel title="Complaint Register" icon={<Bell className="size-4" />}>
+      <Panel title="Complaint Ticket Register" icon={<Bell className="size-4" />}>
+        <p className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 ring-1 ring-blue-200">
+          SNB Admin can raise tickets and add branch details. Review, resolution and closure are restricted to Owner and Main Admin.
+        </p>
         <DataTable
-          headers={["Date", "Area", "Title", "Details", "Raised By", "Status", "Action"]}
+          headers={["Ticket", "Date", "Area", "Subject", "Details", "Raised By", "Status"]}
           rows={rows.map((c) => [
-            fmtDateTime(c.createdAt),
-            c.complaintArea,
-            c.title,
-            c.details,
-            c.raisedBy,
-            <StatusBadge key="s" tone={c.status === "Resolved" ? "green" : c.status === "In Review" ? "blue" : "amber"}>{c.status}</StatusBadge>,
-            <div key="a" className="flex gap-2">
-              <button className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => updateComplaintStatus(c.id, "In Review", userName)}>Review</button>
-              <button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateComplaintStatus(c.id, "Resolved", userName)}>Resolve</button>
-            </div>,
+            c.ticket_no,
+            fmtDateTime(c.created_at),
+            c.complaint_area,
+            c.subject,
+            c.description,
+            c.created_by_username,
+            <StatusBadge key="s" tone={c.status === "Resolved" || c.status === "Closed" ? "green" : c.status === "Under Review" || c.status === "In Progress" ? "blue" : "amber"}>{c.status}</StatusBadge>,
           ])}
-          empty="No complaints raised."
+          empty="No complaint tickets raised."
         />
       </Panel>
     </div>
@@ -1820,7 +1875,7 @@ function printWasteLog(entry: any, branchLabel: string) {
 function WasteLogsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
-  const { stock, manualUpdateStock } = useBranchStore();
+  const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
@@ -1864,14 +1919,41 @@ function WasteLogsTab({ userName }: { userName: string }) {
       setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
       return;
     }
-    addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
-    // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
-    // this branch's inventory, so deduct it from current stock immediately.
-    const newQty = currentQty - qty;
-    await manualUpdateStock(BRANCH, currentRow?.itemName || form.itemName, newQty, userName, catalogItem?.barcode);
-    // Print the waste log along with its checklist in one go.
-    printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
-    setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    try {
+      const { error: rpcError } = await supabase.rpc("record_branch_waste_secure", {
+        p_branch: BRANCH,
+        p_log_type: subTab,
+        p_item_barcode: catalogItem?.barcode ?? null,
+        p_item_name: currentRow?.itemName || form.itemName,
+        p_quantity: qty,
+        p_unit: form.unit,
+        p_reason: form.reason.trim(),
+        p_verified_by: form.verifiedBy.trim(),
+        p_checklist: form.checklist,
+      });
+      if (rpcError) {
+        const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_waste_logs").insert({
+          branch: BRANCH,
+          log_type: subTab,
+          item_barcode: catalogItem?.barcode ?? null,
+          item_name: currentRow?.itemName || form.itemName,
+          quantity: qty,
+          unit: form.unit,
+          reason: form.reason.trim(),
+          verified_by: form.verifiedBy.trim(),
+          checklist: form.checklist,
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
+      printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
+      setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    } catch (saveError) {
+      setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
+    }
   };
   return (
     <div className="space-y-4">
