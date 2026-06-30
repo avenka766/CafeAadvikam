@@ -289,6 +289,16 @@ export default function BottomNav() {
         path: "/bakery/receive/snb?tab=po",
       },
       {
+        label: "Shared",
+        icon: <FileText className="size-5" />,
+        path: "/bakery/receive/snb?tab=shared",
+      },
+      {
+        label: "Advance",
+        icon: <History className="size-5" />,
+        path: "/bakery/receive/snb?tab=advance",
+      },
+      {
         label: "Count",
         icon: <ClipboardList className="size-5" />,
         path: "/bakery/receive/snb?tab=stock-count",

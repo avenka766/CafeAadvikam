@@ -188,6 +188,8 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Alert', path: '/bakery/receive/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Purchase Order', path: '/bakery/receive/snb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
+        { label: 'Shared Operations', path: '/bakery/receive/snb?tab=shared', icon: <FileText className="size-4" />, group: 'Shared' },
+        { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <Receipt className="size-4" />, group: 'Shared' },
         { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
       ];
     case 'branch_vrsnb':
