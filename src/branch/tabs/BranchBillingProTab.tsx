@@ -350,7 +350,7 @@ export default function BranchBillingProTab({
       delete next[item.name];
       return next;
     });
-  }, [branch, branchStock, stockMap, isCounterOpen]);
+  }, [branchStock, stockMap, isCounterOpen]);
 
   const submitQtyPopup = useCallback(() => {
     if (!qtyPopupItem) return;
@@ -376,7 +376,7 @@ export default function BranchBillingProTab({
     setQtyPopupItem(null);
     setQtyPopupValue('');
     focusSearch(true);
-  }, [branch, branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
+  }, [branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
 
   const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');

@@ -1069,7 +1069,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     && record.date === todayIso()
     && record.active !== false
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
-  const branchCounterOpenRecord = localCounterOpenRecord ?? (dbCounterSession ? {
+  const branchCounterOpenRecord = useMemo(() => localCounterOpenRecord ?? (dbCounterSession ? {
     id: dbCounterSession.id,
     branch,
     date: todayIso(),
@@ -1081,7 +1081,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     openedBy: dbCounterSession.cashier,
     openedAt: dbCounterSession.openedAt,
     active: true,
-  } : undefined);
+  } : undefined), [branch, dbCounterSession, localCounterOpenRecord]);
   const branchClosureRecord = cashierClosures.find((record) => record.branch === branch
     && today(record.createdAt)
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
