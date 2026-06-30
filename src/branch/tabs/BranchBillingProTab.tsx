@@ -19,6 +19,7 @@ import {
 } from '../branchOpsStore';
 
 type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'credit';
+type DiscountMode = 'percent' | 'value';
 type CheckoutRpcResult = {
   billId: string;
   billNo: string;
@@ -51,41 +52,39 @@ const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100)
 const roundWholeRupee = (value: number) => Math.round(Math.max(0, value));
 const clampPercentage = (value: number) => Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
 const BASE_SHORTCUTS = [
-  ['F1', 'Change Salesperson'],
-  ['F2', 'Quantity Change'],
-  ['F3', 'Cash'],
-  ['F4', 'UPI'],
-  ['F5', 'Card'],
-  ['F6', 'Split Payment'],
-  ['F7', 'Credit Sale'],
-  ['F8', 'Cash Tendered'],
-  ['F9', 'Hold Bill'],
-  ['F10', 'Final Bill'],
-  ['F11', 'Recall Hold'],
-  ['F12', 'Search Items'],
+  ['F1', 'New Bill'],
+  ['F2', 'Search Item'],
+  ['F3', 'Hold Bill'],
+  ['F4', 'Recall Hold Bill'],
+  ['F5', 'Cash Payment'],
+  ['F6', 'UPI Payment'],
+  ['F7', 'Card Payment'],
+  ['F8', 'Print / Final Bill'],
+  ['F9', 'Advance Order'],
+  ['F10', 'Quotation'],
+  ['F11', 'Return Bill'],
+  ['F12', 'Close Shift'],
+  ['Ctrl+B', 'Focus Cart'],
+  ['Ctrl+I', 'Focus Item Search'],
+  ['Ctrl+C', 'Clear Cart'],
+  ['Ctrl+D', 'Focus Discount'],
+  ['Ctrl+R', 'Return Bill'],
+  ['Ctrl+P', 'Print / Final Bill'],
   ['Esc', 'Close popup'],
+  ['Enter', 'Confirm action'],
 ];
 const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
-  cash: 'F3',
-  upi: 'F4',
-  card: 'F5',
-  split: 'F6',
-  credit: 'F7',
+  cash: 'F5',
+  upi: 'F6',
+  card: 'F7',
+  split: '—',
+  credit: '—',
 };
 
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
   return item.uom === 'Kgs' ? 'kg' : 'pcs';
 }
 
-function isSnbFlexibleStockItem(branch: Branch, item: Pick<BillingItem, 'category'>) {
-  if (branch !== 'SNB') return false;
-  const category = item.category
-    .trim()
-    .toLowerCase()
-    .replace(/\s*&\s*/g, ' & ')
-    .replace(/\s+/g, ' ');
-  return category === 'mix & combo' || category === 'mix and combo';
-}
 
 function normalizeItemName(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -179,6 +178,7 @@ export default function BranchBillingProTab({
   const searchRef = useRef<HTMLInputElement>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
   const cashTenderedRef = useRef<HTMLInputElement>(null);
+  const discountRef = useRef<HTMLInputElement>(null);
   const cartRef = useRef<HTMLDivElement>(null);
   const itemsGridRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -201,6 +201,7 @@ export default function BranchBillingProTab({
   const [creditPaidMode, setCreditPaidMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [creditRemarks, setCreditRemarks] = useState('');
   const [discount, setDiscount] = useState('');
+  const [discountMode, setDiscountMode] = useState<DiscountMode>('percent');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -282,9 +283,11 @@ export default function BranchBillingProTab({
   };
 
   const subtotal = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.price * i.quantity, 0)), [cart]);
-  const discountPercent = clampPercentage(Number(discount || 0));
-  const rawDiscountValue = roundMoney((subtotal * discountPercent) / 100);
-  const discountValue = Math.min(subtotal, roundWholeRupee(rawDiscountValue));
+  const discountInput = Math.max(0, Number(discount || 0));
+  const discountValue = discountMode === 'percent'
+    ? Math.min(subtotal, roundMoney((subtotal * clampPercentage(discountInput)) / 100))
+    : Math.min(subtotal, roundMoney(discountInput));
+  const discountPercent = subtotal > 0 ? roundMoney((discountValue / subtotal) * 100) : 0;
   const tax = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.tax, 0)), [cart]);
   const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - discountValue));
   const total = roundWholeRupee(amountBeforeRoundOff);
@@ -296,6 +299,8 @@ export default function BranchBillingProTab({
     : paymentMode === 'split'
       ? Number(split.cash || 0) + Number(split.upi || 0) + Number(split.card || 0)
       : Number(cashTendered || (paymentMode === 'cash' ? 0 : total));
+  const splitIsValid = paymentMode !== 'split' || roundMoney(tendered) === roundMoney(total);
+  const checkoutDisabled = saving || cart.length === 0 || !splitIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
   const due = Math.max(0, total - tendered);
   const balance = paymentMode === 'credit' ? Math.max(0, total - tendered) : Math.max(0, tendered - total);
   const todayBills = bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === new Date().toDateString());
@@ -306,14 +311,12 @@ export default function BranchBillingProTab({
     if (paymentMode === 'credit') { setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); }
     if (paymentMode === 'split') {
       setSplit((current) => {
-        const cash = Number(current.cash || 0);
-        const upi = Number(current.upi || 0);
-        const card = Number(current.card || 0);
-        if (cash + upi + card === total) return current;
-        if (cash > 0) return { cash: String(Math.min(cash, total)), upi: String(Math.max(0, Number((total - Math.min(cash, total)).toFixed(2))) || ''), card: '' };
-        if (upi > 0) return { cash: String(Math.max(0, Number((total - Math.min(upi, total)).toFixed(2))) || ''), upi: String(Math.min(upi, total)), card: '' };
-        if (card > 0) return { cash: String(Math.max(0, Number((total - Math.min(card, total)).toFixed(2))) || ''), upi: '', card: String(Math.min(card, total)) };
-        return { cash: '', upi: total > 0 ? String(total) : '', card: '' };
+        const next = {
+          cash: current.cash === '' ? '' : String(Math.min(Math.max(0, Number(current.cash)), total)),
+          upi: current.upi === '' ? '' : String(Math.min(Math.max(0, Number(current.upi)), total)),
+          card: current.card === '' ? '' : String(Math.min(Math.max(0, Number(current.card)), total)),
+        };
+        return next;
       });
     }
   }, [paymentMode, total]);
@@ -326,16 +329,15 @@ export default function BranchBillingProTab({
       return;
     }
     const unit = unitOf(item);
-    const flexibleStock = isSnbFlexibleStockItem(branch, item);
     const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-    if (!flexibleStock && available <= 0) {
+    if (available <= 0) {
       setError(`${item.name} is out of stock and cannot be billed.`);
       return;
     }
     setCart((current) => {
       const existing = current.find((c) => c.barcode === item.barcode || c.itemName === item.name);
       const finalQty = Number(amount.toFixed(3));
-      if (!flexibleStock && finalQty > available) {
+      if (finalQty > available) {
         setError(`Only ${available} ${unit} available for ${item.name}.`);
         return current;
       }
@@ -364,9 +366,8 @@ export default function BranchBillingProTab({
       setShowCounterClosedAlert(true);
       return;
     }
-    const flexibleStock = isSnbFlexibleStockItem(branch, qtyPopupItem);
     const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name, qtyPopupItem.barcode));
-    if (!flexibleStock && amount > available) {
+    if (amount > available) {
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
     }
@@ -414,9 +415,8 @@ export default function BranchBillingProTab({
     }
 
     const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
-    const flexibleStock = catalogItem ? isSnbFlexibleStockItem(branch, catalogItem) : false;
     const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-    if (!flexibleStock && nextQty > available) {
+    if (nextQty > available) {
       setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
       clearCartQuantityDraft(itemName);
       return;
@@ -457,16 +457,16 @@ export default function BranchBillingProTab({
     if (!cart.length) return 'Cart is empty.';
     for (const item of cart) {
       const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
-      const flexibleStock = catalogItem ? isSnbFlexibleStockItem(branch, catalogItem) : false;
-      const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-      if (!flexibleStock && available <= 0) return `${item.itemName} is out of stock.`;
-      if (!flexibleStock && item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
+        const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
+      if (available <= 0) return `${item.itemName} is out of stock.`;
+      if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
     }
     if (paymentMode === 'cash' && Number(cashTendered || 0) < total) return 'Cash tendered is less than bill total.';
     if (paymentMode === 'credit' && !creditCustomerName.trim()) return 'Customer name is required for credit sale.';
     if (paymentMode === 'credit' && !creditCustomerMobile.trim()) return 'Mobile number is required for credit sale.';
     if (paymentMode === 'credit' && !creditDueDate) return 'Due date is required for credit sale.';
-    if (discountPercent < 0 || discountPercent > 100) return 'Discount percentage must be between 0 and 100.';
+    if (discountMode === 'percent' && discountInput > 100) return 'Discount percentage must be between 0 and 100.';
+    if (discountMode === 'value' && discountInput > subtotal) return 'Discount value cannot exceed the subtotal.';
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
     if (paymentMode === 'split' && tendered < total) return 'Split payment total is less than bill total.';
     if (paymentMode === 'split' && tendered > total) return 'Split payment cannot exceed the bill total.';
@@ -474,23 +474,20 @@ export default function BranchBillingProTab({
   };
 
   const updateSplitAmount = (field: 'cash' | 'upi' | 'card', rawValue: string) => {
-    const value = Math.max(0, Math.min(Number(rawValue || 0), total));
-    const valueText = rawValue === '' ? '' : String(value);
-    const remaining = Math.max(0, Number((total - value).toFixed(2)));
-    const remainingText = remaining > 0 ? String(remaining) : '';
     setSplit((current) => {
-      // FIX: only auto-distribute remainder when the other fields are already empty,
-      // so the user can type freely without their partially-entered values being overwritten.
-      if (field === 'cash') {
-        const autoFill = !current.upi && !current.card;
-        return { ...current, cash: valueText, upi: autoFill ? remainingText : current.upi, card: '' };
-      }
-      if (field === 'upi') {
-        const autoFill = !current.cash && !current.card;
-        return { ...current, upi: valueText, cash: autoFill ? remainingText : current.cash, card: '' };
-      }
-      const autoFill = !current.cash && !current.upi;
-      return { ...current, card: valueText, cash: autoFill ? remainingText : current.cash, upi: '' };
+      if (rawValue === '') return { ...current, [field]: '' };
+      const parsed = Number(rawValue);
+      if (!Number.isFinite(parsed)) return current;
+      return { ...current, [field]: String(roundMoney(Math.min(Math.max(0, parsed), total))) };
+    });
+  };
+
+  const fillSplitRemainder = (field: 'cash' | 'upi' | 'card') => {
+    setSplit((current) => {
+      const otherTotal = (['cash', 'upi', 'card'] as const)
+        .filter((key) => key !== field)
+        .reduce((sum, key) => sum + Number(current[key] || 0), 0);
+      return { ...current, [field]: String(roundMoney(Math.max(0, total - otherTotal))) };
     });
   };
 
@@ -502,7 +499,7 @@ export default function BranchBillingProTab({
       setSplit({ cash: '', upi: '', card: '' });
     } else if (mode === 'split') {
       setCashTendered('');
-      setSplit({ cash: '', upi: total > 0 ? String(total) : '', card: '' });
+      setSplit({ cash: '', upi: '', card: '' });
     } else if (mode === 'credit') {
       setCashTendered('');
       setSplit({ cash: '', upi: '', card: '' });
@@ -692,22 +689,25 @@ export default function BranchBillingProTab({
         }
         return;
       }
-      if (e.key === 'F1' && requiresSalesperson) { e.preventDefault(); selectRef.current?.focus(); }
-      if (e.key === 'F2') {
-        e.preventDefault();
-        const selectedCartItem = cart[0] ? items.find((item) => item.name === cart[0].itemName) : visibleItems[selectedIndex];
-        if (selectedCartItem) openQtyPopup(selectedCartItem);
-      }
-      if (e.key === 'F3') { e.preventDefault(); selectPaymentModeRef.current('cash'); }
-      if (e.key === 'F4') { e.preventDefault(); selectPaymentModeRef.current('upi'); }
-      if (e.key === 'F5') { e.preventDefault(); selectPaymentModeRef.current('card'); }
-      if (e.key === 'F6') { e.preventDefault(); selectPaymentModeRef.current('split'); }
-      if (e.key === 'F7') { e.preventDefault(); selectPaymentModeRef.current('credit'); }
-      if (e.key === 'F8') { e.preventDefault(); cashTenderedRef.current?.focus(); }
-      if (e.key === 'F9') { e.preventDefault(); holdBill(); }
-      if (e.key === 'F10') { e.preventDefault(); checkoutRef.current(); }
-      if (e.key === 'F11') { e.preventDefault(); setShowHold(true); }
-      if (e.key === 'F12') { e.preventDefault(); focusSearch(false); }
+      const key = e.key.toLowerCase();
+      if (e.ctrlKey && key === 'b') { e.preventDefault(); cartRef.current?.focus(); return; }
+      if (e.ctrlKey && key === 'i') { e.preventDefault(); focusSearch(false); return; }
+      if (e.ctrlKey && key === 'c') { e.preventDefault(); clear(); return; }
+      if (e.ctrlKey && key === 'd') { e.preventDefault(); discountRef.current?.focus(); return; }
+      if (e.ctrlKey && key === 'r') { e.preventDefault(); onOpenTab?.('returns'); return; }
+      if (e.ctrlKey && key === 'p') { e.preventDefault(); void checkoutRef.current(); return; }
+      if (e.key === 'F1') { e.preventDefault(); clear(); focusSearch(false); return; }
+      if (e.key === 'F2') { e.preventDefault(); focusSearch(false); return; }
+      if (e.key === 'F3') { e.preventDefault(); holdBill(); return; }
+      if (e.key === 'F4') { e.preventDefault(); setShowHold(true); return; }
+      if (e.key === 'F5') { e.preventDefault(); selectPaymentModeRef.current('cash'); return; }
+      if (e.key === 'F6') { e.preventDefault(); selectPaymentModeRef.current('upi'); return; }
+      if (e.key === 'F7') { e.preventDefault(); selectPaymentModeRef.current('card'); return; }
+      if (e.key === 'F8') { e.preventDefault(); void checkoutRef.current(); return; }
+      if (e.key === 'F9') { e.preventDefault(); onOpenTab?.('advance'); return; }
+      if (e.key === 'F10') { e.preventDefault(); onOpenTab?.('quotation'); return; }
+      if (e.key === 'F11') { e.preventDefault(); onOpenTab?.('returns'); return; }
+      if (e.key === 'F12') { e.preventDefault(); onOpenTab?.('closure'); return; }
       const target = e.target as HTMLElement | null;
       const isEditing = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'));
       if (isEditing) return;
@@ -720,7 +720,7 @@ export default function BranchBillingProTab({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, focusSearch, holdBill, items, requiresSalesperson, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
+  }, [cart, clear, focusSearch, holdBill, items, onOpenTab, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
 
   if (!billingAllowed) {
     return (
@@ -842,19 +842,27 @@ export default function BranchBillingProTab({
           <div className="shrink-0 border-t border-slate-200 bg-white shadow-[0_-12px_35px_rgba(15,23,42,.08)]">
             <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-1.5 text-xs">
               <div className="min-w-0 flex-1"><span className="text-xs font-bold text-slate-500">Subtotal </span><span className="font-black tabular-nums">{money(subtotal)}</span></div>
-              <div className="flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1">
-                <span className="text-xs font-bold text-slate-500">Disc %</span>
+              <div className="flex items-center gap-1 rounded-xl bg-slate-100 px-1 py-1">
+                <select value={discountMode} onChange={(e) => { setDiscountMode(e.target.value as DiscountMode); setDiscount(''); }} className="rounded-lg bg-white px-1 py-1 text-[10px] font-black outline-none" aria-label="Discount type">
+                  <option value="percent">%</option>
+                  <option value="value">₹</option>
+                </select>
                 <input
+                  ref={discountRef}
                   type="number"
                   min="0"
-                  max="100"
+                  max={discountMode === 'percent' ? 100 : subtotal}
                   step="0.01"
                   value={discount}
                   onChange={(e) => setDiscount(e.target.value)}
-                  onBlur={() => { if (discount !== '') setDiscount(String(clampPercentage(Number(discount)))); }}
+                  onBlur={() => {
+                    if (discount === '') return;
+                    const value = Math.max(0, Number(discount));
+                    setDiscount(String(discountMode === 'percent' ? clampPercentage(value) : Math.min(value, subtotal)));
+                  }}
                   placeholder="0"
                   className="w-14 bg-transparent text-sm font-black outline-none"
-                  aria-label="Discount percentage"
+                  aria-label={discountMode === 'percent' ? 'Discount percentage' : 'Discount value'}
                 />
               </div>
               <div className="rounded-xl bg-slate-950 px-3 py-1 text-lg font-black tabular-nums text-white">{money(total)}</div>
@@ -872,11 +880,14 @@ export default function BranchBillingProTab({
             {paymentMode === 'split' ? (
               <div className="space-y-1 px-4 pb-2">
                 <div className="grid grid-cols-3 gap-2">
-                  <input type="number" min="0" max={total} value={split.cash} onChange={(e)=>updateSplitAmount('cash', e.target.value)} placeholder="Cash" className="rounded-xl border px-2 py-1 font-bold"/>
-                  <input type="number" min="0" max={total} value={split.upi} onChange={(e)=>updateSplitAmount('upi', e.target.value)} placeholder="UPI" className="rounded-xl border px-2 py-1 font-bold"/>
-                  <input type="number" min="0" max={total} value={split.card} onChange={(e)=>updateSplitAmount('card', e.target.value)} placeholder="Card" className="rounded-xl border px-2 py-1 font-bold"/>
+                  {(['cash','upi','card'] as const).map((field) => (
+                    <div key={field} className="flex overflow-hidden rounded-xl border bg-white">
+                      <input type="number" min="0" max={total} value={split[field]} onChange={(e)=>updateSplitAmount(field, e.target.value)} placeholder={field.toUpperCase()} className="min-w-0 flex-1 px-2 py-1 font-bold outline-none"/>
+                      <button type="button" onClick={() => fillSplitRemainder(field)} className="border-l bg-slate-100 px-2 text-[9px] font-black text-slate-600" title={`Fill remaining amount in ${field}`}>REST</button>
+                    </div>
+                  ))}
                 </div>
-                <p className="text-xs font-bold text-slate-500">Split must equal {money(total)}. Remaining auto-fills when one amount is entered.</p>
+                <p className={cn('text-xs font-bold', roundMoney(tendered) === roundMoney(total) ? 'text-emerald-700' : 'text-red-600')}>Split must equal {money(total)}. Enter all allocations or use REST; checkout stays locked until exact.</p>
               </div>
             ) : paymentMode === 'credit' ? (
               <div className="mx-4 mb-2 space-y-2 rounded-2xl border-2 border-amber-200 bg-amber-50 p-2">
@@ -910,8 +921,8 @@ export default function BranchBillingProTab({
                   <input ref={cashTenderedRef} value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-8 min-w-0 flex-1 bg-transparent text-base font-black outline-none"/>
                 </div>
               )}
-              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
-              <button onClick={checkout} disabled={saving || cart.length === 0} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
+              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F3</span></button>
+              <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F8</span></button>
             </div>
             {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border border-slate-200 bg-white py-1.5 text-xs font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
           </div>
@@ -978,22 +989,21 @@ export default function BranchBillingProTab({
                     }
                     if (e.key === 'Escape') setShowDropdown(false);
                   }}
-                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F12 - search item name or barcode'}
+                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F2 - search item name or barcode'}
                   className="h-8 w-full bg-transparent text-sm font-black outline-none placeholder:text-slate-400"
                 />
                 {showDropdown && visibleItems.length > 0 && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                     {visibleItems.slice(0, 10).map((item, idx) => {
                       const st = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-                      const flexibleStock = isSnbFlexibleStockItem(branch, item);
-                      return (
+                                        return (
                         <div
                           key={item.barcode}
                           onMouseDown={() => { openQtyPopup(item); setShowDropdown(false); setQuery(''); }}
-                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && !flexibleStock && 'opacity-50')}
+                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && 'opacity-50')}
                         >
                           <span>{item.name}</span>
-                          <span className="text-xs text-slate-500">{money(item.price)} - {flexibleStock && st <= 0 ? 'Non-stock billing' : st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
+                          <span className="text-xs text-slate-500">{money(item.price)} - {st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
                         </div>
                       );
                     })}
@@ -1012,8 +1022,7 @@ export default function BranchBillingProTab({
             <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1.5">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-                const flexibleStock = isSnbFlexibleStockItem(branch, item);
-                const disabled = stock <= 0 && !flexibleStock;
+                            const disabled = stock <= 0;
                 const inCart = cart.find((c)=>c.barcode===item.barcode || c.itemName===item.name);
                 return (
                   <div
@@ -1034,7 +1043,7 @@ export default function BranchBillingProTab({
                     </div>
                     <div className="mt-1">
                       <p className="text-sm font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
-                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{flexibleStock && stock <= 0 ? 'Non-stock billing' : disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
+                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
                     </div>
                     {inCart && <div className="mt-1.5 rounded-lg bg-emerald-600 px-2 py-0.5 text-center text-[9px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
@@ -1054,7 +1063,7 @@ export default function BranchBillingProTab({
           existingQuantity={cart.find((line) => line.barcode === qtyPopupItem.barcode || line.itemName === qtyPopupItem.name)?.quantity}
           branchStock={branchStock}
           stockMap={stockMap}
-          allowInsufficientStock={isSnbFlexibleStockItem(branch, qtyPopupItem)}
+          allowInsufficientStock={false}
           onValue={setQtyPopupValue}
           onClose={() => setShowQtyPopup(false)}
           onAdd={submitQtyPopup}
