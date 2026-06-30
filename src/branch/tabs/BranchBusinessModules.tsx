@@ -25,7 +25,7 @@ import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCa
 import { printCounterBill, printHtml, printBranchCashierClosure } from '../printUtils';
 import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
-type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void };
+type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order' };
 
 type LedgerBillRow = {
   id: string;
@@ -414,14 +414,16 @@ export function CreditSalesTab({ branch }: ModuleProps) {
     </Section>
   </div>;
 }
-export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
+export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, counterOpenings } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
+  const isSnbOrder = source === 'snb-order' && branch === 'SNB';
   const requiresSalesperson = branch === 'SNB';
   const user = currentUser?.username || currentUser?.displayName || 'Cashier';
+  const auditActor = isSnbOrder ? `SNB Order - ${user}` : user;
   const items = useOperationalCatalog(branch);
   const people = Array.from(new Set(salespeople.filter((p)=>p.branch===branch && p.active).map((p)=>p.name).filter(Boolean)));
   const [mode, setMode] = useState<'store' | 'custom' | 'cake'>('store');
@@ -444,7 +446,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
   });
   const [error, setError] = useState('');
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
-  const counterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
+  const counterOpenToday = isSnbOrder || counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const staff = requiresSalesperson ? common.salesperson : user;
@@ -595,32 +597,72 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
     const orderNo = nextBranchAdvanceOrderNumber(branch);
     let stockReserved = false;
-    if (orderType === 'store') {
-      const stockError = await reserveStoreLines(orderNo, sourceLines);
-      if (stockError) {
-        setError(`Advance order was not saved because stock could not be reserved: ${stockError}`);
+    if (isSnbOrder) {
+      const receiverItems = sourceLines.map((line) => ({
+        itemName: line.itemName,
+        barcode: line.barcode,
+        quantity: line.quantity,
+        sellUnit: line.unit,
+        price: line.price,
+        lineTotal: line.lineTotal,
+        isCustom: orderType !== 'store',
+        orderType,
+        slipNumber: common.slipNumber.trim() || undefined,
+        mobile: common.mobile.trim(),
+        deliveryTime: common.deliveryTime,
+      }));
+      const receiverNotes = [
+        `${orderType} advance order`,
+        common.mobile.trim() ? `Mobile ${common.mobile.trim()}` : '',
+        common.slipNumber.trim() ? `Slip ${common.slipNumber.trim()}` : '',
+        common.deliveryTime ? `Delivery time ${common.deliveryTime}` : '',
+        orderType === 'cake' ? `${cake.creamType} · ${selectedCakeType?.name || ''} · ${cake.flavor} · ${cake.shape} · ${cake.designType}` : '',
+        orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing SNB stock advance order',
+      ].filter(Boolean).join(' | ');
+      const { error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure', {
+        p_customer_name: common.customerName.trim(),
+        p_items: receiverItems,
+        p_subtotal: orderValue,
+        p_advance_amount: adv,
+        p_advance_method: common.paymentMode,
+        p_delivery_date: common.deliveryDate,
+        p_notes: receiverNotes,
+        p_entered_by: auditActor,
+      });
+      if (receiverError) {
+        setError(`Advance order was not saved: ${receiverError.message}`);
         return;
       }
-      stockReserved = true;
-    }
-    if (adv > 0) {
-      const { error: paymentError } = await supabase.rpc('record_branch_advance_payment', {
-        p_branch: branch,
-        p_order_no: orderNo,
-        p_bill_no: orderNo,
-        p_payment_stage: 'advance',
-        p_payment_mode: common.paymentMode,
-        p_amount: adv,
-        p_order_total: orderValue,
-        p_collected_by: staff,
-        p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
-      });
-      if (paymentError) {
-        if (stockReserved) await releaseStoreReservation(orderNo);
-        setError(/record_branch_advance_payment|could not find the function|schema cache/i.test(paymentError.message)
-          ? 'Advance payment RPC is not installed. Run 20260621_branch_advance_payment_rpc.sql before collecting an advance.'
-          : `Advance order was not saved: ${paymentError.message}`);
-        return;
+      stockReserved = orderType === 'store';
+      await fetchBranchData(branch);
+    } else {
+      if (orderType === 'store') {
+        const stockError = await reserveStoreLines(orderNo, sourceLines);
+        if (stockError) {
+          setError(`Advance order was not saved because stock could not be reserved: ${stockError}`);
+          return;
+        }
+        stockReserved = true;
+      }
+      if (adv > 0) {
+        const { error: paymentError } = await supabase.rpc('record_branch_advance_payment', {
+          p_branch: branch,
+          p_order_no: orderNo,
+          p_bill_no: orderNo,
+          p_payment_stage: 'advance',
+          p_payment_mode: common.paymentMode,
+          p_amount: adv,
+          p_order_total: orderValue,
+          p_collected_by: staff,
+          p_remarks: `${orderType} advance order - ${common.customerName.trim()}`,
+        });
+        if (paymentError) {
+          if (stockReserved) await releaseStoreReservation(orderNo);
+          setError(/record_branch_advance_payment|could not find the function|schema cache/i.test(paymentError.message)
+            ? 'Advance payment RPC is not installed. Run 20260621_branch_advance_payment_rpc.sql before collecting an advance.'
+            : `Advance order was not saved: ${paymentError.message}`);
+          return;
+        }
       }
     }
     const order = addAdvanceCakeOrder({
@@ -641,9 +683,10 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       photoCharge: orderType === 'cake' ? cakePrice.photoCharge : undefined,
       messageOnCake: orderType === 'cake' ? cake.messageOnCake : '', designNotes: orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing branch stock advance order [Stock Reserved]',
       attachmentName, attachmentDataUrl, orderValue, advanceAmount: adv, balanceAmount, salesperson: staff, paymentMode: common.paymentMode as 'cash'|'upi'|'card',
+      createdBy: auditActor, collectionSource: isSnbOrder ? 'SNB Order collected' : undefined, skipLocalCashMovement: isSnbOrder,
     });
     // Print slip — show "PAID IN FULL" stamp when fully paid
-    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: staff, fullyPaid, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
+    printAdvanceSalesOrder({ branch, orderNo: order.orderNo, slipNumber: order.slipNumber, customerName: order.customerName, mobile: order.mobile, deliveryDate: order.deliveryDate, deliveryTime: order.deliveryTime, items: sourceLines, orderValue, advanceAmount: adv, balanceAmount, paymentMode: common.paymentMode, staffName: isSnbOrder ? auditActor : staff, fullyPaid, cakeDetails: orderType === 'cake' && selectedCakeType ? { creamType: cake.creamType, cakeType: selectedCakeType.name, flavor: cake.flavor.trim(), weightKg: cakeWeight, shape: cake.shape.trim(), design: cake.designType, baseRate: cakePrice.baseRate, baseAmount: cakePrice.baseAmount, designCharge: cakePrice.designCharge, drawingCharge: cakePrice.drawingCharge, photoCharge: cakePrice.photoCharge, messageOnCake: cake.messageOnCake.trim() || undefined } : undefined });
     setCommon({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
     setStoreFullyPaid(false); setCustomFullyPaid(false);
     setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'' });
@@ -671,7 +714,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       p_balance_amount: o.balanceAmount,
       p_payment_mode: usedMode,
       p_salesperson: o.salesperson,
-      p_biller: currentUser?.displayName || 'Staff',
+      p_biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
       p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved,
     });
     if (finalError) {
@@ -684,7 +727,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     if (!finalResult?.billNo || !finalResult.invoiceNo) { setError('Final invoice was not returned by Supabase.'); return; }
     const { billNo, invoiceNo } = finalResult;
     if (orderKind !== 'custom') await fetchBranchData(branch);
-    if (o.balanceAmount > 0) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    if (o.balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
     // balance portion tagged with usedMode. Previously the entire order value was
@@ -711,9 +754,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
       paymentMode: finalBillPaymentMode,
       split: finalBillSplit,
       salesperson: o.salesperson,
-      biller: currentUser?.displayName || 'Staff',
+      biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
     });
-    updateAdvanceStatus(o.id, 'Paid In Full', currentUser?.displayName || 'Staff', { finalInvoiceBillNo: billNo, balanceAmount: 0 });
+    updateAdvanceStatus(o.id, 'Paid In Full', isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'), { finalInvoiceBillNo: billNo, balanceAmount: 0 });
     void printCounterBill(finalBill, false);
     setCollectingId(null);
   };

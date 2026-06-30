@@ -22,6 +22,7 @@ interface Props {
   branchThresholds: Record<string, number>;
   loading: boolean;
   stockMismatches: StockMismatch[];
+  allowManualUpdate?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -398,7 +399,7 @@ function NegativeStockTab({
 
 type StockSubTab = 'incoming' | 'current' | 'manual' | 'negative' | 'threshold';
 
-export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches }: Props) {
+export function StockTab({ branch, branchStock, branchIncoming, branchThresholds, loading, stockMismatches, allowManualUpdate = true }: Props) {
   const { confirmIncoming, confirmAllIncoming, syncIncomingFromDispatches, fetchBranchData } = useBranchStore();
   const { addNotification } = useBranchOpsStore();
   const { currentUser } = useAuthStore();
@@ -516,10 +517,14 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
   const SUBTABS: { id: StockSubTab; label: string }[] = [
     { id: 'incoming', label: `Incoming${todayIncoming.length > 0 ? ` (${todayIncoming.length})` : ''}` },
     { id: 'current',  label: 'Current stock' },
-    { id: 'manual',   label: 'Update stock' },
+    ...(allowManualUpdate ? [{ id: 'manual' as const, label: 'Update stock' }] : []),
     { id: 'negative', label: `Negative${negativeItems.length > 0 ? ` (${negativeItems.length})` : ''}` },
     { id: 'threshold', label: 'Thresholds' },
   ];
+
+  useEffect(() => {
+    if (!allowManualUpdate && subTab === 'manual') setSubTab('incoming');
+  }, [allowManualUpdate, subTab]);
 
   return (
     <div className="space-y-3">
@@ -673,7 +678,7 @@ export function StockTab({ branch, branchStock, branchIncoming, branchThresholds
       )}
 
       {/* ── Manual stock update ──────────────────────────────────────────────── */}
-      {subTab === 'manual' && <ManualStockUpdate branch={branch} branchStock={branchStock} />}
+      {allowManualUpdate && subTab === 'manual' && <ManualStockUpdate branch={branch} branchStock={branchStock} />}
 
       {/* ── Negative stock ───────────────────────────────────────────────────── */}
       {subTab === 'negative' && (
