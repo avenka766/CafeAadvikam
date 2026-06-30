@@ -195,6 +195,7 @@ export function printBranchCashierClosure(input: {
   billsCount: number;
   cancelledCount: number;
   cash: number; upi: number; card: number; splitTotal: number;
+  actualUpi: number; upiDifference: number; upiNotes?: string;
   creditSales: number; creditCollected: number;
   openingCash: number; expenses: number; refunds: number;
   expected: number; counted: number; difference: number;
@@ -215,6 +216,7 @@ export function printBranchCashierClosure(input: {
           <td>${safeHtml(b.biller)}</td>
         </tr>`).join('');
   const notesHtml = input.notes?.trim() ? `<div class="notes"><b>Closure Notes</b><p>${safeHtml(input.notes)}</p></div>` : '';
+  const upiNotesHtml = input.upiNotes?.trim() ? `<div class="notes"><b>UPI Audit Remarks</b><p>${safeHtml(input.upiNotes)}</p></div>` : '';
   const refundRowsHtml = input.refundRows.length === 0
     ? '<tr><td colspan="7" class="muted center">No refunds in this counter session.</td></tr>'
     : input.refundRows.map((r) => `<tr><td>${safeHtml(r.returnNo)}</td><td>${safeHtml(r.originalBillNo)}</td><td>${safeHtml(new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td><td>${safeHtml(r.paymentMode.toUpperCase())}</td><td>${safeHtml(r.reason)}</td><td>${safeHtml(r.cashier)}</td><td class="right strong">-${safeHtml(inr(r.amount))}</td></tr>`).join('');
@@ -288,9 +290,15 @@ export function printBranchCashierClosure(input: {
           <tr><td>Refunds</td><td class="right">${safeHtml(inr(input.refunds))}</td></tr>
           <tr><td>Expected Cash</td><td class="right">${safeHtml(inr(input.expected))}</td></tr>
           <tr><td>Physical Cash</td><td class="right">${safeHtml(inr(input.counted))}</td></tr>
-          <tr><td class="strong">Difference</td><td class="right strong">${safeHtml(inr(input.difference))}</td></tr>
+          <tr><td class="strong">Cash Difference</td><td class="right strong">${safeHtml(inr(input.difference))}</td></tr>
         </tbody></table></section>
       </div>
+
+      <section class="section"><h2>UPI Audit</h2><table><tbody>
+        <tr><td>System UPI Total</td><td class="right">${safeHtml(inr(input.upi))}</td></tr>
+        <tr><td>Verified / Entered UPI Amount</td><td class="right">${safeHtml(inr(input.actualUpi))}</td></tr>
+        <tr><td class="strong">UPI Difference</td><td class="right strong">${safeHtml(inr(input.upiDifference))}</td></tr>
+      </tbody></table></section>
 
       <div class="grid">
         <div class="card"><div class="label">Credit Sales</div><div class="value">${safeHtml(inr(input.creditSales))}</div></div>
@@ -299,6 +307,7 @@ export function printBranchCashierClosure(input: {
         <div class="card"><div class="label">Normal Sales</div><div class="value">${safeHtml(inr(input.totalSales))}</div></div>
       </div>
 
+      ${upiNotesHtml}
       ${notesHtml}
       <section class="section"><h2>Refund Register</h2><table><thead><tr><th>Return</th><th>Original Bill</th><th>Time</th><th>Mode</th><th>Reason</th><th>Cashier</th><th class="right">Amount</th></tr></thead><tbody>${refundRowsHtml}</tbody></table></section>
       <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Payment</th><th class="right">Paid</th><th>Cashier</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>

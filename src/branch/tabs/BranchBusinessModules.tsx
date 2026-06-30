@@ -1050,6 +1050,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
   const [opening, setOpening] = useState('0');
   const [closing, setClosing] = useState('');
+  const [actualUpiInput, setActualUpiInput] = useState('');
+  const [upiAuditNotes, setUpiAuditNotes] = useState('');
   const [notes, setNotes] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
   const [ledgerToday, setLedgerToday] = useState<ClosureLedgerRow | null>(null);
@@ -1244,9 +1246,24 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const expected = Number(opening || 0) + cash - cashOutflows;
   const countedCash = closeTotal > 0 ? closeTotal : Number(closing || 0);
   const diff = countedCash - expected;
+  const actualUpi = Number(actualUpiInput || 0);
+  const upiDifference = actualUpi - upi;
+  const upiAuditEntered = actualUpiInput.trim() !== '';
+  const cashMatches = Math.abs(diff) < 0.01;
+  const upiMatches = upiAuditEntered && Math.abs(upiDifference) < 0.01;
+  const closureAuditComplete = countedCash > 0 && upiAuditEntered;
+  const closureMatches = closureAuditComplete && cashMatches && upiMatches;
 
   const save = async () => {
     if (!branchCounterOpenRecord) { setSavedMessage('Open the counter before saving a closure.'); return; }
+    if (!upiAuditEntered || !Number.isFinite(actualUpi) || actualUpi < 0) {
+      setSavedMessage('Enter the verified UPI amount before saving the closure. Enter 0 when there was no UPI settlement.');
+      return;
+    }
+    if (Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3) {
+      setSavedMessage('Enter UPI audit remarks because the verified amount does not match the system UPI total.');
+      return;
+    }
     const closurePayload = {
       branch,
       closure_date: todayIso(),
@@ -1261,6 +1278,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       closing_denominations: Object.fromEntries(Object.entries(closeDenominations).map(([denom, count]) => [String(denom), String(count || '')])),
       cash_total: cash,
       upi_total: upi,
+      actual_upi: actualUpi,
+      upi_difference: upiDifference,
+      upi_notes: upiAuditNotes.trim() || null,
       card_total: card,
       credit_billed: creditSalesTotal,
       credit_collected: creditCollectionTotal,
@@ -1302,6 +1322,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           net_sales: netSales,
           cash_sales: cash,
           upi_sales: upi,
+          counted_upi: actualUpi,
+          upi_difference: upiDifference,
+          upi_notes: upiAuditNotes.trim() || null,
           card_sales: card,
           credit_sales: creditSalesTotal,
           credit_collected: creditCollectionTotal,
@@ -1327,13 +1350,15 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         return;
       }
     }
-    addCashierClosure({ branch, cashier: user, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
+    addCashierClosure({ branch, cashier: user, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
     closeCounter(branch, todayIso(), user, currentUser?.id);
     setDbCounterSession(null);
-    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; cash outflows ${money(cashOutflows)}; difference ${money(diff)}.`, raisedBy: user });
+    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: user });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setClosing('');
+    setActualUpiInput('');
+    setUpiAuditNotes('');
     setNotes('');
     setTimeout(() => setSavedMessage(''), 3000);
   };
@@ -1389,6 +1414,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     totalSales, advanceCollected: advanceCollectedToday, totalSalesIncAdvance,
     billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
     cash, upi, card, splitTotal,
+    actualUpi, upiDifference, upiNotes: upiAuditNotes,
     creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
     openingCash: Number(opening || 0), expenses: cashOutflows, refunds,
     expected, counted: countedCash, difference: diff,
@@ -1405,7 +1431,10 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       ['Advance Collected Today', advanceCollectedToday],
       ['Total Sales (inc. Advance)', totalSalesIncAdvance],
       ['Cash Collected', cash],
-      ['UPI Collected', upi],
+      ['UPI Collected (System)', upi],
+      ['UPI Verified / Entered', actualUpi],
+      ['UPI Difference', upiDifference],
+      ['UPI Audit Remarks', upiAuditNotes],
       ['Card Collected', card],
       ['Split Payments', splitTotal],
       ['Credit Sales', creditSalesTotal],
@@ -1487,18 +1516,18 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           </div>
           <p className="mt-2 text-sm font-bold text-muted-foreground">Cash {money(cash)} · UPI {money(upi)} · Card {money(card)}</p>
         </div>
-        <div className={cn('rounded-3xl border p-4 shadow-soft', countedCash > 0 ? (Math.abs(diff) < 0.01 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50') : 'border-slate-200 bg-slate-50')}>
+        <div className={cn('rounded-3xl border p-4 shadow-soft', closureAuditComplete ? (closureMatches ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50') : 'border-slate-200 bg-slate-50')}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Step 3</p>
               <h3 className="font-display text-lg font-black text-foreground">Close Counter</h3>
             </div>
-            {countedCash > 0 && Math.abs(diff) < 0.01 ? <CheckCircle2 className="size-6 text-emerald-600" /> : <Banknote className="size-6 text-slate-600" />}
+            {closureMatches ? <CheckCircle2 className="size-6 text-emerald-600" /> : <WalletCards className="size-6 text-slate-600" />}
           </div>
           <p className="mt-2 text-sm font-bold text-muted-foreground">
             {!branchCounterOpenRecord && branchClosureRecord
-              ? `Closed by ${branchClosureRecord.cashier}. Difference ${money(branchClosureRecord.difference)}`
-              : `Expected ${money(expected)} · Counted ${money(countedCash)} · Difference ${money(diff)}`}
+              ? `Closed by ${branchClosureRecord.cashier}. Cash difference ${money(branchClosureRecord.difference)} · UPI difference ${money(branchClosureRecord.upiDifference || 0)}`
+              : `Cash difference ${money(diff)} · UPI difference ${upiAuditEntered ? money(upiDifference) : 'enter verified UPI'}`}
           </p>
         </div>
       </div>
@@ -1588,8 +1617,8 @@ export function CashierClosureTab({ branch }: ModuleProps) {
 
         <div className="rounded-3xl border border-border bg-card p-4 shadow-soft space-y-3">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Cash closure check</p>
-            <h2 className="font-display text-xl font-black text-foreground">Cash Counter</h2>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">Cash and UPI closure check</p>
+            <h2 className="font-display text-xl font-black text-foreground">Counter Audit</h2>
           </div>
           <div className="rounded-2xl bg-muted/40 p-3 space-y-2">
             <Field label="Opening Cash"><Input type="number" value={opening} onChange={(e)=>setOpening(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} /></Field>
@@ -1612,12 +1641,50 @@ export function CashierClosureTab({ branch }: ModuleProps) {
               </div>
             </div>
             <Field label="Physical Closing Cash"><Input type="number" value={closing} onChange={(e)=>setClosing(e.target.value)} placeholder="Enter counted cash" /></Field>
-            <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', Math.abs(diff) < 0.01 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700')}>
-              <span className="text-sm font-black">Difference</span>
+            <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', cashMatches ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700')}>
+              <span className="text-sm font-black">Cash Difference</span>
               <span className="font-display text-xl font-black tabular-nums">{money(diff)}</span>
             </div>
           </div>
-          <Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Closure notes, cash shortage/excess reason, UPI settlement note..." rows={3} />
+
+          <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">UPI audit</p>
+                <p className="text-xs font-bold text-muted-foreground">Compare the UPI app or settlement amount with the system total.</p>
+              </div>
+              <Smartphone className="size-5 text-blue-700" />
+            </div>
+            <div className="flex justify-between rounded-xl bg-card px-3 py-2 text-sm">
+              <span>System UPI total</span>
+              <span className="font-black tabular-nums">{money(upi)}</span>
+            </div>
+            <Field label="Verified / Entered UPI Amount">
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={actualUpiInput}
+                onChange={(e)=>{ setActualUpiInput(e.target.value); setSavedMessage(''); }}
+                placeholder="Enter amount shown in UPI settlement"
+              />
+            </Field>
+            <div className={cn('rounded-2xl px-3 py-3 flex items-center justify-between border', !upiAuditEntered ? 'bg-slate-50 border-slate-200 text-slate-600' : upiMatches ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700')}>
+              <span className="text-sm font-black">UPI Difference</span>
+              <span className="font-display text-xl font-black tabular-nums">{upiAuditEntered ? money(upiDifference) : '—'}</span>
+            </div>
+            <Textarea
+              value={upiAuditNotes}
+              onChange={(e)=>{ setUpiAuditNotes(e.target.value); setSavedMessage(''); }}
+              placeholder={upiAuditEntered && Math.abs(upiDifference) >= 0.01 ? 'Required: explain UPI shortage or excess' : 'UPI verification remarks (optional when matched)'}
+              rows={2}
+            />
+            {upiAuditEntered && Math.abs(upiDifference) >= 0.01 && upiAuditNotes.trim().length < 3 && (
+              <p className="text-xs font-black text-red-700">Remarks are required because the UPI amount does not match.</p>
+            )}
+          </div>
+
+          <Textarea value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="General closure notes and cash shortage/excess reason..." rows={3} />
         </div>
       </div>
 
