@@ -98,7 +98,7 @@ function csvDownload(filename: string, rows: Array<Record<string, string | numbe
   const headers = Object.keys(safeRows[0]);
   const csv = [headers.join(','), ...safeRows.map(row => headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 0);
 }
 function paymentIncludes(payment: string | null | undefined, key: 'cash' | 'upi' | 'card' | 'credit') {
   const m = (payment || '').toLowerCase();
@@ -216,7 +216,7 @@ function AdminDashboard() {
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
   const requestedTab = searchParams.get('tab') as AdminTab | null;
-  const allowedNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
+  const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
   const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
@@ -283,10 +283,15 @@ function AdminDashboard() {
     if (requestedTab === 'items') navigate('/bakery/items', { replace: true });
   }, [navigate, requestedTab]);
   useEffect(() => {
-    if (requestedTab && NAV_ITEMS.some((item) => item.id === requestedTab) && requestedTab !== activeTab) {
-      setActiveTab(requestedTab);
+    if (!requestedTab) return;
+    const allowed = allowedNavItems.some((item) => item.id === requestedTab);
+    if (!allowed) {
+      setActiveTab('overview');
+      setSearchParams({}, { replace: true });
+      return;
     }
-  }, [requestedTab, activeTab]);
+    setActiveTab(requestedTab);
+  }, [allowedNavItems, requestedTab, setSearchParams]);
 
   const rangeLabel = fromDate === toDate
     ? new Date(`${fromDate}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -337,9 +342,12 @@ function AdminDashboard() {
     return BRANCHES.map(branch => {
       if (branch === 'Cafe') return { branch, label: 'Cafe', sales: cafeSalesTotal, orders: cafeServedOrders.length, returns: 0 };
       const txns = branchTransactions.filter(t => t.branch === branch);
-      const ops = opsBillsInRange.filter(b => b.branch === branch);
-      const revenue = Math.max(txns.reduce((sum, t) => sum + t.revenue, 0), ops.reduce((sum, b) => sum + Number(b.total || 0), 0));
-      return { branch, label: branch, sales: revenue, orders: Math.max(txns.length, ops.length), returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
+      const ops = opsBillsInRange.filter(b => b.branch === branch && b.status !== 'Returned');
+      const representedBills = new Set(ops.map((bill) => bill.billNo).filter(Boolean));
+      const legacy = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
+      const revenue = ops.reduce((sum, bill) => sum + Number(bill.total || 0), 0) + legacy.reduce((sum, transaction) => sum + transaction.revenue, 0);
+      const legacyOrders = new Set(legacy.map((transaction) => transaction.billNo || transaction.id)).size;
+      return { branch, label: branch, sales: revenue, orders: ops.length + legacyOrders, returns: returns.filter(r => r.branch === branch && inRange(r.createdAt, fromDate, toDate)).reduce((sum, r) => sum + Number(r.total || 0), 0) };
     });
   }, [cafeSalesTotal, cafeServedOrders.length, branchTransactions, opsBillsInRange, returns, fromDate, toDate]);
 
@@ -353,9 +361,14 @@ function AdminDashboard() {
       days[key] = { date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Cafe: 0, SNB: 0, VRSNB: 0, Hosur: 0, Total: 0 };
     }
     cafeServedOrders.forEach(o => { const key = localDateKey(o.createdAt); if (!days[key]) return; days[key].Cafe += Number(o.total || 0); days[key].Total += Number(o.total || 0); });
-    branchTransactions.forEach(t => { const key = localDateKey(t.soldAt); if (!days[key] || t.branch === 'Cafe') return; days[key][t.branch] += t.revenue; days[key].Total += t.revenue; });
+    const representedBills = new Set(opsBillsInRange.map((bill) => bill.billNo).filter(Boolean));
+    opsBillsInRange.filter((bill) => bill.branch !== 'Cafe' && bill.status !== 'Returned').forEach((bill) => {
+      const key = localDateKey(bill.createdAt); if (!days[key]) return;
+      days[key][bill.branch] += Number(bill.total || 0); days[key].Total += Number(bill.total || 0);
+    });
+    branchTransactions.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo)).forEach(t => { const key = localDateKey(t.soldAt); if (!days[key] || t.branch === 'Cafe') return; days[key][t.branch] += t.revenue; days[key].Total += t.revenue; });
     return Object.values(days);
-  }, [fromDate, toDate, cafeServedOrders, branchTransactions]);
+  }, [fromDate, toDate, cafeServedOrders, branchTransactions, opsBillsInRange]);
 
   const filteredDailySalesTrend = useMemo(() => {
     if (branchFilter === 'all') return dailySalesTrend;
@@ -371,7 +384,8 @@ function AdminDashboard() {
       else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
       else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
     });
-    branchTransactions.forEach(t => {
+    const representedBills = new Set(opsBillsInRange.map((bill) => bill.billNo).filter(Boolean));
+    branchTransactions.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo)).forEach(t => {
       if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
       else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
       else if (paymentIncludes(t.payment, 'card')) totals.card += t.revenue;
@@ -412,19 +426,19 @@ function AdminDashboard() {
 
   const balanceSummary = useMemo(() => {
     const totals = { cash: 0, upi: 0, card: 0, bank: 0 };
-    cashMovements.forEach(m => {
+    cashMovements.filter((movement) => inRange(movement.dateTime, fromDate, toDate)).forEach(m => {
       if (!['cash', 'upi', 'card', 'bank'].includes(m.paymentMode)) return;
       const key = m.paymentMode as keyof typeof totals;
       totals[key] += m.direction === 'in' ? Number(m.amount || 0) : -Number(m.amount || 0);
     });
-    bankDeposits.forEach(d => {
+    bankDeposits.filter((deposit) => inRange(deposit.createdAt, fromDate, toDate)).forEach(d => {
       const amount = Number(d.amount || 0); totals.bank += amount;
       if (d.paymentMode === 'Cash Deposit') totals.cash -= amount;
       if (d.paymentMode === 'UPI Transfer') totals.upi -= amount;
       if (d.paymentMode === 'Card Settlement') totals.card -= amount;
     });
     return totals;
-  }, [cashMovements, bankDeposits]);
+  }, [cashMovements, bankDeposits, fromDate, toDate]);
 
   const closureRows = useMemo<ClosureRow[]>(() => {
     return BRANCHES.map(branch => {
@@ -432,7 +446,12 @@ function AdminDashboard() {
       const savedLedgerClosure = adminLedger.savedClosureByBranchDate.get(`${branch}:${closureDate}`);
       if (branch !== 'Cafe' && ledger) {
         const openingBalance = Number(savedLedgerClosure?.opening_cash || 0);
-        const totalSales = adminLedger.toNumber(ledger.sales_total) + adminLedger.toNumber(ledger.advance_collected) + adminLedger.toNumber(ledger.advance_balance_collected);
+        const totalSales = Math.max(
+          0,
+          adminLedger.toNumber(ledger.sales_total)
+            - adminLedger.toNumber(ledger.advance_collected)
+            - adminLedger.toNumber(ledger.advance_balance_collected),
+        );
         const cashSales = adminLedger.toNumber(ledger.cash_total);
         const upiSales = adminLedger.toNumber(ledger.upi_total);
         const cardSales = adminLedger.toNumber(ledger.card_total);
@@ -454,7 +473,7 @@ function AdminDashboard() {
           netSales: Math.max(0, totalSales - returnsDay),
           expenses: expensesDay,
           purchasePayments: adminLedger.toNumber(savedLedgerClosure?.purchase_payments || 0),
-          bankDeposits: 0,
+          bankDeposits: adminLedger.toNumber(savedLedgerClosure?.bank_deposits || 0),
           closingBalance,
           differenceAmount,
           remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed and verified from Supabase' : 'Pending branch closure'),
@@ -468,11 +487,13 @@ function AdminDashboard() {
       const txns = branch === 'Cafe' ? [] : branchTransactions.filter(t => t.branch === branch && localDateKey(t.soldAt) === closureDate);
       const opsBills = opsBillsInRange.filter(b => b.branch === branch && localDateKey(b.createdAt) === closureDate);
       const cafeDayOrders = branch === 'Cafe' ? orders.filter(o => localDateKey(o.createdAt) === closureDate && o.status === 'served') : [];
-      const totalSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0) : Math.max(txns.reduce((sum, t) => sum + t.revenue, 0), opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0));
-      const cashSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.cash || 0) : o.paymentType === 'cash' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'cash'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0));
-      const upiSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.upi || 0) : o.paymentType === 'upi' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'upi'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0));
-      const cardSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.card || 0) : o.paymentType === 'card' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'card'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0));
-      const creditSalesDay = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'unpaid' ? Number(o.total || 0) : 0), 0) : Math.max(txns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'credit'), 0), opsBills.reduce((sum, b) => sum + (b.paymentMode === 'credit' ? Number(b.total || 0) : 0), 0));
+      const representedBills = new Set(opsBills.map((bill) => bill.billNo).filter(Boolean));
+      const legacyTxns = txns.filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
+      const totalSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0) : opsBills.reduce((sum, b) => sum + Number(b.total || 0), 0) + legacyTxns.reduce((sum, t) => sum + t.revenue, 0);
+      const cashSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.cash || 0) : o.paymentType === 'cash' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'cash' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'cash'), 0);
+      const upiSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.upi || 0) : o.paymentType === 'upi' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'upi' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'upi'), 0);
+      const cardSales = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'part_payment' ? Number(o.paymentBreakdown?.card || 0) : o.paymentType === 'card' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? Number(b.total || 0) : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'card'), 0);
+      const creditSalesDay = branch === 'Cafe' ? cafeDayOrders.reduce((sum, o) => sum + (o.paymentType === 'unpaid' ? Number(o.total || 0) : 0), 0) : opsBills.reduce((sum, b) => sum + (b.paymentMode === 'credit' ? Number(b.total || 0) : 0), 0) + legacyTxns.reduce((sum, t) => sum + paymentAmount(t.revenue, t.payment, 'credit'), 0);
       const returnsDay = returns.filter(r => r.branch === branch && localDateKey(r.createdAt) === closureDate).reduce((sum, r) => sum + Number(r.total || 0), 0);
       const expensesDay = cashMovements.filter(m => m.branch === branch && localDateKey(m.dateTime) === closureDate && m.direction === 'out' && m.purpose.toLowerCase().includes('expense')).reduce((sum, m) => sum + Number(m.amount || 0), 0);
       const paymentsDay = purchasePayments.filter(p => p.branch === branch && localDateKey(p.createdAt) === closureDate).reduce((sum, p) => sum + Number(p.amount || 0), 0);
@@ -563,7 +584,9 @@ function AdminDashboard() {
         else if (b.paymentMode === 'credit') totals.credit += Number(b.total || 0);
         else if (b.paymentMode === 'split') { totals.cash += Number(b.split?.cash || 0); totals.upi += Number(b.split?.upi || 0); totals.card += Number(b.split?.card || 0); }
       });
-      const filteredTxns = branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter);
+      const representedBills = new Set(filteredBills.map((bill) => bill.billNo).filter(Boolean));
+      const filteredTxns = (branchFilter === 'all' ? branchTransactions : branchTransactions.filter(t => t.branch === branchFilter))
+        .filter((transaction) => !transaction.billNo || !representedBills.has(transaction.billNo));
       filteredTxns.forEach(t => {
         if (paymentIncludes(t.payment, 'cash')) totals.cash += t.revenue;
         else if (paymentIncludes(t.payment, 'upi')) totals.upi += t.revenue;
@@ -1510,7 +1533,7 @@ function AdminDashboard() {
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={polling ? 'green' : 'amber'}>{polling ? 'Live' : 'Offline'}</Badge>
+            <Badge tone={polling ? 'blue' : 'amber'}>{polling ? 'Auto refresh on' : 'Auto refresh off'}</Badge>
           </div>
           <h2 className="mt-1 font-display text-2xl font-black text-slate-950 sm:text-3xl">{activeMeta.label}</h2>
           <p className="mt-1 text-sm text-slate-500">{activeMeta.description}</p>

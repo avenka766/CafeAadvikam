@@ -87,7 +87,7 @@ const CHART_COLORS = [
   "#8B5CF6",
   "#F59E0B",
 ];
-const CREDIT_BRANCHES: Branch[] = ["Cafe", "VRSNB"];
+const CREDIT_BRANCHES: Branch[] = ["VRSNB"];
 const CREDIT_BRANCH_LABEL: Record<Branch, string> = {
   Cafe: "Cafe / Biller",
   VRSNB: "VRSNB Branch",
@@ -217,9 +217,9 @@ function normal(name: string) {
     .trim();
 }
 
-function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number }>(rows: T[]) {
+function dedupeStockRows<T extends { itemName: string; quantity?: number; minThreshold?: number; updatedAt?: string; lastUpdatedAt?: string }>(rows: T[]) {
   const map = new Map<string, T>();
-  rows.forEach((row) => {
+  [...rows].sort((a, b) => Number(new Date(a.updatedAt || a.lastUpdatedAt || 0)) - Number(new Date(b.updatedAt || b.lastUpdatedAt || 0))).forEach((row) => {
     const key = normal(row.itemName);
     // Duplicate rows for the same item are a data sync artifact, not separate
     // stock batches — keep the latest record instead of summing quantities
@@ -231,26 +231,11 @@ function dedupeStockRows<T extends { itemName: string; quantity?: number; minThr
 
 function csvDownload(
   filename: string,
-  rows: Array<Record<string, string | number | null | undefined>>,
+  rows: Array<Record<string, string | number | boolean | null | undefined>>,
 ) {
-  const safeRows = rows.length
-    ? rows
-    : [{ Note: "No data for selected filters" }];
-  const headers = Object.keys(safeRows[0]);
-  const csv = [
-    headers.join(","),
-    ...safeRows.map((row) =>
-      headers
-        .map((h) => `"${String(row[h] ?? "").replace(/"/g, '""')}"`)
-        .join(","),
-    ),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const base = filename.replace(/\.(csv|xlsx?|xls)$/i, "");
+  const title = base.replace(/[_-]+/g, " ").trim() || "VRSNB Report";
+  downloadExcel(`${base}.xls`, title, rows);
 }
 
 function amountForLegacyPayment(
@@ -456,8 +441,8 @@ export default function AdminVRSNBDashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(true);
   const [lowSearch, setLowSearch] = useState("");
   const [notice, setNotice] = useState("");
-  const [viewBranch, setViewBranch] = useState<Branch>("VRSNB");
-  const viewBranchLabel = viewBranch === "Cafe" ? "Cafe / Biller" : "VRSNB Branch";
+  const viewBranch: Branch = BRANCH;
+  const viewBranchLabel = "VRSNB Branch";
   const adminLedger = useBranchLedger(fromDate, toDate, [viewBranch]);
 
   const userName =
@@ -470,10 +455,9 @@ export default function AdminVRSNBDashboard() {
   };
 
   useEffect(() => {
-    if (requestedTab && TABS.some((item) => item.id === requestedTab) && requestedTab !== tab) {
-      setTab(requestedTab);
-    }
-  }, [requestedTab, tab]);
+    const nextTab = requestedTab && TABS.some((item) => item.id === requestedTab) ? requestedTab : "overview";
+    setTab((current) => current === nextTab ? current : nextTab);
+  }, [requestedTab]);
 
   useEffect(() => {
     void loadCatalog('VRSNB');
@@ -482,9 +466,7 @@ export default function AdminVRSNBDashboard() {
 
   useEffect(() => {
     fetchBranchData(BRANCH);
-    fetchBranchData("Cafe");
     fetchCreditPayments(BRANCH);
-    fetchCreditPayments("Cafe");
   }, [fetchBranchData, fetchCreditPayments]);
 
   const branchStock = useMemo(() => {
@@ -587,7 +569,15 @@ export default function AdminVRSNBDashboard() {
       .reduce((sum, s) => sum + (s.unitPrice ?? 0) * s.quantitySold, 0);
   const ledgerRows = adminLedger.closureRows.filter((row) => row.branch === viewBranch);
   const hasLedgerRows = ledgerRows.length > 0;
-  const ledgerGrossSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0);
+  const ledgerGrossSales = ledgerRows.reduce(
+    (sum, row) => sum + Math.max(
+      0,
+      adminLedger.toNumber(row.sales_total)
+        - adminLedger.toNumber(row.advance_collected)
+        - adminLedger.toNumber(row.advance_balance_collected),
+    ),
+    0,
+  );
   const ledgerCashSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.cash_total), 0);
   const ledgerUpiSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.upi_total), 0);
   const ledgerCardSales = ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.card_total), 0);
@@ -598,7 +588,7 @@ export default function AdminVRSNBDashboard() {
   const grossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
   const netSales = Math.max(0, grossSales - returnAmount);
   const billsCount = hasLedgerRows ? ledgerBillsCount : rawBillsCount;
-  const avgBillValue = billsCount > 0 ? netSales / billsCount : rawAvgBillValue;
+  const avgBillValue = billsCount > 0 ? grossSales / billsCount : rawAvgBillValue;
   const finalCashSales = hasLedgerRows ? ledgerCashSales : cashSales;
   const finalUpiSales = hasLedgerRows ? ledgerUpiSales : upiSales;
   const finalCardSales = hasLedgerRows ? ledgerCardSales : cardSales;
@@ -614,9 +604,7 @@ export default function AdminVRSNBDashboard() {
     .reduce((sum, m) => sum + m.amount, 0);
   const advanceCollected = hasLedgerRows ? ledgerAdvanceCollected : advanceCollectionsFallback;
   const advanceBalanceCollected = hasLedgerRows ? ledgerAdvanceBalanceCollected : 0;
-  const transparentGrossSales = hasLedgerRows
-    ? ledgerRows.reduce((sum, row) => sum + adminLedger.toNumber(row.sales_total), 0)
-    : rawGrossSales;
+  const transparentGrossSales = hasLedgerRows ? ledgerGrossSales : rawGrossSales;
   const salesBreakdown = {
     billSales: transparentGrossSales,
     advanceCollected,
@@ -630,8 +618,7 @@ export default function AdminVRSNBDashboard() {
       finalCashSales +
       finalUpiSales +
       finalCardSales +
-      advanceCollected +
-      advanceBalanceCollected,
+      (hasLedgerRows ? 0 : advanceCollected + advanceBalanceCollected),
   };
 
   const lowStockRows = useMemo(() => {
@@ -656,7 +643,7 @@ export default function AdminVRSNBDashboard() {
     [movementRows, fromDate, toDate],
   );
   const balanceByMode = (mode: "cash" | "upi" | "card" | "bank") =>
-    movementRows
+    movementInRange
       .filter((m) => m.paymentMode === mode)
       .reduce(
         (sum, m) => sum + (m.direction === "in" ? m.amount : -m.amount),
@@ -670,7 +657,7 @@ export default function AdminVRSNBDashboard() {
   // the matching cash-movement outflow, otherwise Bank Transfer deposits
   // cancel themselves and show an incorrect zero/negative balance.
   const bankBalance = bankDeposits
-    .filter((d) => d.branch === viewBranch)
+    .filter((d) => d.branch === viewBranch && inRange(d.createdAt, fromDate, toDate))
     .reduce((sum, d) => sum + d.amount, 0);
   const cashBalance = balanceByMode("cash");
   const upiBalance = balanceByMode("upi");
@@ -975,30 +962,9 @@ export default function AdminVRSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      <div className="flex flex-col gap-3 rounded-[2rem] bg-slate-950 p-3 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex rounded-2xl bg-white/10 p-1">
-            {(["Cafe", "VRSNB"] as Branch[]).map((branch) => (
-              <button
-                key={branch}
-                type="button"
-                onClick={() => setViewBranch(branch)}
-                className={cn(
-                  "rounded-xl px-4 py-2 text-sm font-black transition",
-                  viewBranch === branch
-                    ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20"
-                    : "text-white/70 hover:bg-white/10 hover:text-white",
-                )}
-              >
-                {branch === "Cafe" ? "Cafe" : "VRSNB Branch"}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="px-1 text-left sm:text-right">
-          <p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p>
-          <p className="text-sm font-bold">Showing {viewBranchLabel} data</p>
-        </div>
+      <div className="flex items-center justify-between rounded-[2rem] bg-slate-950 p-3 text-white shadow-lg">
+        <div><p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p><p className="text-sm font-bold">Showing {viewBranchLabel} data only</p></div>
+        <span className="rounded-full bg-orange-500 px-3 py-1.5 text-xs font-black">Branch Scoped</span>
       </div>
       {!["stock", "complaints", "quotations"].includes(tab) && (
         <DateFilters
@@ -1032,7 +998,7 @@ export default function AdminVRSNBDashboard() {
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
-      {tab === "credit" && <CreditTab />}
+      {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
       {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
       {tab === "closure" && (
@@ -1749,14 +1715,66 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
 }
 
 function ComplaintsTab({ userName }: { userName: string }) {
-  const { complaints, addComplaint, updateComplaintStatus } = useBranchOpsStore();
   const [form, setForm] = useState({ complaintArea: "VRSNB", title: "", details: "" });
-  const rows = complaints.filter((c) => c.branch === BRANCH);
-  const save = () => {
-    if (!form.title.trim() || !form.details.trim()) return;
-    addComplaint({ branch: BRANCH, complaintArea: form.complaintArea, title: form.title, details: form.details, raisedBy: userName });
-    setForm({ ...form, title: "", details: "" });
+  const [rows, setRows] = useState<any[]>([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const { data, error: loadError } = await supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .eq("branch", BRANCH)
+      .order("created_at", { ascending: false });
+    if (loadError) {
+      setError(loadError.message);
+      return;
+    }
+    setRows(data || []);
   };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const save = async () => {
+    if (!form.title.trim() || !form.details.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const { error: rpcError } = await supabase.rpc("create_branch_complaint_ticket", {
+        p_branch: BRANCH,
+        p_complaint_area: form.complaintArea,
+        p_category: "General",
+        p_subject: form.title.trim(),
+        p_description: form.details.trim(),
+        p_priority: "Medium",
+      });
+      if (rpcError) {
+        const missingRpc = /create_branch_complaint_ticket|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_complaint_tickets").insert({
+          ticket_no: "",
+          branch: BRANCH,
+          complaint_area: form.complaintArea,
+          category: "General",
+          subject: form.title.trim(),
+          description: form.details.trim(),
+          priority: "Medium",
+          status: "Open",
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      setForm({ ...form, title: "", details: "" });
+      await load();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Unable to submit complaint");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
       <Panel title="Raise Complaint" icon={<MessageSquareWarning className="size-4" />}>
@@ -1768,25 +1786,28 @@ function ComplaintsTab({ userName }: { userName: string }) {
           </Field>
           <Field label="Title"><input className={inputCls} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
           <Field label="Details"><textarea className={inputCls} value={form.details} onChange={(e) => setForm({ ...form, details: e.target.value })} /></Field>
-          <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Submit Complaint</button>
+          {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{error}</p>}
+          <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:opacity-50")}>
+            {saving ? "Submitting..." : "Submit Complaint"}
+          </button>
         </div>
       </Panel>
-      <Panel title="Complaint Register" icon={<Bell className="size-4" />}>
+      <Panel title="Complaint Ticket Register" icon={<Bell className="size-4" />}>
+        <p className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 ring-1 ring-blue-200">
+          VRSNB Admin can raise tickets and add branch details. Review, resolution and closure are restricted to Owner and Main Admin.
+        </p>
         <DataTable
-          headers={["Date", "Area", "Title", "Details", "Raised By", "Status", "Action"]}
+          headers={["Ticket", "Date", "Area", "Subject", "Details", "Raised By", "Status"]}
           rows={rows.map((c) => [
-            fmtDateTime(c.createdAt),
-            c.complaintArea,
-            c.title,
-            c.details,
-            c.raisedBy,
-            <StatusBadge key="s" tone={c.status === "Resolved" ? "green" : c.status === "In Review" ? "blue" : "amber"}>{c.status}</StatusBadge>,
-            <div key="a" className="flex gap-2">
-              <button className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => updateComplaintStatus(c.id, "In Review", userName)}>Review</button>
-              <button className={cn(btnCls, "bg-emerald-50 text-emerald-700")} onClick={() => updateComplaintStatus(c.id, "Resolved", userName)}>Resolve</button>
-            </div>,
+            c.ticket_no,
+            fmtDateTime(c.created_at),
+            c.complaint_area,
+            c.subject,
+            c.description,
+            c.created_by_username,
+            <StatusBadge key="s" tone={c.status === "Resolved" || c.status === "Closed" ? "green" : c.status === "Under Review" || c.status === "In Progress" ? "blue" : "amber"}>{c.status}</StatusBadge>,
           ])}
-          empty="No complaints raised."
+          empty="No complaint tickets raised."
         />
       </Panel>
     </div>
@@ -1816,7 +1837,7 @@ function printWasteLog(entry: any, branchLabel: string) {
 function WasteLogsTab({ userName }: { userName: string }) {
   const catalogItems = useVRSNBCatalog();
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
-  const { stock, manualUpdateStock } = useBranchStore();
+  const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
@@ -1860,14 +1881,41 @@ function WasteLogsTab({ userName }: { userName: string }) {
       setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
       return;
     }
-    addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
-    // Sync stock: the wasted/dumped/damaged/transferred-out quantity leaves
-    // this branch's inventory, so deduct it from current stock immediately.
-    const newQty = currentQty - qty;
-    await manualUpdateStock(BRANCH, currentRow?.itemName || form.itemName, newQty, userName, catalogItem?.barcode);
-    // Print the waste log along with its checklist in one go.
-    printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
-    setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    try {
+      const { error: rpcError } = await supabase.rpc("record_branch_waste_secure", {
+        p_branch: BRANCH,
+        p_log_type: subTab,
+        p_item_barcode: catalogItem?.barcode ?? null,
+        p_item_name: currentRow?.itemName || form.itemName,
+        p_quantity: qty,
+        p_unit: form.unit,
+        p_reason: form.reason.trim(),
+        p_verified_by: form.verifiedBy.trim(),
+        p_checklist: form.checklist,
+      });
+      if (rpcError) {
+        const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
+        if (!missingRpc) throw rpcError;
+        const { error: insertError } = await supabase.from("branch_waste_logs").insert({
+          branch: BRANCH,
+          log_type: subTab,
+          item_barcode: catalogItem?.barcode ?? null,
+          item_name: currentRow?.itemName || form.itemName,
+          quantity: qty,
+          unit: form.unit,
+          reason: form.reason.trim(),
+          verified_by: form.verifiedBy.trim(),
+          checklist: form.checklist,
+          created_by_username: userName,
+        });
+        if (insertError) throw insertError;
+      }
+      addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
+      printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "VRSNB");
+      setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+    } catch (saveError) {
+      setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
+    }
   };
   return (
     <div className="space-y-4">
@@ -1896,7 +1944,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>
@@ -3248,7 +3296,7 @@ function SalespersonReportTab(props: any) {
   );
 }
 
-function CreditTab() {
+function CreditTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
   const {
     creditSales,
     creditPayments,
@@ -3258,7 +3306,6 @@ function CreditTab() {
   } = useBranchStore();
   const { currentUser } = useAuthStore();
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "partial" | "settled">("pending");
-  const [branchFilter, setBranchFilter] = useState<Branch | "all">("all");
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [modes, setModes] = useState<Record<string, "cash" | "upi" | "card" | "bank">>({});
   const [message, setMessage] = useState("");
@@ -3286,13 +3333,13 @@ function CreditTab() {
   );
   const visibleSales = sales.filter((sale) => {
     if (statusFilter !== "all" && sale.status !== statusFilter) return false;
-    if (branchFilter !== "all" && sale.branch !== branchFilter) return false;
     return true;
   });
   const openCredit = sales
     .filter((sale) => sale.status !== "settled")
     .reduce((sum, sale) => sum + sale.creditAmount, 0);
-  const collected = payments.reduce((sum, payment) => sum + payment.amount, 0);
+  const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
+  const collected = paymentsInRange.reduce((sum, payment) => sum + payment.amount, 0);
   const todayCollected = payments
     .filter((payment) => inRange(payment.createdAt, dateInput(), dateInput()))
     .reduce((sum, payment) => sum + payment.amount, 0);
@@ -3327,19 +3374,15 @@ function CreditTab() {
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-4">
         <Kpi label="Open Credit" value={money(openCredit)} icon={<WalletCards className="size-5" />} tone="red" />
-        <Kpi label="Collected" value={money(collected)} icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Collected (Selected Dates)" value={money(collected)} icon={<CheckCircle2 className="size-5" />} tone="green" />
         <Kpi label="Collected Today" value={money(todayCollected)} icon={<IndianRupee className="size-5" />} tone="blue" />
         <Kpi label="Credit Bills" value={sales.length} icon={<Receipt className="size-5" />} tone="amber" />
       </div>
       <Panel
-        title="Cafe + VRSNB Credit Register"
+        title="VRSNB Credit Register"
         icon={<CreditCard className="size-4" />}
         action={
           <div className="flex flex-wrap gap-2">
-            <select className={cn(inputCls, "h-10 w-36 py-1")} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value as Branch | "all")}>
-              <option value="all">All units</option>
-              {CREDIT_BRANCHES.map((branch) => <option key={branch} value={branch}>{CREDIT_BRANCH_LABEL[branch]}</option>)}
-            </select>
             <select className={cn(inputCls, "h-10 w-32 py-1")} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)}>
               <option value="all">All status</option>
               <option value="pending">Pending</option>
@@ -3416,13 +3459,13 @@ function CreditTab() {
               </div>
             ),
           ])}
-          empty="No Cafe or VRSNB credit sales found."
+          empty="No VRSNB credit sales found."
         />
       </Panel>
-      <Panel title="Credit Collections" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Credit_Collections.csv", payments.map((p) => ({ Unit: CREDIT_BRANCH_LABEL[p.branch], Bill: p.billNo, Amount: p.amount, Mode: p.paymentMode, CollectedBy: p.collectedBy, Date: p.createdAt, Remarks: p.remarks })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Collections" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Credit_Collections.csv", paymentsInRange.map((p) => ({ Unit: CREDIT_BRANCH_LABEL[p.branch], Bill: p.billNo, Amount: p.amount, Mode: p.paymentMode, CollectedBy: p.collectedBy, Date: p.createdAt, Remarks: p.remarks })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={["Unit", "Bill", "Amount", "Mode", "Collected By", "Date", "Remarks"]}
-          rows={payments.map((payment) => [
+          rows={paymentsInRange.map((payment) => [
             CREDIT_BRANCH_LABEL[payment.branch],
             payment.billNo,
             money(payment.amount),
@@ -4093,6 +4136,8 @@ function StockAuditTab({
   const [savingId, setSavingId] = useState("");
   const [savingLine, setSavingLine] = useState("");
   const [physicalDrafts, setPhysicalDrafts] = useState<Record<string, string>>({});
+  const [reversingId, setReversingId] = useState("");
+  const [reportReversals, setReportReversals] = useState<Record<string, { by: string; reason: string; at: string }>>({});
   const [sort, setSort] = useState<{ field: "difference" | "value"; direction: "asc" | "desc" }>({
     field: "difference",
     direction: "desc",
@@ -4101,6 +4146,29 @@ function StockAuditTab({
     .filter((report) => report.branch === BRANCH)
     .sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt)));
   const pending = reports.filter((report) => report.status === "Pending Admin Review");
+
+  useEffect(() => {
+    let mounted = true;
+    void supabase
+      .from("branch_operation_records")
+      .select("record_id, actor, payload, created_at")
+      .eq("branch", BRANCH)
+      .eq("record_type", "stock_count_reversal")
+      .then(({ data }) => {
+        if (!mounted) return;
+        const next: Record<string, { by: string; reason: string; at: string }> = {};
+        ((data || []) as Array<Record<string, unknown>>).forEach((row) => {
+          const payload = (row.payload || {}) as Record<string, unknown>;
+          next[String(row.record_id)] = {
+            by: String(row.actor || payload.reversedBy || "Admin"),
+            reason: String(payload.reason || ""),
+            at: String(payload.reversedAt || row.created_at || ""),
+          };
+        });
+        setReportReversals(next);
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const itemMeta = useMemo(() => {
     const map = new Map<string, { price: number; category: string }>();
@@ -4193,6 +4261,9 @@ function StockAuditTab({
           "Reported Date": fmtDateTime(report.createdAt),
           "Reported By": report.reportedBy,
           "Confirmed By": report.confirmedBy || "",
+          "Reversed By": reportReversals[report.id]?.by || "",
+          "Reversal Reason": reportReversals[report.id]?.reason || "",
+          "Reversed At": reportReversals[report.id]?.at ? fmtDateTime(reportReversals[report.id].at) : "",
           Category: itemMeta.get(normal(line.itemName))?.category ?? "-",
           Item: line.itemName,
           Unit: line.unit || "",
@@ -4261,6 +4332,39 @@ function StockAuditTab({
     }
   };
 
+  const reverseReport = async (reportId: string) => {
+    const report = reports.find((row) => row.id === reportId);
+    if (!report || report.status !== "Confirmed") return;
+    if (reportReversals[report.id]) {
+      setNotice(`${report.reportNo} was already reversed.`);
+      return;
+    }
+    const reason = window.prompt(`Reason for reversing ${report.reportNo}?`)?.trim() || "";
+    if (!reason) {
+      setNotice("A reversal reason is mandatory.");
+      return;
+    }
+    if (!window.confirm(`Reverse ${report.reportNo} and restore the exact pre-confirmation quantities? This is blocked if stock changed after confirmation.`)) return;
+    setReversingId(report.id);
+    try {
+      const { data, error } = await supabase.rpc("reverse_branch_stock_count_report", {
+        p_report_id: report.id,
+        p_reversed_by: userName,
+        p_reason: reason,
+      });
+      if (error) {
+        setNotice(`Stock audit reversal failed: ${error.message}`);
+        return;
+      }
+      const payload = (data || {}) as Record<string, unknown>;
+      setReportReversals((current) => ({ ...current, [report.id]: { by: userName, reason, at: new Date().toISOString() } }));
+      await fetchBranchData(BRANCH);
+      setNotice(`${String(payload.reportNo || report.reportNo)} reversed. Pre-confirmation stock was restored.`);
+    } finally {
+      setReversingId("");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -4300,8 +4404,17 @@ function StockAuditTab({
                 >
                   {savingId === report.id ? "Saving..." : "Confirm & Save"}
                 </button>
+              ) : reportReversals[report.id] ? (
+                <StatusBadge tone="amber">Reversed</StatusBadge>
               ) : (
-                <StatusBadge tone="green">Confirmed</StatusBadge>
+                <button
+                  type="button"
+                  disabled={reversingId === report.id}
+                  onClick={() => void reverseReport(report.id)}
+                  className={cn(btnCls, "bg-red-600 text-white shadow-lg shadow-red-100 disabled:opacity-50")}
+                >
+                  <RotateCcw className="size-4" /> {reversingId === report.id ? "Reversing..." : "Reverse Confirmation"}
+                </button>
               )
             }
           >
@@ -4309,6 +4422,7 @@ function StockAuditTab({
               <span>Reported by: <b className="text-slate-900">{report.reportedBy}</b></span>
               <span>Date: <b className="text-slate-900">{fmtDateTime(report.createdAt)}</b></span>
               <span>Confirmed by: <b className="text-slate-900">{report.confirmedBy || "-"}</b></span>
+              {reportReversals[report.id] && <span className="sm:col-span-3 rounded-xl bg-red-50 p-2 text-red-700">Reversed by <b>{reportReversals[report.id].by}</b> · {reportReversals[report.id].at ? fmtDateTime(reportReversals[report.id].at) : ""} · {reportReversals[report.id].reason}</span>}
             </div>
             <div className="overflow-x-auto rounded-3xl border border-slate-200">
               <table className="w-full min-w-[1100px] text-sm">

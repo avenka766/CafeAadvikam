@@ -314,10 +314,15 @@ function SalesOverviewTab() {
     (['VRSNB', 'SNB', 'Hosur'] as const).forEach(b => {
       const ledgerRows = salesLedger.closureRows.filter(row => row.branch === b);
       if (ledgerRows.length > 0) {
-        branches[b].revenue = ledgerRows.reduce((sum, row) =>
-          sum + salesLedger.toNumber(row.sales_total)
-          + salesLedger.toNumber(row.advance_collected)
-          + salesLedger.toNumber(row.advance_balance_collected), 0);
+        branches[b].revenue = ledgerRows.reduce(
+          (sum, row) => sum + Math.max(
+            0,
+            salesLedger.toNumber(row.sales_total)
+              - salesLedger.toNumber(row.advance_collected)
+              - salesLedger.toNumber(row.advance_balance_collected),
+          ),
+          0,
+        );
       }
       bills.filter(bill => bill.branch === b && bill.status !== 'Returned' && new Date(bill.createdAt) >= cutoff && new Date(bill.createdAt) <= cutoffEnd).forEach(bill => {
         branches[b].qty += bill.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -715,6 +720,9 @@ function SalesOverviewTab() {
 // CHANGE 10: aggregate branch view (no per-employee list), stacked dept chart
 type OwnerAttendanceRow = { employee_id: string; day: number; present: boolean; half: boolean; woff: boolean; bf: boolean; lunch: boolean; dinner: boolean };
 type OwnerMonthAttendance = Record<string, OwnerAttendanceRow>;
+type OwnerDeductionDecision = { deductAdvance: boolean; deductOther: boolean; deductUniform: boolean; deductESI: boolean; deductPF: boolean };
+type OwnerDeductionDecisions = Record<string, OwnerDeductionDecision>;
+const ownerDefaultDecision = (): OwnerDeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
 const OWNER_ESI_RATE = 0.0075;
 const OWNER_PF_RATE = 0.12;
 const OWNER_ESI_WAGE_LIMIT = 21000;
@@ -722,7 +730,7 @@ const ownerAttendanceKey = (employeeId: string, day: number) => `${employeeId}-$
 const ownerCalcESI = (earned: number, gross: number) => gross <= OWNER_ESI_WAGE_LIMIT ? Math.round(earned * OWNER_ESI_RATE) : 0;
 const ownerCalcPF = (earned: number) => Math.min(1800, Math.round(earned * OWNER_PF_RATE));
 
-function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number) {
+function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number }, attendance: OwnerMonthAttendance, daysInMonth: number, decision: OwnerDeductionDecision = ownerDefaultDecision()) {
   let presentDays = 0;
   let halfDays = 0;
   let woffDays = 0;
@@ -740,7 +748,12 @@ function ownerCalcSalary(emp: { id: string; grossSalary: number; salaryAdvance: 
   }
   const worked = presentDays + halfDays * 0.5 + woffDays;
   const earned = Math.round((Number(emp.grossSalary || 0) / daysInMonth) * worked);
-  const deductions = Number(emp.salaryAdvance || 0) + Number(emp.uniformDeduction || 0) + Number(emp.otherDeduction || 0) + canteenTotal + ownerCalcESI(earned, Number(emp.grossSalary || 0)) + ownerCalcPF(earned);
+  const deductions = (decision.deductAdvance ? Number(emp.salaryAdvance || 0) : 0)
+    + (decision.deductUniform ? Number(emp.uniformDeduction || 0) : 0)
+    + (decision.deductOther ? Number(emp.otherDeduction || 0) : 0)
+    + canteenTotal
+    + (decision.deductESI ? ownerCalcESI(earned, Number(emp.grossSalary || 0)) : 0)
+    + (decision.deductPF ? ownerCalcPF(earned) : 0);
   return { earned, deductions, net: Math.max(0, earned - deductions), worked };
 }
 
@@ -750,11 +763,12 @@ function AttendanceSalaryTab() {
     grossSalary: number; salaryAdvance: number; uniformDeduction: number; otherDeduction: number;
   }>>([]);
   const [attendance, setAttendance] = useState<OwnerMonthAttendance>({});
+  const [deductionDecisions, setDeductionDecisions] = useState<OwnerDeductionDecisions>({});
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const now = new Date();
-  const payrollYear = now.getFullYear();
-  const payrollMonth = now.getMonth() + 1;
+  const [payrollYear, setPayrollYear] = useState(now.getFullYear());
+  const [payrollMonth, setPayrollMonth] = useState(now.getMonth() + 1);
   const daysInMonth = new Date(payrollYear, payrollMonth, 0).getDate();
 
   const loadEmployees = useCallback(() => {
@@ -762,9 +776,10 @@ function AttendanceSalaryTab() {
     Promise.all([
       supabase.from('employees').select('*'),
       supabase.from('attendance').select('*').eq('year', payrollYear).eq('month', payrollMonth),
-    ]).then(([employeesRes, attendanceRes]) => {
+      supabase.from('deduction_decisions').select('*').eq('year', payrollYear).eq('month', payrollMonth),
+    ]).then(([employeesRes, attendanceRes, decisionsRes]) => {
       const data = employeesRes.data;
-      const error = employeesRes.error || attendanceRes.error;
+      const error = employeesRes.error || attendanceRes.error || decisionsRes.error;
       console.debug('[AttendanceSalaryTab] employees:', data?.length, error?.message);
       if (error) setFetchError(error.message || 'Failed to load employee data.');
       else if (data) {
@@ -792,6 +807,17 @@ function AttendanceSalaryTab() {
           };
         });
         setAttendance(nextAttendance);
+        const nextDecisions: OwnerDeductionDecisions = {};
+        (decisionsRes.data ?? []).forEach((row: any) => {
+          nextDecisions[String(row.employee_id)] = {
+            deductAdvance: Boolean(row.deduct_advance),
+            deductOther: Boolean(row.deduct_other),
+            deductUniform: Boolean(row.deduct_uniform),
+            deductESI: Boolean(row.deduct_esi),
+            deductPF: Boolean(row.deduct_pf),
+          };
+        });
+        setDeductionDecisions(nextDecisions);
       }
       setLoading(false);
     });
@@ -806,12 +832,12 @@ function AttendanceSalaryTab() {
 
   const salaryStats = useMemo(() => {
     const total      = employees.reduce((a, e) => a + (Number(e.grossSalary) || 0), 0);
-    const earned     = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).earned, 0);
+    const earned     = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).earned, 0);
     const advances   = employees.reduce((a, e) => a + (Number(e.salaryAdvance) || 0), 0);
-    const deductions = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).deductions, 0);
-    const netPayable = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth).net, 0);
+    const deductions = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).deductions, 0);
+    const netPayable = employees.reduce((a, e) => a + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).net, 0);
     return { total, earned, advances, deductions, netPayable };
-  }, [employees, attendance, daysInMonth]);
+  }, [employees, attendance, daysInMonth, deductionDecisions]);
 
   const atRiskEmployees = useMemo(() =>
     employees
@@ -855,6 +881,13 @@ function AttendanceSalaryTab() {
 
   return (
     <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-border bg-card p-3">
+        <div><p className="text-xs font-black uppercase tracking-wide text-muted-foreground">Payroll period</p><p className="font-display text-lg font-black">Attendance and approved deductions</p></div>
+        <div className="flex gap-2">
+          <select value={payrollMonth} onChange={(event) => setPayrollMonth(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:12},(_,index)=><option key={index+1} value={index+1}>{new Date(2026,index,1).toLocaleString('en-IN',{month:'long'})}</option>)}</select>
+          <select value={payrollYear} onChange={(event) => setPayrollYear(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:5},(_,index)=>now.getFullYear()-index).map((year)=><option key={year} value={year}>{year}</option>)}</select>
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <KPI icon={<Users       className="size-4" />} label="Total Staff"   value={String(employees.length)}              color="bg-primary/10 text-primary" />
         {/* FIX (MD Bug #10): labels clarified to emphasise these are contracted-salary estimates,
@@ -869,7 +902,7 @@ function AttendanceSalaryTab() {
           <Building2 className="size-4 text-primary" />Branch Summary
         </h3>
         {Object.entries(branchGroups).map(([branch, emps]) => {
-          const branchTotal = emps.reduce((s, e) => s + ownerCalcSalary(e, attendance, daysInMonth).earned, 0);
+          const branchTotal = emps.reduce((s, e) => s + ownerCalcSalary(e, attendance, daysInMonth, deductionDecisions[e.id] ?? ownerDefaultDecision()).earned, 0);
           const highRisk    = emps.filter(e => Number(e.grossSalary) > 0 && Number(e.salaryAdvance) / Number(e.grossSalary) >= 0.5).length;
           return (
             <div key={branch} className="rounded-2xl border border-slate-200 p-4">
@@ -1492,7 +1525,7 @@ function BranchOverviewTab() {
       const syncedPending = purchases.filter(p => ownerInRange(p.createdAt, from, to) && (p.syncStatus || 'Not Synced') !== 'Synced').length;
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: paid, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - paid),
+        expenses: 0, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - paid),
         stockAlerts: syncedPending, closureStatus: syncedPending ? `${syncedPending} purchase sync pending` : 'Purchase sync clear',
         keyAlert: 'Supplier invoices and stock sync control',
       };
@@ -1511,14 +1544,24 @@ function BranchOverviewTab() {
     const branch = unit.replace(' Branch', '') as Branch;
     const ledgerRows = ownerLedger.closureRows.filter(row => row.branch === branch);
     if (ledgerRows.length > 0) {
-      const gross = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.sales_total) + ownerLedger.toNumber(row.advance_collected) + ownerLedger.toNumber(row.advance_balance_collected), 0);
+      const gross = ledgerRows.reduce(
+        (sum, row) => sum + Math.max(
+          0,
+          ownerLedger.toNumber(row.sales_total)
+            - ownerLedger.toNumber(row.advance_collected)
+            - ownerLedger.toNumber(row.advance_balance_collected),
+        ),
+        0,
+      );
       const cash = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.cash_total), 0);
       const upi = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.upi_total), 0);
       const card = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.card_total), 0);
       const credit = ledgerRows.reduce((sum, row) => sum + ownerLedger.toNumber(row.credit_billed), 0);
       const savedClosure = ownerLedger.savedClosures.find(c => c.branch === branch);
       const stockAlertCount = branchStockAlertCount(branch);
-      const openCredit = (creditSales[branch] || []).reduce((sum, sale) => sum + moneyNumber(sale.creditAmount), 0);
+      const openCredit = (creditSales[branch] || [])
+        .filter((sale) => sale.status !== 'settled' && ownerInRange(sale.createdAt, from, to))
+        .reduce((sum, sale) => sum + moneyNumber(sale.creditAmount), 0);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
         expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: 0, pendingPayments: openCredit,
@@ -1669,7 +1712,7 @@ function OwnerDailyClosureTab() {
   const [branch, setBranch] = useState<'all' | Branch>('all');
   const ownerLedger = useBranchLedger(date, date, ['VRSNB', 'SNB', 'Hosur']);
 
-  useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
 
   const rows: OwnerClosureRow[] = useMemo(() => OWNER_FULL_BRANCHES.map(b => {
     if (b === 'Cafe') {
@@ -1684,19 +1727,26 @@ function OwnerDailyClosureTab() {
     const ledger = ownerLedger.closureByBranchDate.get(`${b}:${date}`);
     const savedLedgerClosure = ownerLedger.savedClosureByBranchDate.get(`${b}:${date}`);
     if (ledger) {
-      const gross = ownerLedger.toNumber(ledger.sales_total) + ownerLedger.toNumber(ledger.advance_collected) + ownerLedger.toNumber(ledger.advance_balance_collected);
+      const gross = Math.max(
+        0,
+        ownerLedger.toNumber(ledger.sales_total)
+          - ownerLedger.toNumber(ledger.advance_collected)
+          - ownerLedger.toNumber(ledger.advance_balance_collected),
+      );
       const ret = ownerLedger.toNumber(savedLedgerClosure?.refunds || 0);
       const cash = ownerLedger.toNumber(ledger.cash_total);
       const upi = ownerLedger.toNumber(ledger.upi_total);
       const card = ownerLedger.toNumber(ledger.card_total);
       const credit = ownerLedger.toNumber(ledger.credit_billed);
       const expenses = ownerLedger.toNumber(savedLedgerClosure?.expenses || 0);
-      const expectedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.expected_cash) : Math.max(0, cash - expenses);
+      const purchasePayments = ownerLedger.toNumber(savedLedgerClosure?.purchase_payments || 0);
+      const bankDeposits = ownerLedger.toNumber(savedLedgerClosure?.bank_deposits || 0);
+      const expectedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.expected_cash) : Math.max(0, cash - expenses - purchasePayments - bankDeposits);
       const countedCash = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.actual_cash) : 0;
       const difference = savedLedgerClosure ? ownerLedger.toNumber(savedLedgerClosure.difference) : 0;
       return {
         branch: ownerBranchDisplay(b), opening: ownerLedger.toNumber(savedLedgerClosure?.opening_cash || 0), grossSales: gross, returns: ret, netSales: Math.max(0, gross - ret), cash, upi, card, credit,
-        expenses, purchases: expenses, bankDeposits: 0, expectedCash, countedCash, difference,
+        expenses, purchases: purchasePayments, bankDeposits, expectedCash, countedCash, difference,
         status: (savedLedgerClosure ? (Math.abs(difference) > 0 ? 'Difference' : 'Completed') : 'Pending') as OwnerClosureRow['status'],
         closedBy: savedLedgerClosure?.cashier || 'Pending', closedAt: savedLedgerClosure?.created_at || '', remarks: savedLedgerClosure?.notes || (savedLedgerClosure ? 'Closed from Supabase' : 'Closure not submitted'),
       };
@@ -1822,9 +1872,11 @@ function OwnerAlertsTab() {
   const { purchases, cashierClosures, notifications, storeOrders, returns } = useBranchOpsStore();
   const { invoices, load } = useInvoiceStore();
   const [tone, setTone] = useState<'all' | OwnerAlertTone>('all');
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('owner-dismissed-alerts') || '[]') as string[]); } catch { return new Set(); }
+  });
 
-  useEffect(() => { startPolling(7); return () => stopPolling(); }, [startPolling, stopPolling]);
+  useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
   useEffect(() => { void fetchStockMismatches(); }, [fetchStockMismatches]);
   useEffect(() => { load(); }, [load]);
@@ -1861,7 +1913,11 @@ function OwnerAlertsTab() {
 
   // CHANGE 9c: branches with any alert
   const branchesWithAlerts = new Set(alerts.filter(a => a.branch).map(a => a.branch)).size;
-  const dismissAlert = (a: OwnerAlert) => setDismissed(prev => new Set([...prev, `${a.title}-${a.branch ?? ''}`]));
+  const dismissAlert = (a: OwnerAlert) => setDismissed(prev => {
+    const next = new Set([...prev, `${a.title}-${a.branch ?? ''}`]);
+    localStorage.setItem('owner-dismissed-alerts', JSON.stringify([...next]));
+    return next;
+  });
 
   return (
     <div className="owner-tab-stack">
@@ -2259,7 +2315,7 @@ export default function OwnerDashboard() {
     if (requestedTab && ownerTabIds.includes(requestedTab) && requestedTab !== tab) {
       setTab(requestedTab);
     }
-  }, [requestedTab, tab, ownerTabIds]);
+  }, [requestedTab, ownerTabIds]);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
