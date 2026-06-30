@@ -23,7 +23,7 @@ import {
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printHtml } from "@/branch/printUtils";
-import { downloadExcel } from "@/lib/excelDownload";
+import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -982,7 +982,7 @@ export default function AdminSNBDashboard() {
 
   return (
     <main className="min-w-0 space-y-4 px-4 py-5 sm:px-6 xl:px-8">
-      {!["stock", "update-stock", "suppliers", "complaints", "quotations", "salespersons"].includes(tab) && (
+      {!["stock", "update-stock", "suppliers", "quotations", "salespersons"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1513,7 +1513,7 @@ function SalesReturnsTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                `SNB_Sales_Returns_${dateInput()}.csv`,
+                `SNB_Sales_Returns_${dateInput()}.xls`,
                 salesRows.map((r) => ({
                   Type: r.type,
                   Number: r.no,
@@ -1583,33 +1583,109 @@ function SalesReturnsTab(props: any) {
 
 function StockTab(props: any) {
   const catalogItems = useSNBCatalog();
+  const [stockSearch, setStockSearch] = useState("");
+  const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
+  const [unit, setUnit] = useState("All");
+  const [minQty, setMinQty] = useState("");
+  const [maxQty, setMaxQty] = useState("");
+  const categories = useMemo(() => Array.from(new Set(catalogItems.map((item) => item.category || "Uncategorized"))).sort(), [catalogItems]);
+  const units = useMemo(() => Array.from(new Set(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
+  const enrichedRows = useMemo(() => {
+    const query = stockSearch.trim().toLowerCase();
+    return props.branchStock
+      .map((item: any) => {
+        const catalog = catalogItems.find((candidate) => normal(candidate.name) === normal(item.itemName));
+        const current = Number(item.quantity || 0);
+        const minimum = Number(item.minThreshold ?? 10);
+        const shortage = Math.max(0, minimum - current);
+        const rowStatus = current <= 0 ? "Out of Stock" : current <= minimum * 0.5 ? "Critical" : current <= minimum ? "Low" : "OK";
+        const rowUnit = item.unit || catalog?.uom || "pcs";
+        const price = Number(item.price ?? catalog?.price ?? 0);
+        return {
+          ...item,
+          category: catalog?.category || "Uncategorized",
+          unit: rowUnit,
+          price,
+          stockValue: Math.max(0, current) * price,
+          current,
+          minimum,
+          shortage,
+          status: rowStatus,
+          reorder: shortage > 0 ? Math.max(shortage, minimum) : 0,
+          lastChange: item.lastUpdatedAt || item.updatedAt || "",
+        };
+      })
+      .filter((item: any) => !query || item.itemName.toLowerCase().includes(query) || String(item.itemBarcode || "").includes(query))
+      .filter((item: any) => category === "All" || item.category === category)
+      .filter((item: any) => status === "All" || item.status === status)
+      .filter((item: any) => unit === "All" || item.unit === unit)
+      .filter((item: any) => minQty === "" || item.current >= Number(minQty))
+      .filter((item: any) => maxQty === "" || item.current <= Number(maxQty))
+      .sort((a: any, b: any) => a.status.localeCompare(b.status) || a.itemName.localeCompare(b.itemName));
+  }, [props.branchStock, catalogItems, stockSearch, category, status, unit, minQty, maxQty]);
+  const stockValue = enrichedRows.reduce((sum: number, item: any) => sum + item.stockValue, 0);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Kpi
           label="Total Stock Items"
-          value={props.branchStock.length}
+          value={enrichedRows.length}
           icon={<Package className="size-5" />}
         />
         <Kpi
           label="Low Stock Alerts"
-          value={props.lowStockRows.length}
+          value={enrichedRows.filter((item: any) => item.status !== "OK").length}
           icon={<AlertTriangle className="size-5" />}
-          tone={props.lowStockRows.length ? "red" : "green"}
+          tone={enrichedRows.some((item: any) => item.status !== "OK") ? "red" : "green"}
         />
         <Kpi
           label="Stock Value"
-          value={money(
-            props.branchStock.reduce(
-              (s: number, i: any) =>
-                s + Math.max(0, i.quantity) * (i.price ?? 0),
-              0,
-            ),
-          )}
+          value={money(stockValue)}
           icon={<Database className="size-5" />}
           tone="blue"
         />
       </div>
+      <Panel title="Stock Register" icon={<Package className="size-4" />}>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
+            <Search className="size-4 text-slate-400" />
+            <input value={stockSearch} onChange={(event) => setStockSearch(event.target.value)} placeholder="Search item or barcode" className="w-full bg-transparent text-sm font-black outline-none" />
+          </div>
+          <select className={inputCls} value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option>All</option>
+            {categories.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={status} onChange={(event) => setStatus(event.target.value)}>
+            {["All", "OK", "Low", "Critical", "Out of Stock"].map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={unit} onChange={(event) => setUnit(event.target.value)}>
+            <option>All</option>
+            {units.map((value: string) => <option key={value}>{value}</option>)}
+          </select>
+          <input className={inputCls} type="number" min="0" placeholder="Min qty" value={minQty} onChange={(event) => setMinQty(event.target.value)} />
+          <input className={inputCls} type="number" min="0" placeholder="Max qty" value={maxQty} onChange={(event) => setMaxQty(event.target.value)} />
+        </div>
+        <div className="mt-3">
+          <DataTable
+            headers={["Item", "Category", "Barcode", "Current", "Minimum", "Shortage", "Unit", "Value", "Status", "Reorder Suggestion", "Last Change"]}
+            rows={enrichedRows.map((item: any) => [
+              item.itemName,
+              item.category,
+              item.itemBarcode || "-",
+              <span key="q" className="font-black tabular-nums">{item.current}</span>,
+              item.minimum,
+              item.shortage ? <span key="s" className="font-black text-red-600">{item.shortage}</span> : "-",
+              item.unit,
+              money(item.stockValue),
+              <StatusBadge key="status" tone={item.status === "OK" ? "green" : item.status === "Low" ? "amber" : "red"}>{item.status}</StatusBadge>,
+              item.reorder ? `${item.reorder} ${item.unit}` : "-",
+              item.lastChange ? fmtDateTime(item.lastChange) : "-",
+            ])}
+            empty="No stock items match the selected filters."
+          />
+        </div>
+      </Panel>
       <Panel
         title="Low Stock Alerts"
         icon={<AlertTriangle className="size-4" />}
@@ -1758,7 +1834,7 @@ function UpdateStockTab({
             </Field>
           </div>
           <Field label="Reason for Adjustment">
-            <textarea className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Physical count correction, damaged stock correction, opening balance correction…" />
+            <textarea className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Physical count correction, damaged stock correction, opening balance correction..." />
           </Field>
           <Field label="Admin Login Password">
             <input type="password" autoComplete="current-password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -1766,7 +1842,7 @@ function UpdateStockTab({
           {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
           <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-60")}>
             {saving ? <RefreshCcw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-            {saving ? "Updating…" : "Authorize & Update Stock"}
+            {saving ? "Updating..." : "Authorize & Update Stock"}
           </button>
         </div>
       </Panel>
@@ -1880,7 +1956,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.csv", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
         </Panel>
       </div>
@@ -2118,7 +2194,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>
@@ -2344,17 +2420,44 @@ function CashierManagementTab({ userName }: { userName: string }) {
 }
 
 function CurrentCashTab(props: any) {
+  const openingCash = (props.dbReports.counterSessions || [])
+    .filter((row: any) => row.branch === BRANCH || !row.branch)
+    .reduce((sum: number, row: any) => sum + asNumber(row.opening_cash), 0);
+  const creditCash = props.creditPaymentsInRange
+    .filter((payment: any) => payment.paymentMode === "cash")
+    .reduce((sum: number, payment: any) => sum + payment.amount, 0);
+  const advanceCash = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && /advance/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashRefunds = props.branchReturns
+    .filter((row: any) => (row.returnPayMode || row.originalPaymentMode || "cash") === "cash")
+    .reduce((sum: number, row: any) => sum + Number(row.refundAmount ?? row.total ?? 0), 0);
+  const cashExpenses = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashAdjustIn = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "in" && !/advance|credit/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const cashAdjustOut = props.movementInRange
+    .filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && !/expense|purchase|supplier|bank/i.test(m.purpose || ""))
+    .reduce((sum: number, m: any) => sum + m.amount, 0);
+  const expectedPhysicalCash = openingCash + props.cashSales + creditCash + advanceCash + cashAdjustIn - cashRefunds - cashExpenses - props.purchaseCashPaid - props.depositAmount - cashAdjustOut;
   const rows = [
+    { label: "Opening cash", amount: openingCash, kind: "in" },
     { label: "Cash sales", amount: props.cashSales, kind: "in" },
-    { label: "Cash received / adjustments", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "in").reduce((sum: number, m: any) => sum + m.amount, 0), kind: "in" },
-    { label: "Expenses paid by cash", amount: props.movementInRange.filter((m: any) => m.paymentMode === "cash" && m.direction === "out" && /expense/i.test(m.purpose || "")).reduce((sum: number, m: any) => sum + m.amount, 0), kind: "out" },
+    { label: "Cash credit collections", amount: creditCash, kind: "in" },
+    { label: "Cash advance collections", amount: advanceCash, kind: "in" },
+    { label: "Other approved cash in", amount: cashAdjustIn, kind: "in" },
+    { label: "Cash refunds", amount: cashRefunds, kind: "out" },
+    { label: "Expenses paid by cash", amount: cashExpenses, kind: "out" },
     { label: "Cash purchase / supplier payments", amount: props.purchaseCashPaid, kind: "out" },
-    { label: "Bank deposits", amount: props.depositAmount, kind: "out" },
+    { label: "Cash bank deposits", amount: props.depositAmount, kind: "out" },
+    { label: "Other approved cash out", amount: cashAdjustOut, kind: "out" },
   ];
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Current Cash" value={money(props.cashBalance)} icon={<Banknote className="size-5" />} tone="green" />
+        <Kpi label="Expected Physical Cash" value={money(expectedPhysicalCash)} icon={<Banknote className="size-5" />} tone={expectedPhysicalCash >= 0 ? "green" : "red"} />
         <Kpi label="Bank Balance" value={money(props.bankBalance)} icon={<Landmark className="size-5" />} tone="blue" />
         <Kpi label="Expenses" value={money(props.expenseAmount)} icon={<WalletCards className="size-5" />} tone="red" />
         <Kpi label="Bank Deposits" value={money(props.depositAmount)} icon={<ShieldCheck className="size-5" />} tone="purple" />
@@ -2366,6 +2469,18 @@ function CurrentCashTab(props: any) {
           </ResponsiveContainer>
           <div className="space-y-2">{rows.map((row) => <div key={row.label} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3"><span className="text-sm font-bold text-slate-600">{row.label}</span><span className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{row.kind === "out" ? "−" : "+"}{money(row.amount)}</span></div>)}</div>
         </div>
+      </Panel>
+      <Panel title="Source Transactions" icon={<History className="size-4" />}>
+        <DataTable
+          headers={["Source", "Direction", "Amount", "Meaning"]}
+          rows={rows.map((row) => [
+            row.label,
+            row.kind === "in" ? "In" : "Out",
+            <span key="amount" className={cn("font-black", row.kind === "out" ? "text-red-600" : "text-emerald-700")}>{money(row.amount)}</span>,
+            row.kind === "in" ? "Adds to expected physical cash" : "Reduces expected physical cash",
+          ])}
+          empty="No cash source rows found."
+        />
       </Panel>
     </div>
   );
@@ -2674,7 +2789,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
             )}
             onClick={() =>
               csvDownload(
-                "SNB_Purchase_Orders.csv",
+                "SNB_Purchase_Orders.xls",
                 rows.map((p) => ({
                   PONumber: p.poNo,
                   Supplier: p.supplier,
@@ -3393,7 +3508,7 @@ function PurchaseInvoicesTab({
               className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
                 csvDownload(
-                  "SNB_Purchase_Invoices.csv",
+                  "SNB_Purchase_Invoices.xls",
                   visibleRows.map((purchase) => ({
                     Invoice: purchase.invoiceNo,
                     Date: purchase.invoiceDate || localDateKey(purchase.createdAt),
@@ -4539,7 +4654,7 @@ function BankDepositsTab({
         <Panel
           title="Bank Deposit History"
           icon={<History className="size-4" />}
-          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.csv", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
+          action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Bank_Deposits.xls", rows.map((d) => ({ Date: d.depositDate, Amount: d.amount, Method: d.paymentMode, BankAccount: d.bankAccount, Slip: d.slipNo, Ref: d.transactionRef, EnteredBy: d.enteredBy, Remarks: d.remarks })))}><Download className="size-4" /> Excel</button>}
         >
           <DataTable
             headers={[
@@ -4985,6 +5100,156 @@ function ReportsTab(props: any) {
       <RefreshCcw className={cn("size-4", db.loading && "animate-spin")} /> Refresh Database
     </button>
   );
+  const downloadBranchWorkbook = () => downloadExcelWorkbook("SNB_Branch_Report_Workbook.xls", [
+    {
+      name: "Summary",
+      rows: [{
+        FromDate: props.fromDate,
+        ToDate: props.toDate,
+        GeneratedBy: props.userName,
+        GrossSales: grossSales,
+        Discounts: discountAmount,
+        SalesReturns: returnAmount,
+        NetSales: netSales,
+        TotalCollections: collectionTotal,
+        PendingCredit: props.pendingCredit,
+        PurchaseInvoiceValue: purchaseTotal,
+        PurchaseReturns: purchaseReturnValue,
+        SupplierPayments: supplierPaymentTotal,
+        SupplierDue: supplierDue,
+        Expenses: props.expenseAmount,
+        BankDeposits: props.depositAmount,
+      }],
+    },
+    {
+      name: "Item Sales",
+      rows: db.itemSales.map((row) => ({
+        Date: row.business_date,
+        Item: row.item_name,
+        Unit: row.unit || "",
+        Quantity: asNumber(row.quantity_sold),
+        Gross: asNumber(row.gross_sales),
+        Discount: asNumber(row.item_discount),
+        Tax: asNumber(row.tax),
+        Net: asNumber(row.net_item_sales),
+        Bills: asNumber(row.bill_count),
+      })),
+    },
+    {
+      name: "Category Sales",
+      rows: db.categorySales.map((row) => ({
+        Date: row.business_date,
+        Category: row.category,
+        Quantity: asNumber(row.quantity_sold),
+        Gross: asNumber(row.gross_sales),
+        Discount: asNumber(row.item_discount),
+        Net: asNumber(row.net_item_sales),
+        Bills: asNumber(row.bill_count),
+      })),
+    },
+    {
+      name: "Discounts",
+      rows: db.discountBills.map((row) => ({
+        Bill: row.bill_no,
+        DateTime: row.bill_datetime,
+        Cashier: row.cashier || "",
+        Salesperson: row.salesperson || "",
+        Customer: row.customer_name || "",
+        Subtotal: asNumber(row.subtotal),
+        Discount: asNumber(row.discount),
+        DiscountPercent: asNumber(row.effective_discount_percent),
+        Tax: asNumber(row.tax),
+        RoundOff: asNumber(row.round_off),
+        Total: asNumber(row.total),
+      })),
+    },
+    {
+      name: "Daily Closure",
+      rows: db.dailySummary.map((row) => ({
+        Date: row.business_date,
+        ClosedCounters: asNumber(row.closed_counter_count),
+        OpenCounters: asNumber(row.open_counter_count),
+        Gross: asNumber(row.gross_sales),
+        Discounts: asNumber(row.discounts),
+        Returns: asNumber(row.returns),
+        Net: asNumber(row.net_sales),
+        Cash: asNumber(row.cash_sales),
+        UPI: asNumber(row.upi_sales),
+        Card: asNumber(row.card_sales),
+        CreditSales: asNumber(row.credit_sales),
+        CreditCollected: asNumber(row.credit_collected),
+        Advance: asNumber(row.advance_collected),
+        ExpectedCash: asNumber(row.expected_cash),
+        CountedCash: asNumber(row.counted_cash),
+        Difference: asNumber(row.difference),
+      })),
+    },
+    {
+      name: "Supplier Outstanding",
+      rows: db.supplierOutstanding.map((row) => ({
+        Supplier: row.supplier_name,
+        Invoice: row.invoice_number,
+        InvoiceDate: row.invoice_date || "",
+        Total: asNumber(row.total_amount),
+        Returned: asNumber(row.return_amount),
+        Paid: asNumber(row.paid_amount),
+        Balance: asNumber(row.balance_amount),
+        PaymentMethod: row.payment_method || "",
+        SyncStatus: row.sync_status || "",
+      })),
+    },
+    {
+      name: "Supplier Payments",
+      rows: db.supplierPayments.map((row) => ({
+        Date: row.payment_date,
+        Supplier: row.supplier_name,
+        Amount: asNumber(row.amount),
+        Mode: row.payment_method,
+        Reference: row.reference_no || "",
+        Batch: row.payment_batch_id || "",
+        PaidBy: row.paid_by || "",
+      })),
+    },
+    {
+      name: "Purchase Returns",
+      rows: db.purchaseReturns.map((row) => ({
+        Return: row.return_no,
+        Date: row.return_date,
+        Supplier: row.supplier_name,
+        Invoice: row.invoice_number,
+        Reason: row.reason_type,
+        Settlement: row.settlement_type,
+        Value: asNumber(row.total_amount),
+        EnteredBy: row.entered_by,
+      })),
+    },
+    {
+      name: "Credit",
+      rows: dueCredits.map((credit) => ({
+        Customer: credit.customerName,
+        Bill: credit.billNo,
+        Total: credit.subtotal,
+        Paid: credit.amountPaid,
+        Balance: credit.creditAmount,
+        DueDate: credit.dueDate || "",
+        Status: credit.status,
+      })),
+    },
+    {
+      name: "Expenses Deposits",
+      rows: [
+        ...branchExpenses.map((entry) => ({ Type: "Expense", Date: entry.expenseDate, Details: `${entry.category} - ${entry.description}`, Amount: entry.amount, ModeOrBank: entry.mode.toUpperCase() })),
+        ...branchDeposits.map((entry) => ({ Type: "Bank Deposit", Date: entry.depositDate, Details: entry.remarks || entry.transactionRef || entry.slipNo || "", Amount: entry.amount, ModeOrBank: entry.bankAccount })),
+      ],
+    },
+    {
+      name: "Waste Quotations",
+      rows: [
+        ...branchWaste.map((entry) => ({ Type: "Waste", Date: entry.createdAt, Reference: entry.logType, Details: `${entry.itemName} - ${entry.reason}`, ValueOrQty: `${entry.quantity} ${entry.unit}`, Status: entry.verifiedBy })),
+        ...branchQuotes.map((entry) => ({ Type: "Quotation", Date: entry.createdAt, Reference: entry.quoteNo, Details: entry.customerName, ValueOrQty: entry.total, Status: entry.status })),
+      ],
+    },
+  ]);
 
   return (
     <div className="space-y-4">
@@ -5000,7 +5265,7 @@ function ReportsTab(props: any) {
       <Panel
         title="SNB Branch Report Summary"
         icon={<FileSpreadsheet className="size-4" />}
-        action={<div className="flex flex-wrap gap-2">{refreshButton}<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => printOverview({ ...props, grossSales, netSales, returnAmount }, "SNB")}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Branch_Report_Summary.xls", [{ FromDate: props.fromDate, ToDate: props.toDate, GrossSales: grossSales, Discounts: discountAmount, SalesReturns: returnAmount, NetSales: netSales, TotalCollections: collectionTotal, PendingCredit: props.pendingCredit, PurchaseInvoiceValue: purchaseTotal, PurchaseReturns: purchaseReturnValue, SupplierPayments: supplierPaymentTotal, SupplierDue: supplierDue, Expenses: props.expenseAmount, BankDeposits: props.depositAmount }])}><Download className="size-4" /> Excel Summary</button></div>}
+        action={<div className="flex flex-wrap gap-2">{refreshButton}<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => printOverview({ ...props, grossSales, netSales, returnAmount }, "SNB")}><Printer className="size-4" /> Print</button><button className={cn(btnCls, "bg-slate-950 text-white")} onClick={downloadBranchWorkbook}><Download className="size-4" /> Excel Workbook</button></div>}
       >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
@@ -5827,4 +6092,3 @@ function DataTable({
     </div>
   );
 }
-

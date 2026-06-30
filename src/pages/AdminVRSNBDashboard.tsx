@@ -1,6 +1,7 @@
 // src/pages/AdminVRSNBDashboard.tsx
 // VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
+  isValidElement,
   useEffect,
   useMemo,
   useState,
@@ -21,7 +22,7 @@ import {
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
 import { printHtml } from "@/branch/printUtils";
-import { downloadExcel } from "@/lib/excelDownload";
+import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
   Area,
@@ -40,6 +41,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  ArrowUpDown,
   Banknote,
   BarChart3,
   Bell,
@@ -47,6 +49,8 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
   CreditCard,
   Database,
@@ -966,7 +970,7 @@ export default function AdminVRSNBDashboard() {
         <div><p className="text-xs font-black uppercase tracking-wider text-white/50">Admin Data View</p><p className="text-sm font-bold">Showing {viewBranchLabel} data only</p></div>
         <span className="rounded-full bg-orange-500 px-3 py-1.5 text-xs font-black">Branch Scoped</span>
       </div>
-      {!["stock", "complaints", "quotations"].includes(tab) && (
+      {!["stock", "quotations"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1483,7 +1487,7 @@ function SalesReturnsTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                `VRSNB_Sales_Returns_${dateInput()}.csv`,
+                `VRSNB_Sales_Returns_${dateInput()}.xls`,
                 salesRows.map((r) => ({
                   Type: r.type,
                   Number: r.no,
@@ -1553,33 +1557,109 @@ function SalesReturnsTab(props: any) {
 
 function StockTab(props: any) {
   const catalogItems = useVRSNBCatalog();
+  const [stockSearch, setStockSearch] = useState("");
+  const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
+  const [unit, setUnit] = useState("All");
+  const [minQty, setMinQty] = useState("");
+  const [maxQty, setMaxQty] = useState("");
+  const categories = useMemo(() => Array.from(new Set(catalogItems.map((item) => item.category || "Uncategorized"))).sort(), [catalogItems]);
+  const units = useMemo(() => Array.from(new Set(props.branchStock.map((item: any) => item.unit || catalogItems.find((catalog) => normal(catalog.name) === normal(item.itemName))?.uom || "pcs"))).sort(), [props.branchStock, catalogItems]);
+  const enrichedRows = useMemo(() => {
+    const query = stockSearch.trim().toLowerCase();
+    return props.branchStock
+      .map((item: any) => {
+        const catalog = catalogItems.find((candidate) => normal(candidate.name) === normal(item.itemName));
+        const current = Number(item.quantity || 0);
+        const minimum = Number(item.minThreshold ?? 10);
+        const shortage = Math.max(0, minimum - current);
+        const rowStatus = current <= 0 ? "Out of Stock" : current <= minimum * 0.5 ? "Critical" : current <= minimum ? "Low" : "OK";
+        const rowUnit = item.unit || catalog?.uom || "pcs";
+        const price = Number(item.price ?? catalog?.price ?? 0);
+        return {
+          ...item,
+          category: catalog?.category || "Uncategorized",
+          unit: rowUnit,
+          price,
+          stockValue: Math.max(0, current) * price,
+          current,
+          minimum,
+          shortage,
+          status: rowStatus,
+          reorder: shortage > 0 ? Math.max(shortage, minimum) : 0,
+          lastChange: item.lastUpdatedAt || item.updatedAt || "",
+        };
+      })
+      .filter((item: any) => !query || item.itemName.toLowerCase().includes(query) || String(item.itemBarcode || "").includes(query))
+      .filter((item: any) => category === "All" || item.category === category)
+      .filter((item: any) => status === "All" || item.status === status)
+      .filter((item: any) => unit === "All" || item.unit === unit)
+      .filter((item: any) => minQty === "" || item.current >= Number(minQty))
+      .filter((item: any) => maxQty === "" || item.current <= Number(maxQty))
+      .sort((a: any, b: any) => a.status.localeCompare(b.status) || a.itemName.localeCompare(b.itemName));
+  }, [props.branchStock, catalogItems, stockSearch, category, status, unit, minQty, maxQty]);
+  const stockValue = enrichedRows.reduce((sum: number, item: any) => sum + item.stockValue, 0);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Kpi
           label="Total Stock Items"
-          value={props.branchStock.length}
+          value={enrichedRows.length}
           icon={<Package className="size-5" />}
         />
         <Kpi
           label="Low Stock Alerts"
-          value={props.lowStockRows.length}
+          value={enrichedRows.filter((item: any) => item.status !== "OK").length}
           icon={<AlertTriangle className="size-5" />}
-          tone={props.lowStockRows.length ? "red" : "green"}
+          tone={enrichedRows.some((item: any) => item.status !== "OK") ? "red" : "green"}
         />
         <Kpi
           label="Stock Value"
-          value={money(
-            props.branchStock.reduce(
-              (s: number, i: any) =>
-                s + Math.max(0, i.quantity) * (i.price ?? 0),
-              0,
-            ),
-          )}
+          value={money(stockValue)}
           icon={<Database className="size-5" />}
           tone="blue"
         />
       </div>
+      <Panel title="Stock Register" icon={<Package className="size-4" />}>
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
+            <Search className="size-4 text-slate-400" />
+            <input value={stockSearch} onChange={(event) => setStockSearch(event.target.value)} placeholder="Search item or barcode" className="w-full bg-transparent text-sm font-black outline-none" />
+          </div>
+          <select className={inputCls} value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option>All</option>
+            {categories.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={status} onChange={(event) => setStatus(event.target.value)}>
+            {["All", "OK", "Low", "Critical", "Out of Stock"].map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select className={inputCls} value={unit} onChange={(event) => setUnit(event.target.value)}>
+            <option>All</option>
+            {units.map((value: string) => <option key={value}>{value}</option>)}
+          </select>
+          <input className={inputCls} type="number" min="0" placeholder="Min qty" value={minQty} onChange={(event) => setMinQty(event.target.value)} />
+          <input className={inputCls} type="number" min="0" placeholder="Max qty" value={maxQty} onChange={(event) => setMaxQty(event.target.value)} />
+        </div>
+        <div className="mt-3">
+          <DataTable
+            headers={["Item", "Category", "Barcode", "Current", "Minimum", "Shortage", "Unit", "Value", "Status", "Reorder Suggestion", "Last Change"]}
+            rows={enrichedRows.map((item: any) => [
+              item.itemName,
+              item.category,
+              item.itemBarcode || "-",
+              <span key="q" className="font-black tabular-nums">{item.current}</span>,
+              item.minimum,
+              item.shortage ? <span key="s" className="font-black text-red-600">{item.shortage}</span> : "-",
+              item.unit,
+              money(item.stockValue),
+              <StatusBadge key="status" tone={item.status === "OK" ? "green" : item.status === "Low" ? "amber" : "red"}>{item.status}</StatusBadge>,
+              item.reorder ? `${item.reorder} ${item.unit}` : "-",
+              item.lastChange ? fmtDateTime(item.lastChange) : "-",
+            ])}
+            empty="No stock items match the selected filters."
+          />
+        </div>
+      </Panel>
       <Panel
         title="Low Stock Alerts"
         icon={<AlertTriangle className="size-4" />}
@@ -1634,35 +1714,6 @@ function StockTab(props: any) {
           />
         )}
       </Panel>
-      <Panel
-        title="Stock Management View"
-        icon={<Package className="size-4" />}
-      >
-        <DataTable
-          headers={[
-            "Item",
-            "Current Stock",
-            "Unit",
-            "Minimum",
-            "Price",
-            "Status",
-          ]}
-          rows={props.branchStock.map((s: any) => [
-            s.itemName,
-            s.quantity,
-            s.unit ?? "-",
-            s.minThreshold ?? 10,
-            money(s.price ?? 0),
-            <StatusBadge
-              key="status"
-              tone={s.quantity <= (s.minThreshold ?? 10) ? "red" : "green"}
-            >
-              {s.quantity <= (s.minThreshold ?? 10) ? "Low" : "OK"}
-            </StatusBadge>,
-          ])}
-          empty="No stock records found."
-        />
-      </Panel>
     </div>
   );
 }
@@ -1706,7 +1757,7 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Expense</button>
           </div>
         </Panel>
-        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.csv", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
         </Panel>
       </div>
@@ -1944,7 +1995,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.csv", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>
@@ -2076,7 +2127,7 @@ function CashierReportTab(props: any) {
         <Kpi label="Combined Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
         <Kpi label="Top Cashier" value={best ? best.name : "-"} sub={best ? money(best.netSales) : undefined} icon={<BarChart3 className="size-5" />} tone="amber" />
       </div>
-      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Cashier_Report.csv", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
+      <Panel title="Cashier Report" icon={<BarChart3 className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Cashier_Report.xls", rows.map((r: any) => ({ CashierLogin: r.name, GrossSales: r.grossSales, Returns: r.returns, NetSales: r.netSales, Bills: r.bills, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit })))}><Download className="size-4" /> Export</button>}>
         <DataTable headers={["Rank", "Cashier Login", "Gross", "Returns", "Net", "Bills", "Cash", "UPI", "Card", "Credit"]} rows={rows.map((r: any, idx: number) => [`#${idx + 1}`, r.name, money(r.grossSales), money(r.returns), <span key="n" className="font-black text-emerald-700">{money(r.netSales)}</span>, r.bills, money(r.cash), money(r.upi), money(r.card), money(r.credit)])} empty="No cashier sales data found." />
       </Panel>
     </div>
@@ -2104,7 +2155,7 @@ function CashierClosureTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                "VRSNB_All_Cashier_Closures.csv",
+                "VRSNB_All_Cashier_Closures.xls",
                 rows.map((c) => ({
                   Date: fmtDateTime(c.createdAt),
                   Cashier: c.cashier,
@@ -2273,7 +2324,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
             )}
             onClick={() =>
               csvDownload(
-                "VRSNB_Purchase_Orders.csv",
+                "VRSNB_Purchase_Orders.xls",
                 rows.map((p) => ({
                   PONumber: p.poNo,
                   Supplier: p.supplier,
@@ -2799,7 +2850,7 @@ function SupplierPaymentsTab({ userName }: { userName: string }) {
           </button>
         </div>
       </Panel>
-      <Panel title="Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Supplier_Payments.csv", rows.map((p) => ({ Date: p.createdAt, Supplier: p.supplier, Amount: p.amount, Mode: p.mode, Reference: p.reference || "-", PaidBy: p.paidBy })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Supplier_Payments.xls", rows.map((p) => ({ Date: p.createdAt, Supplier: p.supplier, Amount: p.amount, Mode: p.mode, Reference: p.reference || "-", PaidBy: p.paidBy })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={[
             "Date",
@@ -3244,7 +3295,7 @@ function SalespersonReportTab(props: any) {
             className={cn(btnCls, "bg-slate-950 text-white")}
             onClick={() =>
               csvDownload(
-                "VRSNB_Salesperson_Report.csv",
+                "VRSNB_Salesperson_Report.xls",
                 props.salespersonRows.map((r: any) => ({
                   Salesperson: r.name,
                   GrossSales: r.grossSales,
@@ -3393,7 +3444,7 @@ function CreditTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
               className={cn(btnCls, "h-10 bg-white text-slate-700 ring-1 ring-slate-200")}
               onClick={() =>
                 csvDownload(
-                  "VRSNB_Credit_Register.csv",
+                  "VRSNB_Credit_Register.xls",
                   visibleSales.map((s) => ({
                     Unit: CREDIT_BRANCH_LABEL[s.branch],
                     Bill: s.billNo,
@@ -3462,7 +3513,7 @@ function CreditTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
           empty="No VRSNB credit sales found."
         />
       </Panel>
-      <Panel title="Credit Collections" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Credit_Collections.csv", paymentsInRange.map((p) => ({ Unit: CREDIT_BRANCH_LABEL[p.branch], Bill: p.billNo, Amount: p.amount, Mode: p.paymentMode, CollectedBy: p.collectedBy, Date: p.createdAt, Remarks: p.remarks })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Credit Collections" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Credit_Collections.xls", paymentsInRange.map((p) => ({ Unit: CREDIT_BRANCH_LABEL[p.branch], Bill: p.billNo, Amount: p.amount, Mode: p.paymentMode, CollectedBy: p.collectedBy, Date: p.createdAt, Remarks: p.remarks })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={["Unit", "Bill", "Amount", "Mode", "Collected By", "Date", "Remarks"]}
           rows={paymentsInRange.map((payment) => [
@@ -3701,7 +3752,7 @@ function DailyClosureTab({ userName, ...props }: any) {
             </button>
             <button
               onClick={() =>
-                csvDownload("VRSNB_Daily_Closure.csv", [
+                csvDownload("VRSNB_Daily_Closure.xls", [
                   {
                     OpeningBalance: form.openingCash,
                     GrossSales: props.grossSales,
@@ -3868,6 +3919,110 @@ function ReportsTab(props: any) {
     ["Total collections", collectionTotal, "Cash + UPI + card + credit recovery + advances"],
     ["Net sales shown", props.salesBreakdown.netSales, "Sales after returns"],
   ];
+  const downloadBranchWorkbook = () => downloadExcelWorkbook("VRSNB_Branch_Report_Workbook.xls", [
+    {
+      name: "Summary",
+      rows: [{
+        FromDate: props.fromDate,
+        ToDate: props.toDate,
+        Branch: props.reportLabel || "VRSNB Branch",
+        GeneratedBy: props.userName,
+        BillSales: props.salesBreakdown.billSales,
+        GrossSales: props.grossSales,
+        ReturnAmount: props.returnAmount,
+        NetSales: props.netSales,
+        CashSales: props.cashSales,
+        UPISales: props.upiSales,
+        CardSales: props.cardSales,
+        CreditSales: props.creditBillAmount,
+        CreditCollections: props.clearedCredit,
+        AdvanceCollected: props.advanceCollected,
+        AdvanceBalanceCollected: props.advanceBalanceCollected,
+        TotalCollections: collectionTotal,
+        PurchaseTotal: purchaseTotal,
+        SupplierDue: supplierDue,
+        SupplierPayments: props.purchasePaid,
+        Expenses: props.expenseAmount,
+        BankDeposits: props.depositAmount,
+        PendingCredit: props.pendingCredit,
+      }],
+    },
+    {
+      name: "Rupee Story",
+      rows: rupeeRows.map(([Source, Amount, Meaning]) => ({ Source, Amount, Meaning })),
+    },
+    {
+      name: "Item Sales",
+      rows: props.topItems.map((item: any) => ({
+        Item: item.name,
+        Quantity: item.qty,
+        Gross: item.gross,
+        Returns: item.returns,
+        Net: item.net,
+      })),
+    },
+    {
+      name: "Credit",
+      rows: dueCredits.map((credit) => ({
+        Customer: credit.customerName,
+        Bill: credit.billNo,
+        Total: credit.subtotal,
+        Paid: credit.amountPaid,
+        Balance: credit.creditAmount,
+        DueDate: credit.dueDate || "",
+        Status: credit.status,
+      })),
+    },
+    {
+      name: "Purchases",
+      rows: branchPurchases.map((purchase) => ({
+        Invoice: purchase.invoiceNo,
+        Supplier: purchase.supplier,
+        Total: purchase.total,
+        Paid: purchase.paidAmount,
+        Due: Math.max(0, purchase.total - purchase.paidAmount),
+        Status: Math.max(0, purchase.total - purchase.paidAmount) <= 0 ? "Cleared" : purchase.paidAmount > 0 ? "Partial" : "Pending",
+      })),
+    },
+    {
+      name: "Supplier Payments",
+      rows: purchasePayments.filter((payment) => payment.branch === BRANCH).map((payment) => ({
+        Date: payment.createdAt,
+        Supplier: payment.supplier,
+        Amount: payment.amount,
+        Mode: payment.mode,
+        Reference: payment.reference || "",
+      })),
+    },
+    {
+      name: "Expenses Deposits",
+      rows: [
+        ...branchExpenses.map((entry) => ({ Type: "Expense", Date: entry.expenseDate, Details: `${entry.category} - ${entry.description}`, Amount: entry.amount, ModeOrBank: entry.mode.toUpperCase() })),
+        ...branchDeposits.map((entry) => ({ Type: "Bank Deposit", Date: entry.depositDate, Details: entry.remarks || entry.transactionRef || entry.slipNo || "", Amount: entry.amount, ModeOrBank: entry.bankAccount })),
+      ],
+    },
+    {
+      name: "Waste Quotations",
+      rows: [
+        ...branchWaste.map((entry) => ({ Type: "Waste", Date: entry.createdAt, Reference: entry.logType, Details: `${entry.itemName} - ${entry.reason}`, ValueOrQty: `${entry.quantity} ${entry.unit}`, Status: entry.verifiedBy })),
+        ...branchQuotes.map((entry) => ({ Type: "Quotation", Date: entry.createdAt, Reference: entry.quoteNo, Details: entry.customerName, ValueOrQty: entry.total, Status: entry.status })),
+      ],
+    },
+    {
+      name: "Cashier Closures",
+      rows: branchClosures.map((closure) => ({
+        Date: closure.createdAt,
+        Cashier: closure.cashier,
+        Expected: closure.expectedCash,
+        Closing: closure.closingCash,
+        Difference: closure.difference,
+        Cash: closure.cash,
+        UPI: closure.upi,
+        Card: closure.card,
+        CreditCollections: closure.creditCollections ?? 0,
+      })),
+    },
+  ]);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -3910,33 +4065,10 @@ function ReportsTab(props: any) {
             </button>
             <button
               className={cn(btnCls, "bg-slate-950 text-white")}
-              onClick={() =>
-                csvDownload("VRSNB_Branch_Report.csv", [
-                  {
-                    BillSales: props.salesBreakdown.billSales,
-                    GrossSales: props.grossSales,
-                    ReturnAmount: props.returnAmount,
-                    NetSales: props.netSales,
-                    CashSales: props.cashSales,
-                    UPISales: props.upiSales,
-                    CardSales: props.cardSales,
-                    CreditSales: props.creditBillAmount,
-                    CreditCollections: props.clearedCredit,
-                    AdvanceCollected: props.advanceCollected,
-                    AdvanceBalanceCollected: props.advanceBalanceCollected,
-                    TotalCollections: collectionTotal,
-                    PurchaseTotal: purchaseTotal,
-                    SupplierDue: supplierDue,
-                    SupplierPayments: props.purchasePaid,
-                    Expenses: props.expenseAmount,
-                    BankDeposits: props.depositAmount,
-                    PendingCredit: props.pendingCredit,
-                  },
-                ])
-              }
+              onClick={downloadBranchWorkbook}
             >
               <Download className="size-4" />
-              Export Summary
+              Excel Workbook
             </button>
           </div>
         }
@@ -4693,7 +4825,7 @@ function AuditTab() {
           className={cn(btnCls, "bg-slate-950 text-white")}
           onClick={() =>
             csvDownload(
-              "VRSNB_Audit_Logs.csv",
+              "VRSNB_Audit_Logs.xls",
               rows.map((r) => ({
                 Date: fmtDateTime(r.createdAt),
                 User: r.user,
@@ -4734,36 +4866,113 @@ function DataTable({
   empty?: string;
 }) {
   const safeRows = rows || [];
+  const [query, setQuery] = useState("");
+  const [sortIndex, setSortIndex] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(1);
+  const pageSize = safeRows.length > 150 ? 50 : 25;
+
+  const cellText = (node: ReactNode): string => {
+    if (node == null || typeof node === "boolean") return "";
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(cellText).join(" ");
+    if (isValidElement(node)) return cellText((node.props as { children?: ReactNode }).children);
+    return "";
+  };
+
+  const preparedRows = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const filtered = !search
+      ? [...safeRows]
+      : safeRows.filter((row) => row.some((cell) => cellText(cell).toLowerCase().includes(search)));
+    if (sortIndex == null) return filtered;
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return filtered.sort((a, b) => {
+      const left = cellText(a[sortIndex]).trim();
+      const right = cellText(b[sortIndex]).trim();
+      const leftNumber = Number(left.replace(/[₹,%\s,]/g, ""));
+      const rightNumber = Number(right.replace(/[₹,%\s,]/g, ""));
+      const bothNumbers = left !== "" && right !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+      if (bothNumbers) return (leftNumber - rightNumber) * direction;
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) * direction;
+    });
+  }, [query, safeRows, sortDirection, sortIndex]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, sortDirection, sortIndex, safeRows.length]);
+
   if (!safeRows.length)
     return (
       <div className="rounded-3xl bg-slate-50 p-8 text-center text-sm font-black text-slate-400 ring-1 ring-slate-100">
         {empty}
       </div>
     );
+
+  const totalPages = Math.max(1, Math.ceil(preparedRows.length / pageSize));
+  const activePage = Math.min(page, totalPages);
+  const pageRows = preparedRows.slice((activePage - 1) * pageSize, activePage * pageSize);
+  const toggleSort = (index: number) => {
+    if (sortIndex === index) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else {
+      setSortIndex(index);
+      setSortDirection("asc");
+    }
+  };
+
   return (
-    <div className="overflow-x-auto rounded-3xl border border-slate-200">
-      <table className="w-full min-w-[850px] text-sm">
-        <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
-          <tr>
-            {headers.map((h) => (
-              <th key={h} className="px-4 py-3">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 bg-white">
-          {safeRows.map((row, i) => (
-            <tr key={i} className="align-top hover:bg-slate-50/70">
-              {row.map((cell, j) => (
-                <td key={j} className="px-4 py-3 font-semibold text-slate-700">
-                  {cell}
-                </td>
+    <div className="space-y-3">
+      {safeRows.length > 5 && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <label className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <input
+              className={cn(inputCls, "pl-10")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Filter this table..."
+            />
+          </label>
+          <p className="text-xs font-black text-slate-500">{preparedRows.length} of {safeRows.length} records</p>
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-3xl border border-slate-200">
+        <table className="w-full min-w-[850px] text-sm">
+          <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
+            <tr>
+              {headers.map((header, index) => (
+                <th key={`${header}-${index}`} className="px-4 py-3">
+                  <button type="button" className="flex w-full items-center gap-1 text-left hover:text-slate-950" onClick={() => toggleSort(index)}>
+                    <span>{header}</span>
+                    <ArrowUpDown className={cn("size-3", sortIndex === index ? "text-orange-500" : "text-slate-300")} />
+                  </button>
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100 bg-white">
+            {pageRows.map((row, rowIndex) => (
+              <tr key={`${activePage}-${rowIndex}`} className="align-top hover:bg-slate-50/70">
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex} className="px-4 py-3 font-semibold text-slate-700">
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {preparedRows.length > pageSize && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+          <p className="text-xs font-black text-slate-500">Page {activePage} of {totalPages}</p>
+          <div className="flex items-center gap-2">
+            <button disabled={activePage <= 1} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")} onClick={() => setPage((current) => Math.max(1, current - 1))}><ChevronLeft className="size-4" /> Previous</button>
+            <button disabled={activePage >= totalPages} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-40")} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Next <ChevronRight className="size-4" /></button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
