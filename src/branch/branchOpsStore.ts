@@ -364,6 +364,9 @@ export interface CashierClosure {
   difference: number;
   cash: number;
   upi: number;
+  actualUpi?: number;
+  upiDifference?: number;
+  upiNotes?: string;
   card: number;
   returns: number;
   discounts: number;
