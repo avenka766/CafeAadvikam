@@ -52,33 +52,26 @@ const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100)
 const roundWholeRupee = (value: number) => Math.round(Math.max(0, value));
 const clampPercentage = (value: number) => Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
 const BASE_SHORTCUTS = [
-  ['F1', 'New Bill'],
-  ['F2', 'Search Item'],
-  ['F3', 'Hold Bill'],
-  ['F4', 'Recall Hold Bill'],
-  ['F5', 'Cash Payment'],
-  ['F6', 'UPI Payment'],
-  ['F7', 'Card Payment'],
-  ['F8', 'Print / Final Bill'],
-  ['F9', 'Advance Order'],
-  ['F10', 'Quotation'],
-  ['F11', 'Return Bill'],
-  ['F12', 'Close Shift'],
-  ['Ctrl+B', 'Focus Cart'],
-  ['Ctrl+I', 'Focus Item Search'],
-  ['Ctrl+C', 'Clear Cart'],
-  ['Ctrl+D', 'Focus Discount'],
-  ['Ctrl+R', 'Return Bill'],
-  ['Ctrl+P', 'Print / Final Bill'],
+  ['F1', 'Change Salesperson'],
+  ['F2', 'Change Quantity'],
+  ['F3', 'Cash Payment'],
+  ['F4', 'UPI Payment'],
+  ['F5', 'Card Payment'],
+  ['F6', 'Split Payment'],
+  ['F7', 'Credit Sale'],
+  ['F8', 'Cash Tendered'],
+  ['F9', 'Hold Bill'],
+  ['F10', 'Final Bill'],
+  ['F11', 'Recall Hold'],
+  ['F12', 'Search Items'],
   ['Esc', 'Close popup'],
-  ['Enter', 'Confirm action'],
 ];
 const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
-  cash: 'F5',
-  upi: 'F6',
-  card: 'F7',
-  split: '—',
-  credit: '—',
+  cash: 'F3',
+  upi: 'F4',
+  card: 'F5',
+  split: 'F6',
+  credit: 'F7',
 };
 
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
@@ -178,6 +171,10 @@ export default function BranchBillingProTab({
   const searchRef = useRef<HTMLInputElement>(null);
   const selectRef = useRef<HTMLSelectElement>(null);
   const cashTenderedRef = useRef<HTMLInputElement>(null);
+  const splitCashRef = useRef<HTMLInputElement>(null);
+  const creditCustomerNameRef = useRef<HTMLInputElement>(null);
+  const cartQuantityRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const activeCartItemRef = useRef<string | null>(null);
   const discountRef = useRef<HTMLInputElement>(null);
   const cartRef = useRef<HTMLDivElement>(null);
   const itemsGridRef = useRef<HTMLDivElement>(null);
@@ -677,6 +674,42 @@ export default function BranchBillingProTab({
   useEffect(() => { selectPaymentModeRef.current = selectPaymentMode; });
   useEffect(() => { checkoutRef.current = checkout; });
 
+  const focusCartQuantity = useCallback(() => {
+    const itemName = activeCartItemRef.current && cart.some((line) => line.itemName === activeCartItemRef.current)
+      ? activeCartItemRef.current
+      : cart[0]?.itemName;
+    if (!itemName) {
+      setError('Add an item to the cart before changing quantity.');
+      focusSearch(false);
+      return;
+    }
+    const focus = () => {
+      const input = cartQuantityRefs.current[itemName];
+      input?.focus({ preventScroll: true });
+      input?.select();
+    };
+    window.requestAnimationFrame(focus);
+    window.setTimeout(focus, 50);
+  }, [cart, focusSearch]);
+
+  const focusPaymentField = useCallback((mode: PayMode) => {
+    selectPaymentModeRef.current(mode);
+    const focus = () => {
+      if (mode === 'split') {
+        splitCashRef.current?.focus({ preventScroll: true });
+        splitCashRef.current?.select();
+      } else if (mode === 'credit') {
+        creditCustomerNameRef.current?.focus({ preventScroll: true });
+        creditCustomerNameRef.current?.select();
+      } else {
+        cashTenderedRef.current?.focus({ preventScroll: true });
+        cashTenderedRef.current?.select();
+      }
+    };
+    window.requestAnimationFrame(focus);
+    window.setTimeout(focus, 50);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showQtyPopup || showHold || showShortcuts || showCounterClosedAlert) {
@@ -689,25 +722,32 @@ export default function BranchBillingProTab({
         }
         return;
       }
-      const key = e.key.toLowerCase();
-      if (e.ctrlKey && key === 'b') { e.preventDefault(); cartRef.current?.focus(); return; }
-      if (e.ctrlKey && key === 'i') { e.preventDefault(); focusSearch(false); return; }
-      if (e.ctrlKey && key === 'c') { e.preventDefault(); clear(); return; }
-      if (e.ctrlKey && key === 'd') { e.preventDefault(); discountRef.current?.focus(); return; }
-      if (e.ctrlKey && key === 'r') { e.preventDefault(); onOpenTab?.('returns'); return; }
-      if (e.ctrlKey && key === 'p') { e.preventDefault(); void checkoutRef.current(); return; }
-      if (e.key === 'F1') { e.preventDefault(); clear(); focusSearch(false); return; }
-      if (e.key === 'F2') { e.preventDefault(); focusSearch(false); return; }
-      if (e.key === 'F3') { e.preventDefault(); holdBill(); return; }
-      if (e.key === 'F4') { e.preventDefault(); setShowHold(true); return; }
-      if (e.key === 'F5') { e.preventDefault(); selectPaymentModeRef.current('cash'); return; }
-      if (e.key === 'F6') { e.preventDefault(); selectPaymentModeRef.current('upi'); return; }
-      if (e.key === 'F7') { e.preventDefault(); selectPaymentModeRef.current('card'); return; }
-      if (e.key === 'F8') { e.preventDefault(); void checkoutRef.current(); return; }
-      if (e.key === 'F9') { e.preventDefault(); onOpenTab?.('advance'); return; }
-      if (e.key === 'F10') { e.preventDefault(); onOpenTab?.('quotation'); return; }
-      if (e.key === 'F11') { e.preventDefault(); onOpenTab?.('returns'); return; }
-      if (e.key === 'F12') { e.preventDefault(); onOpenTab?.('closure'); return; }
+      if (e.key === 'F1') {
+        e.preventDefault();
+        if (requiresSalesperson) {
+          selectRef.current?.focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (e.key === 'F2') { e.preventDefault(); focusCartQuantity(); return; }
+      if (e.key === 'F3') { e.preventDefault(); focusPaymentField('cash'); return; }
+      if (e.key === 'F4') { e.preventDefault(); focusPaymentField('upi'); return; }
+      if (e.key === 'F5') { e.preventDefault(); focusPaymentField('card'); return; }
+      if (e.key === 'F6') { e.preventDefault(); focusPaymentField('split'); return; }
+      if (e.key === 'F7') { e.preventDefault(); focusPaymentField('credit'); return; }
+      if (e.key === 'F8') {
+        e.preventDefault();
+        if (paymentMode !== 'cash') selectPaymentModeRef.current('cash');
+        window.requestAnimationFrame(() => {
+          cashTenderedRef.current?.focus({ preventScroll: true });
+          cashTenderedRef.current?.select();
+        });
+        return;
+      }
+      if (e.key === 'F9') { e.preventDefault(); holdBill(); return; }
+      if (e.key === 'F10') { e.preventDefault(); void checkoutRef.current(); return; }
+      if (e.key === 'F11') { e.preventDefault(); setShowHold(true); return; }
+      if (e.key === 'F12') { e.preventDefault(); focusSearch(false); return; }
       const target = e.target as HTMLElement | null;
       const isEditing = Boolean(target?.matches('input, textarea, select, [contenteditable="true"]'));
       if (isEditing) return;
@@ -720,7 +760,7 @@ export default function BranchBillingProTab({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cart, clear, focusSearch, holdBill, items, onOpenTab, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, total, visibleItems]);
+  }, [focusCartQuantity, focusPaymentField, focusSearch, holdBill, paymentMode, requiresSalesperson, selectedIndex, showCounterClosedAlert, showHold, showQtyPopup, showShortcuts, visibleItems]);
 
   if (!billingAllowed) {
     return (
@@ -802,8 +842,10 @@ export default function BranchBillingProTab({
                         </div>
                         <p className="shrink-0 text-[11px] font-black tabular-nums text-slate-950">{money(i.lineTotal)}</p>
                         <input
+                          ref={(element) => { cartQuantityRefs.current[i.itemName] = element; }}
                           value={cartQuantityDrafts[i.itemName] ?? (i.unit === 'kg' ? parseFloat(i.quantity.toFixed(3)).toString() : String(i.quantity))}
                           onFocus={(e) => {
+                            activeCartItemRef.current = i.itemName;
                             const input = e.currentTarget;
                             startCartQuantityEdit(i);
                             requestAnimationFrame(() => input.select());
@@ -882,7 +924,7 @@ export default function BranchBillingProTab({
                 <div className="grid grid-cols-3 gap-2">
                   {(['cash','upi','card'] as const).map((field) => (
                     <div key={field} className="flex overflow-hidden rounded-xl border bg-white">
-                      <input type="number" min="0" max={total} value={split[field]} onChange={(e)=>updateSplitAmount(field, e.target.value)} placeholder={field.toUpperCase()} className="min-w-0 flex-1 px-2 py-1 font-bold outline-none"/>
+                      <input ref={field === 'cash' ? splitCashRef : undefined} type="number" min="0" max={total} value={split[field]} onChange={(e)=>updateSplitAmount(field, e.target.value)} placeholder={field.toUpperCase()} className="min-w-0 flex-1 px-2 py-1 font-bold outline-none"/>
                       <button type="button" onClick={() => fillSplitRemainder(field)} className="border-l bg-slate-100 px-2 text-[9px] font-black text-slate-600" title={`Fill remaining amount in ${field}`}>REST</button>
                     </div>
                   ))}
@@ -892,7 +934,7 @@ export default function BranchBillingProTab({
             ) : paymentMode === 'credit' ? (
               <div className="mx-4 mb-2 space-y-2 rounded-2xl border-2 border-amber-200 bg-amber-50 p-2">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <input value={creditCustomerName} onChange={(e)=>setCreditCustomerName(e.target.value)} placeholder="Customer name *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
+                  <input ref={creditCustomerNameRef} value={creditCustomerName} onChange={(e)=>setCreditCustomerName(e.target.value)} placeholder="Customer name *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                   <input value={creditCustomerMobile} onChange={(e)=>setCreditCustomerMobile(e.target.value)} placeholder="Mobile number *" className="rounded-xl border border-amber-200 bg-white p-2 font-bold outline-none focus:border-amber-500"/>
                   <div className="space-y-1">
                     <label className="text-[10px] font-black uppercase tracking-wide text-amber-800">Due Date <span className="text-red-500">*</span></label>
@@ -921,8 +963,8 @@ export default function BranchBillingProTab({
                   <input ref={cashTenderedRef} value={cashTendered} onChange={(e)=>setCashTendered(e.target.value)} placeholder={paymentMode === 'cash' ? 'Cash tendered' : 'Auto collected'} className="h-8 min-w-0 flex-1 bg-transparent text-base font-black outline-none"/>
                 </div>
               )}
-              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F3</span></button>
-              <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F8</span></button>
+              <button onClick={holdBill} className="inline-flex min-w-[70px] items-center justify-center gap-1 rounded-xl bg-amber-100 px-2 py-1.5 text-xs font-black text-amber-800"><PauseCircle className="size-3.5"/>Hold <span className="text-[8px] opacity-70">F9</span></button>
+              <button onClick={checkout} disabled={checkoutDisabled} className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-xl bg-orange-500 px-2 py-1.5 text-xs font-black text-white shadow-md shadow-orange-200 disabled:opacity-50"><Printer className="size-3.5"/>{saving ? 'Saving' : 'Final Bill'} <span className="text-[8px] opacity-70">F10</span></button>
             </div>
             {lastBill && <button onClick={() => { void printCounterBill(lastBill, true); }} className="mx-2.5 mb-1.5 w-[calc(100%-1.25rem)] rounded-xl border border-slate-200 bg-white py-1.5 text-xs font-black text-slate-700">Print duplicate: {lastBill.billNo}</button>}
           </div>
@@ -989,7 +1031,7 @@ export default function BranchBillingProTab({
                     }
                     if (e.key === 'Escape') setShowDropdown(false);
                   }}
-                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F2 - search item name or barcode'}
+                  placeholder={billingInputMode === 'barcode' ? `Scan ${branch === 'SNB' ? '1001...' : '2001...'} barcode and press Enter` : 'F12 - search item name or barcode'}
                   className="h-8 w-full bg-transparent text-sm font-black outline-none placeholder:text-slate-400"
                 />
                 {showDropdown && visibleItems.length > 0 && (
