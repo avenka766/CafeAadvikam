@@ -2,6 +2,7 @@
 // VRSNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
   isValidElement,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -65,6 +66,7 @@ import {
   MessageSquareWarning,
   Package,
   PackageCheck,
+  Pencil,
   Plus,
   Printer,
   Receipt,
@@ -110,6 +112,7 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "update-stock"
   | "expenses"
   | "complaints"
   | "waste"
@@ -131,6 +134,7 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "update-stock", label: "Update Stock", icon: Pencil, adminOnly: true },
   { id: "expenses", label: "Expenses", icon: WalletCards, adminOnly: true },
   { id: "complaints", label: "Complaints", icon: Bell, adminOnly: true },
   { id: "waste", label: "Waste Logs", icon: Trash2, adminOnly: true },
@@ -1023,7 +1027,7 @@ export default function AdminVRSNBDashboard() {
           ))}
         </div>
       </div>
-      {!["stock", "quotations"].includes(tab) && (
+      {!["stock", "update-stock", "quotations"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1051,6 +1055,15 @@ export default function AdminVRSNBDashboard() {
           {...commonProps}
         />
       )}
+      {tab === "update-stock" && (
+        <UpdateStockTab
+          userName={userName}
+          branchStock={vrsnbStockRows}
+          catalogItems={catalogItems}
+          fetchBranchData={fetchBranchData}
+          setNotice={setNotice}
+        />
+      )}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} />}
@@ -1073,6 +1086,142 @@ export default function AdminVRSNBDashboard() {
       )}
       {tab === "notifications" && <NotificationsTab userName={userName} />}
     </main>
+  );
+}
+
+function UpdateStockTab({
+  userName,
+  branchStock,
+  catalogItems,
+  fetchBranchData,
+  setNotice,
+}: {
+  userName: string;
+  branchStock: any[];
+  catalogItems: Array<{ name: string; barcode?: number; category?: string; uom?: string }>;
+  fetchBranchData: (branch: Branch) => Promise<void>;
+  setNotice: (message: string) => void;
+}) {
+  type AdjustmentRow = {
+    id: string;
+    item_name: string;
+    old_quantity: number;
+    new_quantity: number;
+    delta: number;
+    reason: string;
+    adjusted_by: string;
+    adjusted_at: string;
+  };
+  const [selectedItem, setSelectedItem] = useState(catalogItems[0]?.name || "");
+  const [quantity, setQuantity] = useState("");
+  const [reason, setReason] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [history, setHistory] = useState<AdjustmentRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const selectedCatalog = catalogItems.find((item) => item.name === selectedItem);
+  const current = branchStock.find((row) => normal(row.itemName) === normal(selectedItem));
+  const currentQuantity = Number(current?.quantity ?? 0);
+  const reservedQuantity = Number(current?.reservedQuantity ?? 0);
+  const availableQuantity = Number(current?.availableQuantity ?? currentQuantity - reservedQuantity);
+
+  useEffect(() => {
+    if (!selectedItem && catalogItems[0]?.name) setSelectedItem(catalogItems[0].name);
+  }, [catalogItems, selectedItem]);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    const { data, error: historyError } = await supabase
+      .from("branch_stock_adjustments")
+      .select("id,item_name,old_quantity,new_quantity,delta,reason,adjusted_by,adjusted_at")
+      .eq("branch", BRANCH)
+      .order("adjusted_at", { ascending: false })
+      .limit(100);
+    setHistoryLoading(false);
+    if (historyError) {
+      setError(`Unable to load adjustment history: ${historyError.message}`);
+      return;
+    }
+    setHistory((data || []) as AdjustmentRow[]);
+  }, []);
+
+  useEffect(() => { void loadHistory(); }, [loadHistory]);
+
+  const save = async () => {
+    const nextQty = Number(quantity);
+    setError("");
+    if (!selectedItem) return setError("Select an item.");
+    if (!Number.isFinite(nextQty) || nextQty < 0) return setError("Enter a valid stock quantity of zero or more.");
+    if (reason.trim().length < 3) return setError("Enter a clear reason for the stock adjustment.");
+    if (!password) return setError("Enter your login password to authorize this stock update.");
+    if (!window.confirm(`Set ${selectedItem} stock from ${currentQuantity} to ${nextQty}?`)) return;
+
+    setSaving(true);
+    const { data, error: rpcError } = await supabase.rpc("admin_update_vrsnb_stock_secure", {
+      p_item_barcode: selectedCatalog?.barcode ?? current?.itemBarcode ?? null,
+      p_item_name: selectedItem,
+      p_new_quantity: Math.round(nextQty * 1000) / 1000,
+      p_password: password,
+      p_reason: reason.trim(),
+      p_expected_quantity: currentQuantity,
+    });
+    setSaving(false);
+    setPassword("");
+    if (rpcError) {
+      const message = rpcError.message || "";
+      setError(/password|credential|secret|authorization/i.test(message)
+        ? "Authorization failed. Check your login password and try again."
+        : /stock_changed|changed by another/i.test(message)
+          ? "This stock row changed after you opened it. Refresh and confirm the latest quantity before retrying."
+          : `Stock update failed: ${message}`);
+      return;
+    }
+    await Promise.all([fetchBranchData(BRANCH), loadHistory()]);
+    setQuantity("");
+    setReason("");
+    setNotice(`${selectedItem} stock updated securely by ${userName}.`);
+    if (data && typeof data === "object" && "warning" in (data as Record<string, unknown>)) {
+      const warning = String((data as Record<string, unknown>).warning || "");
+      if (warning) setError(warning);
+    }
+  };
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title="Secure VRSNB Stock Update" icon={<ShieldCheck className="size-4" />}>
+        <div className="space-y-3">
+          <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+            Every correction requires the current administrator password, is branch-locked to VRSNB, and is recorded in the audit trail with management notifications.
+          </div>
+          <Field label="Item">
+            <select className={inputCls} value={selectedItem} onChange={(e) => { setSelectedItem(e.target.value); setQuantity(""); setError(""); }}>
+              {catalogItems.map((item) => <option key={`${item.barcode ?? item.name}-${item.name}`} value={item.name}>{item.name}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[10px] font-black uppercase text-slate-500">Current</p><p className="mt-1 text-xl font-black">{currentQuantity}</p></div>
+            <div className="rounded-2xl bg-blue-50 p-3 ring-1 ring-blue-100"><p className="text-[10px] font-black uppercase text-blue-600">Reserved</p><p className="mt-1 text-xl font-black text-blue-800">{reservedQuantity}</p></div>
+            <div className="rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-100"><p className="text-[10px] font-black uppercase text-emerald-600">Available</p><p className="mt-1 text-xl font-black text-emerald-800">{availableQuantity}</p></div>
+          </div>
+          <Field label="New Quantity"><input type="number" min="0" step="0.001" className={inputCls} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></Field>
+          <Field label="Reason for Adjustment"><textarea className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Physical count correction, damaged stock correction, opening balance correction..." /></Field>
+          <Field label="Admin Login Password"><input type="password" autoComplete="current-password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+          {error && <p className="rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</p>}
+          <button disabled={saving} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-60")}>
+            {saving ? <RefreshCcw className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}{saving ? "Verifying & Updating..." : "Authorize & Update Stock"}
+          </button>
+        </div>
+      </Panel>
+      <div className="space-y-4">
+        <Panel title="Current VRSNB Stock" icon={<Package className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void fetchBranchData(BRANCH)}><RefreshCcw className="size-4" /> Refresh</button>}>
+          <DataTable headers={["Item", "Category", "Barcode", "Quantity", "Reserved", "Available", "Unit", "Action"]} rows={branchStock.map((row) => { const item = catalogItems.find((candidate) => normal(candidate.name) === normal(row.itemName)); return [row.itemName, item?.category || "-", item?.barcode ?? row.itemBarcode ?? "-", row.quantity, row.reservedQuantity ?? 0, row.availableQuantity ?? Number(row.quantity || 0) - Number(row.reservedQuantity || 0), row.unit || item?.uom || "-", <button key="select" className={cn(btnCls, "bg-blue-50 text-blue-700")} onClick={() => { setSelectedItem(row.itemName); setQuantity(String(row.quantity)); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Select</button>]; })} empty="No VRSNB stock records found." />
+        </Panel>
+        <Panel title="Recent Stock Adjustments" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadHistory()}><RefreshCcw className={cn("size-4", historyLoading && "animate-spin")} /> Refresh</button>}>
+          <DataTable headers={["Date", "Item", "Old", "New", "Difference", "Reason", "Updated By"]} rows={history.map((row) => [fmtDateTime(row.adjusted_at), row.item_name, row.old_quantity, row.new_quantity, row.delta, row.reason, row.adjusted_by])} empty={historyLoading ? "Loading adjustment history..." : "No VRSNB stock adjustments found."} />
+        </Panel>
+      </div>
+    </div>
   );
 }
 
