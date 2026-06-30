@@ -8,6 +8,13 @@ import { useAuthStore } from '@/stores/authStore';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+type BranchRealtimeSubscription = {
+  channel: ReturnType<typeof supabase.channel>;
+  subscribers: number;
+};
+
+const branchRealtimeSubscriptions = new Map<string, BranchRealtimeSubscription>();
+
 const isMissingRpcError = (message: string) =>
   /could not find the function|function .* does not exist|schema cache/i.test(message);
 
@@ -1307,6 +1314,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   // Returns an unsubscribe function — call it in the component's cleanup.
   subscribeToStock: (branch) => {
     const channelName = `branch-live-${branch}`;
+    const existing = branchRealtimeSubscriptions.get(channelName);
+    if (existing) {
+      existing.subscribers += 1;
+      return () => {
+        existing.subscribers -= 1;
+        if (existing.subscribers <= 0) {
+          branchRealtimeSubscriptions.delete(channelName);
+          void supabase.removeChannel(existing.channel);
+        }
+      };
+    }
 
     const channel = supabase
       .channel(channelName)
@@ -1330,8 +1348,17 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       )
       .subscribe();
 
+    branchRealtimeSubscriptions.set(channelName, { channel, subscribers: 1 });
+
     // Return cleanup function
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      const current = branchRealtimeSubscriptions.get(channelName);
+      if (!current) return;
+      current.subscribers -= 1;
+      if (current.subscribers <= 0) {
+        branchRealtimeSubscriptions.delete(channelName);
+        void supabase.removeChannel(current.channel);
+      }
+    };
   },
 }));
-
