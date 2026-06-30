@@ -173,6 +173,9 @@ export interface CakeAdvanceOrder {
   storeStatusHistory?: Array<{ status: string; by: string; at: string }>;
   sentToStoreAt?: string;
   finalInvoiceBillNo?: string;
+  createdBy?: string;
+  collectionSource?: string;
+  skipLocalCashMovement?: boolean;
   createdAt: string;
 }
 
@@ -1777,11 +1780,12 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           status: "Pending Store Confirmation",
           createdAt: newOrder.createdAt,
         };
+        const actor = order.createdBy || order.salesperson;
         set((s) => ({
           advanceCakeOrders: [newOrder, ...s.advanceCakeOrders],
           storeOrders: s.storeOrders,
           notifications: s.notifications,
-          cashMovements: [
+          cashMovements: order.skipLocalCashMovement ? s.cashMovements : [
             {
               id: uid("cash"),
               branch: order.branch,
@@ -1790,16 +1794,16 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               paymentMode: order.paymentMode,
               direction: "in",
               purpose: "Cake advance received",
-              enteredBy: order.salesperson,
+              enteredBy: actor,
               referenceNumber: orderNo,
-              remarks: order.customerName,
+              remarks: order.collectionSource || order.customerName,
             },
             ...s.cashMovements,
           ],
           auditLogs: [
             audit(
               order.branch,
-              order.salesperson,
+              actor,
               "Advance Order",
               "-",
               `${orderNo} ${order.advanceAmount}`,
@@ -1811,7 +1815,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
           recordNo: orderNo,
           amount: order.orderValue,
           status: newOrder.status,
-          actor: order.salesperson,
+          actor,
         });
         return newOrder;
       },
