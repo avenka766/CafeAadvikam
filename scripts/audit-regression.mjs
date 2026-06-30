@@ -72,6 +72,7 @@ const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix
 const branchPaymentStockCorrectionMigration = read('supabase/migrations/20260628224500_fix_branch_payment_edit_nav_and_mix_combo_stock.sql') ?? '';
 const completeBranchFixMigration = read('supabase/migrations/20260630030000_branch_snb_vrsnb_complete_fixes.sql') ?? '';
 const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013000_fix_snb_purchase_workflow_dropdowns.sql') ?? '';
+const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_add_branch_upi_closure_audit.sql') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
@@ -275,14 +276,39 @@ check(
 );
 
 check(
-  'Billing keyboard shortcuts match the requested workflow',
+  'Billing keyboard shortcuts match the original SNB and VRSNB workflow',
   [
-    "e.key === 'F3'", "e.key === 'F5'", "e.key === 'F8'", "e.key === 'F9'",
-    "e.key === 'F10'", "e.key === 'F11'", "e.key === 'F12'",
-    "e.ctrlKey && key === 'b'", "e.ctrlKey && key === 'i'", "e.ctrlKey && key === 'c'",
-    "e.ctrlKey && key === 'd'", "e.ctrlKey && key === 'r'", "e.ctrlKey && key === 'p'",
+    "['F1', 'Change Salesperson']",
+    "['F2', 'Change Quantity']",
+    "['F3', 'Cash Payment']",
+    "['F4', 'UPI Payment']",
+    "['F5', 'Card Payment']",
+    "['F6', 'Split Payment']",
+    "['F7', 'Credit Sale']",
+    "['F8', 'Cash Tendered']",
+    "['F9', 'Hold Bill']",
+    "['F10', 'Final Bill']",
+    "['F11', 'Recall Hold']",
+    "['F12', 'Search Items']",
+    "if (requiresSalesperson)",
+    "focusCartQuantity()",
+    "focusPaymentField('split')",
+    "void checkoutRef.current()",
+    "setShowHold(true)",
+    "focusSearch(false)",
   ].every((token) => branchBilling.includes(token)),
-  'Hold, payment, print, advance, quotation, return, closure and Ctrl shortcuts must remain wired.',
+  'F1-F12 must preserve the original salesperson, quantity, payment, tender, hold, final bill, recall and search workflow.',
+);
+
+check(
+  'Branch daily closure requires and stores a UPI settlement audit',
+  branchBusinessModules.includes("actual_upi: actualUpi")
+    && branchBusinessModules.includes("upi_difference: upiDifference")
+    && branchBusinessModules.includes('Enter the verified UPI amount before saving the closure')
+    && branchBusinessModules.includes('UPI audit remarks because the verified amount does not match')
+    && branchUpiClosureAuditMigration.includes('actual_upi numeric(14,2)')
+    && branchUpiClosureAuditMigration.includes('counted_upi numeric(14,2)'),
+  'SNB and VRSNB closure must compare verified UPI with system UPI, require mismatch remarks, and persist both values.',
 );
 
 check(
