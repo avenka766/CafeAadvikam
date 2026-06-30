@@ -434,6 +434,32 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   );
 }
 
+export function SnbStockOperationsPanel() {
+  const [mode, setMode] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="grid shrink-0 grid-cols-3 gap-2 rounded-2xl border border-border bg-white p-2 shadow-sm">
+        {(["Dump", "Damage", "Trans Out"] as const).map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => setMode(item)}
+            className={cn(
+              "min-h-10 rounded-xl px-3 py-2 text-xs font-black transition",
+              mode === item ? "bg-slate-950 text-white shadow" : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+            )}
+          >
+            {item === "Trans Out" ? "Transfer Out" : item}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1">
+        <SnbStockMovementPanel mode={mode} />
+      </div>
+    </div>
+  );
+}
+
 type AdvanceLine = { key: string; barcode: number; itemName: string; quantity: string; sellUnit: "kg" | "pcs"; price: number };
 
 export function SnbAdvanceOrdersPanel() {

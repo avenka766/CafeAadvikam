@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
 import { useBranchStore } from '@/branch/branchStore';
+import { useBranchOpsStore } from '@/branch/branchOpsStore';
 
 type ReceiverBranchScope = 'SNB';
 
@@ -123,18 +124,22 @@ function POCard({ po, onStatusChange, onDelete, currentStockFor }: {
 
 function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchScope?: ReceiverBranchScope }) {
   const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
-  const { suppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
+  const { suppliers: storeSuppliers, loaded: suppliersLoaded, load: loadSuppliers } = useSupplierStore();
+  const branchSuppliers = useBranchOpsStore((state) => state.suppliers);
   const { currentUser }       = useAuthStore();
   const { createPO }          = usePurchaseOrderStore();
   const { items: snbItems } = useOperationalBranchCatalog('SNB');
   const snbStock = useBranchStore((state) => state.stock.SNB);
 
   useEffect(() => {
-    if (!suppliersLoaded) void loadSuppliers();
+    if (!branchScope && !suppliersLoaded) void loadSuppliers();
     if (!branchScope && !stockLoaded) void loadStock();
   }, [branchScope, loadStock, loadSuppliers, stockLoaded, suppliersLoaded]);
 
-  const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '');
+  const suppliers = branchScope === 'SNB'
+    ? branchSuppliers.filter((supplier) => supplier.branch === 'SNB').map((supplier) => ({ id: supplier.id, businessName: supplier.name }))
+    : storeSuppliers.map((supplier) => ({ id: supplier.id, businessName: supplier.businessName }));
+  const [supplierId, setSupplierId] = useState('');
   const [notes,      setNotes]      = useState('');
   const [itemSearch, setItemSearch] = useState('');
   const materialOptions = branchScope === 'SNB'
@@ -161,6 +166,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
 
   useEffect(() => {
     if (!supplierId && suppliers.length > 0) setSupplierId(suppliers[0].id);
+    if (supplierId && !suppliers.some((supplier) => supplier.id === supplierId)) setSupplierId(suppliers[0]?.id ?? '');
   }, [supplierId, suppliers]);
 
   const chooseSearchResult = (name: string) => {
@@ -206,8 +212,9 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
           <p className="text-[11px] font-body font-bold text-muted-foreground uppercase">Supplier</p>
           <select value={supplierId} onChange={e => setSupplierId(e.target.value)}
             className="w-full h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-            {suppliers.map(s => <option key={s.id} value={s.id}>{s.businessName}</option>)}
+            {suppliers.length === 0 ? <option value="">No SNB suppliers added by SNB Admin</option> : suppliers.map(s => <option key={s.id} value={s.id}>{s.businessName}</option>)}
           </select>
+          {branchScope === 'SNB' && suppliers.length === 0 && <p className="text-[11px] font-bold text-amber-700">Add suppliers in SNB Admin → Suppliers before creating a purchase order.</p>}
         </div>
 
         <div className="space-y-2">
