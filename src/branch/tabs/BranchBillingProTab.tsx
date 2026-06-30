@@ -78,6 +78,12 @@ function unitOf(item: BillingItem): 'pcs' | 'kg' {
   return item.uom === 'Kgs' ? 'kg' : 'pcs';
 }
 
+function isSnbFlexibleStockItem(branch: Branch, item?: Pick<BillingItem, 'category'> | null) {
+  if (branch !== 'SNB' || !item) return false;
+  const normalizedCategory = item.category.toLowerCase().replace(/\s+/g, ' ').trim();
+  return normalizedCategory === 'mix & combo' || normalizedCategory === 'mix and combo';
+}
+
 
 function normalizeItemName(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -327,14 +333,15 @@ export default function BranchBillingProTab({
     }
     const unit = unitOf(item);
     const available = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-    if (available <= 0) {
+    const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
+    if (!allowInsufficientStock && available <= 0) {
       setError(`${item.name} is out of stock and cannot be billed.`);
       return;
     }
     setCart((current) => {
       const existing = current.find((c) => c.barcode === item.barcode || c.itemName === item.name);
       const finalQty = Number(amount.toFixed(3));
-      if (finalQty > available) {
+      if (!allowInsufficientStock && finalQty > available) {
         setError(`Only ${available} ${unit} available for ${item.name}.`);
         return current;
       }
@@ -347,7 +354,7 @@ export default function BranchBillingProTab({
       delete next[item.name];
       return next;
     });
-  }, [branchStock, stockMap, isCounterOpen]);
+  }, [branch, branchStock, stockMap, isCounterOpen]);
 
   const submitQtyPopup = useCallback(() => {
     if (!qtyPopupItem) return;
@@ -364,7 +371,7 @@ export default function BranchBillingProTab({
       return;
     }
     const available = Number(stockAvailable(branchStock, stockMap, qtyPopupItem.name, qtyPopupItem.barcode));
-    if (amount > available) {
+    if (!isSnbFlexibleStockItem(branch, qtyPopupItem) && amount > available) {
       setError(`Only ${formatQty(available, unit)} available for ${qtyPopupItem.name}.`);
       return;
     }
@@ -373,7 +380,7 @@ export default function BranchBillingProTab({
     setQtyPopupItem(null);
     setQtyPopupValue('');
     focusSearch(true);
-  }, [branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
+  }, [branch, branchStock, focusSearch, isCounterOpen, qtyPopupItem, qtyPopupValue, setItemQuantity, stockMap]);
 
   const startCartQuantityEdit = (item: BranchBillItem) => {
     setError('');
@@ -413,7 +420,7 @@ export default function BranchBillingProTab({
 
     const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
     const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-    if (nextQty > available) {
+    if (!isSnbFlexibleStockItem(branch, catalogItem) && nextQty > available) {
       setError(`Only ${formatQty(available, item.unit)} available for ${item.itemName}. The previous quantity was kept.`);
       clearCartQuantityDraft(itemName);
       return;
@@ -454,9 +461,11 @@ export default function BranchBillingProTab({
     if (!cart.length) return 'Cart is empty.';
     for (const item of cart) {
       const catalogItem = items.find((catalog) => catalog.barcode === item.barcode || catalog.name === item.itemName);
-        const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
-      if (available <= 0) return `${item.itemName} is out of stock.`;
-      if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
+      const available = Number(stockAvailable(branchStock, stockMap, item.itemName, item.barcode));
+      if (!isSnbFlexibleStockItem(branch, catalogItem)) {
+        if (available <= 0) return `${item.itemName} is out of stock.`;
+        if (item.quantity > available) return `${item.itemName} has only ${available} ${item.unit} available.`;
+      }
     }
     if (paymentMode === 'cash' && Number(cashTendered || 0) < total) return 'Cash tendered is less than bill total.';
     if (paymentMode === 'credit' && !creditCustomerName.trim()) return 'Customer name is required for credit sale.';
@@ -593,10 +602,16 @@ export default function BranchBillingProTab({
         p_due_date: paymentMode === 'credit' ? creditDueDate : null,
         p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
       };
-      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
+      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v4', {
         ...checkoutPayload,
         p_discount_percent: discountPercent,
       });
+      if (rpcError && /complete_branch_checkout_canonical_v4|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
+        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
+          ...checkoutPayload,
+          p_discount_percent: discountPercent,
+        }));
+      }
       if (rpcError && /complete_branch_checkout_canonical_v3|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
         ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
           ...checkoutPayload,
@@ -1038,14 +1053,16 @@ export default function BranchBillingProTab({
                   <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                     {visibleItems.slice(0, 10).map((item, idx) => {
                       const st = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-                                        return (
+                      const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
+                      const unavailable = st <= 0 && !allowInsufficientStock;
+                      return (
                         <div
                           key={item.barcode}
-                          onMouseDown={() => { openQtyPopup(item); setShowDropdown(false); setQuery(''); }}
-                          className={cn('flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-bold', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50', st <= 0 && 'opacity-50')}
+                          onMouseDown={() => { if (!unavailable) { openQtyPopup(item); setShowDropdown(false); setQuery(''); } }}
+                          className={cn('flex items-center justify-between px-3 py-2 text-sm font-bold', unavailable ? 'cursor-not-allowed opacity-50' : 'cursor-pointer', idx === dropdownIndex ? 'bg-amber-200 text-slate-950 ring-2 ring-inset ring-orange-500' : 'hover:bg-slate-50')}
                         >
                           <span>{item.name}</span>
-                          <span className="text-xs text-slate-500">{money(item.price)} - {st > 0 ? formatQty(st, unitOf(item)) : 'Out'}</span>
+                          <span className="text-xs text-slate-500">{money(item.price)} - {st > 0 ? formatQty(st, unitOf(item)) : allowInsufficientStock ? 'Billing allowed' : 'Out'}</span>
                         </div>
                       );
                     })}
@@ -1064,7 +1081,8 @@ export default function BranchBillingProTab({
             <div ref={itemsGridRef} className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-1.5">
               {visibleItems.map((item, idx) => {
                 const stock = Number(stockAvailable(branchStock, stockMap, item.name, item.barcode));
-                            const disabled = stock <= 0;
+                const allowInsufficientStock = isSnbFlexibleStockItem(branch, item);
+                const disabled = stock <= 0 && !allowInsufficientStock;
                 const inCart = cart.find((c)=>c.barcode===item.barcode || c.itemName===item.name);
                 return (
                   <div
@@ -1085,7 +1103,7 @@ export default function BranchBillingProTab({
                     </div>
                     <div className="mt-1">
                       <p className="text-sm font-black text-emerald-700">{money(item.price)}<span className="text-[9px] text-slate-400">/{unitOf(item)}</span></p>
-                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : `${formatQty(stock, unitOf(item))}`}</p>
+                      <p className={cn('mt-0.5 text-[9px] font-black', disabled ? 'text-red-600' : stock <= 0 && allowInsufficientStock ? 'text-emerald-700' : stock < 5 ? 'text-amber-600' : 'text-slate-500')}><Package className="mr-0.5 inline size-3"/>{disabled ? 'Out' : stock <= 0 && allowInsufficientStock ? 'Billing allowed' : `${formatQty(stock, unitOf(item))}`}</p>
                     </div>
                     {inCart && <div className="mt-1.5 rounded-lg bg-emerald-600 px-2 py-0.5 text-center text-[9px] font-black text-white">In cart: {formatQty(inCart.quantity, inCart.unit)}</div>}
                   </div>
@@ -1105,7 +1123,7 @@ export default function BranchBillingProTab({
           existingQuantity={cart.find((line) => line.barcode === qtyPopupItem.barcode || line.itemName === qtyPopupItem.name)?.quantity}
           branchStock={branchStock}
           stockMap={stockMap}
-          allowInsufficientStock={false}
+          allowInsufficientStock={isSnbFlexibleStockItem(branch, qtyPopupItem)}
           onValue={setQtyPopupValue}
           onClose={() => setShowQtyPopup(false)}
           onAdd={submitQtyPopup}
