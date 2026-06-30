@@ -2486,25 +2486,7 @@ export default function OrderReceiverDashboard() {
                       : tab === "advance"
                         ? "Use the same advance-order workflow as SNB Branch, with SNB Order collection attribution."
                         : "Create today’s bakery requirement with live branch stock and a complete-order note.";
-  const receiverTabs: Array<{ key: TabKey; label: string }> = [
-    { key: "order", label: "Order" },
-    { key: "live", label: "Live Status" },
-    { key: "placed", label: "History" },
-    { key: "notifications", label: "Alerts" },
-    ...(branch === "SNB" || branch === "VRSNB"
-      ? ([
-          { key: "stock", label: "Stock" },
-          { key: "stock-count", label: "Stock Count" },
-          ...(branch === "SNB" ? [
-            { key: "po", label: "Purchase Order" } as { key: TabKey; label: string },
-            { key: "purchase-invoice", label: "Purchase Invoice" } as { key: TabKey; label: string },
-            { key: "purchase-return", label: "Purchase Return" } as { key: TabKey; label: string },
-            { key: "stock-movements", label: "Dump / Damage / Transfer Out" } as { key: TabKey; label: string },
-            { key: "advance", label: "Advance Orders" } as { key: TabKey; label: string },
-          ] : []),
-        ] as Array<{ key: TabKey; label: string }>)
-      : []),
-  ];
+
 
   return (
     <div className="order-receiver-workspace dashboard-screen flex h-full min-h-0 flex-col overflow-hidden bg-transparent pb-2 font-semibold">
@@ -2609,23 +2591,7 @@ export default function OrderReceiverDashboard() {
         </div>
       </div>
 
-      <div className="order-receiver-mobile-tabs mb-3 flex shrink-0 gap-2 overflow-x-auto rounded-2xl border border-border bg-white/95 p-2 shadow-soft lg:hidden">
-        {receiverTabs.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setSearchParams({ tab: item.key })}
-            className={cn(
-              "min-h-10 shrink-0 rounded-xl px-3 py-2 text-[11px] font-body font-black transition-all",
-              tab === item.key
-                ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
-                : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      {/* Mobile navigation is provided only by the WorkspaceChrome Menu drawer. */}
 
       {/* Content */}
       <div className="min-h-0 flex-1 overflow-hidden">
