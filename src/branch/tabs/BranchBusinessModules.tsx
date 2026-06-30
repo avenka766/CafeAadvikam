@@ -718,7 +718,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock }: ModuleProps) {
     setCollectingId(null);
   };
 
-  return <div className="branch-split-workspace grid h-full min-h-0 grid-rows-2 gap-2 md:grid-cols-[minmax(340px,42%)_minmax(0,1fr)] md:grid-rows-1">
+  return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     {!counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the cashier counter (Cashier Closure tab) before collecting advance payments.</div>}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
@@ -939,7 +939,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
     ? [{ value:'credit_adjustment', label:'Reduce Credit' }, { value:'cash', label:'Credit + Cash' }, { value:'upi', label:'Credit + UPI' }, { value:'card', label:'Credit + Card' }]
     : [{ value:'cash', label:'Cash' }, { value:'upi', label:'UPI' }, { value:'card', label:'Card' }];
 
-  return <div className="branch-split-workspace grid h-full min-h-0 grid-rows-2 gap-2 md:grid-cols-[minmax(340px,42%)_minmax(0,1fr)] md:grid-rows-1">
+  return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     <Section title="Return Bill" icon={<RotateCcw className="size-5"/>}>
       <div className="space-y-3">
         <Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')find();}} placeholder={`${branch}-0001`}/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>
