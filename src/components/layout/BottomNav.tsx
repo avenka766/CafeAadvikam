@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import {
   ClipboardList,
   Receipt,
+  RotateCcw,
   UtensilsCrossed,
   History,
   LayoutDashboard,
@@ -423,6 +424,11 @@ export default function BottomNav() {
         path: "/admin-snb?tab=stock",
       },
       {
+        label: "Update Stock",
+        icon: <Settings2 className="size-5" />,
+        path: "/admin-snb?tab=update-stock",
+      },
+      {
         label: "Suppliers",
         icon: <Truck className="size-5" />,
         path: "/admin-snb?tab=suppliers",
@@ -436,6 +442,11 @@ export default function BottomNav() {
         label: "Invoices",
         icon: <FileText className="size-5" />,
         path: "/admin-snb?tab=invoices",
+      },
+      {
+        label: "Returns",
+        icon: <RotateCcw className="size-5" />,
+        path: "/admin-snb?tab=purchase-returns",
       },
       {
         label: "Payments",
