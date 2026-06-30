@@ -55,7 +55,7 @@ export const SNB_ITEMS: SnbItem[] = [
   { barcode: 1012, name: 'BANANA CAKE',  price: 460, uom: 'Kgs', category: 'Cakes (by kg)' },
   { barcode: 1013, name: 'CARROT CAKE',  price: 460, uom: 'Kgs', category: 'Cakes (by kg)' },
   { barcode: 1014, name: 'BADAM STICKS', price: 600, uom: 'Kgs', category: 'Biscuits & Cookies' },
-  { barcode: 1015, name: 'BOURNVITA BISCUIT', price: 600, uom: 'Kgs', category: 'Cakes (by kg)' },
+  { barcode: 1015, name: 'Bournvita Biscuit', price: 600, uom: 'Kgs', category: 'Biscuits & Cookies' },
 
   // ── Biscuits & Cookies ────────────────────────────────────────────────────
   { barcode: 1016, name: 'BUTTER BISCUIT',       price: 600, uom: 'Kgs', category: 'Biscuits & Cookies' },
