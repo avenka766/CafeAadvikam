@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  Clock3,
   FileText,
   Flame,
   History,
@@ -185,13 +186,19 @@ function navForRole(role?: string): NavItem[] {
     case 'receiver_snb':
       return [
         { label: 'SNB Order', path: '/bakery/receive/snb', icon: <Inbox className="size-4" />, group: 'Main' },
-        { label: 'History', path: '/bakery/receive/snb?tab=history', icon: <History className="size-4" />, group: 'Main' },
-        { label: 'Alert', path: '/bakery/receive/snb?tab=alerts', icon: <Bell className="size-4" />, group: 'Main' },
+        { label: 'Live Status', path: '/bakery/receive/snb?tab=live', icon: <Clock3 className="size-4" />, group: 'Main' },
+        { label: 'History', path: '/bakery/receive/snb?tab=placed', icon: <History className="size-4" />, group: 'Main' },
+        { label: 'Alert', path: '/bakery/receive/snb?tab=notifications', icon: <Bell className="size-4" />, group: 'Main' },
         { label: 'Stock / Incoming', path: '/bakery/receive/snb?tab=stock', icon: <Package className="size-4" />, group: 'Operations' },
         { label: 'Purchase Order', path: '/bakery/receive/snb?tab=po', icon: <ShoppingCart className="size-4" />, group: 'Operations' },
-        { label: 'Shared Operations', path: '/bakery/receive/snb?tab=shared', icon: <FileText className="size-4" />, group: 'Shared' },
-        { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <Receipt className="size-4" />, group: 'Shared' },
-        { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Invoice', path: '/bakery/receive/snb?tab=purchase-invoice', icon: <Receipt className="size-4" />, group: 'Operations' },
+        { label: 'Purchase Return', path: '/bakery/receive/snb?tab=purchase-return', icon: <RotateCcw className="size-4" />, group: 'Operations' },
+        { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Sales' },
+        { label: 'Dump', path: '/bakery/receive/snb?tab=dump', icon: <Trash2 className="size-4" />, group: 'Stock' },
+        { label: 'Damage', path: '/bakery/receive/snb?tab=damage', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
+        { label: 'Transfer Out', path: '/bakery/receive/snb?tab=transfer-out', icon: <Truck className="size-4" />, group: 'Stock' },
+        { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
+        { label: 'All Shared Records', path: '/bakery/receive/snb?tab=shared', icon: <FileText className="size-4" />, group: 'Reports' },
       ];
     case 'branch_vrsnb':
       return [
