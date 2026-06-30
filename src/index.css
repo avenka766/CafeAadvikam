@@ -3518,10 +3518,16 @@
 }
 
 /* Compact branch workspaces for 30 × 23 inch counter screens and short-height displays. */
+.branch-command-screen .branch-split-workspace-tight {
+  grid-template-columns: minmax(320px, 38%) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
 @media (max-height: 900px) {
   .branch-command-screen { height: calc(100dvh - var(--header-h, 4rem)); min-height: 0 !important; overflow: hidden; }
   .branch-command-screen .branch-compact-tab { height: 100%; min-height: 0; overflow: hidden; }
   .branch-command-screen .branch-split-workspace { min-height: 0; overflow: hidden; }
+  .branch-command-screen .branch-split-workspace-tight { grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .branch-command-screen .branch-split-workspace > * { min-height: 0; overflow: auto; }
   .branch-command-screen .rounded-\[2rem\],
   .branch-command-screen .rounded-3xl { border-radius: 1rem !important; }
@@ -3539,6 +3545,7 @@
 @media (max-width: 767px) {
   .branch-command-screen { min-height: calc(100dvh - var(--header-h, 4rem)); overflow: auto; }
   .branch-command-screen .branch-split-workspace { height: auto !important; min-height: 0; overflow: visible; }
+  .branch-command-screen .branch-split-workspace-tight { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 58dvh) minmax(0, 58dvh); }
   .branch-command-screen .branch-split-workspace > * { max-height: 72dvh; min-height: 18rem; overflow: auto; }
   .order-receiver-workspace { min-height: calc(100dvh - var(--header-h, 4rem)); }
   .order-receiver-workspace table { font-size: .7rem; }
