@@ -488,9 +488,10 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                   </div>
 
                   {/* Status chips */}
-                  {line.qty !== "" && (
-                    <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
+                  <div className="flex flex-wrap items-center gap-1.5 ml-0.5">
                       <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold", availableForLine(line) > 0 ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700")}>Live stock: {availableForLine(line).toFixed(line.uom === "Nos" ? 0 : 2)} {line.uom === "Nos" ? "pcs" : "kg"}</span>
+                      {line.qty !== "" && (
+                        <>
                       {line.uom === "Nos" && convertedKg !== null && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-body font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
                           <Scale className="size-2.5" />
@@ -517,8 +518,9 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                             : "– No recipe · will be custom"}
                         </span>
                       )}
+                        </>
+                      )}
                     </div>
-                  )}
                 </div>
               );
             })}
