@@ -1,5 +1,9 @@
 export type ExcelExportValue = string | number | boolean | null | undefined;
 export type ExcelExportRow = Record<string, ExcelExportValue>;
+export type ExcelWorksheet = {
+  name: string;
+  rows: ExcelExportRow[];
+};
 
 function escapeXml(value: string) {
   return value
@@ -11,7 +15,7 @@ function escapeXml(value: string) {
 }
 
 function safeSheetName(value: string) {
-  return value.replace(/[\\/:*?]/g, " ").replace(/[[\]]/g, " ").trim().slice(0, 31) || "Stock Audit";
+  return value.replace(/[\\/:*?]/g, " ").replace(/[[\]]/g, " ").trim().slice(0, 31) || "Report";
 }
 
 function safeFilename(value: string) {
@@ -20,19 +24,13 @@ function safeFilename(value: string) {
 }
 
 function numberStyle(header: string) {
-  return /price|amount|value|cost/i.test(header) ? "Currency" : "Decimal";
+  return /price|amount|value|cost|sales|cash|upi|card|credit|advance|return|paid|balance|due|discount|tax|net|gross/i.test(header)
+    ? "Currency"
+    : "Decimal";
 }
 
-/**
- * Downloads an Excel 2003 SpreadsheetML workbook. Excel and LibreOffice open
- * this format directly, while keeping numeric cells numeric for sorting/totals.
- */
-export function downloadExcel(
-  filename: string,
-  sheetName: string,
-  rows: ExcelExportRow[],
-) {
-  const safeRows = rows.length ? rows : [{ Note: "No data available" }];
+function worksheetXml(sheet: ExcelWorksheet) {
+  const safeRows = sheet.rows.length ? sheet.rows : [{ Note: "No data available" }];
   const headers = Array.from(
     safeRows.reduce((set, row) => {
       Object.keys(row).forEach((key) => set.add(key));
@@ -58,7 +56,19 @@ export function downloadExcel(
     return `<Cell><Data ss:Type="String">${escapeXml(String(value ?? ""))}</Data></Cell>`;
   };
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  return `<Worksheet ss:Name="${escapeXml(safeSheetName(sheet.name))}">
+  <Table ss:ExpandedColumnCount="${headers.length}" ss:ExpandedRowCount="${safeRows.length + 1}" x:FullColumns="1" x:FullRows="1">
+   ${columnWidths.map((width) => `<Column ss:AutoFitWidth="0" ss:Width="${width.toFixed(1)}"/>`).join("\n   ")}
+   <Row ss:StyleID="Header" ss:AutoFitHeight="1">${headers.map((header) => `<Cell><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join("")}</Row>
+   ${safeRows.map((row) => `<Row>${headers.map((header) => cellXml(header, row[header])).join("")}</Row>`).join("\n   ")}
+  </Table>
+  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>
+  <AutoFilter x:Range="R1C1:R${safeRows.length + 1}C${headers.length}" xmlns="urn:schemas-microsoft-com:office:excel"/>
+ </Worksheet>`;
+}
+
+function workbookXml(worksheets: ExcelWorksheet[]) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:o="urn:schemas-microsoft-com:office:office"
@@ -69,19 +79,13 @@ export function downloadExcel(
   <Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>
   <Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#0F172A" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/></Borders></Style>
   <Style ss:ID="Decimal"><NumberFormat ss:Format="0.###"/></Style>
-  <Style ss:ID="Currency"><NumberFormat ss:Format="₹#,##0.00;[Red]-₹#,##0.00"/></Style>
+  <Style ss:ID="Currency"><NumberFormat ss:Format="[$₹-en-IN]#,##0.00;[Red]-[$₹-en-IN]#,##0.00"/></Style>
  </Styles>
- <Worksheet ss:Name="${escapeXml(safeSheetName(sheetName))}">
-  <Table ss:ExpandedColumnCount="${headers.length}" ss:ExpandedRowCount="${safeRows.length + 1}" x:FullColumns="1" x:FullRows="1">
-   ${columnWidths.map((width) => `<Column ss:AutoFitWidth="0" ss:Width="${width.toFixed(1)}"/>`).join("\n   ")}
-   <Row ss:StyleID="Header" ss:AutoFitHeight="1">${headers.map((header) => `<Cell><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join("")}</Row>
-   ${safeRows.map((row) => `<Row>${headers.map((header) => cellXml(header, row[header])).join("")}</Row>`).join("\n   ")}
-  </Table>
-  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>
-  <AutoFilter x:Range="R1C1:R${safeRows.length + 1}C${headers.length}" xmlns="urn:schemas-microsoft-com:office:excel"/>
- </Worksheet>
+ ${worksheets.map(worksheetXml).join("\n ")}
 </Workbook>`;
+}
 
+function downloadBlob(filename: string, xml: string) {
   const blob = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -91,4 +95,16 @@ export function downloadExcel(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+export function downloadExcel(
+  filename: string,
+  sheetName: string,
+  rows: ExcelExportRow[],
+) {
+  downloadExcelWorkbook(filename, [{ name: sheetName, rows }]);
+}
+
+export function downloadExcelWorkbook(filename: string, worksheets: ExcelWorksheet[]) {
+  downloadBlob(filename, workbookXml(worksheets.length ? worksheets : [{ name: "Report", rows: [] }]));
 }
