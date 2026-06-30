@@ -194,11 +194,8 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Purchase Invoice', path: '/bakery/receive/snb?tab=purchase-invoice', icon: <Receipt className="size-4" />, group: 'Operations' },
         { label: 'Purchase Return', path: '/bakery/receive/snb?tab=purchase-return', icon: <RotateCcw className="size-4" />, group: 'Operations' },
         { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Sales' },
-        { label: 'Dump', path: '/bakery/receive/snb?tab=dump', icon: <Trash2 className="size-4" />, group: 'Stock' },
-        { label: 'Damage', path: '/bakery/receive/snb?tab=damage', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
-        { label: 'Transfer Out', path: '/bakery/receive/snb?tab=transfer-out', icon: <Truck className="size-4" />, group: 'Stock' },
+        { label: 'Dump / Damage / Transfer Out', path: '/bakery/receive/snb?tab=stock-movements', icon: <Truck className="size-4" />, group: 'Stock' },
         { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
-        { label: 'All Shared Records', path: '/bakery/receive/snb?tab=shared', icon: <FileText className="size-4" />, group: 'Reports' },
       ];
     case 'branch_vrsnb':
       return [
