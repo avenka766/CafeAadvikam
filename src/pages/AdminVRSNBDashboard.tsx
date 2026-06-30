@@ -5058,6 +5058,14 @@ function AuditTab() {
   );
 }
 
+function tableCellText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(tableCellText).join(" ");
+  if (isValidElement(node)) return tableCellText((node.props as { children?: ReactNode }).children);
+  return "";
+}
+
 function DataTable({
   headers,
   rows,
@@ -5067,31 +5075,23 @@ function DataTable({
   rows?: ReactNode[][];
   empty?: string;
 }) {
-  const safeRows = rows || [];
+  const safeRows = useMemo(() => rows || [], [rows]);
   const [query, setQuery] = useState("");
   const [sortIndex, setSortIndex] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const pageSize = safeRows.length > 150 ? 50 : 25;
 
-  const cellText = (node: ReactNode): string => {
-    if (node == null || typeof node === "boolean") return "";
-    if (typeof node === "string" || typeof node === "number") return String(node);
-    if (Array.isArray(node)) return node.map(cellText).join(" ");
-    if (isValidElement(node)) return cellText((node.props as { children?: ReactNode }).children);
-    return "";
-  };
-
   const preparedRows = useMemo(() => {
     const search = query.trim().toLowerCase();
     const filtered = !search
       ? [...safeRows]
-      : safeRows.filter((row) => row.some((cell) => cellText(cell).toLowerCase().includes(search)));
+      : safeRows.filter((row) => row.some((cell) => tableCellText(cell).toLowerCase().includes(search)));
     if (sortIndex == null) return filtered;
     const direction = sortDirection === "asc" ? 1 : -1;
     return filtered.sort((a, b) => {
-      const left = cellText(a[sortIndex]).trim();
-      const right = cellText(b[sortIndex]).trim();
+      const left = tableCellText(a[sortIndex]).trim();
+      const right = tableCellText(b[sortIndex]).trim();
       const leftNumber = Number(left.replace(/[₹,%\s,]/g, ""));
       const rightNumber = Number(right.replace(/[₹,%\s,]/g, ""));
       const bothNumbers = left !== "" && right !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);

@@ -259,6 +259,14 @@ type ReportState = {
   purchaseReturnItems: SnbPurchaseReturnItemRow[];
 };
 
+type SnbPurchaseWorkflowSnapshot = {
+  purchaseInvoices: SnbPurchaseInvoiceRow[];
+  supplierOutstanding: SnbSupplierOutstandingRow[];
+  supplierPayments: SnbSupplierPaymentRow[];
+  purchaseReturns: SnbPurchaseReturnRow[];
+  purchaseReturnItems: SnbPurchaseReturnItemRow[];
+};
+
 const EMPTY: ReportState = {
   counterTotals: [],
   counterSessions: [],
@@ -303,6 +311,45 @@ async function fetchPaged(
   return rows;
 }
 
+function rowsFromPayload<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+async function fetchSnbPurchaseWorkflowSnapshot(
+  fromDate: string,
+  toDate: string,
+): Promise<SnbPurchaseWorkflowSnapshot> {
+  const { data, error } = await supabase.rpc("get_snb_purchase_workflow_data", {
+    p_from_date: fromDate,
+    p_to_date: toDate,
+  });
+  if (error) throw new Error(`get_snb_purchase_workflow_data: ${error.message}`);
+  const payload = (data ?? {}) as Record<string, unknown>;
+  return {
+    purchaseInvoices: rowsFromPayload<SnbPurchaseInvoiceRow>(payload.purchaseInvoices),
+    supplierOutstanding: rowsFromPayload<SnbSupplierOutstandingRow>(payload.supplierOutstanding),
+    supplierPayments: rowsFromPayload<SnbSupplierPaymentRow>(payload.supplierPayments),
+    purchaseReturns: rowsFromPayload<SnbPurchaseReturnRow>(payload.purchaseReturns),
+    purchaseReturnItems: rowsFromPayload<SnbPurchaseReturnItemRow>(payload.purchaseReturnItems),
+  };
+}
+
+function mergeRows<T>(
+  groups: T[][],
+  keyFor: (row: T) => string,
+): T[] {
+  const merged = new Map<string, T>();
+  groups.flat().forEach((row, index) => {
+    const key = keyFor(row) || `row:${index}`;
+    merged.set(key, row);
+  });
+  return Array.from(merged.values());
+}
+
+function isMissingOptionalWorkflowRpc(message: string) {
+  return /get_snb_purchase_workflow_data|could not find the function|schema cache|does not exist/i.test(message);
+}
+
 export function asNumber(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -332,12 +379,66 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date" }),
       fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at" }),
       fetchPaged("snb_purchase_return_items", { orderColumn: "created_at" }),
+      fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
     ]);
 
+    const workflowResult = results[13];
+    const workflow = workflowResult.status === "fulfilled"
+      ? workflowResult.value as SnbPurchaseWorkflowSnapshot
+      : null;
     const errors = results
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+      .slice(0, 13)
+      .flatMap((result, index) => {
+        if (result.status !== "rejected") return [];
+        if (workflow && index >= 8 && index <= 12) return [];
+        if (index === 8 && results[9].status === "fulfilled") return [];
+        return [result.reason instanceof Error ? result.reason.message : String(result.reason)];
+      });
     const rows = (index: number) => results[index].status === "fulfilled" ? results[index].value : [];
+    if (workflowResult.status === "rejected") {
+      const workflowError = workflowResult.reason instanceof Error
+        ? workflowResult.reason.message
+        : String(workflowResult.reason);
+      const directPurchaseSourcesFailed = results[8].status === "rejected" || results[9].status === "rejected";
+      if (directPurchaseSourcesFailed && !isMissingOptionalWorkflowRpc(workflowError)) errors.push(workflowError);
+    }
+
+    const purchaseInvoices = mergeRows<SnbPurchaseInvoiceRow>([
+      rows(9) as SnbPurchaseInvoiceRow[],
+      workflow?.purchaseInvoices ?? [],
+    ], (row) => String(row.id || `${row.supplier_name}|${row.invoice_number}`));
+    const derivedOutstanding = purchaseInvoices.map((invoice) => ({
+      purchase_invoice_id: invoice.id,
+      supplier_name: invoice.supplier_name,
+      invoice_number: invoice.invoice_number,
+      invoice_date: invoice.invoice_date,
+      total_amount: invoice.total_amount,
+      paid_amount: invoice.paid_amount,
+      balance_amount: invoice.balance_amount,
+      return_amount: invoice.return_amount,
+      payment_method: invoice.payment_method,
+      sync_status: invoice.sync_status,
+      created_at: invoice.created_at,
+      updated_at: invoice.updated_at,
+    } satisfies SnbSupplierOutstandingRow));
+    const supplierOutstanding = mergeRows<SnbSupplierOutstandingRow>([
+      derivedOutstanding,
+      rows(8) as SnbSupplierOutstandingRow[],
+      workflow?.supplierOutstanding ?? [],
+    ], (row) => String(row.purchase_invoice_id || `${row.supplier_name}|${row.invoice_number}`));
+    const supplierPayments = mergeRows<SnbSupplierPaymentRow>([
+      rows(10) as SnbSupplierPaymentRow[],
+      workflow?.supplierPayments ?? [],
+    ], (row) => String(row.id || `${row.payment_batch_id}|${row.purchase_invoice_id}|${row.payment_date}`));
+    const purchaseReturns = mergeRows<SnbPurchaseReturnRow>([
+      rows(11) as SnbPurchaseReturnRow[],
+      workflow?.purchaseReturns ?? [],
+    ], (row) => String(row.id || row.return_no));
+    const purchaseReturnItems = mergeRows<SnbPurchaseReturnItemRow>([
+      rows(12) as SnbPurchaseReturnItemRow[],
+      workflow?.purchaseReturnItems ?? [],
+    ], (row) => String(row.id || `${row.purchase_return_id}|${row.purchase_invoice_item_id}`));
+
     setData({
       counterTotals: rows(0) as SnbCounterCalculatedRow[],
       counterSessions: rows(1) as SnbCounterSessionRow[],
@@ -347,11 +448,11 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       itemSales: rows(5) as SnbItemSalesRow[],
       categorySales: rows(6) as SnbCategorySalesRow[],
       discountBills: rows(7) as SnbDiscountBillRow[],
-      supplierOutstanding: rows(8) as SnbSupplierOutstandingRow[],
-      purchaseInvoices: rows(9) as SnbPurchaseInvoiceRow[],
-      supplierPayments: rows(10) as SnbSupplierPaymentRow[],
-      purchaseReturns: rows(11) as SnbPurchaseReturnRow[],
-      purchaseReturnItems: rows(12) as SnbPurchaseReturnItemRow[],
+      supplierOutstanding,
+      purchaseInvoices,
+      supplierPayments,
+      purchaseReturns,
+      purchaseReturnItems,
     });
     setError(errors.join(" | "));
     setRefreshedAt(new Date().toISOString());

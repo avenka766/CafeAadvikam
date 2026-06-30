@@ -252,6 +252,13 @@ function normal(name: string) {
     .trim();
 }
 
+function isSyncedPurchaseStatus(value: unknown) {
+  const status = normal(String(value ?? ""));
+  return status.includes("synced")
+    && !status.includes("not synced")
+    && !status.includes("unsynced");
+}
+
 function purchaseUnitFromCatalog(uom?: string): NonNullable<PurchaseRecord["unit"]> {
   return uom === "Kgs" ? "kg" : "nos";
 }
@@ -4057,19 +4064,28 @@ function PurchaseReturnsTab({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const eligibleInvoices = useMemo(() => dbReports.purchaseInvoices
+    .filter((invoice) => isSyncedPurchaseStatus(invoice.sync_status))
+    .sort((a, b) => {
+      const aTime = new Date(a.invoice_date || a.created_at || 0).getTime();
+      const bTime = new Date(b.invoice_date || b.created_at || 0).getTime();
+      return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+    }), [dbReports.purchaseInvoices]);
+
+  const selectedInvoice = eligibleInvoices.find((invoice) => String(invoice.id) === invoiceId);
   const syncedInvoices = useMemo(() => {
     const query = invoiceSearch.trim().toLowerCase();
-    return dbReports.purchaseInvoices
-      .filter((invoice) => invoice.sync_status !== "Not Synced")
+    return eligibleInvoices
       .filter((invoice) =>
         !query ||
-        invoice.invoice_number.toLowerCase().includes(query) ||
-        invoice.supplier_name.toLowerCase().includes(query),
-      )
-      .sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime());
-  }, [dbReports.purchaseInvoices, invoiceSearch]);
+        String(invoice.invoice_number || "").toLowerCase().includes(query) ||
+        String(invoice.supplier_name || "").toLowerCase().includes(query),
+      );
+  }, [eligibleInvoices, invoiceSearch]);
+  const invoiceOptions = selectedInvoice && !syncedInvoices.some((invoice) => invoice.id === selectedInvoice.id)
+    ? [selectedInvoice, ...syncedInvoices]
+    : syncedInvoices;
 
-  const selectedInvoice = dbReports.purchaseInvoices.find((invoice) => invoice.id === invoiceId);
   const returnedQtyByItem = useMemo(() => {
     const map = new Map<string, number>();
     dbReports.purchaseReturnItems.forEach((item) => {
@@ -4219,7 +4235,7 @@ function PurchaseReturnsTab({
         <Kpi label="Purchase Returns" value={dbReports.purchaseReturns.length} icon={<RotateCcw className="size-5" />} tone="amber" />
         <Kpi label="Returned Quantity" value={dbReports.purchaseReturnItems.reduce((sum, item) => sum + asNumber(item.quantity), 0).toFixed(3)} icon={<Package className="size-5" />} tone="red" />
         <Kpi label="Return Value" value={money(dbReports.purchaseReturns.reduce((sum, entry) => sum + asNumber(entry.total_amount), 0))} icon={<IndianRupee className="size-5" />} tone="purple" />
-        <Kpi label="Synced Invoices" value={syncedInvoices.length} sub="Eligible for purchase return" icon={<CheckCircle2 className="size-5" />} tone="green" />
+        <Kpi label="Synced Invoices" value={eligibleInvoices.length} sub={`${syncedInvoices.length} match current search`} icon={<CheckCircle2 className="size-5" />} tone="green" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
@@ -4231,10 +4247,26 @@ function PurchaseReturnsTab({
             <Field label="Find Invoice">
               <input className={inputCls} value={invoiceSearch} onChange={(event) => setInvoiceSearch(event.target.value)} placeholder="Search invoice or supplier" />
             </Field>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 ring-1 ring-slate-200">
+              <span>{dbReports.loading ? "Loading purchase invoices…" : `${eligibleInvoices.length} stock-synced invoice(s) available`}</span>
+              <button type="button" className={cn(btnCls, "bg-white px-3 py-1.5 text-slate-700 ring-1 ring-slate-200")} onClick={() => void dbReports.refresh()} disabled={dbReports.loading}>
+                <RefreshCcw className={cn("size-3.5", dbReports.loading && "animate-spin")} /> Refresh
+              </button>
+            </div>
+            {!dbReports.loading && eligibleInvoices.length === 0 && (
+              <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+                {dbReports.purchaseInvoices.length > 0
+                  ? "Purchase invoices exist, but none are stock-synced yet. Sync an invoice in Purchase Invoices before creating its return."
+                  : "No purchase invoices were returned by the database. Apply the latest SNB workflow migration, then refresh this screen."}
+              </div>
+            )}
+            {!dbReports.loading && invoiceSearch.trim() && syncedInvoices.length === 0 && eligibleInvoices.length > 0 && (
+              <div className="rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-600 ring-1 ring-slate-200">No synced invoice matches “{invoiceSearch.trim()}”.</div>
+            )}
             <Field label="Synced Purchase Invoice *">
               <select className={inputCls} value={invoiceId} onChange={(event) => { setInvoiceId(event.target.value); setError(""); }}>
                 <option value="">Select invoice</option>
-                {syncedInvoices.map((invoice) => (
+                {invoiceOptions.map((invoice) => (
                   <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name} · {invoice.invoice_date}</option>
                 ))}
               </select>
@@ -4330,6 +4362,7 @@ function SupplierPaymentsTab({
   setNotice: (message: string) => void;
 }) {
   const [supplier, setSupplier] = useState("");
+  const [supplierSearch, setSupplierSearch] = useState("");
   const [search, setSearch] = useState("");
   const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<"cash" | "upi" | "card" | "bank" | "cheque">("cash");
@@ -4342,20 +4375,42 @@ function SupplierPaymentsTab({
   const [error, setError] = useState("");
 
   const pendingRows = useMemo(() => dbReports.supplierOutstanding
-    .filter((row) => asNumber(row.balance_amount) > 0.0001)
-    .sort((a, b) => new Date(a.invoice_date || a.created_at).getTime() - new Date(b.invoice_date || b.created_at).getTime()), [dbReports.supplierOutstanding]);
-  const suppliers = useMemo(() => Array.from(new Set(pendingRows.map((row) => row.supplier_name))).sort(), [pendingRows]);
-  const supplierRows = pendingRows.filter((row) =>
-    row.supplier_name === supplier &&
-    (!search.trim() || row.invoice_number.toLowerCase().includes(search.trim().toLowerCase())),
+    .filter((row) => asNumber(row.balance_amount) > 0.0001 && String(row.supplier_name || "").trim())
+    .sort((a, b) => {
+      const aTime = new Date(a.invoice_date || a.created_at || 0).getTime();
+      const bTime = new Date(b.invoice_date || b.created_at || 0).getTime();
+      return (Number.isFinite(aTime) ? aTime : 0) - (Number.isFinite(bTime) ? bTime : 0);
+    }), [dbReports.supplierOutstanding]);
+  const suppliers = useMemo(() => {
+    const names = new Map<string, string>();
+    pendingRows.forEach((row) => {
+      const displayName = String(row.supplier_name || "").trim();
+      const key = normal(displayName);
+      if (key && !names.has(key)) names.set(key, displayName);
+    });
+    return Array.from(names.values()).sort((a, b) => a.localeCompare(b));
+  }, [pendingRows]);
+  const visibleSuppliers = useMemo(() => {
+    const query = normal(supplierSearch);
+    const filtered = query ? suppliers.filter((name) => normal(name).includes(query)) : suppliers;
+    return supplier && !filtered.some((name) => normal(name) === normal(supplier))
+      ? [supplier, ...filtered]
+      : filtered;
+  }, [supplier, supplierSearch, suppliers]);
+  const allSupplierRows = pendingRows.filter((row) => normal(String(row.supplier_name || "")) === normal(supplier));
+  const invoiceQuery = search.trim().toLowerCase();
+  const supplierRows = allSupplierRows.filter((row) =>
+    !invoiceQuery ||
+    String(row.invoice_number || "").toLowerCase().includes(invoiceQuery) ||
+    String(row.invoice_date || "").toLowerCase().includes(invoiceQuery),
   );
-  const allocationRows = supplierRows
+  const allocationRows = allSupplierRows
     .map((row) => ({ row, amount: asNumber(allocations[row.purchase_invoice_id]) }))
     .filter(({ amount }) => amount > 0);
   const total = allocationRows.reduce((sum, entry) => sum + entry.amount, 0);
 
   useEffect(() => {
-    if (supplier && !suppliers.includes(supplier)) {
+    if (supplier && !suppliers.some((name) => normal(name) === normal(supplier))) {
       setSupplier("");
       setAllocations({});
     }
@@ -4363,7 +4418,7 @@ function SupplierPaymentsTab({
 
   const selectAllDue = () => {
     const next: Record<string, string> = {};
-    supplierRows.forEach((row) => { next[row.purchase_invoice_id] = String(asNumber(row.balance_amount)); });
+    allSupplierRows.forEach((row) => { next[row.purchase_invoice_id] = String(asNumber(row.balance_amount)); });
     setAllocations(next);
     setError("");
   };
@@ -4430,12 +4485,31 @@ function SupplierPaymentsTab({
             <div className="rounded-2xl bg-blue-50 p-3 text-sm font-bold text-blue-800 ring-1 ring-blue-100">
               Select one supplier and distribute a single payment across any number of pending invoices. The server prevents overpayment and records one auditable batch.
             </div>
+            <Field label="Find Supplier">
+              <input className={inputCls} value={supplierSearch} onChange={(event) => setSupplierSearch(event.target.value)} placeholder="Search supplier name" />
+            </Field>
             <Field label="Supplier *">
               <select className={inputCls} value={supplier} onChange={(event) => { setSupplier(event.target.value); setAllocations({}); setError(""); }}>
                 <option value="">Select supplier</option>
-                {suppliers.map((name) => <option key={name} value={name}>{name}</option>)}
+                {visibleSuppliers.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
             </Field>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 ring-1 ring-slate-200">
+              <span>{dbReports.loading ? "Loading supplier balances…" : `${suppliers.length} supplier(s) with pending balances`}</span>
+              <button type="button" className={cn(btnCls, "bg-white px-3 py-1.5 text-slate-700 ring-1 ring-slate-200")} onClick={() => void dbReports.refresh()} disabled={dbReports.loading}>
+                <RefreshCcw className={cn("size-3.5", dbReports.loading && "animate-spin")} /> Refresh
+              </button>
+            </div>
+            {!dbReports.loading && suppliers.length === 0 && (
+              <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
+                {dbReports.purchaseInvoices.length > 0
+                  ? "All loaded purchase invoices are fully paid, or their balance values are zero."
+                  : "No supplier invoices were returned by the database. Apply the latest SNB workflow migration, then refresh this screen."}
+              </div>
+            )}
+            {!dbReports.loading && supplierSearch.trim() && visibleSuppliers.length === 0 && suppliers.length > 0 && (
+              <div className="rounded-2xl bg-slate-50 p-3 text-sm font-bold text-slate-600 ring-1 ring-slate-200">No supplier matches “{supplierSearch.trim()}”.</div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Payment Mode *"><select className={inputCls} value={mode} onChange={(event) => { setMode(event.target.value as typeof mode); setError(""); }}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option></select></Field>
               <Field label="Batch Total"><div className="flex min-h-11 items-center rounded-xl bg-slate-950 px-3 font-black text-white">{money(total)}</div></Field>
@@ -4460,13 +4534,15 @@ function SupplierPaymentsTab({
         <Panel
           title="Allocate Pending Invoices"
           icon={<Receipt className="size-4" />}
-          action={<div className="flex gap-2"><button disabled={!supplierRows.length} className={cn(btnCls, "bg-emerald-50 text-emerald-700 disabled:opacity-40")} onClick={selectAllDue}>Pay All Due</button><button disabled={!Object.keys(allocations).length} className={cn(btnCls, "bg-slate-100 text-slate-700 disabled:opacity-40")} onClick={clearAllocations}>Clear</button></div>}
+          action={<div className="flex gap-2"><button disabled={!allSupplierRows.length} className={cn(btnCls, "bg-emerald-50 text-emerald-700 disabled:opacity-40")} onClick={selectAllDue}>Pay All Due</button><button disabled={!Object.keys(allocations).length} className={cn(btnCls, "bg-slate-100 text-slate-700 disabled:opacity-40")} onClick={clearAllocations}>Clear</button></div>}
         >
-          <div className="mb-3"><input className={inputCls} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search invoice number" /></div>
+          <div className="mb-3"><input className={inputCls} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search invoice number or date" /></div>
           {!supplier ? (
             <div className="rounded-3xl bg-slate-50 p-10 text-center font-black text-slate-400">Select a supplier to view pending invoices.</div>
-          ) : !supplierRows.length ? (
+          ) : !allSupplierRows.length ? (
             <div className="rounded-3xl bg-emerald-50 p-10 text-center font-black text-emerald-700">No outstanding invoices for this supplier.</div>
+          ) : !supplierRows.length ? (
+            <div className="rounded-3xl bg-slate-50 p-10 text-center font-black text-slate-500">No pending invoice matches the current search.</div>
           ) : (
             <div className="space-y-2">
               {supplierRows.map((row) => {
@@ -5973,6 +6049,14 @@ function NotificationsTab({ userName }: { userName: string }) {
   );
 }
 
+function tableCellText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(tableCellText).join(" ");
+  if (isValidElement(node)) return tableCellText((node.props as { children?: ReactNode }).children);
+  return "";
+}
+
 function DataTable({
   headers,
   rows,
@@ -5982,31 +6066,23 @@ function DataTable({
   rows?: ReactNode[][];
   empty?: string;
 }) {
-  const safeRows = rows || [];
+  const safeRows = useMemo(() => rows || [], [rows]);
   const [query, setQuery] = useState("");
   const [sortIndex, setSortIndex] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const pageSize = safeRows.length > 150 ? 50 : 25;
 
-  const cellText = (node: ReactNode): string => {
-    if (node == null || typeof node === "boolean") return "";
-    if (typeof node === "string" || typeof node === "number") return String(node);
-    if (Array.isArray(node)) return node.map(cellText).join(" ");
-    if (isValidElement(node)) return cellText((node.props as { children?: ReactNode }).children);
-    return "";
-  };
-
   const preparedRows = useMemo(() => {
     const search = query.trim().toLowerCase();
     const filtered = !search
       ? [...safeRows]
-      : safeRows.filter((row) => row.some((cell) => cellText(cell).toLowerCase().includes(search)));
+      : safeRows.filter((row) => row.some((cell) => tableCellText(cell).toLowerCase().includes(search)));
     if (sortIndex == null) return filtered;
     const direction = sortDirection === "asc" ? 1 : -1;
     return filtered.sort((a, b) => {
-      const left = cellText(a[sortIndex]).trim();
-      const right = cellText(b[sortIndex]).trim();
+      const left = tableCellText(a[sortIndex]).trim();
+      const right = tableCellText(b[sortIndex]).trim();
       const leftNumber = Number(left.replace(/[₹,%\s,]/g, ""));
       const rightNumber = Number(right.replace(/[₹,%\s,]/g, ""));
       const bothNumbers = left !== "" && right !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);

@@ -2315,7 +2315,7 @@ export default function OwnerDashboard() {
     if (requestedTab && ownerTabIds.includes(requestedTab) && requestedTab !== tab) {
       setTab(requestedTab);
     }
-  }, [requestedTab, ownerTabIds]);
+  }, [requestedTab, ownerTabIds, tab]);
 
   const tabs: Array<{ id: OwnerDashboardTab; label: string; icon: React.ReactNode; hint: string }> = [
     { id: 'branches',   label: 'Branch Overview',    icon: <Store         className="size-4" />, hint: 'Cafe, SNB, VRSNB, Hosur' },
