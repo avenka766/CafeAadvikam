@@ -9,6 +9,7 @@ import { useSupplierStore } from './supplierStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
 import { useOperationalBranchCatalog } from '@/hooks/useOperationalBranchCatalog';
+import { useBranchStore } from '@/branch/branchStore';
 
 type ReceiverBranchScope = 'SNB';
 
@@ -19,10 +20,11 @@ const STATUS_META: Record<POStatus, { label: string; color: string; icon: React.
   cancelled:{ label: 'Cancelled',color: 'bg-red-50 text-red-700 border-red-200',                 icon: Ban          },
 };
 
-function POCard({ po, onStatusChange, onDelete }: {
+function POCard({ po, onStatusChange, onDelete, currentStockFor }: {
   po: ReturnType<typeof usePurchaseOrderStore.getState>['orders'][0];
   onStatusChange: (id: string, status: POStatus) => void;
   onDelete: (id: string) => void;
+  currentStockFor?: (itemName: string) => { quantity: number; unit: string } | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const meta = STATUS_META[po.status];
@@ -57,17 +59,22 @@ function POCard({ po, onStatusChange, onDelete }: {
         <div className="px-4 pb-4 space-y-3 border-t border-border pt-3">
           <div className="rounded-xl border border-border overflow-hidden">
             <div className="grid grid-cols-12 px-3 py-2 bg-muted/50 text-[9px] font-body font-bold text-muted-foreground uppercase">
-              <span className="col-span-6">Material</span>
-              <span className="col-span-3 text-right">Qty</span>
-              <span className="col-span-3 text-right">Unit</span>
+              <span className="col-span-5">Material</span>
+              <span className="col-span-2 text-right">Order Qty</span>
+              <span className="col-span-2 text-right">Unit</span>
+              <span className="col-span-3 text-right">Current Stock</span>
             </div>
-            {po.items.map((item, i) => (
-              <div key={i} className="grid grid-cols-12 px-3 py-2.5 border-t border-border text-xs font-body">
-                <span className="col-span-6 font-semibold text-foreground">{item.materialName}</span>
-                <span className="col-span-3 text-right text-foreground">{item.quantity}</span>
-                <span className="col-span-3 text-right text-muted-foreground">{item.unit}</span>
-              </div>
-            ))}
+            {po.items.map((item, i) => {
+              const live = currentStockFor?.(item.materialName);
+              return (
+                <div key={i} className="grid grid-cols-12 px-3 py-2.5 border-t border-border text-xs font-body">
+                  <span className="col-span-5 font-semibold text-foreground">{item.materialName}</span>
+                  <span className="col-span-2 text-right text-foreground">{item.quantity}</span>
+                  <span className="col-span-2 text-right text-muted-foreground">{item.unit}</span>
+                  <span className="col-span-3 text-right font-bold text-emerald-700">{live ? `${live.quantity.toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${live.unit}` : '—'}</span>
+                </div>
+              );
+            })}
           </div>
 
           {po.notes && (
@@ -120,6 +127,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const { currentUser }       = useAuthStore();
   const { createPO }          = usePurchaseOrderStore();
   const { items: snbItems } = useOperationalBranchCatalog('SNB');
+  const snbStock = useBranchStore((state) => state.stock.SNB);
 
   useEffect(() => {
     if (!suppliersLoaded) void loadSuppliers();
@@ -130,8 +138,11 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
   const [notes,      setNotes]      = useState('');
   const [itemSearch, setItemSearch] = useState('');
   const materialOptions = branchScope === 'SNB'
-    ? snbItems.map((item) => ({ id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category }))
-    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material' }));
+    ? snbItems.map((item) => {
+        const live = snbStock.find((stockItem) => stockItem.itemBarcode === item.barcode || stockItem.itemName.toLowerCase() === item.name.toLowerCase());
+        return { id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, currentStock: Number(live?.availableQuantity ?? live?.quantity ?? 0), stockUnit: live?.unit || (item.uom === 'Kgs' ? 'kg' : 'pcs') };
+      })
+    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material', currentStock: Number(item.currentStock || 0), stockUnit: item.unit }));
   const filteredMaterialOptions = materialOptions.filter((item) =>
     !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),
   );
@@ -232,7 +243,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
                   className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-muted"
                 >
                   <span className="text-sm font-bold text-foreground">{item.name}</span>
-                  <span className="text-[10px] font-semibold text-muted-foreground">{item.category} · {item.unit}</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground">{item.category} · Stock {item.currentStock.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {item.stockUnit}</span>
                 </button>
               ))}
             </div>
@@ -244,18 +255,21 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
                 ? [selected, ...filteredMaterialOptions]
                 : filteredMaterialOptions;
               return (
-                <div key={i} className="flex gap-2 items-center">
-                  <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
-                    className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
-                    {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
-                  </select>
-                  <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
-                    className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
-                  <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
-                  <button onClick={() => removeLine(i)} disabled={lines.length === 1}
-                    className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
-                    <Trash2 className="size-3.5" />
-                  </button>
+                <div key={i} className="rounded-2xl border border-border bg-muted/20 p-2">
+                  <div className="flex gap-2 items-center">
+                    <select value={line.materialName} onChange={e => setItem(i, e.target.value)}
+                      className="flex-1 h-10 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none">
+                      {options.map(s => <option key={s.id} value={s.name}>{s.name} ({s.category})</option>)}
+                    </select>
+                    <input type="number" min={1} value={line.quantity} onChange={e => setQty(i, Number(e.target.value))}
+                      className="w-16 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none" />
+                    <span className="text-xs font-body text-muted-foreground w-8">{line.unit}</span>
+                    <button onClick={() => removeLine(i)} disabled={lines.length === 1}
+                      className="size-9 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center disabled:opacity-30">
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-[10px] font-black text-emerald-700">Current store stock: {selected ? `${selected.currentStock.toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${selected.stockUnit}` : 'Not available'}</p>
                 </div>
               );
             })()
@@ -287,6 +301,12 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
+  const snbStock = useBranchStore((state) => state.stock.SNB);
+  const currentStockFor = (itemName: string) => {
+    if (branchScope !== 'SNB') return null;
+    const row = snbStock.find((item) => item.itemName.toLowerCase() === itemName.toLowerCase());
+    return row ? { quantity: Number(row.availableQuantity ?? row.quantity ?? 0), unit: row.unit || 'pcs' } : null;
+  };
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
 
@@ -344,7 +364,8 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
           {filtered.map(po => (
             <POCard key={po.id} po={po}
               onStatusChange={updateStatus}
-              onDelete={deletePO} />
+              onDelete={deletePO}
+              currentStockFor={currentStockFor} />
           ))}
         </div>
       )}

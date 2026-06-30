@@ -46,6 +46,13 @@ import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
+import {
+  LiveOrderStatusPanel,
+  SnbAdvanceOrdersPanel,
+  SnbPurchaseInvoicePanel,
+  SnbPurchaseReturnPanel,
+  SnbStockMovementPanel,
+} from "./SnbReceiverSharedTabs";
 
 // ── Branch config ──────────────────────────────────────────────────────────────
 
@@ -83,7 +90,21 @@ const BRANCH_META: Record<string, BranchMeta> = {
   },
 };
 
-type TabKey = "order" | "placed" | "notifications" | "stock" | "po" | "stock-count" | "shared" | "advance";
+type TabKey =
+  | "order"
+  | "live"
+  | "placed"
+  | "notifications"
+  | "stock"
+  | "po"
+  | "purchase-invoice"
+  | "purchase-return"
+  | "dump"
+  | "damage"
+  | "transfer-out"
+  | "stock-count"
+  | "shared"
+  | "advance";
 type DatePreset = "today" | "yesterday" | "7d" | "15d" | "1m" | "custom";
 
 interface SharedOperationRow {
@@ -2274,11 +2295,17 @@ function StockCountPanel({
 }
 
 function tabFromParams(value: string | null): TabKey {
+  if (value === "live" || value === "live-status" || value === "tracking") return "live";
   if (value === "history" || value === "placed" || value === "orders") return "placed";
   if (value === "alert" || value === "alerts" || value === "notifications") return "notifications";
   if (value === "stock" || value === "incoming") return "stock";
   if (value === "po" || value === "purchase" || value === "purchase-order") return "po";
   if (value === "stock-count" || value === "count" || value === "daily-stock-take") return "stock-count";
+  if (value === "purchase-invoice" || value === "purchase-invoices" || value === "invoice") return "purchase-invoice";
+  if (value === "purchase-return" || value === "purchase-returns" || value === "return") return "purchase-return";
+  if (value === "dump") return "dump";
+  if (value === "damage") return "damage";
+  if (value === "transfer-out" || value === "transfer") return "transfer-out";
   if (value === "shared" || value === "admin-shared" || value === "shared-data") return "shared";
   if (value === "advance" || value === "advance-orders") return "advance";
   return "order";
@@ -2315,7 +2342,8 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const requestedTab = tabFromParams(searchParams.get("tab"));
-  const tab = branch !== "SNB" && (["po", "shared", "advance"] as TabKey[]).includes(requestedTab) ? "order" : requestedTab;
+  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "dump", "damage", "transfer-out", "shared", "advance"];
+  const tab = branch !== "SNB" && snbOnlyTabs.includes(requestedTab) ? "order" : requestedTab;
   const userName =
     currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
 
@@ -2420,49 +2448,79 @@ export default function OrderReceiverDashboard() {
   const unreadCount = branchNotifications.filter((n) => !n.isRead).length;
 
   const heading =
-    tab === "placed"
-      ? "Placed Orders"
-      : tab === "notifications"
-        ? "Packing Alerts"
-        : tab === "stock"
-          ? "Stock / Incoming"
-          : tab === "po"
-            ? "Purchase Order"
-            : tab === "stock-count"
-              ? "Daily Stock Take"
-              : tab === "shared"
-                ? "Shared SNB Operations"
-                : tab === "advance"
-                  ? "Advance Orders"
-                  : "Place New Order";
+    tab === "live"
+      ? "Live Order Status"
+      : tab === "placed"
+        ? "Placed Orders"
+        : tab === "notifications"
+          ? "Packing Alerts"
+          : tab === "stock"
+            ? "Stock / Incoming"
+            : tab === "po"
+              ? "Purchase Order"
+              : tab === "purchase-invoice"
+                ? "Purchase Invoice"
+                : tab === "purchase-return"
+                  ? "Purchase Return"
+                  : tab === "dump"
+                    ? "Dump"
+                    : tab === "damage"
+                      ? "Damage"
+                      : tab === "transfer-out"
+                        ? "Transfer Out"
+                        : tab === "stock-count"
+                          ? "Daily Stock Take"
+                          : tab === "shared"
+                            ? "Shared SNB Operations"
+                            : tab === "advance"
+                              ? "Advance Orders"
+                              : "Place New Order";
   const subheading =
-    tab === "placed"
-      ? "Filter by date range and download your branch order history."
-      : tab === "notifications"
-        ? "Shortage, excess and remainder alerts from packing are shown here."
-        : tab === "stock"
-          ? `Confirm incoming stock, update stock manually and maintain thresholds for ${branch}.`
-          : tab === "po"
-            ? `Create and track ${branch} purchase orders from the receiver dashboard.`
-            : tab === "stock-count"
-              ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
-              : tab === "shared"
-                ? "Purchase invoices, purchase returns, dump, damage and transfer-out entered by SNB Admin."
-                : tab === "advance"
-                  ? "Live advance orders entered by SNB Branch, including balances, delivery and pipeline status."
-                  : "Create today’s bakery requirement with live branch stock and a complete-order note.";
+    tab === "live"
+      ? "See each order move live through store, baker, packing and dispatch."
+      : tab === "placed"
+        ? "Filter by date range and download your branch order history."
+        : tab === "notifications"
+          ? "Shortage, excess and remainder alerts from packing are shown here."
+          : tab === "stock"
+            ? `Confirm incoming stock, update stock manually and maintain thresholds for ${branch}.`
+            : tab === "po"
+              ? `Create and track ${branch} purchase orders with current store stock beside every item.`
+              : tab === "purchase-invoice"
+                ? "Create purchase invoices and view the same shared records available to SNB Admin."
+                : tab === "purchase-return"
+                  ? "Post verified purchase returns with live stock deduction and shared Admin history."
+                  : tab === "dump"
+                    ? "Record dumped stock after physical verification."
+                    : tab === "damage"
+                      ? "Record damaged stock after physical verification."
+                      : tab === "transfer-out"
+                        ? "Record stock transferred out and share it with SNB Admin."
+                        : tab === "stock-count"
+                          ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
+                          : tab === "shared"
+                            ? "Combined audit view of purchase invoices, purchase returns, dump, damage and transfer-out."
+                            : tab === "advance"
+                              ? "Take advance orders, reserve stock and show Admin collections as SNB Order collected."
+                              : "Create today’s bakery requirement with live branch stock and a complete-order note.";
   const receiverTabs: Array<{ key: TabKey; label: string }> = [
     { key: "order", label: "Order" },
-    { key: "placed", label: "Placed Orders" },
-    { key: "notifications", label: "Notifications" },
+    { key: "live", label: "Live Status" },
+    { key: "placed", label: "History" },
+    { key: "notifications", label: "Alerts" },
     ...(branch === "SNB" || branch === "VRSNB"
       ? ([
-          { key: "stock", label: "Stock / Incoming" },
+          { key: "stock", label: "Stock" },
           { key: "stock-count", label: "Stock Count" },
           ...(branch === "SNB" ? [
             { key: "po", label: "Purchase Order" } as { key: TabKey; label: string },
-            { key: "shared", label: "Shared Operations" } as { key: TabKey; label: string },
+            { key: "purchase-invoice", label: "Purchase Invoice" } as { key: TabKey; label: string },
+            { key: "purchase-return", label: "Purchase Return" } as { key: TabKey; label: string },
+            { key: "dump", label: "Dump" } as { key: TabKey; label: string },
+            { key: "damage", label: "Damage" } as { key: TabKey; label: string },
+            { key: "transfer-out", label: "Transfer Out" } as { key: TabKey; label: string },
             { key: "advance", label: "Advance Orders" } as { key: TabKey; label: string },
+            { key: "shared", label: "All Shared" } as { key: TabKey; label: string },
           ] : []),
         ] as Array<{ key: TabKey; label: string }>)
       : []),
@@ -2571,14 +2629,14 @@ export default function OrderReceiverDashboard() {
         </div>
       </div>
 
-      <div className="mb-4 hidden flex-wrap gap-2 rounded-3xl border border-border bg-white/90 p-2 shadow-soft">
+      <div className="order-receiver-mobile-tabs mb-3 flex shrink-0 gap-2 overflow-x-auto rounded-2xl border border-border bg-white/95 p-2 shadow-soft lg:hidden">
         {receiverTabs.map((item) => (
           <button
             key={item.key}
             type="button"
             onClick={() => setSearchParams({ tab: item.key })}
             className={cn(
-              "rounded-2xl px-4 py-2 text-xs font-body font-black transition-all",
+              "min-h-10 shrink-0 rounded-xl px-3 py-2 text-[11px] font-body font-black transition-all",
               tab === item.key
                 ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200",
@@ -2613,6 +2671,14 @@ export default function OrderReceiverDashboard() {
               />
             </div>
           )
+        )}
+
+        {tab === "live" && (
+          <LiveOrderStatusPanel
+            orders={branchOrders}
+            loading={loading}
+            onRefresh={() => fetchOrders(true)}
+          />
         )}
 
         {tab === "placed" && (
@@ -2711,13 +2777,21 @@ export default function OrderReceiverDashboard() {
 
         {tab === "po" && branch === "SNB" && <PurchaseOrderTab branchScope="SNB" />}
 
+        {tab === "purchase-invoice" && branch === "SNB" && <SnbPurchaseInvoicePanel />}
+
+        {tab === "purchase-return" && branch === "SNB" && <SnbPurchaseReturnPanel />}
+
+        {tab === "dump" && branch === "SNB" && <SnbStockMovementPanel mode="Dump" />}
+
+        {tab === "damage" && branch === "SNB" && <SnbStockMovementPanel mode="Damage" />}
+
+        {tab === "transfer-out" && branch === "SNB" && <SnbStockMovementPanel mode="Trans Out" />}
+
         {tab === "shared" && branch === "SNB" && (
           <SharedBranchOperationsPanel branch={branch} />
         )}
 
-        {tab === "advance" && branch === "SNB" && (
-          <SharedAdvanceOrdersPanel branch={branch} />
-        )}
+        {tab === "advance" && branch === "SNB" && <SnbAdvanceOrdersPanel />}
 
         {tab === "stock-count" && (branch === "SNB" || branch === "VRSNB") && (
           <StockCountPanel branch={branch} branchStock={stock[branch]} userName={userName} />
