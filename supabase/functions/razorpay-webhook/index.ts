@@ -53,7 +53,7 @@ Deno.serve(async (req) => {
           recipient_role: 'admin', type: 'online_order_paid', title: 'New paid online order',
           body: `${order.order_number} · ${order.customer_name} · ₹${Number(order.amount).toFixed(2)}`,
           ref_id: order.id, ref_label: order.order_number, is_read: false,
-          metadata: { source: 'razorpay_webhook', payment_id: payment.id, event_id: eventId, amount_paise: payment.amount, currency: payment.currency },
+          meta: { source: 'razorpay_webhook', payment_id: payment.id, event_id: eventId, amount_paise: payment.amount, currency: payment.currency },
         });
       }
     } else if (event.event === 'payment.failed') {
