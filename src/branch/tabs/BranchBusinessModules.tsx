@@ -1299,22 +1299,60 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       notes: notes || null,
       status: 'finalized',
     };
-    const { data, error } = await supabase
-      .from('branch_daily_closures')
-      .insert(closurePayload)
-      .select()
-      .single();
-    if (error) {
-      const missingLedger = error.code === '42P01' || error.code === 'PGRST205' || /does not exist|schema cache/i.test(error.message);
-      setSavedMessage(missingLedger
-        ? 'Supabase closure table is not installed. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql first.'
-        : `Failed to save closure in Supabase: ${error.message}`);
-      return;
-    }
-    if (activeSessionId) {
-      const { error: sessionCloseError } = await supabase
-        .from('branch_counter_sessions')
-        .update({
+    const upiAuditText = [
+      '[UPI AUDIT]',
+      `System UPI: ${upi.toFixed(2)}`,
+      `Verified UPI: ${actualUpi.toFixed(2)}`,
+      `Difference: ${upiDifference.toFixed(2)}`,
+      `Remarks: ${upiAuditNotes.trim() || 'Matched'}`,
+    ].join(' | ');
+    const isMissingUpiSchemaCacheError = (candidate: { code?: string; message?: string } | null | undefined) =>
+      candidate?.code === 'PGRST204'
+      && /actual_upi|upi_difference|upi_notes|counted_upi/i.test(candidate.message || '');
+    const rpcPayload = {
+      ...closurePayload,
+      session_advance_collected: advanceCollectedToday,
+      supplier_payments: supplierPaymentTotal,
+      bank_deposits: bankDepositTotal,
+    };
+    const { error: closureRpcError } = await supabase.rpc('finalize_branch_counter_closure_secure', {
+      p_payload: rpcPayload,
+    });
+
+    if (closureRpcError) {
+      const rpcUnavailable = closureRpcError.code === 'PGRST202'
+        || closureRpcError.code === '42883'
+        || /finalize_branch_counter_closure_secure.*schema cache|function.*not found/i.test(closureRpcError.message || '');
+      if (!rpcUnavailable) {
+        setSavedMessage(`Failed to finalize counter closure: ${closureRpcError.message}`);
+        return;
+      }
+
+      // Compatibility path for deployments where the closure RPC migration has
+      // not been applied yet. A stale PostgREST cache must not block closure.
+      let closureInsertError = (await supabase
+        .from('branch_daily_closures')
+        .insert(closurePayload)).error;
+      if (isMissingUpiSchemaCacheError(closureInsertError)) {
+        const legacyClosurePayload: Record<string, unknown> = { ...closurePayload };
+        delete legacyClosurePayload.actual_upi;
+        delete legacyClosurePayload.upi_difference;
+        delete legacyClosurePayload.upi_notes;
+        legacyClosurePayload.notes = [notes?.trim(), upiAuditText].filter(Boolean).join('\n') || null;
+        closureInsertError = (await supabase
+          .from('branch_daily_closures')
+          .insert(legacyClosurePayload)).error;
+      }
+      if (closureInsertError) {
+        const missingLedger = closureInsertError.code === '42P01' || closureInsertError.code === 'PGRST205';
+        setSavedMessage(missingLedger
+          ? 'The branch closure table is missing from Supabase. Apply the branch core migration before saving closure.'
+          : `Failed to save closure in Supabase: ${closureInsertError.message}`);
+        return;
+      }
+
+      if (activeSessionId) {
+        const sessionClosePayload: Record<string, unknown> = {
           status: 'finalized',
           gross_sales: grossSalesBeforeDiscount,
           discounts,
@@ -1342,12 +1380,27 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           closed_by_user_id: currentUser?.id || null,
           closed_by_username: user,
           notes: notes || null,
-        })
-        .eq('id', activeSessionId)
-        .eq('status', 'open');
-      if (sessionCloseError) {
-        setSavedMessage(`Closure saved, but counter session finalization failed: ${sessionCloseError.message}`);
-        return;
+        };
+        let sessionCloseError = (await supabase
+          .from('branch_counter_sessions')
+          .update(sessionClosePayload)
+          .eq('id', activeSessionId)
+          .eq('status', 'open')).error;
+        if (isMissingUpiSchemaCacheError(sessionCloseError)) {
+          delete sessionClosePayload.counted_upi;
+          delete sessionClosePayload.upi_difference;
+          delete sessionClosePayload.upi_notes;
+          sessionClosePayload.notes = [notes?.trim(), upiAuditText].filter(Boolean).join('\n') || null;
+          sessionCloseError = (await supabase
+            .from('branch_counter_sessions')
+            .update(sessionClosePayload)
+            .eq('id', activeSessionId)
+            .eq('status', 'open')).error;
+        }
+        if (sessionCloseError) {
+          setSavedMessage(`Closure saved, but counter session finalization failed: ${sessionCloseError.message}`);
+          return;
+        }
       }
     }
     addCashierClosure({ branch, cashier: user, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
