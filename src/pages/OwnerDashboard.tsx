@@ -1539,7 +1539,7 @@ function BranchOverviewTab() {
       const credit = served.reduce((sum, o) => sum + (o.paymentType === 'credit' || o.paymentType === 'unpaid' ? moneyNumber(o.total) : 0), 0);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit,
-        expenses: 0, purchases: 0, pendingPayments: credit,
+        expenses: 0, purchases: 0, pendingPayments: credit, pendingCredit: credit,
         stockAlerts: 0, closureStatus: served.length ? 'Review Cafe closure' : 'No sale yet',
         keyAlert: cancelled.length ? `${cancelled.length} cancelled orders` : 'Kitchen and billing live',
       };
@@ -1554,7 +1554,7 @@ function BranchOverviewTab() {
       // ledger, so it shouldn't contribute to the Purchases total at all.
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: 0, purchases: 0, pendingPayments: 0,
+        expenses: 0, purchases: 0, pendingPayments: 0, pendingCredit: 0,
         stockAlerts: 0, closureStatus: pending ? `${pending} production/store orders pending` : 'No pending production alerts',
         keyAlert: 'Track wastage, recipes and material movement',
       };
@@ -1570,7 +1570,7 @@ function BranchOverviewTab() {
       const storePurchasePaid = invoicesInRange.reduce((sum, row) => sum + row.paid, 0);
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: 0, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - storePurchasePaid),
+        expenses: 0, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - storePurchasePaid), pendingCredit: 0,
         stockAlerts: 0, closureStatus: invoicesInRange.length ? 'Store invoices recorded' : 'No store invoices in range',
         keyAlert: 'Supplier invoices and stock sync control — see Store Purchases tab for sync status',
       };
@@ -1580,7 +1580,7 @@ function BranchOverviewTab() {
       const pendingDispatch = storeOrders.filter(o => ownerInRange(o.createdAt, from, to) && ['Confirmed', 'Ready'].includes(o.status)).length;
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: 0, purchases: 0, pendingPayments: 0,
+        expenses: 0, purchases: 0, pendingPayments: 0, pendingCredit: 0,
         stockAlerts: 0, closureStatus: pendingDispatch ? `${pendingDispatch} dispatches waiting` : 'Dispatch clear',
         keyAlert: 'Pack, dispatch and shortage visibility',
       };
@@ -1616,7 +1616,7 @@ function BranchOverviewTab() {
       const branchPurchaseInfo = branchPurchaseSummary(branch);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
-        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending,
+        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
         stockAlerts: stockAlertCount + pendingIncomingCount(branch),
         closureStatus: savedClosure ? (Math.abs(ownerLedger.toNumber(savedClosure.difference)) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
         keyAlert: branch === 'Hosur'
@@ -1642,7 +1642,7 @@ function BranchOverviewTab() {
     const card = localBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.card) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('card') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     return {
       unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
-      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending,
+      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending, pendingCredit: openCredit,
       stockAlerts: stockAlertCount + pendingIncomingCount(branch),
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: branch === 'Hosur'
@@ -1661,14 +1661,14 @@ function BranchOverviewTab() {
       Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit,
     }));
 
+  const storePurchases = branchRows.find(row => row.unit === 'Store')?.purchases ?? 0;
   const totals = visibleRows.reduce((acc, row) => ({
     sales: acc.sales + row.sales,
     netSales: acc.netSales + row.netSales,
-    purchases: acc.purchases + row.purchases,
     expenses: acc.expenses + row.expenses,
-    pending: acc.pending + row.pendingPayments,
+    pendingCredit: acc.pendingCredit + row.pendingCredit,
     alerts: acc.alerts + row.stockAlerts,
-  }), { sales: 0, netSales: 0, purchases: 0, expenses: 0, pending: 0, alerts: 0 });
+  }), { sales: 0, netSales: 0, expenses: 0, pendingCredit: 0, alerts: 0 });
 
   // chartRows no longer used — replaced by grouped payment chart in CHANGE 4c
 
@@ -1695,8 +1695,8 @@ function BranchOverviewTab() {
       <section className="owner-metric-grid wide">
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
-        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(totals.purchases)} sub="Store + branches" tone="purple" />
-        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(totals.pending)} sub="Credit + supplier" tone="amber" />
+        <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(storePurchases)} sub="Store only" tone="purple" />
+        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(totals.pendingCredit)} sub="Customer credit only" tone="amber" />
       </section>
 
       {/* CHANGE 4c: Grouped payment bar chart for sales branches */}
