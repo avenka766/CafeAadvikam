@@ -1446,9 +1446,30 @@ function OwnerComplaintsTab() {
 function BranchOverviewTab() {
   const { orders, startPolling, stopPolling } = useOrderStore();
   const { sales, incoming, advanceOrders, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
+  const { bills, returns, purchases, cashMovements, bankDeposits, cashierClosures, storeOrders } = useBranchOpsStore();
   const [preset, setPreset] = useState<OwnerDatePreset>('today');
   const SALES_UNITS = ['Cafe', 'SNB Branch', 'VRSNB Branch', 'Hosur Branch'];
+
+  // FIX (Store purchases bug): the central Store's purchases live in the
+  // `store_invoices` table, NOT in the branch-tagged `purchases` array from
+  // useBranchOpsStore (that array only ever holds Cafe/SNB/VRSNB/Hosur
+  // records). Load store invoices independently so the "Store" row reflects
+  // real store purchases instead of an unfiltered sum of every branch's
+  // purchases.
+  const [storeInvoiceRows, setStoreInvoiceRows] = useState<Array<{ total: number; paid: number; date: string }>>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await supabase.from('store_invoices').select('grand_total, paid_amount, delivery_date, created_at');
+      if (!alive || !data) return;
+      setStoreInvoiceRows((data as Array<Record<string, unknown>>).map((invoice) => ({
+        total: Number(invoice.grand_total || 0),
+        paid: Number(invoice.paid_amount || 0),
+        date: String(invoice.delivery_date || invoice.created_at || ''),
+      })));
+    })();
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => { startPolling(60); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { OWNER_FULL_BRANCHES.forEach(branch => fetchBranchData(branch)); }, [fetchBranchData]);
@@ -1491,6 +1512,22 @@ function BranchOverviewTab() {
     return new Set((incoming[branch] || []).filter(item => !item.confirmed).map(item => item.id)).size;
   }, [incoming]);
 
+  // FIX: pending supplier payments must come from each purchase record's own
+  // running `paidAmount` (total - paidAmount), not from separately
+  // date-filtering `purchases` and `purchasePayments` and subtracting the two
+  // totals. That approach broke whenever a payment's date fell outside the
+  // purchase's date (e.g. a payment made today against an older purchase, or
+  // vice versa), making the figure swing incorrectly as the date filter
+  // changed. This is also shared by both branch code paths below, so the
+  // figure is now consistent whether or not a branch has ledger closure rows
+  // for the selected range.
+  const branchPurchaseSummary = useCallback((branch: Branch) => {
+    const records = purchases.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to));
+    const total = records.reduce((sum, p) => sum + moneyNumber(p.total), 0);
+    const pending = records.reduce((sum, p) => sum + Math.max(0, moneyNumber(p.total) - moneyNumber(p.paidAmount)), 0);
+    return { total, pending };
+  }, [purchases, from, to]);
+
   const branchRows = useMemo(() => OWNER_OPERATING_UNITS.map((unit) => {
     if (unit === 'Cafe') {
       const served = orders.filter(o => o.status === 'served' && ownerInRange(o.createdAt, from, to));
@@ -1510,24 +1547,32 @@ function BranchOverviewTab() {
 
     if (unit === 'Bakery Production') {
       const pending = storeOrders.filter(o => ownerInRange(o.createdAt, from, to) && !['Delivered', 'Rejected'].includes(o.status)).length;
-      const approvedStorePurchases = purchases.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
+      // FIX: this row previously summed every branch's purchases (no branch
+      // filter) and displayed that as "store purchases" here too, on top of
+      // the same amounts already counted in the Store row and in each
+      // branch's own row. Bakery Production doesn't have its own purchase
+      // ledger, so it shouldn't contribute to the Purchases total at all.
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: 0, purchases: approvedStorePurchases, pendingPayments: 0,
+        expenses: 0, purchases: 0, pendingPayments: 0,
         stockAlerts: 0, closureStatus: pending ? `${pending} production/store orders pending` : 'No pending production alerts',
         keyAlert: 'Track wastage, recipes and material movement',
       };
     }
 
     if (unit === 'Store') {
-      const storePurchaseTotal = purchases.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
-      const paid = purchasePayments.filter(p => ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
-      const syncedPending = purchases.filter(p => ownerInRange(p.createdAt, from, to) && (p.syncStatus || 'Not Synced') !== 'Synced').length;
+      // FIX: previously summed the branch-tagged `purchases` array with no
+      // branch filter, so this showed Store + every branch's purchases
+      // combined. Store purchases actually live in `store_invoices` — use
+      // that instead, scoped to the selected date range.
+      const invoicesInRange = storeInvoiceRows.filter(row => ownerInRange(row.date, from, to));
+      const storePurchaseTotal = invoicesInRange.reduce((sum, row) => sum + row.total, 0);
+      const storePurchasePaid = invoicesInRange.reduce((sum, row) => sum + row.paid, 0);
       return {
         unit, sales: 0, netSales: 0, cash: 0, upi: 0, card: 0, credit: 0,
-        expenses: 0, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - paid),
-        stockAlerts: syncedPending, closureStatus: syncedPending ? `${syncedPending} purchase sync pending` : 'Purchase sync clear',
-        keyAlert: 'Supplier invoices and stock sync control',
+        expenses: 0, purchases: storePurchaseTotal, pendingPayments: Math.max(0, storePurchaseTotal - storePurchasePaid),
+        stockAlerts: 0, closureStatus: invoicesInRange.length ? 'Store invoices recorded' : 'No store invoices in range',
+        keyAlert: 'Supplier invoices and stock sync control — see Store Purchases tab for sync status',
       };
     }
 
@@ -1562,9 +1607,16 @@ function BranchOverviewTab() {
       const openCredit = (creditSales[branch] || [])
         .filter((sale) => sale.status !== 'settled' && ownerInRange(sale.createdAt, from, to))
         .reduce((sum, sale) => sum + moneyNumber(sale.creditAmount), 0);
+      // FIX: this used to always report purchases:0 and pendingPayments as
+      // customer credit only, whenever the branch had a closure ledger row
+      // for the range (which is almost always). Now it uses the same real
+      // purchase records as the fallback path below, and "Pending Payments"
+      // correctly combines unpaid customer credit + unpaid supplier
+      // purchases, matching the "Credit + supplier" label on the summary card.
+      const branchPurchaseInfo = branchPurchaseSummary(branch);
       return {
         unit, sales: gross, netSales: gross, cash, upi, card, credit: Math.max(credit, openCredit),
-        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: 0, pendingPayments: openCredit,
+        expenses: ownerLedger.toNumber(savedClosure?.expenses || 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending,
         stockAlerts: stockAlertCount + pendingIncomingCount(branch),
         closureStatus: savedClosure ? (Math.abs(ownerLedger.toNumber(savedClosure.difference)) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
         keyAlert: branch === 'Hosur'
@@ -1579,8 +1631,7 @@ function BranchOverviewTab() {
     const legacyOnly = dbSales.filter((sale) => !sale.billNo || !billedNumbers.has(sale.billNo));
     const gross = legacyOnly.reduce((sum, s) => sum + moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold), 0) + localBills.reduce((sum, b) => sum + moneyNumber(b.total), 0);
     const ret = branchReturns.reduce((sum, r) => sum + moneyNumber(r.total), 0);
-    const branchPurchases = purchases.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.total), 0);
-    const purchasePaid = purchasePayments.filter(p => p.branch === branch && ownerInRange(p.createdAt, from, to)).reduce((sum, p) => sum + moneyNumber(p.amount), 0);
+    const branchPurchaseInfo = branchPurchaseSummary(branch);
     const stockAlertCount = branchStockAlertCount(branch);
     const openCredit = (creditSales[branch] || [])
       .filter((credit) => credit.status !== 'settled' && ownerInRange(credit.createdAt, from, to))
@@ -1591,14 +1642,14 @@ function BranchOverviewTab() {
     const card = localBills.reduce((sum, b) => sum + (b.paymentMode === 'card' ? moneyNumber(b.total) : b.paymentMode === 'split' ? moneyNumber(b.split?.card) : 0), 0) + dbSales.reduce((sum, s) => sum + ((s.paymentMethod || '').toLowerCase().includes('card') ? moneyNumber(s.unitPrice) * moneyNumber(s.quantitySold) : 0), 0);
     return {
       unit, sales: gross, netSales: Math.max(0, gross - ret), cash, upi, card, credit: openCredit,
-      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchases, pendingPayments: Math.max(0, branchPurchases - purchasePaid),
+      expenses: cashMovements.filter((movement) => movement.branch === branch && movement.direction === 'out' && !String(movement.purpose || '').toLowerCase().startsWith('purchase payment') && ownerInRange(movement.dateTime, from, to)).reduce((sum, movement) => sum + moneyNumber(movement.amount), 0), purchases: branchPurchaseInfo.total, pendingPayments: openCredit + branchPurchaseInfo.pending,
       stockAlerts: stockAlertCount + pendingIncomingCount(branch),
       closureStatus: lastClosure ? (Math.abs(lastClosure.difference) > 0 ? 'Difference in closure' : 'Closed') : 'Pending closure',
       keyAlert: branch === 'Hosur'
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, purchases, purchasePayments, cashMovements, cashierClosures, storeOrders, from, to, branchStockAlertCount, pendingIncomingCount]);
+  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, purchases, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
