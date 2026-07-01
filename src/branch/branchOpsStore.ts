@@ -246,7 +246,7 @@ export interface PurchaseRecord {
   paidAmount: number;
   paymentMethod?: "cash" | "upi" | "card" | "bank" | "credit";
   remarks?: string;
-  syncStatus?: "Not Synced" | "Synced" | "Partially Synced";
+  syncStatus?: "Not Synced" | "Synced" | "Partially Synced" | "Re-sync Required";
   syncedToStock?: boolean;
   syncedAt?: string;
   syncedBy?: string;

@@ -10,7 +10,6 @@ import {
   RotateCcw,
   Save,
   Search,
-  ShoppingCart,
   Trash2,
   Truck,
   X,
@@ -20,6 +19,8 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { useBranchStore } from "@/branch/branchStore";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
+import { useSnbAdminReports } from "@/hooks/useSnbAdminReports";
+import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard";
 import { AdvancePaymentsTab } from "@/branch/tabs/AdvancePaymentsTab";
 import type { BakeryOrder } from "./types";
 
@@ -128,170 +129,59 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
   );
 }
 
-type InvoiceLine = {
-  key: string;
-  itemName: string;
-  barcode?: number;
-  quantity: string;
-  unit: string;
-  rate: string;
-  tax: string;
-  discount: string;
-};
-
-type InvoiceRow = {
-  id: string;
-  supplier_name: string;
-  invoice_number: string;
-  invoice_date: string;
-  total_amount: number | string;
-  balance_amount: number | string;
-  payment_method: string | null;
-  sync_status: string;
-  created_by: string | null;
-  created_at: string;
-};
-
-function newInvoiceLine(item?: { name: string; barcode: number; price: number; uom: string }): InvoiceLine {
-  return {
-    key: crypto.randomUUID(),
-    itemName: item?.name || "",
-    barcode: item?.barcode,
-    quantity: "1",
-    unit: item?.uom === "Kgs" ? "kg" : "pcs",
-    rate: String(item?.price || 0),
-    tax: "0",
-    discount: "0",
-  };
-}
-
 export function SnbPurchaseInvoicePanel() {
-  const { items: catalogItems } = useOperationalBranchCatalog("SNB");
-  const stock = useBranchStore((state) => state.stock.SNB);
   const user = useAuthStore((state) => state.currentUser);
-  const userName = user?.displayName || user?.username || "SNB Order";
-  const [rows, setRows] = useState<InvoiceRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
-  const [form, setForm] = useState({ supplier: "", invoiceNo: "", invoiceDate: todayInput(), paymentMethod: "credit", remarks: "" });
-  const [lines, setLines] = useState<InvoiceLine[]>([]);
-
-  useEffect(() => {
-    if (lines.length === 0 && catalogItems[0]) setLines([newInvoiceLine(catalogItems[0])]);
-  }, [catalogItems, lines.length]);
-
-  const loadRows = useCallback(async () => {
-    setLoading(true);
-    const { data, error: loadError } = await supabase
-      .from("snb_purchase_invoices")
-      .select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,payment_method,sync_status,created_by,created_at")
-      .order("created_at", { ascending: false })
-      .limit(500);
-    setLoading(false);
-    if (loadError) setError(loadError.message);
-    else setRows((data || []) as InvoiceRow[]);
-  }, []);
-
-  useEffect(() => { void loadRows(); }, [loadRows]);
-
-  const stockFor = useCallback((line: InvoiceLine) => stock.find((item) => line.barcode != null && item.itemBarcode != null ? item.itemBarcode === line.barcode : normal(item.itemName) === normal(line.itemName)), [stock]);
-  const lineTotal = (line: InvoiceLine) => Math.max(0, Number(line.quantity || 0) * Number(line.rate || 0) + Number(line.tax || 0) - Number(line.discount || 0));
-  const total = lines.reduce((sum, line) => sum + lineTotal(line), 0);
-
-  const updateLine = (key: string, patch: Partial<InvoiceLine>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line));
-  const chooseItem = (key: string, name: string) => {
-    const item = catalogItems.find((entry) => entry.name === name);
-    updateLine(key, { itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs", rate: String(item?.price || 0) });
-  };
-
-  const submit = async () => {
-    setError(""); setSuccess("");
-    if (!form.supplier.trim() || !form.invoiceNo.trim()) return setError("Supplier and invoice number are required.");
-    if (!lines.length || lines.some((line) => !line.itemName || Number(line.quantity) <= 0 || Number(line.rate) < 0)) return setError("Add valid invoice items, quantity and rate.");
-    setSaving(true);
-    const { data, error: saveError } = await supabase.rpc("create_snb_order_purchase_invoice_secure", {
-      p_supplier_name: form.supplier.trim(),
-      p_invoice_number: form.invoiceNo.trim(),
-      p_invoice_date: form.invoiceDate,
-      p_items: lines.map((line) => ({ item_name: line.itemName, item_barcode: line.barcode || null, quantity: Number(line.quantity), unit: line.unit, rate: Number(line.rate), tax: Number(line.tax || 0), discount: Number(line.discount || 0), total_amount: lineTotal(line) })),
-      p_payment_method: form.paymentMethod,
-      p_remarks: form.remarks.trim() || null,
-      p_entered_by: `SNB Order - ${userName}`,
-    });
-    setSaving(false);
-    if (saveError) return setError(saveError.message);
-    const result = (data || {}) as Record<string, unknown>;
-    setSuccess(`${String(result.invoiceNumber || form.invoiceNo)} saved and shared with SNB Admin.`);
-    setForm({ supplier: "", invoiceNo: "", invoiceDate: todayInput(), paymentMethod: "credit", remarks: "" });
-    setLines(catalogItems[0] ? [newInvoiceLine(catalogItems[0])] : []);
-    await loadRows();
-  };
-
-  const visibleRows = rows.filter((row) => !query.trim() || `${row.invoice_number} ${row.supplier_name} ${row.sync_status} ${row.created_by || ""}`.toLowerCase().includes(query.toLowerCase()));
+  const fetchBranchData = useBranchStore((state) => state.fetchBranchData);
+  const [notice, setNotice] = useState("");
+  const today = todayInput();
+  const fromDate = `${today.slice(0, 4)}-01-01`;
+  const dbReports = useSnbAdminReports(fromDate, today);
+  const actorName = `SNB Order - ${user?.displayName || user?.username || "SNB Order"}`;
 
   return (
-    <div className="grid h-full min-h-0 gap-3 overflow-auto xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
-      <section className={cn(panelClass, "p-3")}>
-        <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Shared with SNB Admin</p><h2 className="font-display text-lg font-black">New Purchase Invoice</h2></div><ShoppingCart className="size-5 text-amber-600" /></div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Supplier"><input className={inputClass} value={form.supplier} onChange={(event) => setForm({ ...form, supplier: event.target.value })} placeholder="Supplier name" /></Field>
-          <Field label="Invoice Number"><input className={inputClass} value={form.invoiceNo} onChange={(event) => setForm({ ...form, invoiceNo: event.target.value })} placeholder="INV-001" /></Field>
-          <Field label="Invoice Date"><input type="date" className={inputClass} value={form.invoiceDate} onChange={(event) => setForm({ ...form, invoiceDate: event.target.value })} /></Field>
-          <Field label="Payment Method"><select className={inputClass} value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option value="credit">Credit</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank</option></select></Field>
+    <div className="h-full min-h-0 overflow-auto p-1">
+      <div className="space-y-3">
+        <div className={cn(panelClass, "flex flex-wrap items-center justify-between gap-3 p-3")}>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">
+              Same purchase workflow as SNB Admin
+            </p>
+            <h2 className="font-display text-lg font-black">SNB Purchase Invoice Management</h2>
+            <p className="mt-1 text-[11px] font-semibold text-muted-foreground">
+              Create, edit, re-sync and review the shared SNB purchase ledger. All actions are recorded as SNB Order.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void dbReports.refresh()}
+            className="grid size-10 place-items-center rounded-xl border border-border bg-white"
+            aria-label="Refresh purchase invoices"
+          >
+            <RefreshCw className={cn("size-4", dbReports.loading && "animate-spin")} />
+          </button>
         </div>
-        <div className="mt-3 space-y-2">
-          {lines.map((line, index) => {
-            const currentStock = stockFor(line);
-            return (
-              <div key={line.key} className="rounded-2xl border border-border bg-slate-50 p-2.5">
-                <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-black uppercase text-muted-foreground">Item {index + 1}</span><button type="button" disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((entry) => entry.key !== line.key))} className="grid size-8 place-items-center rounded-lg bg-red-50 text-red-600 disabled:opacity-30"><Trash2 className="size-3.5" /></button></div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Field label="Item" hint={`Current stock: ${formatQty(currentStock?.availableQuantity ?? currentStock?.quantity ?? 0, currentStock?.unit || line.unit)}`}><select className={inputClass} value={line.itemName} onChange={(event) => chooseItem(line.key, event.target.value)}>{catalogItems.map((item) => <option key={item.barcode} value={item.name}>{item.name}</option>)}</select></Field>
-                  <div className="grid grid-cols-2 gap-2"><Field label="Qty"><input type="number" min="0.001" step="0.001" className={inputClass} value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} /></Field><Field label="Unit"><input className={inputClass} value={line.unit} onChange={(event) => updateLine(line.key, { unit: event.target.value })} /></Field></div>
-                  <Field label="Rate"><input type="number" min="0" step="0.01" className={inputClass} value={line.rate} onChange={(event) => updateLine(line.key, { rate: event.target.value })} /></Field>
-                  <div className="grid grid-cols-2 gap-2"><Field label="Tax"><input type="number" min="0" step="0.01" className={inputClass} value={line.tax} onChange={(event) => updateLine(line.key, { tax: event.target.value })} /></Field><Field label="Discount"><input type="number" min="0" step="0.01" className={inputClass} value={line.discount} onChange={(event) => updateLine(line.key, { discount: event.target.value })} /></Field></div>
-                </div>
-                <p className="mt-2 text-right text-xs font-black">Line total: {money(lineTotal(line))}</p>
-              </div>
-            );
-          })}
-          <button type="button" onClick={() => setLines((current) => [...current, newInvoiceLine(catalogItems[0])])} className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border text-xs font-black text-muted-foreground"><Plus className="size-4" /> Add item</button>
-        </div>
-        <div className="mt-3"><Field label="Remarks"><textarea className={textareaClass} value={form.remarks} onChange={(event) => setForm({ ...form, remarks: event.target.value })} placeholder="Invoice note or stock details" /></Field></div>
-        <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2"><span className="text-xs font-black text-amber-800">Invoice total</span><strong className="text-lg text-amber-900">{money(total)}</strong></div>
-        <div className="mt-3"><StatusMessage error={error} success={success} /></div>
-        <button type="button" onClick={() => void submit()} disabled={saving} className={cn(primaryButton, "mt-3 w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save & Share Invoice</button>
-      </section>
 
-      <section className={cn(panelClass, "flex min-h-[420px] flex-col overflow-hidden")}>
-        <div className="flex shrink-0 items-center gap-2 border-b border-border p-3"><Search className="size-4 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search invoice or supplier" className="h-9 flex-1 bg-transparent text-xs font-bold outline-none" /><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button></div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          {loading && !rows.length ? <div className="flex h-full items-center justify-center"><Loader2 className="size-5 animate-spin" /></div> : visibleRows.length === 0 ? <div className="flex h-full items-center justify-center p-8 text-sm font-bold text-muted-foreground">No purchase invoices found.</div> : (
-            <div className="divide-y divide-border">{visibleRows.map((row) => <article key={row.id} className="p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black">{row.invoice_number}</p><p className="text-xs font-bold text-muted-foreground">{row.supplier_name} · {row.invoice_date}</p></div><span className={cn("rounded-full px-2 py-1 text-[10px] font-black", row.sync_status === "Synced" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700")}>{row.sync_status}</span></div><div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs"><span className="font-semibold text-muted-foreground">Entered by {row.created_by || "SNB Admin"}</span><strong>{money(Number(row.total_amount || 0))}</strong></div></article>)}</div>
-          )}
-        </div>
-      </section>
+        {notice ? (
+          <div className="flex items-center justify-between gap-3 rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
+            <span>{notice}</span>
+            <button type="button" onClick={() => setNotice("")} aria-label="Dismiss message">
+              <X className="size-4" />
+            </button>
+          </div>
+        ) : null}
+
+        {dbReports.error ? <StatusMessage error={dbReports.error} /> : null}
+
+        <PurchaseInvoicesTab
+          userName={actorName}
+          fetchBranchData={fetchBranchData}
+          setNotice={setNotice}
+          dbReports={dbReports}
+        />
+      </div>
     </div>
   );
 }
-
-type ReturnInvoice = InvoiceRow;
-type ReturnItem = {
-  id: string;
-  item_name: string;
-  quantity: number | string;
-  synced_quantity: number | string | null;
-  unit: string;
-  rate: number | string;
-  tax: number | string;
-  discount: number | string;
-  returnQuantity: string;
-  itemReason: string;
-};
-type ReturnRow = { id: string; return_no: string; supplier_name: string; invoice_number: string; return_date: string; reason_type: string; settlement_type: string; total_amount: number | string; entered_by: string; status: string; created_at: string };
 
 export function SnbPurchaseReturnPanel() {
   const stock = useBranchStore((state) => state.stock.SNB);

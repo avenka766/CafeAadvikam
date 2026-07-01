@@ -74,6 +74,10 @@ const completeBranchFixMigration = read('supabase/migrations/20260630030000_bran
 const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013000_fix_snb_purchase_workflow_dropdowns.sql') ?? '';
 const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_add_branch_upi_closure_audit.sql') ?? '';
 const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_branch_closure_schema_cache_rpc.sql') ?? '';
+const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
+const branchCheckoutCacheRefreshMigration = read('supabase/migrations/20260701080000_refresh_branch_checkout_v4_schema_cache.sql') ?? '';
+const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
+const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
@@ -81,6 +85,10 @@ const branchStore = read('src/branch/branchStore.ts') ?? '';
 const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
 const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
+const snbReceiverSharedTabs = read('src/bakery/SnbReceiverSharedTabs.tsx') ?? '';
+const snbOrderPurchaseSaveParityMigration = read('supabase/migrations/20260701103000_snb_order_purchase_invoice_save_parity.sql') ?? '';
+const snbOrderPurchaseRevisionParityMigration = read('supabase/migrations/20260701103100_snb_order_purchase_invoice_revision_parity.sql') ?? '';
+const snbOrderPurchaseSyncParityMigration = read('supabase/migrations/20260701103200_snb_order_purchase_invoice_sync_report_parity.sql') ?? '';
 const adminDashboard = read('src/pages/AdminDashboard.tsx') ?? '';
 const ownerDashboard = read('src/pages/OwnerDashboard.tsx') ?? '';
 const snbHistory = read('src/pages/SNBHistoryPage.tsx') ?? '';
@@ -282,6 +290,17 @@ check(
 );
 
 check(
+  'Branch discount checkout survives PostgREST RPC cache lag',
+  branchBilling.includes("code === 'PGRST202'")
+    && branchBilling.includes("branch === 'SNB' ? 'v4' : 'v3'")
+    && branchBilling.includes("complete_branch_checkout_canonical_v4")
+    && branchBilling.includes("complete_branch_checkout_canonical_v3")
+    && branchCheckoutCacheRefreshMigration.includes("pg_notify('pgrst', 'reload schema')")
+    && branchCheckoutCacheRefreshMigration.includes('complete_branch_checkout_canonical_v4'),
+  'VRSNB must use the strict v3 checkout, SNB must retain v4 Mix & Combo handling, and PGRST202 cache misses must recover safely.',
+);
+
+check(
   'Billing keyboard shortcuts match the original SNB and VRSNB workflow',
   [
     "['F1', 'Change Salesperson']",
@@ -405,6 +424,20 @@ check(
 );
 
 check(
+  'SNB Order reuses the complete SNB Admin purchase invoice workflow',
+  adminSnb.includes('export function PurchaseInvoicesTab')
+    && snbReceiverSharedTabs.includes('import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard"')
+    && snbReceiverSharedTabs.includes('<PurchaseInvoicesTab')
+    && snbReceiverSharedTabs.includes('Same purchase workflow as SNB Admin')
+    && snbOrderPurchaseSaveParityMigration.includes("'receiver_snb', 'admin_snb', 'admin', 'owner'")
+    && snbOrderPurchaseSaveParityMigration.includes("then 'SNB Order - ' || c.username")
+    && snbOrderPurchaseRevisionParityMigration.includes("save_snb_purchase_invoice_revision_secure")
+    && snbOrderPurchaseSyncParityMigration.includes("snb_sync_purchase_invoice_to_stock")
+    && snbOrderPurchaseSyncParityMigration.includes("get_snb_purchase_workflow_data"),
+  'SNB Order must use the same invoice list, editor, revision and stock-sync component as SNB Admin, with receiver_snb authorization and audit attribution.',
+);
+
+check(
   'VRSNB Admin includes all requested parity tabs',
   ['Sales & Returns','Low Stock / Stock','Expenses','Complaints','Waste Logs','Credit','Cashier Report','Cashier Closure','Daily Closure Report','Branch Report','Stock Audit']
     .every((label) => adminVrsnb.includes(label)),
@@ -493,6 +526,28 @@ check(
   ownerDashboard.includes('startPolling(60)')
     && !ownerDashboard.includes('startPolling(7)'),
   'Owner reporting must not issue heavy database polling every few seconds.',
+);
+
+
+check(
+  'Synced SNB purchase invoices use an audited edit and re-sync workflow',
+  adminSnb.includes('save_snb_purchase_invoice_revision_secure')
+    && adminSnb.includes('Reason for Editing Synced Invoice')
+    && adminSnb.includes('Save Changes & Require Re-sync')
+    && adminSnb.includes('Sync Again')
+    && snbPurchaseRevisionMigration.includes("'purchase_invoice_revision'")
+    && snbPurchaseRevisionMigration.includes("sync_status = 'Re-sync Required'"),
+  'A synced purchase invoice edit must require a reason, create a revision, and wait for a second stock sync.',
+);
+
+check(
+  'SNB purchase invoice re-sync applies only stock deltas and notifies authorized roles',
+  snbPurchaseRevisionMigration.includes('coalesce(item.quantity, 0) - coalesce(item.synced_quantity, 0)')
+    && snbPurchaseRevisionMigration.includes('reserved_quantity')
+    && snbPurchaseRevisionMigration.includes("array['admin_snb', 'admin', 'owner']")
+    && notificationStore.includes("'snb_purchase_invoice_revision'")
+    && adminNotificationsTab.includes('SNB Invoice Revision'),
+  'Re-sync must add or deduct only the edited difference, block unsafe reductions, and surface the audit notification.',
 );
 
 const exposedSecretPatterns = [

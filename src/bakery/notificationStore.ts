@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/authStore';
 
 export type NotificationType =
   | 'invoice_pending'
+  | 'snb_purchase_invoice_revision'
   | 'baker_shortage'
   | 'packing_discrepancy'
   | 'packing_remainder'

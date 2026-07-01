@@ -186,6 +186,13 @@ export type SnbPurchaseInvoiceRow = {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  revision_number?: number | string | null;
+  revision_pending?: boolean | null;
+  last_edit_reason?: string | null;
+  last_edited_by?: string | null;
+  last_edited_at?: string | null;
+  last_resynced_by?: string | null;
+  last_resynced_at?: string | null;
 };
 
 export type SnbSupplierPaymentRow = {
