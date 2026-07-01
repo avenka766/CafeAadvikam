@@ -69,10 +69,11 @@ const unifiedMigration = read('supabase/migrations/20260627190000_unified_branch
 const stockLinkRepairMigration = read('supabase/migrations/20260627213000_repair_branch_item_stock_links.sql') ?? '';
 const priceAuthRepairMigration = read('supabase/migrations/20260627233000_fix_branch_price_persistence_and_staff_login.sql') ?? '';
 const adminInvoiceRepairMigration = read('supabase/migrations/20260628040000_fix_admin_invoice_review_workflow.sql') ?? '';
-const branchPaymentStockCorrectionMigration = read('supabase/migrations/20260628224500_fix_branch_payment_edit_nav_and_mix_combo_stock.sql') ?? '';
+const snbMixComboRestoreMigration = read('supabase/migrations/20260701033000_restore_snb_mix_combo_flexible_stock.sql') ?? '';
 const completeBranchFixMigration = read('supabase/migrations/20260630030000_branch_snb_vrsnb_complete_fixes.sql') ?? '';
 const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013000_fix_snb_purchase_workflow_dropdowns.sql') ?? '';
 const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_add_branch_upi_closure_audit.sql') ?? '';
+const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_branch_closure_schema_cache_rpc.sql') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
@@ -131,12 +132,17 @@ check(
 );
 
 check(
-  'Zero-stock items are disabled for both SNB and VRSNB',
-  branchBilling.includes('const disabled = stock <= 0;')
-    && branchBilling.includes('if (available <= 0)')
-    && !branchBilling.includes('Non-stock billing')
-    && !branchBilling.includes('isSnbFlexibleStockItem'),
-  'Every item must pass normal live-stock validation; no zero-stock category exception is allowed.',
+  'Only SNB Mix & Combo may bill through insufficient stock',
+  branchBilling.includes("branch !== 'SNB'")
+    && branchBilling.includes("normalizedCategory === 'mix & combo'")
+    && branchBilling.includes("normalizedCategory === 'mix and combo'")
+    && branchBilling.includes('const disabled = stock <= 0 && !allowInsufficientStock;')
+    && branchBilling.includes('allowInsufficientStock={isSnbFlexibleStockItem(branch, qtyPopupItem)}')
+    && branchBilling.includes("supabase.rpc('complete_branch_checkout_canonical_v4'")
+    && snbMixComboRestoreMigration.includes("if p_branch = 'SNB' then")
+    && snbMixComboRestoreMigration.includes("in ('mix & combo', 'mix and combo')")
+    && snbMixComboRestoreMigration.includes('complete_branch_checkout_canonical_v3'),
+  'SNB Mix & Combo may bypass stock validation, while VRSNB and every other category must remain strictly stock-controlled.',
 );
 
 
@@ -310,6 +316,17 @@ check(
     && branchUpiClosureAuditMigration.includes('counted_upi numeric(14,2)'),
   'SNB and VRSNB closure must compare verified UPI with system UPI, require mismatch remarks, and persist both values.',
 );
+
+check(
+  'Branch counter closure is atomic and resilient to PostgREST schema-cache lag',
+  branchBusinessModules.includes("supabase.rpc('finalize_branch_counter_closure_secure'")
+    && branchBusinessModules.includes("candidate?.code === 'PGRST204'")
+    && branchBusinessModules.includes('delete legacyClosurePayload.actual_upi')
+    && branchClosureRpcMigration.includes('create or replace function public.finalize_branch_counter_closure_secure')
+    && branchClosureRpcMigration.includes("select pg_notify('pgrst','reload schema')"),
+  'Counter closure must use the atomic closure RPC and keep a safe compatibility path for stale UPI-column schema caches.',
+);
+
 
 check(
   'Payment edit supports full split allocations through a secure RPC',
