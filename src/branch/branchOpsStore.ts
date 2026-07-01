@@ -374,6 +374,11 @@ export interface CashierClosure {
   duplicateBills: number;
   creditSales?: number;
   creditCollections?: number;
+  totalSales?: number;
+  advanceCollections?: number;
+  expenses?: number;
+  purchasePayments?: number;
+  bankDeposits?: number;
   notes: string;
   createdAt: string;
 }
