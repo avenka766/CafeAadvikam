@@ -889,11 +889,12 @@ function PlacedOrdersPanel({
     }
 
     // Insert notification
-    await supabase.from("store_notifications").insert({
+    await supabase.from("admin_notifications").insert({
       type: "item_removed",
       title: `Item removed from Order #${order.orderNumber}`,
       body: `${item.itemName} removed — ${finalRemoveReason}`,
-      branch,
+      ref_id: order.id,
+      ref_label: `Order #${order.orderNumber}`,
       meta: {
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -901,7 +902,7 @@ function PlacedOrdersPanel({
         reason: finalRemoveReason,
         branch,
       },
-    }).select().maybeSingle(); // fire-and-forget; ignore if notifications table schema differs
+    }).select().maybeSingle(); // fire-and-forget; ignore if notifications insert fails
 
     setRemoving(false);
     setRemoveTarget(null);
