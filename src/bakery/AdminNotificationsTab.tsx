@@ -29,6 +29,14 @@ const TYPE_META: Record<
     iconColor: 'text-amber-600',
     badgeCls: 'bg-amber-100 text-amber-700 border-amber-300',
   },
+  snb_purchase_invoice_revision: {
+    label: 'SNB Invoice Revision',
+    icon: RefreshCw,
+    cardBorder: 'border-orange-300',
+    iconBg: 'bg-orange-50',
+    iconColor: 'text-orange-600',
+    badgeCls: 'bg-orange-100 text-orange-700 border-orange-300',
+  },
   baker_shortage: {
     label: 'Baker Shortage',
     icon: PackageX,
@@ -137,6 +145,69 @@ function NotificationDetailModal({
           <p className="text-xs font-body text-amber-700 mt-1">
             Go to the <span className="font-bold">Store Invoices</span> tab to review and approve or reject this invoice.
           </p>
+        </div>
+      );
+    }
+
+    if (notification.type === 'snb_purchase_invoice_revision' && m) {
+      const suppliedChanges = Array.isArray(m.changes)
+        ? m.changes as Array<{ itemName?: string; syncedQuantity?: number; newQuantity?: number; delta?: number; unit?: string }>
+        : [];
+      const snapshotChanges = (() => {
+        if (suppliedChanges.length > 0) return suppliedChanges;
+        const oldRows = Array.isArray(m.oldSnapshot) ? m.oldSnapshot as Array<Record<string, unknown>> : [];
+        const newRows = Array.isArray(m.newSnapshot) ? m.newSnapshot as Array<Record<string, unknown>> : [];
+        const rows = new Map<string, { itemName: string; syncedQuantity: number; newQuantity: number; unit: string }>();
+        oldRows.forEach((row) => {
+          const itemName = String(row.itemName ?? '—');
+          const key = itemName.trim().toLowerCase();
+          const current = rows.get(key) ?? { itemName, syncedQuantity: 0, newQuantity: 0, unit: String(row.unit ?? '') };
+          current.syncedQuantity += Number(row.quantity ?? row.syncedQuantity ?? 0);
+          rows.set(key, current);
+        });
+        newRows.forEach((row) => {
+          const itemName = String(row.itemName ?? '—');
+          const key = itemName.trim().toLowerCase();
+          const current = rows.get(key) ?? { itemName, syncedQuantity: 0, newQuantity: 0, unit: String(row.unit ?? '') };
+          current.newQuantity += Number(row.quantity ?? 0);
+          current.unit = String(row.unit ?? current.unit);
+          rows.set(key, current);
+        });
+        return [...rows.values()]
+          .map((row) => ({ ...row, delta: row.newQuantity - row.syncedQuantity }))
+          .filter((row) => Math.abs(row.delta) > 0.0001);
+      })();
+      const changes = snapshotChanges;
+      return (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-orange-200 bg-orange-50 p-3 space-y-1.5">
+            <p className="text-xs font-body font-bold text-orange-800 uppercase tracking-wide">Synced Invoice Revision</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Invoice:</span> {String(m.invoiceNumber ?? notification.refLabel ?? '—')}</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Supplier:</span> {String(m.supplierName ?? '—')}</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Status:</span> {String(m.status ?? 'Pending Re-sync')}</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Reason:</span> {String(m.editReason ?? '—')}</p>
+            <p className="text-sm text-orange-950"><span className="font-bold">Edited by:</span> {String(m.editedBy ?? '—')}</p>
+            {m.resyncedBy ? <p className="text-sm text-orange-950"><span className="font-bold">Re-synced by:</span> {String(m.resyncedBy)}</p> : null}
+            <p className="text-sm text-orange-950"><span className="font-bold">Total:</span> ₹{Number(m.oldTotal ?? 0).toFixed(2)} → ₹{Number(m.newTotal ?? 0).toFixed(2)}</p>
+          </div>
+          {changes.length > 0 && (
+            <div className="rounded-xl border border-orange-200 overflow-hidden">
+              <div className="grid grid-cols-12 bg-orange-50 px-3 py-2 text-[9px] font-bold uppercase text-orange-700">
+                <span className="col-span-5">Item</span>
+                <span className="col-span-3 text-right">Synced</span>
+                <span className="col-span-4 text-right">Change</span>
+              </div>
+              {changes.map((change, index) => (
+                <div key={`${change.itemName}-${index}`} className="grid grid-cols-12 border-t border-orange-100 px-3 py-2.5 text-xs">
+                  <span className="col-span-5 font-semibold truncate">{change.itemName || '—'}</span>
+                  <span className="col-span-3 text-right text-muted-foreground">{Number(change.syncedQuantity ?? 0)} {change.unit || ''}</span>
+                  <span className={cn('col-span-4 text-right font-bold', Number(change.delta ?? 0) < 0 ? 'text-red-600' : 'text-emerald-600')}>
+                    {Number(change.delta ?? 0) > 0 ? '+' : ''}{Number(change.delta ?? 0)} {change.unit || ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -576,6 +647,7 @@ export default function AdminNotificationsTab() {
   );
 
   const invoiceCount     = notifications.filter(n => n.type === 'invoice_pending').length;
+  const revisionCount    = notifications.filter(n => n.type === 'snb_purchase_invoice_revision').length;
   const shortageCount    = notifications.filter(n => n.type === 'baker_shortage').length;
   const discrepancyCount = notifications.filter(n => n.type === 'packing_discrepancy').length;
   const lowStockCount    = notifications.filter(n => n.type === 'low_stock').length;
@@ -607,9 +679,10 @@ export default function AdminNotificationsTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-2">
         {[
           { label: 'Invoices',    value: invoiceCount,     color: invoiceCount > 0 ? 'text-amber-600' : 'text-muted-foreground',    bg: invoiceCount > 0 ? 'bg-amber-50 border-amber-200' : '' },
+          { label: 'SNB Revisions', value: revisionCount, color: revisionCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: revisionCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
           { label: 'Shortages',  value: shortageCount,    color: shortageCount > 0 ? 'text-red-600' : 'text-muted-foreground',      bg: shortageCount > 0 ? 'bg-red-50 border-red-200' : '' },
           { label: 'Discrep.',   value: discrepancyCount, color: discrepancyCount > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: discrepancyCount > 0 ? 'bg-orange-50 border-orange-200' : '' },
           { label: 'Low Stock',  value: lowStockCount,    color: lowStockCount > 0 ? 'text-yellow-600' : 'text-muted-foreground',   bg: lowStockCount > 0 ? 'bg-yellow-50 border-yellow-200' : '' },
@@ -630,6 +703,7 @@ export default function AdminNotificationsTab() {
           {([
             { id: 'all',                 label: 'All' },
             { id: 'invoice_pending',     label: '📄 Invoices' },
+            { id: 'snb_purchase_invoice_revision', label: '🔄 SNB Revisions' },
             { id: 'baker_shortage',      label: '📦 Shortage' },
             { id: 'packing_discrepancy', label: '⚖️ Discrepancy' },
             { id: 'packing_remainder',   label: '⚖️ Remainder' },
