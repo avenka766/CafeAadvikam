@@ -85,6 +85,10 @@ const branchStore = read('src/branch/branchStore.ts') ?? '';
 const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
 const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
+const snbReceiverSharedTabs = read('src/bakery/SnbReceiverSharedTabs.tsx') ?? '';
+const snbOrderPurchaseSaveParityMigration = read('supabase/migrations/20260701103000_snb_order_purchase_invoice_save_parity.sql') ?? '';
+const snbOrderPurchaseRevisionParityMigration = read('supabase/migrations/20260701103100_snb_order_purchase_invoice_revision_parity.sql') ?? '';
+const snbOrderPurchaseSyncParityMigration = read('supabase/migrations/20260701103200_snb_order_purchase_invoice_sync_report_parity.sql') ?? '';
 const adminDashboard = read('src/pages/AdminDashboard.tsx') ?? '';
 const ownerDashboard = read('src/pages/OwnerDashboard.tsx') ?? '';
 const snbHistory = read('src/pages/SNBHistoryPage.tsx') ?? '';
@@ -417,6 +421,20 @@ check(
     && orderReceiverDashboard.includes('Purchase Return')
     && orderReceiverDashboard.includes('Transfer Out'),
   'SNB Order must receive Admin purchase/return/dump/damage/transfer data and Branch advance-order status.',
+);
+
+check(
+  'SNB Order reuses the complete SNB Admin purchase invoice workflow',
+  adminSnb.includes('export function PurchaseInvoicesTab')
+    && snbReceiverSharedTabs.includes('import { PurchaseInvoicesTab } from "@/pages/AdminSNBDashboard"')
+    && snbReceiverSharedTabs.includes('<PurchaseInvoicesTab')
+    && snbReceiverSharedTabs.includes('Same purchase workflow as SNB Admin')
+    && snbOrderPurchaseSaveParityMigration.includes("'receiver_snb', 'admin_snb', 'admin', 'owner'")
+    && snbOrderPurchaseSaveParityMigration.includes("then 'SNB Order - ' || c.username")
+    && snbOrderPurchaseRevisionParityMigration.includes("save_snb_purchase_invoice_revision_secure")
+    && snbOrderPurchaseSyncParityMigration.includes("snb_sync_purchase_invoice_to_stock")
+    && snbOrderPurchaseSyncParityMigration.includes("get_snb_purchase_workflow_data"),
+  'SNB Order must use the same invoice list, editor, revision and stock-sync component as SNB Admin, with receiver_snb authorization and audit attribution.',
 );
 
 check(
