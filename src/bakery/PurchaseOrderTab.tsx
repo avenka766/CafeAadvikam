@@ -147,7 +147,7 @@ function CreatePOForm({ onClose, branchScope }: { onClose: () => void; branchSco
         const live = snbStock.find((stockItem) => stockItem.itemBarcode === item.barcode || stockItem.itemName.toLowerCase() === item.name.toLowerCase());
         return { id: String(item.barcode), name: item.name, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', category: item.category, currentStock: Number(live?.availableQuantity ?? live?.quantity ?? 0), stockUnit: live?.unit || (item.uom === 'Kgs' ? 'kg' : 'pcs') };
       })
-    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material', currentStock: Number(item.currentStock || 0), stockUnit: item.unit }));
+    : stockItems.map((item) => ({ id: item.id, name: item.name, unit: item.unit, category: 'Store Material', currentStock: Number(item.quantity || 0), stockUnit: item.unit }));
   const filteredMaterialOptions = materialOptions.filter((item) =>
     !itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.toLowerCase()) || item.category.toLowerCase().includes(itemSearch.toLowerCase()),
   );
@@ -308,6 +308,7 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
   const { orders, loaded, loading, load, updateStatus, deletePO } = usePurchaseOrderStore();
   const [showCreate, setShowCreate] = useState(false);
   const [filterStatus, setFilterStatus] = useState<'all' | POStatus>('all');
+  const [actionError, setActionError] = useState<string | null>(null);
   const snbStock = useBranchStore((state) => state.stock.SNB);
   const currentStockFor = (itemName: string) => {
     if (branchScope !== 'SNB') return null;
@@ -316,6 +317,18 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
   };
 
   useEffect(() => { if (!loaded) load(); }, [loaded, load]);
+
+  const handleStatusChange = async (id: string, status: POStatus) => {
+    setActionError(null);
+    const error = await updateStatus(id, status);
+    if (error) setActionError(error);
+  };
+
+  const handleDelete = async (id: string) => {
+    setActionError(null);
+    const error = await deletePO(id);
+    if (error) setActionError(error);
+  };
 
   const scopedOrders = branchScope
     ? orders.filter(o => o.branch === branchScope)
@@ -341,6 +354,15 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
           </div>
         ))}
       </div>
+
+      {actionError && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss purchase order error">
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
         <div className="flex gap-1.5 flex-1 overflow-x-auto pb-0.5">
@@ -370,8 +392,8 @@ export default function PurchaseOrderTab({ branchScope }: { branchScope?: Receiv
         <div className="space-y-2">
           {filtered.map(po => (
             <POCard key={po.id} po={po}
-              onStatusChange={updateStatus}
-              onDelete={deletePO}
+              onStatusChange={(id, status) => { void handleStatusChange(id, status); }}
+              onDelete={(id) => { void handleDelete(id); }}
               currentStockFor={currentStockFor} />
           ))}
         </div>

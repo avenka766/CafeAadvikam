@@ -36,7 +36,7 @@ interface POState {
   load: () => Promise<void>;
   createPO: (data: Omit<PurchaseOrder, 'id' | 'orderNumber' | 'createdAt' | 'sentAt' | 'receivedAt'>) => Promise<string | null>;
   updateStatus: (id: string, status: POStatus) => Promise<string | null>;
-  deletePO: (id: string) => Promise<void>;
+  deletePO: (id: string) => Promise<string | null>;
 }
 
 function mapRow(r: Record<string, unknown>): PurchaseOrder {
@@ -123,11 +123,12 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
       .from('purchase_orders')
       .update({ status: 'cancelled', cancelled_at: cancelledAt })
       .eq('id', id);
-    if (error) return;
+    if (error) return error.message;
     set(s => ({
       orders: s.orders.map(o =>
         o.id === id ? { ...o, status: 'cancelled', cancelledAt } : o
       ),
     }));
+    return null;
   },
 }));

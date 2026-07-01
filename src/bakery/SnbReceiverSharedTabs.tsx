@@ -129,6 +129,54 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
   );
 }
 
+type ReturnInvoice = {
+  id: string;
+  supplier_name: string;
+  invoice_number: string;
+  invoice_date: string;
+  total_amount: number | string;
+  balance_amount: number | string;
+  payment_method: string | null;
+  sync_status: string;
+  revision_pending: boolean;
+  created_by: string | null;
+  created_at: string;
+};
+
+type ReturnItem = {
+  id: string;
+  item_name: string;
+  quantity: number | string;
+  synced_quantity: number | string;
+  unit: string;
+  rate: number | string;
+  tax: number | string;
+  discount: number | string;
+  returnedQuantity: number;
+  returnableQuantity: number;
+  returnQuantity: string;
+  itemReason: string;
+};
+
+type ReturnRow = {
+  id: string;
+  return_no: string;
+  supplier_name: string;
+  invoice_number: string;
+  return_date: string;
+  reason_type: string;
+  settlement_type: string;
+  total_amount: number | string;
+  entered_by: string;
+  status: string;
+  created_at: string;
+};
+
+type PriorReturnItem = {
+  purchase_invoice_item_id: string;
+  quantity: number | string;
+};
+
 export function SnbPurchaseInvoicePanel() {
   const user = useAuthStore((state) => state.currentUser);
   const fetchBranchData = useBranchStore((state) => state.fetchBranchData);
@@ -200,7 +248,13 @@ export function SnbPurchaseReturnPanel() {
   const loadBase = useCallback(async () => {
     setLoading(true);
     const [invoiceResult, historyResult] = await Promise.all([
-      supabase.from("snb_purchase_invoices").select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,payment_method,sync_status,created_by,created_at").neq("sync_status", "Not Synced").order("created_at", { ascending: false }).limit(500),
+      supabase
+        .from("snb_purchase_invoices")
+        .select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,payment_method,sync_status,revision_pending,created_by,created_at")
+        .eq("sync_status", "Synced")
+        .eq("revision_pending", false)
+        .order("created_at", { ascending: false })
+        .limit(500),
       supabase.from("snb_purchase_returns").select("id,return_no,supplier_name,invoice_number,return_date,reason_type,settlement_type,total_amount,entered_by,status,created_at").order("created_at", { ascending: false }).limit(500),
     ]);
     setLoading(false);
@@ -210,17 +264,75 @@ export function SnbPurchaseReturnPanel() {
 
   useEffect(() => { void loadBase(); }, [loadBase]);
   useEffect(() => {
-    if (!invoiceId) { setItems([]); return; }
+    if (!invoiceId) {
+      setItems([]);
+      return;
+    }
+
     void (async () => {
       setLoading(true);
-      const { data, error: itemError } = await supabase.from("snb_purchase_invoice_items").select("id,item_name,quantity,synced_quantity,unit,rate,tax,discount").eq("purchase_invoice_id", invoiceId).order("item_name");
+      setError("");
+
+      const { data: invoiceItems, error: itemError } = await supabase
+        .from("snb_purchase_invoice_items")
+        .select("id,item_name,quantity,synced_quantity,unit,rate,tax,discount")
+        .eq("purchase_invoice_id", invoiceId)
+        .order("item_name");
+
+      if (itemError) {
+        setLoading(false);
+        setError(itemError.message);
+        return;
+      }
+
+      const baseItems = (invoiceItems || []) as Array<
+        Omit<ReturnItem, "returnedQuantity" | "returnableQuantity" | "returnQuantity" | "itemReason">
+      >;
+      const itemIds = baseItems.map((item) => item.id);
+      let priorReturns: PriorReturnItem[] = [];
+
+      if (itemIds.length > 0) {
+        const { data: returnedRows, error: returnedError } = await supabase
+          .from("snb_purchase_return_items")
+          .select("purchase_invoice_item_id,quantity")
+          .in("purchase_invoice_item_id", itemIds);
+
+        if (returnedError) {
+          setLoading(false);
+          setError(returnedError.message);
+          return;
+        }
+
+        priorReturns = (returnedRows || []) as PriorReturnItem[];
+      }
+
+      const returnedByItem = new Map<string, number>();
+      for (const row of priorReturns) {
+        returnedByItem.set(
+          row.purchase_invoice_item_id,
+          (returnedByItem.get(row.purchase_invoice_item_id) || 0) + Number(row.quantity || 0),
+        );
+      }
+
+      setItems(
+        baseItems.map((item) => {
+          const returnedQuantity = returnedByItem.get(item.id) || 0;
+          const returnableQuantity = Math.max(0, Number(item.synced_quantity || 0) - returnedQuantity);
+          return {
+            ...item,
+            returnedQuantity,
+            returnableQuantity,
+            returnQuantity: "",
+            itemReason: "",
+          };
+        }),
+      );
       setLoading(false);
-      if (itemError) setError(itemError.message);
-      else setItems(((data || []) as Omit<ReturnItem, "returnQuantity" | "itemReason">[]).map((item) => ({ ...item, returnQuantity: "", itemReason: "" })));
     })();
   }, [invoiceId]);
 
   const stockFor = (itemName: string) => stock.find((item) => normal(item.itemName) === normal(itemName));
+  const selectedInvoice = invoices.find((invoice) => invoice.id === invoiceId);
   const selected = items.filter((item) => Number(item.returnQuantity || 0) > 0);
   const estimated = selected.reduce((sum, item) => {
     const qty = Number(item.returnQuantity || 0); const originalQty = Number(item.quantity || 0); const ratio = originalQty > 0 ? qty / originalQty : 0;
@@ -229,13 +341,24 @@ export function SnbPurchaseReturnPanel() {
 
   const submit = async () => {
     setError(""); setSuccess("");
-    if (!invoiceId) return setError("Select a synced purchase invoice.");
+    if (!invoiceId || !selectedInvoice) return setError("Select a fully synced purchase invoice.");
+    if (selectedInvoice.sync_status !== "Synced" || selectedInvoice.revision_pending) {
+      return setError("Re-sync the edited purchase invoice before creating a return.");
+    }
+    if (form.returnDate > todayInput()) return setError("Return date cannot be in the future.");
+    if (form.returnDate < selectedInvoice.invoice_date) return setError("Return date cannot be before the invoice date.");
     if (!selected.length) return setError("Enter a return quantity for at least one item.");
     if (form.remarks.trim().length < 5) return setError("Enter clear return remarks.");
     for (const item of selected) {
-      const qty = Number(item.returnQuantity || 0); const available = Number(stockFor(item.item_name)?.availableQuantity ?? stockFor(item.item_name)?.quantity ?? 0); const invoiceQty = Number(item.synced_quantity ?? item.quantity ?? 0);
-      if (qty <= 0 || qty > invoiceQty + 0.0001) return setError(`${item.item_name}: invalid return quantity.`);
-      if (qty > available + 0.0001) return setError(`${item.item_name}: only ${formatQty(available, item.unit)} is available in live stock.`);
+      const qty = Number(item.returnQuantity || 0);
+      const live = stockFor(item.item_name);
+      const available = Number(live?.availableQuantity ?? live?.quantity ?? 0);
+      if (qty <= 0 || qty > item.returnableQuantity + 0.0001) {
+        return setError(`${item.item_name}: only ${formatQty(item.returnableQuantity, item.unit)} remains returnable.`);
+      }
+      if (qty > available + 0.0001) {
+        return setError(`${item.item_name}: only ${formatQty(available, live?.unit || item.unit)} is unreserved in live stock.`);
+      }
       if (item.itemReason.trim().length < 3) return setError(`Enter item details for ${item.item_name}.`);
     }
     if (form.settlementType === "Credit Note" && !form.creditNoteNo.trim()) return setError("Credit note number is required.");
@@ -264,9 +387,17 @@ export function SnbPurchaseReturnPanel() {
     <div className="grid h-full min-h-0 gap-3 overflow-auto xl:grid-cols-[minmax(380px,1fr)_minmax(0,1fr)]">
       <section className={cn(panelClass, "p-3")}>
         <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Stock deduction is automatic</p><h2 className="font-display text-lg font-black">New Purchase Return</h2></div><RotateCcw className="size-5 text-amber-600" /></div>
-        <Field label="Synced Purchase Invoice"><select className={inputClass} value={invoiceId} onChange={(event) => { setInvoiceId(event.target.value); setError(""); }}><option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name}</option>)}</select></Field>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Return Date"><input type="date" max={todayInput()} className={inputClass} value={form.returnDate} onChange={(event) => setForm({ ...form, returnDate: event.target.value })} /></Field><Field label="Reason"><select className={inputClass} value={form.reasonType} onChange={(event) => setForm({ ...form, reasonType: event.target.value })}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputClass} value={form.settlementType} onChange={(event) => setForm({ ...form, settlementType: event.target.value })}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>No Financial Adjustment</option></select></Field>{form.settlementType === "Credit Note" ? <Field label="Credit Note No"><input className={inputClass} value={form.creditNoteNo} onChange={(event) => setForm({ ...form, creditNoteNo: event.target.value })} /></Field> : ["Cash Refund", "Bank Refund"].includes(form.settlementType) ? <Field label="Reference No"><input className={inputClass} value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} /></Field> : <div />}</div>
-        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); return <div key={item.id} className="rounded-2xl border border-border bg-slate-50 p-2.5"><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Invoice: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Live: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div><input type="number" min="0" step="0.001" value={item.returnQuantity} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: event.target.value } : line))} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none" /></div><input value={item.itemReason} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line))} placeholder="Damage / return details" className="mt-2 h-9 w-full rounded-xl border border-border px-3 text-xs font-bold outline-none" /></div>; })}</div>
+        <Field label="Synced Purchase Invoice"><select className={inputClass} value={invoiceId} onChange={(event) => {
+          const nextInvoiceId = event.target.value;
+          const nextInvoice = invoices.find((invoice) => invoice.id === nextInvoiceId);
+          setInvoiceId(nextInvoiceId);
+          setError("");
+          if (nextInvoice && form.returnDate < nextInvoice.invoice_date) {
+            setForm((current) => ({ ...current, returnDate: nextInvoice.invoice_date }));
+          }
+        }}><option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name}</option>)}</select></Field>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Return Date"><input type="date" min={selectedInvoice?.invoice_date} max={todayInput()} className={inputClass} value={form.returnDate} onChange={(event) => setForm({ ...form, returnDate: event.target.value })} /></Field><Field label="Reason"><select className={inputClass} value={form.reasonType} onChange={(event) => setForm({ ...form, reasonType: event.target.value })}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputClass} value={form.settlementType} onChange={(event) => setForm({ ...form, settlementType: event.target.value })}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>No Financial Adjustment</option></select></Field>{form.settlementType === "Credit Note" ? <Field label="Credit Note No"><input className={inputClass} value={form.creditNoteNo} onChange={(event) => setForm({ ...form, creditNoteNo: event.target.value })} /></Field> : ["Cash Refund", "Bank Refund"].includes(form.settlementType) ? <Field label="Reference No"><input className={inputClass} value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} /></Field> : <div />}</div>
+        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); return <div key={item.id} className="rounded-2xl border border-border bg-slate-50 p-2.5"><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Purchased: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Returned: {formatQty(item.returnedQuantity, item.unit)} · Returnable: {formatQty(item.returnableQuantity, item.unit)} · Live unreserved: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div><input type="number" min="0" max={Math.min(item.returnableQuantity, Number(live?.availableQuantity ?? live?.quantity ?? 0))} step="0.001" disabled={item.returnableQuantity <= 0} value={item.returnQuantity} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: event.target.value } : line))} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div><input value={item.itemReason} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line))} placeholder="Damage / return details" className="mt-2 h-9 w-full rounded-xl border border-border px-3 text-xs font-bold outline-none" /></div>; })}</div>
         <div className="mt-3"><Field label="Remarks"><textarea className={textareaClass} value={form.remarks} onChange={(event) => setForm({ ...form, remarks: event.target.value })} /></Field></div>
         <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2"><span className="text-xs font-black text-amber-800">Estimated return value</span><strong>{money(estimated)}</strong></div>
         <div className="mt-3"><StatusMessage error={error} success={success} /></div>
