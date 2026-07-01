@@ -327,6 +327,17 @@ check(
   'Counter closure must use the atomic closure RPC and keep a safe compatibility path for stale UPI-column schema caches.',
 );
 
+check(
+  'Closed counters do not retain live Cash, UPI or Card totals',
+  branchBusinessModules.includes('const hasActiveCounter = Boolean(branchCounterOpenRecord);')
+    && branchBusinessModules.includes('const useClosedLedgerForLiveTotals: boolean = false;')
+    && branchBusinessModules.includes('const todayBills = hasActiveCounter ? bills.filter')
+    && branchBusinessModules.includes('const todayCreditCollections = hasActiveCounter ? branchCreditPayments.filter')
+    && branchBusinessModules.includes("setActualUpiInput('');")
+    && branchBusinessModules.includes("setOpening('0');"),
+  'After counter finalization, the live closure workspace must reset current-session collections instead of showing the finalized day ledger.',
+);
+
 
 check(
   'Payment edit supports full split allocations through a secure RPC',

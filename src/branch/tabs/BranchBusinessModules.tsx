@@ -1162,30 +1162,32 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     void loadClosureLedger();
   }, [loadClosureLedger]);
 
+  const hasActiveCounter = Boolean(branchCounterOpenRecord);
   const sessionStartedAt = branchCounterOpenRecord?.openedAt ? new Date(branchCounterOpenRecord.openedAt).getTime() : 0;
   const inCurrentSession = (value: string) => !sessionStartedAt || new Date(value).getTime() >= sessionStartedAt;
-  // While a counter is open, calculate only that counter session. The daily ledger
-  // remains useful after closing, but using it for a reopened session would count
-  // transactions from earlier closures again.
-  const closureLedger = branchCounterOpenRecord ? null : ledgerToday;
+  // The live closure workspace must represent only the currently open counter.
+  // A finalized daily ledger remains available for reports/history, but must not
+  // repopulate Cash/UPI/Card after the cashier closes the counter.
+  const useClosedLedgerForLiveTotals: boolean = false;
+  const closureLedger = useClosedLedgerForLiveTotals ? ledgerToday : null;
   const activeSessionId = branchCounterOpenRecord?.counterSessionId;
   const belongsToCashier = (cashierUserId?: string, cashierName?: string) => currentUser?.id
     ? (cashierUserId ? cashierUserId === currentUser.id : cashierName === user)
     : cashierName === user;
-  const todayBills = bills.filter((b) => b.branch === branch
+  const todayBills = hasActiveCounter ? bills.filter((b) => b.branch === branch
     && today(b.createdAt)
     && inCurrentSession(b.createdAt)
-    && (activeSessionId ? b.counterSessionId === activeSessionId : belongsToCashier(b.cashierUserId, b.biller)));
+    && (activeSessionId ? b.counterSessionId === activeSessionId : belongsToCashier(b.cashierUserId, b.biller))) : [];
   const counterTodayBills = todayBills.filter((b) => b.source !== 'advance-final');
-  const todayReturns = returns.filter((r) => r.branch === branch && today(r.createdAt) && inCurrentSession(r.createdAt) && r.returnedBy === user);
-  const todayPurchasePayments = purchasePayments.filter((p) => p.branch === branch && today(p.createdAt) && inCurrentSession(p.createdAt) && p.paidBy === user);
-  const todayExpenseEntries = expenses.filter((e) => e.branch === branch && today(e.createdAt) && inCurrentSession(e.createdAt) && e.enteredBy === user);
-  const todayBankDeposits = bankDeposits.filter((d) => d.branch === branch && today(d.createdAt) && inCurrentSession(d.createdAt) && d.enteredBy === user);
+  const todayReturns = hasActiveCounter ? returns.filter((r) => r.branch === branch && today(r.createdAt) && inCurrentSession(r.createdAt) && r.returnedBy === user) : [];
+  const todayPurchasePayments = hasActiveCounter ? purchasePayments.filter((p) => p.branch === branch && today(p.createdAt) && inCurrentSession(p.createdAt) && p.paidBy === user) : [];
+  const todayExpenseEntries = hasActiveCounter ? expenses.filter((e) => e.branch === branch && today(e.createdAt) && inCurrentSession(e.createdAt) && e.enteredBy === user) : [];
+  const todayBankDeposits = hasActiveCounter ? bankDeposits.filter((d) => d.branch === branch && today(d.createdAt) && inCurrentSession(d.createdAt) && d.enteredBy === user) : [];
   const branchCredits = creditSales[branch] || [];
   const branchCreditPayments = creditPayments[branch] || [];
-  const todayCreditSales = branchCredits.filter((c) => today(c.createdAt) && inCurrentSession(c.createdAt) && c.soldBy === user);
-  const todayCreditCollections = branchCreditPayments.filter((m) => today(m.createdAt) && inCurrentSession(m.createdAt) && m.collectedBy === user);
-  const todayAdvancePayments = cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.enteredBy === user && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection'));
+  const todayCreditSales = hasActiveCounter ? branchCredits.filter((c) => today(c.createdAt) && inCurrentSession(c.createdAt) && c.soldBy === user) : [];
+  const todayCreditCollections = hasActiveCounter ? branchCreditPayments.filter((m) => today(m.createdAt) && inCurrentSession(m.createdAt) && m.collectedBy === user) : [];
+  const todayAdvancePayments = hasActiveCounter ? cashMovements.filter((m) => m.branch === branch && today(m.dateTime) && inCurrentSession(m.dateTime) && m.enteredBy === user && m.direction === 'in' && (m.purpose === 'Cake advance received' || m.purpose === 'Advance balance collection')) : [];
 
   const grossBillSales = counterTodayBills.reduce((sum, bill) => sum + bill.total, 0);
   const grossSalesBeforeDiscount = counterTodayBills.reduce((sum, bill) => sum + bill.subtotal + bill.tax, 0);
@@ -1409,6 +1411,9 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: user });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
+    setOpening('0');
+    setOpenDenominations({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
+    setCloseDenominations({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
     setClosing('');
     setActualUpiInput('');
     setUpiAuditNotes('');
