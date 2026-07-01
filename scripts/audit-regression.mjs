@@ -74,6 +74,9 @@ const completeBranchFixMigration = read('supabase/migrations/20260630030000_bran
 const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013000_fix_snb_purchase_workflow_dropdowns.sql') ?? '';
 const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_add_branch_upi_closure_audit.sql') ?? '';
 const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_branch_closure_schema_cache_rpc.sql') ?? '';
+const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
+const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
+const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
@@ -493,6 +496,28 @@ check(
   ownerDashboard.includes('startPolling(60)')
     && !ownerDashboard.includes('startPolling(7)'),
   'Owner reporting must not issue heavy database polling every few seconds.',
+);
+
+
+check(
+  'Synced SNB purchase invoices use an audited edit and re-sync workflow',
+  adminSnb.includes('save_snb_purchase_invoice_revision_secure')
+    && adminSnb.includes('Reason for Editing Synced Invoice')
+    && adminSnb.includes('Save Changes & Require Re-sync')
+    && adminSnb.includes('Sync Again')
+    && snbPurchaseRevisionMigration.includes("'purchase_invoice_revision'")
+    && snbPurchaseRevisionMigration.includes("sync_status = 'Re-sync Required'"),
+  'A synced purchase invoice edit must require a reason, create a revision, and wait for a second stock sync.',
+);
+
+check(
+  'SNB purchase invoice re-sync applies only stock deltas and notifies authorized roles',
+  snbPurchaseRevisionMigration.includes('coalesce(item.quantity, 0) - coalesce(item.synced_quantity, 0)')
+    && snbPurchaseRevisionMigration.includes('reserved_quantity')
+    && snbPurchaseRevisionMigration.includes("array['admin_snb', 'admin', 'owner']")
+    && notificationStore.includes("'snb_purchase_invoice_revision'")
+    && adminNotificationsTab.includes('SNB Invoice Revision'),
+  'Re-sync must add or deduct only the edited difference, block unsafe reductions, and surface the audit notification.',
 );
 
 const exposedSecretPatterns = [
