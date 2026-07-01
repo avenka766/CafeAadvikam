@@ -1035,8 +1035,6 @@ export default function AdminSNBDashboard() {
       {tab === "invoices" && (
         <PurchaseInvoicesTab
           userName={userName}
-          branchStock={branchStock}
-          manualUpdateStock={manualUpdateStock}
           fetchBranchData={fetchBranchData}
           setNotice={setNotice}
           dbReports={dbReports}
@@ -2875,15 +2873,11 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
 
 function PurchaseInvoicesTab({
   userName,
-  branchStock,
-  manualUpdateStock,
   fetchBranchData,
   setNotice,
   dbReports,
 }: {
   userName: string;
-  branchStock: any[];
-  manualUpdateStock: any;
   fetchBranchData: any;
   setNotice: (v: string) => void;
   dbReports: ReturnType<typeof useSnbAdminReports>;
@@ -2916,6 +2910,7 @@ function PurchaseInvoicesTab({
       tax: "0",
       discount: "0",
       remarks: "",
+      editReason: "",
     };
   };
 
@@ -2926,6 +2921,7 @@ function PurchaseInvoicesTab({
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [syncFilter, setSyncFilter] = useState<"all" | "synced" | "not-synced">("all");
   const [lines, setLines] = useState<PurchaseLine[]>([]);
+  const [syncedBaseline, setSyncedBaseline] = useState<Array<{ itemName: string; quantity: number; unit?: PurchaseUnit }>>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -2980,6 +2976,8 @@ function PurchaseInvoicesTab({
           syncedToStock: invoice.sync_status === "Synced",
           syncedAt: invoice.synced_at || undefined,
           syncedBy: invoice.synced_by || undefined,
+          lastEditedAt: invoice.last_edited_at || local.lastEditedAt,
+          lastEditedBy: invoice.last_edited_by || local.lastEditedBy,
           createdAt: invoice.created_at || local.createdAt,
         };
       }
@@ -3006,6 +3004,8 @@ function PurchaseInvoicesTab({
         syncedToStock: invoice.sync_status === "Synced",
         syncedAt: invoice.synced_at || undefined,
         syncedBy: invoice.synced_by || undefined,
+        lastEditedAt: invoice.last_edited_at || undefined,
+        lastEditedBy: invoice.last_edited_by || undefined,
       };
     });
     const databaseIds = new Set(databaseRows.map((purchase) => purchase.dbId).filter(Boolean));
@@ -3067,6 +3067,7 @@ function PurchaseInvoicesTab({
       remarks?: string;
     },
     normalizedLines: PurchaseLine[],
+    editReason: string,
   ) => {
     const databaseId = await findDatabaseInvoiceId(purchase);
     const rpcItems = normalizedLines.map((line) => ({
@@ -3078,26 +3079,52 @@ function PurchaseInvoicesTab({
       discount: Number(line.discount || 0),
       total_amount: lineTotal(line),
     }));
-    const { data, error } = await supabase.rpc("save_snb_purchase_invoice_secure", {
-      p_invoice_id: databaseId,
-      p_supplier_name: invoiceData.supplier,
-      p_invoice_number: invoiceData.invoiceNo,
-      p_invoice_date: invoiceData.invoiceDate || dateInput(),
-      p_items: rpcItems,
-      p_payment_method: invoiceData.paymentMethod || "credit",
-      p_remarks: invoiceData.remarks || null,
-    });
+    const revisionEdit = Boolean(
+      purchase && databaseId && (
+        purchase.syncedToStock ||
+        purchase.syncStatus === "Synced" ||
+        purchase.syncStatus === "Re-sync Required"
+      ),
+    );
+    const rpcName = revisionEdit
+      ? "save_snb_purchase_invoice_revision_secure"
+      : "save_snb_purchase_invoice_secure";
+    const payload = revisionEdit
+      ? {
+          p_invoice_id: databaseId,
+          p_supplier_name: invoiceData.supplier,
+          p_invoice_number: invoiceData.invoiceNo,
+          p_invoice_date: invoiceData.invoiceDate || dateInput(),
+          p_items: rpcItems,
+          p_payment_method: invoiceData.paymentMethod || "credit",
+          p_remarks: invoiceData.remarks || null,
+          p_edit_reason: editReason.trim(),
+        }
+      : {
+          p_invoice_id: databaseId,
+          p_supplier_name: invoiceData.supplier,
+          p_invoice_number: invoiceData.invoiceNo,
+          p_invoice_date: invoiceData.invoiceDate || dateInput(),
+          p_items: rpcItems,
+          p_payment_method: invoiceData.paymentMethod || "credit",
+          p_remarks: invoiceData.remarks || null,
+        };
+    const { data, error } = await supabase.rpc(rpcName, payload);
     if (error) {
-      const missingRpc = /save_snb_purchase_invoice_secure|could not find the function|does not exist|schema cache/i.test(error.message);
+      const missingRpc = /save_snb_purchase_invoice|could not find the function|does not exist|schema cache/i.test(error.message);
       if (missingRpc) {
-        throw new Error("The secure purchase-invoice database migration is missing. Apply the included SNB workflow migrations before using this screen.");
+        throw new Error("The audited purchase-invoice revision migration is missing. Apply the included SNB revision migration before editing synced invoices.");
       }
       throw new Error(`Failed to save purchase invoice: ${error.message}`);
     }
     const result = data as Record<string, unknown> | null;
     const invoiceId = String(result?.invoiceId || result?.invoice_id || databaseId || "");
     if (!invoiceId) throw new Error("Purchase invoice saved without a database ID.");
-    return invoiceId;
+    return {
+      invoiceId,
+      status: String(result?.status || (revisionEdit ? "Re-sync Required" : "Not Synced")),
+      revisionNumber: Number(result?.revisionNumber || 0),
+    };
   };
 
   const databaseInvoiceFor = (purchase: PurchaseRecord) =>
@@ -3142,6 +3169,7 @@ function PurchaseInvoicesTab({
     setEditingPurchaseId(null);
     setForm(createBlankForm());
     setLines([]);
+    setSyncedBaseline([]);
     setItemSearch("");
     setEditorOpen(true);
   };
@@ -3167,31 +3195,37 @@ function PurchaseInvoicesTab({
         ];
 
   const openEdit = async (purchase: PurchaseRecord) => {
-    if (purchase.syncedToStock || purchase.syncStatus === "Synced") {
-      setNotice("Synced invoices are locked to protect stock integrity. Use Purchase Return for damaged goods or Update Stock for separately verified corrections.");
-      return;
-    }
     let editableLines = purchaseLines(purchase);
+    let baselineLines: Array<{ itemName: string; quantity: number; unit?: PurchaseUnit }> = [];
     if (purchase.dbId) {
       const { data, error } = await supabase
         .from("snb_purchase_invoice_items")
-        .select("item_name,quantity,unit,rate,tax,discount,total_amount")
+        .select("item_name,quantity,unit,rate,tax,discount,total_amount,synced_quantity")
         .eq("purchase_invoice_id", purchase.dbId)
-        .order("item_name", { ascending: true });
+        .order("created_at", { ascending: true });
       if (error) {
         setNotice(`Unable to load invoice items: ${error.message}`);
         return;
       }
       if (data?.length) {
-        editableLines = data.map((line) => ({
-          itemName: String(line.item_name),
-          quantity: asNumber(line.quantity),
-          unit: (String(line.unit || "nos").toLowerCase() as PurchaseUnit),
-          cost: asNumber(line.rate),
-          tax: asNumber(line.tax),
-          discount: asNumber(line.discount),
-          total: asNumber(line.total_amount),
-        }));
+        editableLines = data
+          .filter((line) => asNumber(line.quantity) > 0)
+          .map((line) => ({
+            itemName: String(line.item_name),
+            quantity: asNumber(line.quantity),
+            unit: (String(line.unit || "nos").toLowerCase() as PurchaseUnit),
+            cost: asNumber(line.rate),
+            tax: asNumber(line.tax),
+            discount: asNumber(line.discount),
+            total: asNumber(line.total_amount),
+          }));
+        baselineLines = data
+          .filter((line) => asNumber(line.synced_quantity) > 0)
+          .map((line) => ({
+            itemName: String(line.item_name),
+            quantity: asNumber(line.synced_quantity),
+            unit: (String(line.unit || "nos").toLowerCase() as PurchaseUnit),
+          }));
       }
     }
     const first = catalogItems[0];
@@ -3207,8 +3241,10 @@ function PurchaseInvoicesTab({
       tax: "0",
       discount: "0",
       remarks: purchase.remarks || "",
+      editReason: "",
     });
     setLines(editableLines);
+    setSyncedBaseline(baselineLines);
     setItemSearch("");
     setEditorOpen(true);
   };
@@ -3264,7 +3300,7 @@ function PurchaseInvoicesTab({
     });
   };
 
-  const aggregateQuantities = (purchaseLinesToAggregate: PurchaseLine[]) => {
+  const aggregateQuantities = (purchaseLinesToAggregate: Array<{ itemName: string; quantity: number }>) => {
     const map = new Map<string, { itemName: string; quantity: number }>();
     purchaseLinesToAggregate.forEach((line) => {
       const key = normal(line.itemName);
@@ -3277,11 +3313,19 @@ function PurchaseInvoicesTab({
     return map;
   };
 
+  const requiresRevisionReason = Boolean(
+    selectedPurchase && (
+      selectedPurchase.syncedToStock ||
+      selectedPurchase.syncStatus === "Synced" ||
+      selectedPurchase.syncStatus === "Re-sync Required"
+    ),
+  );
+
   const stockAdjustments = (() => {
-    if (!selectedPurchase || !(selectedPurchase.syncedToStock || selectedPurchase.syncStatus === "Synced")) {
+    if (!requiresRevisionReason) {
       return [] as Array<{ itemName: string; delta: number }>;
     }
-    const oldMap = aggregateQuantities(purchaseLines(selectedPurchase));
+    const oldMap = aggregateQuantities(syncedBaseline);
     const newMap = aggregateQuantities(lines);
     return Array.from(new Set([...oldMap.keys(), ...newMap.keys()]))
       .map((key) => ({
@@ -3290,65 +3334,6 @@ function PurchaseInvoicesTab({
       }))
       .filter((adjustment) => Math.abs(adjustment.delta) > 0.0001);
   })();
-
-  const reconcileSyncedStock = async () => {
-    if (!selectedPurchase || stockAdjustments.length === 0) return null;
-    const plan = stockAdjustments.map((adjustment) => {
-      const catalogItem = itemFromCatalog(adjustment.itemName);
-      const stockItem = branchStock.find((entry) =>
-        catalogItem?.barcode != null && entry.itemBarcode != null
-          ? Number(entry.itemBarcode) === Number(catalogItem.barcode)
-          : normal(entry.itemName) === normal(adjustment.itemName),
-      );
-      const currentQuantity = Number(stockItem?.quantity || 0);
-      return {
-        ...adjustment,
-        barcode: catalogItem?.barcode,
-        stockName: stockItem?.itemName || adjustment.itemName,
-        currentQuantity,
-        nextQuantity: currentQuantity + adjustment.delta,
-      };
-    });
-    const invalid = plan.find((adjustment) => adjustment.nextQuantity < 0);
-    if (invalid) {
-      return `Cannot reduce ${invalid.itemName} by ${Math.abs(invalid.delta)} because only ${invalid.currentQuantity} is currently available in stock.`;
-    }
-
-    const applied: typeof plan = [];
-    for (const adjustment of plan) {
-      const error = await manualUpdateStock(
-        BRANCH,
-        adjustment.stockName,
-        adjustment.nextQuantity,
-        userName,
-        adjustment.barcode,
-      );
-      if (error) {
-        for (const rollback of [...applied].reverse()) {
-          await manualUpdateStock(
-            BRANCH,
-            rollback.stockName,
-            rollback.currentQuantity,
-            userName,
-            rollback.barcode,
-          );
-        }
-        return `${error} Any stock changes made during this edit were rolled back.`;
-      }
-      applied.push(adjustment);
-    }
-    await fetchBranchData(BRANCH);
-    addAuditLog({
-      branch: BRANCH,
-      user: userName,
-      action: "SNB Purchase Invoice Stock Reconciliation",
-      previousValue: selectedPurchase.invoiceNo,
-      newValue: plan
-        .map((adjustment) => `${adjustment.itemName} ${adjustment.delta > 0 ? "+" : ""}${adjustment.delta}`)
-        .join(", "),
-    });
-    return null;
-  };
 
   const saveInvoice = async () => {
     if (saving) return;
@@ -3386,6 +3371,17 @@ function PurchaseInvoicesTab({
       setNotice("Every invoice item must have a valid item, quantity, unit, and price.");
       return;
     }
+    const duplicateItemNames = normalizedLines
+      .map((line) => normal(line.itemName))
+      .filter((name, index, all) => all.indexOf(name) !== index);
+    if (duplicateItemNames.length) {
+      setNotice("Each item can appear only once in a purchase invoice. Combine duplicate quantities before saving.");
+      return;
+    }
+    if (requiresRevisionReason && form.editReason.trim().length < 5) {
+      setNotice("Enter a clear reason for editing this synced purchase invoice.");
+      return;
+    }
     const total = normalizedLines.reduce((sum, line) => sum + line.total, 0);
     if (selectedPurchase && total + 0.001 < paidFor(selectedPurchase)) {
       setNotice(`Invoice total cannot be below the already paid amount of ${money(paidFor(selectedPurchase))}.`);
@@ -3411,14 +3407,18 @@ function PurchaseInvoicesTab({
 
     setSaving(true);
     try {
-      const dbId = await persistDatabaseInvoice(selectedPurchase, invoiceData, normalizedLines);
-      if (!dbId) throw new Error("Purchase invoice saved without a database ID.");
+      const saved = await persistDatabaseInvoice(
+        selectedPurchase,
+        invoiceData,
+        normalizedLines,
+        form.editReason,
+      );
+      const dbId = saved.invoiceId;
       const localPurchase = selectedPurchase
         ? purchases.find((purchase) => purchase.id === selectedPurchase.id || purchase.dbId === dbId)
         : undefined;
       if (localPurchase) {
         updatePurchase(localPurchase.id, { ...invoiceData, dbId }, userName);
-        setNotice(`${form.invoiceNo.trim()} updated in the SNB purchase ledger.`);
       } else {
         addPurchase({
           branch: BRANCH,
@@ -3426,14 +3426,26 @@ function PurchaseInvoicesTab({
           ...invoiceData,
           enteredBy: userName,
         });
+      }
+      if (requiresRevisionReason) {
+        addAuditLog({
+          branch: BRANCH,
+          user: userName,
+          action: "SNB Synced Purchase Invoice Edited",
+          previousValue: selectedPurchase?.invoiceNo || form.invoiceNo.trim(),
+          newValue: `Revision ${saved.revisionNumber} · ${form.editReason.trim()} · waiting for stock re-sync`,
+        });
+        setNotice(`${form.invoiceNo.trim()} updated. Revision ${saved.revisionNumber} is waiting for Sync Again; Admin and Owner were notified.`);
+      } else {
         setNotice(selectedPurchase
-          ? `${form.invoiceNo.trim()} updated and synchronized to this device.`
+          ? `${form.invoiceNo.trim()} updated in the SNB purchase ledger.`
           : `${form.invoiceNo.trim()} saved in the SNB purchase ledger. Stock sync is pending.`);
       }
       await dbReports.refresh();
       setEditorOpen(false);
       setEditingPurchaseId(null);
       setLines([]);
+      setSyncedBaseline([]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Purchase invoice save failed.");
     } finally {
@@ -3446,6 +3458,7 @@ function PurchaseInvoicesTab({
       setNotice("This purchase invoice is already synced to stock. Duplicate sync prevented.");
       return;
     }
+    const isResync = purchase.syncStatus === "Re-sync Required";
     setSaving(true);
     try {
       const invoiceId = await findDatabaseInvoiceId(purchase);
@@ -3454,18 +3467,22 @@ function PurchaseInvoicesTab({
         p_invoice_id: invoiceId,
         p_synced_by: userName,
       });
-      if (error) throw new Error(`Stock sync failed: ${error.message}`);
+      if (error) throw new Error(`${isResync ? "Stock re-sync" : "Stock sync"} failed: ${error.message}`);
       const localPurchase = purchases.find((entry) => entry.id === purchase.id || entry.dbId === invoiceId);
       if (localPurchase) markPurchaseSynced(localPurchase.id, userName, "Synced");
       addAuditLog({
         branch: BRANCH,
         user: userName,
-        action: "SNB Purchase Sync To Stock",
-        previousValue: purchase.itemName,
-        newValue: `${purchaseLines(purchase).length} item(s) synced from ${purchase.invoiceNo}`,
+        action: isResync ? "SNB Purchase Revision Re-synced" : "SNB Purchase Sync To Stock",
+        previousValue: purchase.invoiceNo,
+        newValue: isResync
+          ? `${purchase.invoiceNo} revision delta applied to stock`
+          : `${purchaseLines(purchase).length} item(s) synced from ${purchase.invoiceNo}`,
       });
       await Promise.all([fetchBranchData(BRANCH), dbReports.refresh()]);
-      setNotice(`${purchase.invoiceNo} synced to SNB stock successfully.`);
+      setNotice(isResync
+        ? `${purchase.invoiceNo} changes were re-synced to SNB stock successfully. The audit notification was updated.`
+        : `${purchase.invoiceNo} synced to SNB stock successfully.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Purchase stock sync failed.");
     } finally {
@@ -3583,6 +3600,7 @@ function PurchaseInvoicesTab({
             const paidAmount = paidFor(purchase);
             const paymentStatus = balance <= 0 ? "Cleared" : paidAmount > 0 ? "Partial" : "Pending";
             const isSynced = purchase.syncedToStock || purchase.syncStatus === "Synced";
+            const needsResync = purchase.syncStatus === "Re-sync Required";
             const invoiceLines = purchaseLines(purchase);
             return [
               <div key="invoice" className="min-w-[130px]">
@@ -3616,7 +3634,7 @@ function PurchaseInvoicesTab({
               <StatusBadge key="payment" tone={paymentStatus === "Cleared" ? "green" : paymentStatus === "Partial" ? "blue" : "amber"}>
                 {paymentStatus}
               </StatusBadge>,
-              <StatusBadge key="stock" tone={isSynced ? "green" : "amber"}>
+              <StatusBadge key="stock" tone={isSynced ? "green" : needsResync ? "red" : "amber"}>
                 {purchase.syncStatus ?? "Not Synced"}
               </StatusBadge>,
               <div key="actions" className="flex min-w-[210px] flex-wrap gap-2">
@@ -3638,7 +3656,7 @@ function PurchaseInvoicesTab({
                   )}
                 >
                   <RefreshCcw className="size-3.5" />
-                  {isSynced ? "Synced" : "Sync"}
+                  {isSynced ? "Synced" : needsResync ? "Sync Again" : "Sync"}
                 </button>
               </div>,
             ];
@@ -3940,6 +3958,20 @@ function PurchaseInvoicesTab({
                 )}
               </Panel>
 
+              {requiresRevisionReason && (
+                <Panel title="Reason for Editing Synced Invoice *" icon={<AlertTriangle className="size-4" />}>
+                  <textarea
+                    className={cn(inputCls, "min-h-24 resize-y border-amber-300 bg-amber-50/50")}
+                    value={form.editReason}
+                    onChange={(event) => setForm({ ...form, editReason: event.target.value })}
+                    placeholder="Explain why this synced invoice is being changed. This reason is saved in the audit history and sent to Admin and Owner."
+                  />
+                  <p className="mt-2 text-xs font-semibold text-amber-700">
+                    Saving will not change stock immediately. The invoice will move to Re-sync Required and the stock difference must be applied with Sync Again.
+                  </p>
+                </Panel>
+              )}
+
               <Panel title="Remarks" icon={<BookOpenCheck className="size-4" />}>
                 <textarea
                   className={cn(inputCls, "min-h-24 resize-y")}
@@ -3949,7 +3981,7 @@ function PurchaseInvoicesTab({
                 />
               </Panel>
 
-              {selectedPurchase?.syncedToStock || selectedPurchase?.syncStatus === "Synced" ? (
+              {requiresRevisionReason ? (
                 <div className={cn(
                   "rounded-3xl p-4 ring-1",
                   stockAdjustments.length
@@ -3960,12 +3992,12 @@ function PurchaseInvoicesTab({
                     {stockAdjustments.length ? <AlertTriangle className="mt-0.5 size-5 shrink-0" /> : <CheckCircle2 className="mt-0.5 size-5 shrink-0" />}
                     <div>
                       <p className="font-black">
-                        {stockAdjustments.length ? "Stock reconciliation will be applied" : "No stock quantity changes detected"}
+                        {stockAdjustments.length ? "Stock difference waiting for re-sync" : "No stock quantity difference detected"}
                       </p>
                       <p className="mt-1 text-sm font-semibold opacity-80">
                         {stockAdjustments.length
                           ? stockAdjustments.map((adjustment) => `${adjustment.itemName}: ${adjustment.delta > 0 ? "+" : ""}${adjustment.delta}`).join(" · ")
-                          : "Changing supplier, invoice number, price, tax, discount, or remarks will not alter stock."}
+                          : "Price, tax, discount, supplier, invoice number, or remarks changes still require an audited Sync Again confirmation."}
                       </p>
                     </div>
                   </div>
@@ -4002,8 +4034,8 @@ function PurchaseInvoicesTab({
                   <CheckCircle2 className="size-4" />
                   {saving
                     ? "Saving..."
-                    : selectedPurchase && stockAdjustments.length
-                      ? "Save & Reconcile"
+                    : requiresRevisionReason
+                      ? "Save Changes & Require Re-sync"
                       : selectedPurchase
                         ? "Update Invoice"
                         : "Save Invoice"}
@@ -5925,7 +5957,7 @@ function NotificationsTab({ userName }: { userName: string }) {
       const { data, error } = await supabase
         .from("admin_notifications")
         .select("*")
-        .eq("type", "price_change")
+        .in("type", ["price_change", "snb_purchase_invoice_revision"])
         .order("created_at", { ascending: false })
         .limit(100);
       if (!active) return;
@@ -5934,7 +5966,7 @@ function NotificationsTab({ userName }: { userName: string }) {
           (data || []).filter((n: any) => {
             const metaBranch = n.meta?.branch;
             const label = String(n.ref_label || "");
-            return metaBranch === BRANCH || label.includes(BRANCH);
+            return n.type === "snb_purchase_invoice_revision" || metaBranch === BRANCH || label.includes(BRANCH);
           }),
         );
       }
@@ -5945,16 +5977,26 @@ function NotificationsTab({ userName }: { userName: string }) {
     };
   }, []);
   const rows = [
-    ...priceNotifications.map((n) => ({
-      id: `price-${n.id}`,
-      date: n.created_at,
-      type: "Price Change",
-      title: n.title,
-      details: n.body || n.ref_label || "-",
-      raisedBy: n.meta?.updatedBy || "Admin",
-      status: "Unread",
-      source: "supabase",
-    })),
+    ...priceNotifications.map((n) => {
+      const isPurchaseRevision = n.type === "snb_purchase_invoice_revision";
+      const changes = Array.isArray(n.meta?.changes)
+        ? n.meta.changes
+            .map((change: any) => `${change.itemName}: ${Number(change.delta) > 0 ? "+" : ""}${Number(change.delta || 0)}`)
+            .join(" · ")
+        : "";
+      return {
+        id: `${isPurchaseRevision ? "purchase-revision" : "price"}-${n.id}`,
+        date: n.created_at,
+        type: isPurchaseRevision ? "Purchase Invoice Revision" : "Price Change",
+        title: n.title,
+        details: isPurchaseRevision
+          ? `${n.body || n.ref_label || "-"}${n.meta?.editReason ? ` Reason: ${n.meta.editReason}.` : ""}${changes ? ` Stock change: ${changes}.` : ""}`
+          : n.body || n.ref_label || "-",
+        raisedBy: isPurchaseRevision ? n.meta?.editedBy || n.meta?.resyncedBy || "SNB Admin" : n.meta?.updatedBy || "Admin",
+        status: isPurchaseRevision ? n.meta?.status || "Pending Re-sync" : "Unread",
+        source: "supabase",
+      };
+    }),
     ...notifications
       .filter((n) => n.branch === BRANCH && n.type === "Complaint")
       .map((n) => ({
@@ -6042,7 +6084,7 @@ function NotificationsTab({ userName }: { userName: string }) {
             <StatusBadge key="a" tone="blue">Auto</StatusBadge>
           ),
         ])}
-        empty="No SNB Admin notifications for price changes, complaint replies, credit sales, or cash closure differences."
+        empty="No SNB Admin notifications for purchase revisions, price changes, complaint replies, credit sales, or cash closure differences."
       />
     </Panel>
     </div>
