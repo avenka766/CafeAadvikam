@@ -75,6 +75,7 @@ const snbPurchaseWorkflowRepairMigration = read('supabase/migrations/20260701013
 const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_add_branch_upi_closure_audit.sql') ?? '';
 const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_branch_closure_schema_cache_rpc.sql') ?? '';
 const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
+const branchCheckoutCacheRefreshMigration = read('supabase/migrations/20260701080000_refresh_branch_checkout_v4_schema_cache.sql') ?? '';
 const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
 const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
@@ -282,6 +283,17 @@ check(
     && branchBilling.includes("discountMode === 'value'")
     && branchBilling.includes('Discount value cannot exceed the subtotal'),
   'The branch billing screen must support validated percentage and fixed-value discounts.',
+);
+
+check(
+  'Branch discount checkout survives PostgREST RPC cache lag',
+  branchBilling.includes("code === 'PGRST202'")
+    && branchBilling.includes("branch === 'SNB' ? 'v4' : 'v3'")
+    && branchBilling.includes("complete_branch_checkout_canonical_v4")
+    && branchBilling.includes("complete_branch_checkout_canonical_v3")
+    && branchCheckoutCacheRefreshMigration.includes("pg_notify('pgrst', 'reload schema')")
+    && branchCheckoutCacheRefreshMigration.includes('complete_branch_checkout_canonical_v4'),
+  'VRSNB must use the strict v3 checkout, SNB must retain v4 Mix & Combo handling, and PGRST202 cache misses must recover safely.',
 );
 
 check(
