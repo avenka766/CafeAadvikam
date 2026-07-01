@@ -93,6 +93,8 @@ const snbOrderStockMovementMigration = read('supabase/migrations/20260701113000_
 const snbOrderBranchRoleMappingMigration = read('supabase/migrations/20260701114500_map_receiver_snb_to_snb_branch.sql') ?? '';
 const branchWasteSingleWriterMigration = read('supabase/migrations/20260701123000_remove_duplicate_branch_waste_stock_trigger.sql') ?? '';
 const snbOrderFullWorkflowMigration = read('supabase/migrations/20260701140000_snb_order_full_workflow_hardening.sql') ?? '';
+const workspaceChrome = read('src/components/layout/WorkspaceChrome.tsx') ?? '';
+const snbOrderDailyClosureMigration = read('supabase/migrations/20260701190000_snb_order_daily_closure_parity.sql') ?? '';
 const purchaseOrderTab = read('src/bakery/PurchaseOrderTab.tsx') ?? '';
 const purchaseOrderStore = read('src/bakery/purchaseOrderStore.ts') ?? '';
 const adminDashboard = read('src/pages/AdminDashboard.tsx') ?? '';
@@ -461,9 +463,9 @@ check(
     && snbOrderFullWorkflowMigration.includes('update public.branch_stock')
     && snbOrderFullWorkflowMigration.includes('insert into public.branch_stock_adjustments')
     && snbOrderFullWorkflowMigration.includes("'itemBarcode', stock_row.item_barcode")
-    && !/branch_stock_adjustments\s*\([\s\S]{0,300}\bitem_barcode\b/.test(snbOrderFullWorkflowMigration)
-    && !/branch_stock_adjustments\s*\([\s\S]{0,300}\badjusted_by_user_id\b/.test(snbOrderFullWorkflowMigration)
-    && !/branch_stock_adjustments\s*\([\s\S]{0,300}\breference_no\b/.test(snbOrderFullWorkflowMigration)
+    && !/branch_stock_adjustments\s*\([^)]*\bitem_barcode\b/.test(snbOrderFullWorkflowMigration)
+    && !/branch_stock_adjustments\s*\([^)]*\badjusted_by_user_id\b/.test(snbOrderFullWorkflowMigration)
+    && !/branch_stock_adjustments\s*\([^)]*\breference_no\b/.test(snbOrderFullWorkflowMigration)
     && !adminSnb.includes('from("branch_waste_logs").insert')
     && !adminVrsnb.includes('from("branch_waste_logs").insert'),
   'Dump, damage and transfer-out must use only the live branch_stock_adjustments columns, preserve legacy details in metadata, and have one stock-deduction owner.',
@@ -503,6 +505,40 @@ check(
     && purchaseOrderTab.includes('setActionError(error)')
     && purchaseOrderTab.includes('{actionError && ('),
   'Purchase Order status and cancellation failures must be visible instead of being silently ignored.',
+);
+
+check(
+  'SNB Order reuses the SNB Branch Daily Closure screen',
+  orderReceiverDashboard.includes('tab === "closure"')
+    && orderReceiverDashboard.includes('<CashierClosureTab branch="SNB"')
+    && branchBusinessModules.includes("source === 'snb-order'")
+    && workspaceChrome.includes('/bakery/receive/snb?tab=closure'),
+  'SNB Order must expose the same shared CashierClosureTab and mobile/desktop navigation as SNB Branch.',
+);
+
+check(
+  'SNB Order advance orders require an open counter in frontend and backend',
+  branchBusinessModules.includes('get_my_branch_counter_session_secure')
+    && branchBusinessModules.includes('Checking the SNB Order counter')
+    && !branchBusinessModules.includes('const counterOpenToday = isSnbOrder ||')
+    && snbOrderDailyClosureMigration.includes('open_branch_counter_session_secure')
+    && snbOrderDailyClosureMigration.includes('COUNTER_NOT_OPEN')
+    && snbOrderDailyClosureMigration.includes('and cashier_user_id = c.staff_id')
+    && snbOrderDailyClosureMigration.includes("and status = 'open'"),
+  'SNB Order must be unable to create an advance order until its own SNB counter is open, even through a direct RPC call.',
+);
+
+check(
+  'SNB Order closure uses session-linked collections and is visible to SNB Admin',
+  branchBusinessModules.includes('get_my_branch_counter_closure_snapshot_secure')
+    && branchBusinessModules.includes('counterSnapshot.advanceCash')
+    && branchBusinessModules.includes('SNB Admin')
+    && snbOrderDailyClosureMigration.includes('branch_advance_payments')
+    && snbOrderDailyClosureMigration.includes('counter_session_id = s.id')
+    && snbOrderDailyClosureMigration.includes('finalize_branch_counter_closure_secure')
+    && snbOrderDailyClosureMigration.includes('receiver_snb')
+    && adminSnb.includes('cashier_display_name || row.cashier_username'),
+  'Closure must total the exact open counter session, finalize it atomically, and show SNB Order attribution in SNB Admin reports.',
 );
 
 check(
