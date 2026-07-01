@@ -829,6 +829,7 @@ export default function AdminSNBDashboard() {
         cash: number;
         upi: number;
         card: number;
+        credit: number;
       }
     >();
     branchBills.forEach((bill) => {
@@ -2150,20 +2151,10 @@ function WasteLogsTab({ userName }: { userName: string }) {
       });
       if (rpcError) {
         const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
-        if (!missingRpc) throw rpcError;
-        const { error: insertError } = await supabase.from("branch_waste_logs").insert({
-          branch: BRANCH,
-          log_type: subTab,
-          item_barcode: catalogItem?.barcode ?? null,
-          item_name: currentRow?.itemName || form.itemName,
-          quantity: qty,
-          unit: form.unit,
-          reason: form.reason.trim(),
-          verified_by: form.verifiedBy.trim(),
-          checklist: form.checklist,
-          created_by_username: userName,
-        });
-        if (insertError) throw insertError;
+        if (missingRpc) {
+          throw new Error("Stock movement service is temporarily unavailable. Refresh the dashboard and retry.");
+        }
+        throw rpcError;
       }
       addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
       printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");

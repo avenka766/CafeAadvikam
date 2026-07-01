@@ -2245,6 +2245,17 @@ function NewBillPanel() {
 
 // -- Main BillingDashboard -----------------------------------------------------
 
+type CafeEditablePaymentMode = 'cash' | 'upi' | 'card';
+
+interface CafePaymentEditAudit {
+  order_id: string;
+  old_mode: string;
+  new_mode: string;
+  changed_by: string;
+  reason: string;
+  changed_at: string;
+}
+
 function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
   const { currentUser } = useAuthStore();
   const loadOrders = useOrderStore((state) => state.loadOrders);
