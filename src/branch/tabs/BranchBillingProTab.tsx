@@ -84,6 +84,31 @@ function isSnbFlexibleStockItem(branch: Branch, item?: Pick<BillingItem, 'catego
   return normalizedCategory === 'mix & combo' || normalizedCategory === 'mix and combo';
 }
 
+type RpcErrorLike = {
+  code?: string | null;
+  message?: string | null;
+  details?: string | null;
+  hint?: string | null;
+  status?: number | null;
+};
+
+function isRpcUnavailableError(error: unknown, rpcName: string) {
+  if (!error || typeof error !== 'object') return false;
+  const rpcError = error as RpcErrorLike;
+  const code = String(rpcError.code ?? '').toUpperCase();
+  if (code === 'PGRST202' || code === '404' || rpcError.status === 404) return true;
+
+  const text = [rpcError.message, rpcError.details, rpcError.hint]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const name = rpcName.toLowerCase();
+  const missingFunction = text.includes('could not find the function')
+    || text.includes('function does not exist')
+    || text.includes('does not exist')
+    || text.includes('schema cache');
+  return missingFunction && (text.includes(name) || text.includes('function'));
+}
 
 function normalizeItemName(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -602,28 +627,62 @@ export default function BranchBillingProTab({
         p_due_date: paymentMode === 'credit' ? creditDueDate : null,
         p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
       };
-      let { data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v4', {
-        ...checkoutPayload,
-        p_discount_percent: discountPercent,
+      const flexibleStockShortfall = branch === 'SNB' && canonicalItems.some((line) => {
+        const catalogItem = items.find((item) => item.barcode === line.barcode || item.name === line.itemName);
+        if (!isSnbFlexibleStockItem(branch, catalogItem)) return false;
+        return line.quantity > Number(stockAvailable(branchStock, stockMap, line.itemName, line.barcode));
       });
-      if (rpcError && /complete_branch_checkout_canonical_v4|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
-        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
+
+      let checkoutRpc: 'v4' | 'v3' | 'v2' | 'base' = branch === 'SNB' ? 'v4' : 'v3';
+      const checkoutResponse = branch === 'SNB'
+        ? await supabase.rpc('complete_branch_checkout_canonical_v4', {
+            ...checkoutPayload,
+            p_discount_percent: discountPercent,
+          })
+        : await supabase.rpc('complete_branch_checkout_canonical_v3', {
+            ...checkoutPayload,
+            p_discount_percent: discountPercent,
+          });
+      let { data, error: rpcError } = checkoutResponse;
+
+      // A freshly installed RPC can exist in PostgreSQL before PostgREST refreshes
+      // its schema cache. Retry v4 once, then use v3 only when the sale does not
+      // require the SNB Mix & Combo flexible-stock wrapper.
+      if (checkoutRpc === 'v4' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4')) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v4', {
           ...checkoutPayload,
           p_discount_percent: discountPercent,
         }));
+        if (isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4') && !flexibleStockShortfall) {
+          checkoutRpc = 'v3';
+          ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
+            ...checkoutPayload,
+            p_discount_percent: discountPercent,
+          }));
+        }
       }
-      if (rpcError && /complete_branch_checkout_canonical_v3|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
+
+      if (checkoutRpc === 'v3' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v3')) {
+        checkoutRpc = 'v2';
         ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
           ...checkoutPayload,
           p_discount_percent: discountPercent,
         }));
       }
-      if (rpcError && /complete_branch_checkout_canonical_v2|could not find the function|function .* does not exist|schema cache/i.test(rpcError.message)) {
+      if (checkoutRpc === 'v2' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v2')) {
+        checkoutRpc = 'base';
         ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', checkoutPayload));
       }
       if (rpcError) {
-        const missingRpc = /complete_branch_checkout_canonical|complete_branch_checkout|could not find the function|function .* does not exist/i.test(rpcError.message);
-        throw new Error(missingRpc ? 'Canonical atomic checkout is not installed in Supabase. Run all pending migrations before billing.' : rpcError.message);
+        if (flexibleStockShortfall && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4')) {
+          throw new Error('SNB Mix & Combo checkout is temporarily unavailable while the Supabase API refreshes. Retry the bill once; stock and discount values have not been changed.');
+        }
+        const missingRpc = isRpcUnavailableError(rpcError, `complete_branch_checkout_canonical_${checkoutRpc}`)
+          || isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical');
+        throw new Error(missingRpc
+          ? 'Branch checkout is temporarily unavailable because the Supabase API schema cache is stale. Retry once after refreshing the dashboard.'
+          : rpcError.message);
       }
       const result = data as CheckoutRpcResult;
       if (!result?.billNo || !result.invoiceNo) throw new Error('Checkout committed but bill number was not returned.');
