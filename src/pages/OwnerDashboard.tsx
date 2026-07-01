@@ -1662,13 +1662,17 @@ function BranchOverviewTab() {
     }));
 
   const storePurchases = branchRows.find(row => row.unit === 'Store')?.purchases ?? 0;
+  const overallCreditPending = useMemo(() => OWNER_FULL_BRANCHES.reduce((grandTotal, branch) => (
+    grandTotal + (creditSales[branch] || [])
+      .filter((sale) => sale.status !== 'settled')
+      .reduce((branchTotal, sale) => branchTotal + Math.max(0, moneyNumber(sale.creditAmount)), 0)
+  ), 0), [creditSales]);
   const totals = visibleRows.reduce((acc, row) => ({
     sales: acc.sales + row.sales,
     netSales: acc.netSales + row.netSales,
     expenses: acc.expenses + row.expenses,
-    pendingCredit: acc.pendingCredit + row.pendingCredit,
     alerts: acc.alerts + row.stockAlerts,
-  }), { sales: 0, netSales: 0, expenses: 0, pendingCredit: 0, alerts: 0 });
+  }), { sales: 0, netSales: 0, expenses: 0, alerts: 0 });
 
   // chartRows no longer used — replaced by grouped payment chart in CHANGE 4c
 
@@ -1696,7 +1700,7 @@ function BranchOverviewTab() {
         <OwnerMetricCard icon={<IndianRupee className="size-5" />} label="Gross Sales" value={formatCurrency(totals.sales)} sub="Cafe + branches" tone="green" />
         <OwnerMetricCard icon={<TrendingUp className="size-5" />} label="Net Sales" value={formatCurrency(totals.netSales)} sub="After returns" tone="blue" />
         <OwnerMetricCard icon={<ShoppingBag className="size-5" />} label="Purchases" value={formatCurrency(storePurchases)} sub="Store only" tone="purple" />
-        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(totals.pendingCredit)} sub="Customer credit only" tone="amber" />
+        <OwnerMetricCard icon={<WalletCards className="size-5" />} label="Pending Payments" value={formatCurrency(overallCreditPending)} sub="Overall customer credit outstanding" tone="amber" />
       </section>
 
       {/* CHANGE 4c: Grouped payment bar chart for sales branches */}
