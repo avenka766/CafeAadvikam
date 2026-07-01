@@ -2871,7 +2871,7 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
   );
 }
 
-function PurchaseInvoicesTab({
+export function PurchaseInvoicesTab({
   userName,
   fetchBranchData,
   setNotice,
