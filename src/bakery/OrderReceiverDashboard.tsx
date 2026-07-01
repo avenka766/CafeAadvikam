@@ -41,7 +41,7 @@ import BranchStockForm from "./BranchStockForm";
 import PurchaseOrderTab from "./PurchaseOrderTab";
 import { useBranchStore, type StockItem } from "@/branch/branchStore";
 import { StockTab } from "@/branch/tabs/StockTab";
-import { AdvanceCakeOrdersTab } from "@/branch/tabs/BranchBusinessModules";
+import { AdvanceCakeOrdersTab, CashierClosureTab } from "@/branch/tabs/BranchBusinessModules";
 import { useBranchOpsStore } from "@/branch/branchOpsStore";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/types";
@@ -101,7 +101,8 @@ type TabKey =
   | "purchase-return"
   | "stock-movements"
   | "stock-count"
-  | "advance";
+  | "advance"
+  | "closure";
 type DatePreset = "today" | "yesterday" | "7d" | "15d" | "1m" | "custom";
 
 interface SharedOperationRow {
@@ -889,12 +890,11 @@ function PlacedOrdersPanel({
     }
 
     // Insert notification
-    await supabase.from("admin_notifications").insert({
+    await supabase.from("store_notifications").insert({
       type: "item_removed",
       title: `Item removed from Order #${order.orderNumber}`,
       body: `${item.itemName} removed — ${finalRemoveReason}`,
-      ref_id: order.id,
-      ref_label: `Order #${order.orderNumber}`,
+      branch,
       meta: {
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -902,7 +902,7 @@ function PlacedOrdersPanel({
         reason: finalRemoveReason,
         branch,
       },
-    }).select().maybeSingle(); // fire-and-forget; ignore if notifications insert fails
+    }).select().maybeSingle(); // fire-and-forget; ignore if notifications table schema differs
 
     setRemoving(false);
     setRemoveTarget(null);
@@ -2304,6 +2304,7 @@ function tabFromParams(value: string | null): TabKey {
   if (value === "dump" || value === "damage" || value === "transfer-out" || value === "transfer" || value === "stock-movements" || value === "waste") return "stock-movements";
   if (value === "shared" || value === "admin-shared" || value === "shared-data") return "purchase-invoice";
   if (value === "advance" || value === "advance-orders") return "advance";
+  if (value === "closure" || value === "daily-closure" || value === "cashier-closure") return "closure";
   return "order";
 }
 
@@ -2338,7 +2339,7 @@ export default function OrderReceiverDashboard() {
   const meta = role ? BRANCH_META[role] : null;
   const branch = meta?.branch as Branch | undefined;
   const requestedTab = tabFromParams(searchParams.get("tab"));
-  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "stock-movements", "advance"];
+  const snbOnlyTabs: TabKey[] = ["po", "purchase-invoice", "purchase-return", "stock-movements", "advance", "closure"];
   const tab = branch !== "SNB" && snbOnlyTabs.includes(requestedTab) ? "order" : requestedTab;
   const userName =
     currentUser?.displayName || currentUser?.username || `${branch ?? "SNB"} Receiver`;
@@ -2464,7 +2465,9 @@ export default function OrderReceiverDashboard() {
                       ? "Daily Stock Take"
                       : tab === "advance"
                         ? "Advance Orders"
-                        : "Place New Order";
+                        : tab === "closure"
+                          ? "Daily Closure"
+                          : "Place New Order";
   const subheading =
     tab === "live"
       ? "See each order move live through store, baker, packing and dispatch."
@@ -2485,8 +2488,10 @@ export default function OrderReceiverDashboard() {
                     : tab === "stock-count"
                       ? `Record the physical end-of-day count and send differences to ${branch} Admin.`
                       : tab === "advance"
-                        ? "Use the same advance-order workflow as SNB Branch, with SNB Order collection attribution."
-                        : "Create today’s bakery requirement with live branch stock and a complete-order note.";
+                        ? "Open the SNB Order counter first, then take advance orders and collect payments."
+                        : tab === "closure"
+                          ? "Open the counter, verify SNB Order advance collections and save the same cashier closure used by SNB Branch."
+                          : "Create today’s bakery requirement with live branch stock and a complete-order note.";
 
 
   return (
@@ -2733,6 +2738,10 @@ export default function OrderReceiverDashboard() {
 
         {tab === "advance" && branch === "SNB" && (
           <AdvanceCakeOrdersTab branch="SNB" branchStock={stock.SNB} source="snb-order" />
+        )}
+
+        {tab === "closure" && branch === "SNB" && (
+          <CashierClosureTab branch="SNB" branchStock={stock.SNB} source="snb-order" />
         )}
 
         {tab === "stock-count" && (branch === "SNB" || branch === "VRSNB") && (
