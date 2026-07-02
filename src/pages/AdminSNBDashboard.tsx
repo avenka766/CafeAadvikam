@@ -231,6 +231,14 @@ function fmtDate(iso: string) {
   });
 }
 
+function cashierLabel(row: any) {
+  const username = String(row?.cashier_username || "").trim();
+  if (username) return username;
+  const displayName = String(row?.cashier_display_name || "").trim();
+  if (displayName) return displayName;
+  return "Legacy / Unattributed";
+}
+
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString("en-IN", {
     day: "2-digit",
@@ -1417,6 +1425,9 @@ function RupeeBreakdown({ breakdown }: { breakdown: any }) {
 }
 
 function SalesReturnsTab(props: any) {
+  const billerByBillNo = new Map<string, string>(
+    (props.branchBills || []).map((b: any) => [b.billNo, b.biller]),
+  );
   const salesRows = [
     ...props.branchBills.map((b: any) => ({
       type: "Sale",
@@ -1424,6 +1435,7 @@ function SalesReturnsTab(props: any) {
       date: b.createdAt,
       customer: b.creditCustomerName || "-",
       person: b.salesperson,
+      cashier: b.biller || "Legacy / Unattributed",
       gross: b.total,
       returns: 0,
       net: b.total,
@@ -1435,6 +1447,7 @@ function SalesReturnsTab(props: any) {
       date: s.soldAt,
       customer: "-",
       person: s.soldBy,
+      cashier: s.soldBy || "Legacy / Unattributed",
       gross: (s.unitPrice ?? 0) * s.quantitySold,
       returns: 0,
       net: (s.unitPrice ?? 0) * s.quantitySold,
@@ -1446,6 +1459,7 @@ function SalesReturnsTab(props: any) {
       date: r.createdAt,
       customer: r.originalBillNo,
       person: r.returnedBy,
+      cashier: billerByBillNo.get(r.originalBillNo) || r.returnedBy || "Legacy / Unattributed",
       gross: 0,
       returns: r.total,
       net: -r.total,
@@ -1459,6 +1473,7 @@ function SalesReturnsTab(props: any) {
         date: m.dateTime,
         customer: m.remarks || "-",
         person: m.enteredBy,
+        cashier: m.enteredBy || "Legacy / Unattributed",
         gross: m.amount,
         returns: 0,
         net: m.amount,
@@ -1470,6 +1485,7 @@ function SalesReturnsTab(props: any) {
       date: p.createdAt,
       customer: p.remarks || "-",
       person: p.collectedBy,
+      cashier: p.collectedBy || "Legacy / Unattributed",
       gross: p.amount,
       returns: 0,
       net: p.amount,
@@ -1524,7 +1540,8 @@ function SalesReturnsTab(props: any) {
                   Type: r.type,
                   Number: r.no,
                   Date: fmtDateTime(r.date),
-                  CashierName: r.person,
+                  SalespersonName: r.person,
+                  CashierName: r.cashier,
                   GrossSales: r.gross,
                   ReturnAmount: r.returns,
                   NetSales: r.net,
@@ -1543,6 +1560,7 @@ function SalesReturnsTab(props: any) {
             "Type",
             "No",
             "Date",
+            "Salesperson Name",
             "Cashier Name",
             "Gross Sales",
             "Return Amount",
@@ -1567,6 +1585,7 @@ function SalesReturnsTab(props: any) {
             r.no,
             fmtDateTime(r.date),
             r.person,
+            r.cashier,
             money(r.gross),
             money(r.returns),
             <span
@@ -2677,12 +2696,12 @@ function CashierClosureTab(props: any) {
         <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
         <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
       </div>
-      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: cashierLabel(row), OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]}
           rows={rows.map((row: any) => [
             row.business_date,
-            row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
+            cashierLabel(row),
             `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
             <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>,
             money(asNumber(row.opening_cash)),
@@ -5269,8 +5288,8 @@ function DailyClosureTab({ userName, ...props }: any) {
         <DataTable headers={["Date", "Closed Counters", "Open Counters", "Gross", "Discounts", "Returns", "Net", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Expected Cash", "Counted Cash", "Difference"]} rows={dailyRows.map((row) => [row.business_date, asNumber(row.closed_counter_count), asNumber(row.open_counter_count), money(asNumber(row.gross_sales)), money(asNumber(row.discounts)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.cash_sales)), money(asNumber(row.upi_sales)), money(asNumber(row.card_sales)), money(asNumber(row.credit_sales)), money(asNumber(row.credit_collected)), money(asNumber(row.advance_collected)), money(asNumber(row.expected_cash)), money(asNumber(row.counted_cash)), <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{money(asNumber(row.difference))}</span>])} empty="No consolidated daily closure data found for the selected date range." />
       </Panel>
 
-      <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
-        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
+      <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: cashierLabel(row), Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
+        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, cashierLabel(row), <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
       </Panel>
     </div>
   );
