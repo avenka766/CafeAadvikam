@@ -410,6 +410,7 @@ export function SnbPurchaseReturnPanel() {
 
 export type StockMovementMode = "Dump" | "Damage" | "Trans Out";
 type WasteRow = { id: string; log_type: StockMovementMode; item_name: string; quantity: number | string; unit: string; reason: string; verified_by: string; created_by_username: string; created_at: string };
+type WasteLine = { lineId: string; itemName: string; barcode?: number; quantity: string; unit: string };
 
 export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const { items: catalogItems } = useOperationalBranchCatalog("SNB");
@@ -417,31 +418,59 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const user = useAuthStore((state) => state.currentUser);
   const userName = user?.displayName || user?.username || "SNB Order";
   const first = catalogItems[0];
-  const [form, setForm] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: first?.uom === "Kgs" ? "kg" : "pcs", reason: "", verifiedBy: userName, confirmed: false });
+  const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: first?.uom === "Kgs" ? "kg" : "pcs" });
+  const [lines, setLines] = useState<WasteLine[]>([]);
+  const [meta, setMeta] = useState({ reason: "", verifiedBy: userName, confirmed: false });
   const [history, setHistory] = useState<WasteRow[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  useEffect(() => { if (!form.itemName && first) setForm((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: first.uom === "Kgs" ? "kg" : "pcs" })); }, [first, form.itemName]);
+  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: first.uom === "Kgs" ? "kg" : "pcs" })); }, [first, lineDraft.itemName]);
+  // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
+  useEffect(() => { setLines([]); setError(""); setSuccess(""); }, [mode]);
   const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
   useEffect(() => { void loadRows(); }, [loadRows]);
-  const stockRow = stock.find((item) => form.barcode != null && item.itemBarcode != null ? item.itemBarcode === form.barcode : normal(item.itemName) === normal(form.itemName));
-  const available = Number(stockRow?.availableQuantity ?? stockRow?.quantity ?? 0);
-  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setForm((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs" })); };
+
+  const stockFor = (itemName: string, barcode?: number) => stock.find((item) => barcode != null && item.itemBarcode != null ? item.itemBarcode === barcode : normal(item.itemName) === normal(itemName));
+  const draftStockRow = stockFor(lineDraft.itemName, lineDraft.barcode);
+  const draftAvailable = Number(draftStockRow?.availableQuantity ?? draftStockRow?.quantity ?? 0);
+  // Account for quantities of the same item already queued in this batch, so a second line for the same item is checked against what's actually left.
+  const queuedForDraftItem = lines.filter((line) => (lineDraft.barcode != null && line.barcode != null) ? line.barcode === lineDraft.barcode : normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+  const draftRemaining = Math.max(0, draftAvailable - queuedForDraftItem);
+
+  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setLineDraft((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs" })); };
+
+  const addLine = () => {
+    setError("");
+    const qty = Number(lineDraft.quantity || 0);
+    if (!lineDraft.itemName || qty <= 0) return setError("Choose an item and enter a valid quantity.");
+    if (qty > draftRemaining) return setError(`Only ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} is available for ${lineDraft.itemName} (after items already added).`);
+    setLines((current) => [...current, { lineId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, itemName: lineDraft.itemName, barcode: lineDraft.barcode, quantity: lineDraft.quantity, unit: lineDraft.unit }]);
+    setLineDraft((current) => ({ ...current, quantity: "" }));
+  };
+  const removeLine = (lineId: string) => setLines((current) => current.filter((line) => line.lineId !== lineId));
+
   const submit = async () => {
-    setError(""); setSuccess(""); const qty = Number(form.quantity || 0);
-    if (!form.itemName || qty <= 0) return setError("Choose an item and enter a valid quantity.");
-    if (qty > available) return setError(`Only ${formatQty(available, stockRow?.unit || form.unit)} is available.`);
-    if (form.reason.trim().length < 3 || !form.verifiedBy.trim()) return setError("Reason and verifier are required.");
-    if (!form.confirmed) return setError("Confirm the physical verification before posting.");
+    setError(""); setSuccess("");
+    if (lines.length === 0) return setError("Add at least one item to the list before posting.");
+    if (meta.reason.trim().length < 3 || !meta.verifiedBy.trim()) return setError("Reason and verifier are required.");
+    if (!meta.confirmed) return setError("Confirm the physical verification before posting.");
     setSaving(true);
-    const { error: saveError } = await supabase.rpc("record_branch_waste_secure", { p_branch: "SNB", p_log_type: mode, p_item_barcode: form.barcode || null, p_item_name: form.itemName, p_quantity: qty, p_unit: form.unit, p_reason: form.reason.trim(), p_verified_by: form.verifiedBy.trim(), p_checklist: ["Quantity physically verified", `Entered by SNB Order - ${userName}`] });
+    const { error: saveError } = await supabase.rpc("record_branch_waste_batch_secure", {
+      p_branch: "SNB",
+      p_log_type: mode,
+      p_items: lines.map((line) => ({ itemBarcode: line.barcode ?? null, itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
+      p_reason: meta.reason.trim(),
+      p_verified_by: meta.verifiedBy.trim(),
+      p_checklist: ["Quantity physically verified", `Entered by SNB Order - ${userName}`],
+    });
     setSaving(false);
     if (saveError) return setError(saveError.message);
-    setSuccess(`${mode === "Trans Out" ? "Transfer Out" : mode} posted and shared with SNB Admin.`);
-    setForm((current) => ({ ...current, quantity: "", reason: "", confirmed: false }));
+    setSuccess(`${lines.length} item${lines.length > 1 ? "s" : ""} posted as ${mode === "Trans Out" ? "Transfer Out" : mode} and shared with SNB Admin.`);
+    setLines([]);
+    setMeta((current) => ({ ...current, reason: "", confirmed: false }));
     await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData("SNB")]);
   };
   const title = mode === "Trans Out" ? "Transfer Out" : mode;
@@ -449,7 +478,39 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
 
   return (
     <div className="grid h-full min-h-0 gap-3 overflow-auto xl:grid-cols-[minmax(340px,0.85fr)_minmax(0,1.15fr)]">
-      <section className={cn(panelClass, "p-3")}><div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Live stock deduction</p><h2 className="font-display text-lg font-black">New {title}</h2></div><Icon className="size-5 text-amber-600" /></div><div className="space-y-3"><Field label="Item" hint={`Available now: ${formatQty(available, stockRow?.unit || form.unit)}`}><select className={inputClass} value={form.itemName} onChange={(event) => choose(event.target.value)}>{catalogItems.map((item) => <option key={item.barcode}>{item.name}</option>)}</select></Field><div className="grid grid-cols-2 gap-3"><Field label="Quantity"><input type="number" min="0.001" step="0.001" className={inputClass} value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field><Field label="Unit"><input className={inputClass} value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} /></Field></div><Field label="Reason / Destination"><textarea className={textareaClass} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder={mode === "Trans Out" ? "Destination and transfer reason" : `${title} reason`} /></Field><Field label="Verified By"><input className={inputClass} value={form.verifiedBy} onChange={(event) => setForm({ ...form, verifiedBy: event.target.value })} /></Field><label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={form.confirmed} onChange={(event) => setForm({ ...form, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm the quantity was physically checked and may be deducted from usable SNB stock.</span></label><StatusMessage error={error} success={success} /><button type="button" onClick={() => void submit()} disabled={saving} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title}</button></div></section>
+      <section className={cn(panelClass, "p-3")}>
+        <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Live stock deduction</p><h2 className="font-display text-lg font-black">New {title}</h2></div><Icon className="size-5 text-amber-600" /></div>
+        <div className="space-y-3">
+          <Field label="Item" hint={`Available now: ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)}`}>
+            <select className={inputClass} value={lineDraft.itemName} onChange={(event) => choose(event.target.value)}>{catalogItems.map((item) => <option key={item.barcode}>{item.name}</option>)}</select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantity"><input type="number" min="0.001" step="0.001" className={inputClass} value={lineDraft.quantity} onChange={(event) => setLineDraft({ ...lineDraft, quantity: event.target.value })} /></Field>
+            <Field label="Unit"><input className={inputClass} value={lineDraft.unit} onChange={(event) => setLineDraft({ ...lineDraft, unit: event.target.value })} /></Field>
+          </div>
+          <button type="button" onClick={addLine} className={cn(primaryButton, "w-full bg-amber-600")}><Plus className="size-4" /> Add item to list</button>
+
+          {lines.length > 0 && (
+            <div className="rounded-2xl border border-border bg-slate-50 p-2.5">
+              <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-500">{lines.length} item{lines.length > 1 ? "s" : ""} queued for this {title.toLowerCase()}</p>
+              <div className="space-y-1.5">
+                {lines.map((line) => (
+                  <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
+                    <div className="text-xs font-bold"><span className="font-black">{line.itemName}</span> · {formatQty(Number(line.quantity), line.unit)}</div>
+                    <button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Field label="Reason / Destination"><textarea className={textareaClass} value={meta.reason} onChange={(event) => setMeta({ ...meta, reason: event.target.value })} placeholder={mode === "Trans Out" ? "Destination and transfer reason" : `${title} reason`} /></Field>
+          <Field label="Verified By"><input className={inputClass} value={meta.verifiedBy} onChange={(event) => setMeta({ ...meta, verifiedBy: event.target.value })} /></Field>
+          <label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={meta.confirmed} onChange={(event) => setMeta({ ...meta, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm every item's quantity was physically checked and may be deducted from usable SNB stock.</span></label>
+          <StatusMessage error={error} success={success} />
+          <button type="button" onClick={() => void submit()} disabled={saving || lines.length === 0} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title} ({lines.length} item{lines.length === 1 ? "" : "s"})</button>
+        </div>
+      </section>
       <section className={cn(panelClass, "min-h-[420px] overflow-auto")}><div className="sticky top-0 flex items-center justify-between border-b border-border bg-white p-3"><h3 className="text-sm font-black">{title} History</h3><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button></div>{history.length === 0 ? <div className="p-8 text-center text-sm font-bold text-muted-foreground">No {title.toLowerCase()} records found.</div> : <div className="divide-y divide-border">{history.map((row) => <article key={row.id} className="p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black">{row.item_name}</p><p className="text-xs font-bold text-muted-foreground">{formatQty(Number(row.quantity), row.unit)} · {row.reason}</p></div><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{title}</span></div><p className="mt-2 text-[10px] font-semibold text-muted-foreground">Verified by {row.verified_by} · Entered by {row.created_by_username} · {new Date(row.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</p></article>)}</div>}</section>
     </div>
   );
