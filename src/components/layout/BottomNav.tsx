@@ -165,15 +165,6 @@ export default function BottomNav() {
         path: "/order-history",
       },
     );
-  } else if (currentUser.role === "billing") {
-    navItems.push(
-      { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/billing" },
-      { label: "Advance", icon: <FileText className="size-5" />, path: "/billing?tab=advance" },
-      { label: "History", icon: <History className="size-5" />, path: "/billing?tab=history" },
-      { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/billing?tab=payment-edit" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/daily-closure" },
-      { label: "Alerts", icon: <Bell className="size-5" />, path: "/billing?tab=alerts" },
-    );
   } else if (currentUser.role === "kitchen") {
     navItems.push(
       {

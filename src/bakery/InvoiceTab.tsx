@@ -274,7 +274,6 @@ function CreateInvoiceModal({
 
   const addLine = () => {
     setLines(prev => [...prev, { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 }]);
-    setDismissedHints(new Set()); // reset so new line shows hint fresh
   };
 
   const removeLine = (idx: number) => {

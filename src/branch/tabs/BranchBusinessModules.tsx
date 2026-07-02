@@ -77,6 +77,20 @@ type ClosureLedgerRow = {
   advance_balance_collected: number | string;
 };
 
+type CounterClosureSnapshot = {
+  counterSession?: Record<string, unknown> | null;
+  advanceCash: number;
+  advanceUpi: number;
+  advanceCard: number;
+  advanceBank: number;
+  advanceInitial: number;
+  advanceBalance: number;
+  advanceTotal: number;
+  paymentCount: number;
+  sourceRole?: string;
+  sourceLabel?: string;
+};
+
 type SavedClosureRow = {
   id: string;
   branch: Branch;
@@ -445,8 +459,32 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     attachmentName:'', attachmentDataUrl:'',
   });
   const [error, setError] = useState('');
+  const [receiverCounterOpen, setReceiverCounterOpen] = useState(false);
+  const [receiverCounterLoading, setReceiverCounterLoading] = useState(isSnbOrder);
   const orders = advanceCakeOrders.filter((o)=>o.branch===branch);
-  const counterOpenToday = isSnbOrder || counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
+  const localCounterOpenToday = counterOpenings.some((c) => c.branch === branch && c.date === todayIso() && c.active !== false && (currentUser?.id ? c.cashierUserId === currentUser.id : c.cashier === user));
+  const counterOpenToday = isSnbOrder ? receiverCounterOpen : localCounterOpenToday;
+
+  useEffect(() => {
+    if (!isSnbOrder) return;
+    let active = true;
+    const loadCounter = async () => {
+      setReceiverCounterLoading(true);
+      const { data, error: counterError } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: 'SNB' });
+      if (!active) return;
+      if (counterError) {
+        setReceiverCounterOpen(false);
+        setError(`Unable to verify the SNB Order counter: ${counterError.message}`);
+      } else {
+        const row = data && typeof data === 'object' ? data as { id?: string } : null;
+        setReceiverCounterOpen(Boolean(row?.id));
+      }
+      setReceiverCounterLoading(false);
+    };
+    void loadCounter();
+    const refreshId = window.setInterval(() => { void loadCounter(); }, 15_000);
+    return () => { active = false; window.clearInterval(refreshId); };
+  }, [isSnbOrder]);
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
   const historyOrders = orders.filter((o) => o.status === 'Paid In Full');
   const staff = requiresSalesperson ? common.salesperson : user;
@@ -762,7 +800,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   };
 
   return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
-    {!counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the cashier counter (Cashier Closure tab) before collecting advance payments.</div>}
+    {receiverCounterLoading && isSnbOrder && <div className="xl:col-span-2 rounded-2xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm font-black text-blue-800">Checking the SNB Order counter...</div>}
+    {!receiverCounterLoading && !counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the counter in the Daily Closure tab before taking or collecting an advance order.</div>}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
       <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1">
         {(['store','custom','cake'] as const).map((tab)=><button key={tab} onClick={()=>setMode(tab)} className={cn('rounded-xl px-3 py-2 text-sm font-black capitalize', mode===tab?'bg-slate-950 text-white':'text-slate-600')}>{tab === 'store' ? 'Store Items' : tab === 'custom' ? 'Custom Items' : 'Cake Orders'}</button>)}
@@ -1044,7 +1083,7 @@ export function PurchaseOrderTab({ branch }: ModuleProps) {
   const rows=purchaseOrders.filter(p=>p.branch===branch); return <div className="grid gap-5 xl:grid-cols-[400px_minmax(0,1fr)]"><Section title="Create Purchase Order" icon={<ClipboardCheck className="size-5"/>}><div className="space-y-3"><Field label="Supplier"><Input value={f.supplier} onChange={(e)=>setF({...f,supplier:e.target.value})}/></Field><Field label="Item"><Select value={f.itemName} onChange={(e)=>setF({...f,itemName:e.target.value})}>{items.map(i=><option key={i.name}>{i.name}</option>)}</Select></Field><div className="grid grid-cols-2 gap-2"><Field label="Quantity"><Input type="number" value={f.quantity} onChange={(e)=>setF({...f,quantity:e.target.value})}/></Field><Field label="Expected Rate"><Input type="number" value={f.expectedRate} onChange={(e)=>setF({...f,expectedRate:e.target.value})}/></Field></div><Field label="Expected Delivery"><Input type="date" value={f.expectedDeliveryDate} onChange={(e)=>setF({...f,expectedDeliveryDate:e.target.value})}/></Field><Field label="Remarks"><Textarea value={f.remarks} onChange={(e)=>setF({...f,remarks:e.target.value})}/></Field><PrimaryButton onClick={create}>Create PO</PrimaryButton></div></Section><Section title="PO Workflow" icon={<Truck className="size-5"/>}><div className="space-y-3">{rows.map((p:PurchaseOrderRecord)=><div key={p.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-black">{p.poNo} · {p.supplier}</p><p className="text-sm text-slate-500">{p.itemName} · {p.quantity} × {money(p.expectedRate)} · {money(p.totalAmount)}</p></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black">{p.status}</span></div><div className="mt-3 flex flex-wrap gap-2">{(['Approved','Rejected','Ordered','Received','Closed'] as const).map(s=><SoftButton key={s} onClick={()=>updatePoStatus(p.id,s,user)}>{s}</SoftButton>)}</div></div>)}</div></Section></div>;
 }
 
-export function CashierClosureTab({ branch }: ModuleProps) {
+export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const { currentUser } = useAuthStore();
   const { bills, returns, cashierClosures, purchasePayments, cashMovements, counterOpenings, expenses, bankDeposits, addCashierClosure, openCounter, closeCounter, addNotification } = useBranchOpsStore();
   const { creditSales, creditPayments, fetchCreditSales, fetchCreditPayments } = useBranchStore();
@@ -1061,8 +1100,10 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const [closeDenominations, setCloseDenominations] = useState<Record<number,string>>({500:'',200:'',100:'',50:'',20:'',10:'',5:'',2:'',1:''});
   const [openSavedMessage, setOpenSavedMessage] = useState('');
   const [ledgerLoading, setLedgerLoading] = useState(false);
-  const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string }>(null);
+  const [counterSnapshot, setCounterSnapshot] = useState<CounterClosureSnapshot>({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
+  const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string; cashierDisplayName?: string; denominations?: Record<string,string> }>(null);
   const user = currentUser?.username || currentUser?.displayName || 'Cashier';
+  const isSnbOrder = source === 'snb-order' && branch === 'SNB';
   const denominations = [500,200,100,50,20,10,5,2,1];
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
   const openTotal = denomTotal(openDenominations);
@@ -1071,16 +1112,26 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     && record.date === todayIso()
     && record.active !== false
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
+  // Many branches (e.g. SNB) share one login across multiple people at the counter,
+  // so the actual on-duty person's name (typed in the "Cashier Name" field when
+  // opening the counter) should be attributed everywhere, not the shared login's
+  // own username/display name.
+  const activeCashierName = localCounterOpenRecord?.cashier
+    || dbCounterSession?.cashierDisplayName
+    || dbCounterSession?.cashier
+    || openCashier.trim()
+    || user;
+  const auditActor = isSnbOrder ? `SNB Order - ${activeCashierName}` : activeCashierName;
   const branchCounterOpenRecord = useMemo(() => localCounterOpenRecord ?? (dbCounterSession ? {
     id: dbCounterSession.id,
     branch,
     date: todayIso(),
-    cashier: dbCounterSession.cashier,
+    cashier: dbCounterSession.cashierDisplayName || dbCounterSession.cashier,
     cashierUserId: dbCounterSession.cashierUserId,
     counterSessionId: dbCounterSession.id,
     openingCash: dbCounterSession.openingCash,
-    denominations: {},
-    openedBy: dbCounterSession.cashier,
+    denominations: dbCounterSession.denominations || {},
+    openedBy: dbCounterSession.cashierDisplayName || dbCounterSession.cashier,
     openedAt: dbCounterSession.openedAt,
     active: true,
   } : undefined), [branch, dbCounterSession, localCounterOpenRecord]);
@@ -1088,37 +1139,68 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     && today(record.createdAt)
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
 
+  const loadOpenSession = useCallback(async () => {
+    if (!currentUser?.id) { setDbCounterSession(null); return null; }
+    const { data, error } = await supabase.rpc('get_my_branch_counter_session_secure', { p_branch: branch });
+    if (error) {
+      setOpenSavedMessage(`Could not load cashier counter: ${error.message}`);
+      setDbCounterSession(null);
+      return null;
+    }
+    const row = data && typeof data === 'object' ? data as Record<string, unknown> : null;
+    if (!row?.id) {
+      setDbCounterSession(null);
+      return null;
+    }
+    const mapped = {
+      id: String(row.id),
+      openingCash: Number(row.opening_cash || 0),
+      openedAt: String(row.opened_at),
+      cashier: String(row.cashier_username || user),
+      cashierUserId: String(row.cashier_user_id),
+      cashierDisplayName: String(row.cashier_display_name || row.cashier_username || user),
+      denominations: (row.opening_denominations && typeof row.opening_denominations === 'object' ? row.opening_denominations : {}) as Record<string,string>,
+    };
+    setDbCounterSession(mapped);
+    return mapped;
+  }, [branch, currentUser?.id, user]);
+
+  const loadCounterSnapshot = useCallback(async () => {
+    if (!isSnbOrder) return null;
+    const { data, error } = await supabase.rpc('get_my_branch_counter_closure_snapshot_secure', { p_branch: branch });
+    if (error) {
+      setClosureMessage(`Could not load SNB Order collection totals: ${error.message}`);
+      return null;
+    }
+    const row = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+    const snapshot: CounterClosureSnapshot = {
+      counterSession: row.counterSession as Record<string,unknown> | null | undefined,
+      advanceCash: Number(row.advanceCash || 0),
+      advanceUpi: Number(row.advanceUpi || 0),
+      advanceCard: Number(row.advanceCard || 0),
+      advanceBank: Number(row.advanceBank || 0),
+      advanceInitial: Number(row.advanceInitial || 0),
+      advanceBalance: Number(row.advanceBalance || 0),
+      advanceTotal: Number(row.advanceTotal || 0),
+      paymentCount: Number(row.paymentCount || 0),
+      sourceRole: typeof row.sourceRole === 'string' ? row.sourceRole : undefined,
+      sourceLabel: typeof row.sourceLabel === 'string' ? row.sourceLabel : undefined,
+    };
+    setCounterSnapshot(snapshot);
+    return snapshot;
+  }, [branch, isSnbOrder]);
+
   useEffect(() => {
     let active = true;
-    const loadOpenSession = async () => {
-      if (!currentUser?.id) { setDbCounterSession(null); return; }
-      const { data, error } = await supabase
-        .from('branch_counter_sessions')
-        .select('id,opening_cash,opened_at,cashier_username,cashier_user_id')
-        .eq('branch', branch)
-        .eq('cashier_user_id', currentUser.id)
-        .eq('status', 'open')
-        .order('opened_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!active) return;
-      if (error) {
-        const missing = /branch_counter_sessions|does not exist|schema cache/i.test(error.message || '');
-        if (!missing) setOpenSavedMessage(`Could not load cashier counter: ${error.message}`);
-        setDbCounterSession(null);
-        return;
-      }
-      setDbCounterSession(data ? {
-        id: String(data.id),
-        openingCash: Number(data.opening_cash || 0),
-        openedAt: String(data.opened_at),
-        cashier: String(data.cashier_username || user),
-        cashierUserId: String(data.cashier_user_id),
-      } : null);
+    const load = async () => {
+      const session = await loadOpenSession();
+      if (!active || !session) return;
+      await loadCounterSnapshot();
     };
-    void loadOpenSession();
-    return () => { active = false; };
-  }, [branch, currentUser?.id, user]);
+    void load();
+    const refreshId = window.setInterval(() => { void load(); }, 15_000);
+    return () => { active = false; window.clearInterval(refreshId); };
+  }, [loadCounterSnapshot, loadOpenSession]);
 
   useEffect(() => {
     setOpenCashier(user);
@@ -1191,9 +1273,11 @@ export function CashierClosureTab({ branch }: ModuleProps) {
 
   const grossBillSales = counterTodayBills.reduce((sum, bill) => sum + bill.total, 0);
   const grossSalesBeforeDiscount = counterTodayBills.reduce((sum, bill) => sum + bill.subtotal + bill.tax, 0);
-  const advanceCollectedToday = closureLedger
-    ? num(closureLedger.advance_collected) + num(closureLedger.advance_balance_collected)
-    : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
+  const advanceCollectedToday = isSnbOrder
+    ? counterSnapshot.advanceTotal
+    : closureLedger
+      ? num(closureLedger.advance_collected) + num(closureLedger.advance_balance_collected)
+      : todayAdvancePayments.reduce((s, m) => s + m.amount, 0);
   const normalCash = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'cash' ? b.total : b.paymentMode === 'split' ? Number(b.split?.cash || 0) : 0), 0);
   const normalUpi = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'upi' ? b.total : b.paymentMode === 'split' ? Number(b.split?.upi || 0) : 0), 0);
   const normalCard = counterTodayBills.reduce((s, b) => s + (b.paymentMode === 'card' ? b.total : b.paymentMode === 'split' ? Number(b.split?.card || 0) : 0), 0);
@@ -1206,17 +1290,17 @@ export function CashierClosureTab({ branch }: ModuleProps) {
   const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
   const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
   const creditCollectionTotal = closureLedger ? num(closureLedger.credit_collected) : creditCollectionCash + creditCollectionDigital;
-  const advanceCash = todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
-  const advanceUpi = todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
-  const advanceCard = todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
-  const advanceDigital = todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
+  const advanceCash = isSnbOrder ? counterSnapshot.advanceCash : todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
+  const advanceUpi = isSnbOrder ? counterSnapshot.advanceUpi : todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
+  const advanceCard = isSnbOrder ? counterSnapshot.advanceCard : todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+  const advanceDigital = isSnbOrder ? counterSnapshot.advanceUpi + counterSnapshot.advanceCard + counterSnapshot.advanceBank : todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
   // Payment totals shown in closure are NET collections after refunds.
   // The ledger RPC also stores net totals, so no second subtraction is applied in ledger mode.
   const cash = closureLedger ? num(closureLedger.cash_total) : normalCash + creditCollectionCash + advanceCash - refundCash;
   const upi = closureLedger ? num(closureLedger.upi_total) : normalUpi + creditCollectionUpi + advanceUpi - refundUpi;
   const card = closureLedger ? num(closureLedger.card_total) : normalCard + creditCollectionCard + advanceCard - refundCard;
-  const advancePaid = closureLedger ? num(closureLedger.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
-  const advanceFull = closureLedger ? num(closureLedger.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
+  const advancePaid = isSnbOrder ? counterSnapshot.advanceInitial : closureLedger ? num(closureLedger.advance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Cake advance received').reduce((s, m) => s + m.amount, 0);
+  const advanceFull = isSnbOrder ? counterSnapshot.advanceBalance : closureLedger ? num(closureLedger.advance_balance_collected) : todayAdvancePayments.filter((m) => m.purpose === 'Advance balance collection').reduce((s, m) => s + m.amount, 0);
   const splitTotal = counterTodayBills.filter((b) => b.paymentMode === 'split').reduce((s, b) => s + b.total, 0);
   const refunds = todayReturns.reduce((s, r) => s + r.total, 0);
   const discounts = closureLedger ? num(closureLedger.discounts) : counterTodayBills.reduce((s, b) => s + b.discount, 0);
@@ -1258,6 +1342,16 @@ export function CashierClosureTab({ branch }: ModuleProps) {
 
   const save = async () => {
     if (!branchCounterOpenRecord) { setSavedMessage('Open the counter before saving a closure.'); return; }
+    if (isSnbOrder) {
+      const latestSnapshot = await loadCounterSnapshot();
+      if (!latestSnapshot) { setSavedMessage('Unable to verify the latest SNB Order collections. Refresh and try again.'); return; }
+      const changed = Math.abs(latestSnapshot.advanceTotal - counterSnapshot.advanceTotal) >= 0.01
+        || latestSnapshot.paymentCount !== counterSnapshot.paymentCount;
+      if (changed) {
+        setSavedMessage('New advance collections were found and the closure totals were refreshed. Verify the amounts and save the closure again.');
+        return;
+      }
+    }
     if (!upiAuditEntered || !Number.isFinite(actualUpi) || actualUpi < 0) {
       setSavedMessage('Enter the verified UPI amount before saving the closure. Enter 0 when there was no UPI settlement.');
       return;
@@ -1269,7 +1363,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     const closurePayload = {
       branch,
       closure_date: todayIso(),
-      cashier: user,
+      cashier: auditActor,
       cashier_user_id: currentUser?.id || null,
       cashier_username: user,
       counter_session_id: activeSessionId || null,
@@ -1298,7 +1392,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
       expected_cash: expected,
       actual_cash: countedCash,
       difference: diff,
-      notes: notes || null,
+      notes: [isSnbOrder ? '[SNB ORDER CLOSURE]' : '', notes].filter(Boolean).join(' | ') || null,
       status: 'finalized',
     };
     const upiAuditText = [
@@ -1405,10 +1499,10 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         }
       }
     }
-    addCashierClosure({ branch, cashier: user, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
-    closeCounter(branch, todayIso(), user, currentUser?.id);
+    addCashierClosure({ branch, cashier: auditActor, cashierUserId: currentUser?.id, counterSessionId: activeSessionId, grossSales: grossSalesBeforeDiscount, netSales, openingCash: Number(opening || 0), closingCash: countedCash, expectedCash: expected, difference: diff, cash, upi, actualUpi, upiDifference, upiNotes: upiAuditNotes.trim(), card, returns: refunds, discounts, billsCount: counterTodayBills.length, duplicateBills: duplicate, creditSales: creditSalesTotal, creditCollections: creditCollectionTotal, notes });
+    closeCounter(branch, todayIso(), auditActor, currentUser?.id);
     setDbCounterSession(null);
-    addNotification({ branch, type: 'closure', title: `${branch} cashier counter closed`, details: `${user} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: user });
+    addNotification({ branch, type: 'closure', title: `${isSnbOrder ? 'SNB Order' : branch} cashier counter closed`, details: `${auditActor} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: auditActor });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setOpening('0');
@@ -1433,37 +1527,44 @@ export function CashierClosureTab({ branch }: ModuleProps) {
     const openingDenominations = Object.fromEntries(
       Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
     );
-    const { data: inserted, error: insertError } = await supabase
-      .from('branch_counter_sessions')
-      .insert({
-        branch,
-        business_date: todayIso(),
-        cashier_user_id: currentUser.id,
-        cashier_username: user,
-        cashier_display_name: currentUser.displayName || user,
-        opening_cash: openTotal,
-        opening_denominations: openingDenominations,
-        status: 'open',
-      })
-      .select('id,opening_cash,opened_at,cashier_username,cashier_user_id')
-      .single();
-    if (insertError || !inserted) {
-      setOpenSavedMessage(`Could not open cashier counter: ${insertError?.message || 'No session returned'}`);
+    const operatorName = openCashier.trim();
+    const { data, error: openError } = await supabase.rpc('open_branch_counter_session_secure', {
+      p_branch: branch,
+      p_opening_cash: openTotal,
+      p_opening_denominations: openingDenominations,
+      p_operator_name: operatorName || null,
+    });
+    if (openError) {
+      setOpenSavedMessage(`Could not open cashier counter: ${openError.message}`);
+      return;
+    }
+    const inserted = data && typeof data === 'object' ? data as Record<string, unknown> : null;
+    if (!inserted?.id) {
+      setOpenSavedMessage('Could not open cashier counter: no session was returned.');
       return;
     }
     const record = openCounter({
       branch,
       date: todayIso(),
-      cashier: user,
+      cashier: operatorName || user,
       cashierUserId: currentUser.id,
       counterSessionId: String(inserted.id),
       openingCash: Number(inserted.opening_cash || 0),
       denominations: openingDenominations,
-      openedBy: user,
+      openedBy: String(inserted.cashier_display_name || operatorName || user),
     });
-    setDbCounterSession({ id: String(inserted.id), openingCash: Number(inserted.opening_cash || 0), openedAt: String(inserted.opened_at), cashier: String(inserted.cashier_username || user), cashierUserId: String(inserted.cashier_user_id) });
+    setDbCounterSession({
+      id: String(inserted.id),
+      openingCash: Number(inserted.opening_cash || 0),
+      openedAt: String(inserted.opened_at),
+      cashier: String(inserted.cashier_username || user),
+      cashierUserId: String(inserted.cashier_user_id),
+      cashierDisplayName: String(inserted.cashier_display_name || inserted.cashier_username || user),
+      denominations: openingDenominations,
+    });
     setOpening(String(record.openingCash));
-    setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${record.cashier}. Opening cash: ${money(record.openingCash)}`);
+    setCounterSnapshot({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
+    setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${isSnbOrder ? 'SNB Order - ' : ''}${record.cashier}. Opening cash: ${money(record.openingCash)}`);
   };
 
   const printClosure = () => printBranchCashierClosure({
@@ -1534,12 +1635,12 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         <div>
           <div className="flex items-center gap-2">
             <div className="size-2 rounded-full bg-emerald-400" />
-            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">{BRANCH_LABELS[branch]} cashier closure</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-muted-foreground">{isSnbOrder ? 'SNB Order' : BRANCH_LABELS[branch]} cashier closure</p>
           </div>
           <p className="mt-1 text-sm font-black text-foreground">Cashier Closure - {new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
+          <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); void loadOpenSession(); void loadCounterSnapshot(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
             <RotateCcw className={cn("size-4", ledgerLoading && "animate-spin")} />Refresh
           </button>
           <button onClick={printClosure} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
@@ -1595,14 +1696,14 @@ export function CashierClosureTab({ branch }: ModuleProps) {
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground">{BRANCH_LABELS[branch]} counter open</p>
             <h2 className="font-display text-xl font-black text-foreground">Start Cashier Counter</h2>
-            <p className="mt-1 text-xs font-bold text-muted-foreground">{branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier} with ${money(branchCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : 'Open the counter before billing or advance collection.'}</p>
+            <p className="mt-1 text-xs font-bold text-muted-foreground">{branchCounterOpenRecord ? `Opened by ${branchCounterOpenRecord.cashier} with ${money(branchCounterOpenRecord.openingCash)}. Close the counter before starting another opening.` : isSnbOrder ? 'Open the counter before taking any SNB Order advance order or collecting payment.' : 'Open the counter before billing or advance collection.'}</p>
           </div>
           <span className={cn('rounded-full px-3 py-1 text-xs font-black border', branchCounterOpenRecord ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')}>{branchCounterOpenRecord ? 'OPENED' : 'NOT OPENED'}</span>
         </div>
         <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
           <div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier</label>
-            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
+            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier Name (on duty)</label>
+            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} placeholder="Enter your name" className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
           </div>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
             {denominations.map((denom) => (
@@ -1635,6 +1736,7 @@ export function CashierClosureTab({ branch }: ModuleProps) {
         <Kpi label="Bills Closed" value={counterTodayBills.length} icon={<Receipt/>} tone="slate"/>
         <Kpi label="Cancelled" value={todayReturns.length} icon={<XCircle/>} tone="red"/>
       </div>
+      {isSnbOrder && <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-900">This closure contains only collections linked to this SNB Order counter session. Advance transactions: <span className="font-black">{counterSnapshot.paymentCount}</span> · Cash <span className="font-black">{money(counterSnapshot.advanceCash)}</span> · UPI <span className="font-black">{money(counterSnapshot.advanceUpi)}</span> · Card <span className="font-black">{money(counterSnapshot.advanceCard)}</span>. The finalized session is visible in SNB Admin → Cashier Closure and Daily Closure Report.</div>}
 
       {todayReturns.length > 0 && (
         <Section title="Refund Register" icon={<RotateCcw className="size-5"/>}>

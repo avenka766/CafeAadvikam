@@ -374,6 +374,11 @@ export interface CashierClosure {
   duplicateBills: number;
   creditSales?: number;
   creditCollections?: number;
+  totalSales?: number;
+  advanceCollections?: number;
+  expenses?: number;
+  purchasePayments?: number;
+  bankDeposits?: number;
   notes: string;
   createdAt: string;
 }
@@ -804,6 +809,7 @@ const mergeOperationRecordsIntoState = (
     ["bills", "advance_final_bill"],
     ["creditSales", "credit_sale"],
     ["holds", "hold_bill"],
+    ["salespeople", "salesperson"],
     ["advanceCakeOrders", "advance_order"],
     ["quotations", "quotation"],
     ["returns", "return"],
@@ -1681,81 +1687,94 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => ({ holds: s.holds.filter((h) => h.id !== id) })),
       clearHolds: (branch) =>
         set((s) => ({ holds: s.holds.filter((h) => h.branch !== branch) })),
-      addSalesperson: (branch, name, user, details = {}) =>
+      addSalesperson: (branch, name, user, details = {}) => {
+        const newSalesperson: SalespersonProfile = {
+          id: uid("sp"),
+          branch,
+          name: name.trim(),
+          mobile: details.mobile ?? "",
+          address: details.address ?? "",
+          role: details.role ?? "Salesperson",
+          active: details.active ?? true,
+          status:
+            details.status ??
+            ((details.active ?? true) ? "Active" : "Inactive"),
+          joiningDate:
+            details.joiningDate ?? new Date().toISOString().slice(0, 10),
+          assignedBranch: details.assignedBranch ?? branch,
+          remarks: details.remarks ?? "",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
         set((s) => ({
-          salespeople: [
-            {
-              id: uid("sp"),
-              branch,
-              name: name.trim(),
-              mobile: details.mobile ?? "",
-              address: details.address ?? "",
-              role: details.role ?? "Salesperson",
-              active: details.active ?? true,
-              status:
-                details.status ??
-                ((details.active ?? true) ? "Active" : "Inactive"),
-              joiningDate:
-                details.joiningDate ?? new Date().toISOString().slice(0, 10),
-              assignedBranch: details.assignedBranch ?? branch,
-              remarks: details.remarks ?? "",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            ...s.salespeople,
-          ],
+          salespeople: [newSalesperson, ...s.salespeople],
           auditLogs: [
             audit(branch, user, "Add Salesperson", "-", name.trim()),
             ...s.auditLogs,
           ],
-        })),
+        }));
+        // DATA-03 FIX: mirror to branch_operation_records so a new salesperson
+        // survives even if another device's stale local copy of the shared
+        // app_state blob gets persisted afterwards and would otherwise clobber
+        // this addition (see mergeOperationRecordsIntoState recovery merge).
+        mirrorOperationRecord(branch, "salesperson", newSalesperson.id, newSalesperson, {
+          recordNo: newSalesperson.mobile,
+          status: newSalesperson.status,
+          actor: user,
+        });
+      },
       updateSalesperson: (id, name, active, user, details = {}) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
+          if (!prev) return s;
+          const updated: SalespersonProfile = {
+            ...prev,
+            ...details,
+            name: name.trim(),
+            active,
+            status: details.status ?? (active ? "Active" : "Inactive"),
+            updatedAt: new Date().toISOString(),
+          };
+          mirrorOperationRecord(prev.branch, "salesperson", id, updated, {
+            recordNo: updated.mobile,
+            status: updated.status,
+            actor: user,
+          });
           return {
-            salespeople: s.salespeople.map((p) =>
-              p.id === id
-                ? {
-                    ...p,
-                    ...details,
-                    name: name.trim(),
-                    active,
-                    status: details.status ?? (active ? "Active" : "Inactive"),
-                    updatedAt: new Date().toISOString(),
-                  }
-                : p,
-            ),
-            auditLogs: prev
-              ? [
-                  audit(
-                    prev.branch,
-                    user,
-                    "Update Salesperson",
-                    `${prev.name}/${prev.active}`,
-                    `${name}/${active}`,
-                  ),
-                  ...s.auditLogs,
-                ]
-              : s.auditLogs,
+            salespeople: s.salespeople.map((p) => (p.id === id ? updated : p)),
+            auditLogs: [
+              audit(
+                prev.branch,
+                user,
+                "Update Salesperson",
+                `${prev.name}/${prev.active}`,
+                `${name}/${active}`,
+              ),
+              ...s.auditLogs,
+            ],
           };
         }),
       removeSalesperson: (id, user) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
+          if (!prev) return s;
+          mirrorOperationRecord(prev.branch, "salesperson", id, { ...prev, active: false, status: "Deleted" }, {
+            recordNo: prev.mobile,
+            status: "Deleted",
+            actor: user,
+          });
           return {
             salespeople: s.salespeople.filter((p) => p.id !== id),
-            auditLogs: prev
-              ? [
-                  audit(
-                    prev.branch,
-                    user,
-                    "Delete Salesperson",
-                    prev.name,
-                    "-",
-                  ),
-                  ...s.auditLogs,
-                ]
-              : s.auditLogs,
+            auditLogs: [
+              audit(
+                prev.branch,
+                user,
+                "Delete Salesperson",
+                prev.name,
+                "-",
+              ),
+              ...s.auditLogs,
+            ],
           };
         }),
       addAdvanceCakeOrder: (order) => {

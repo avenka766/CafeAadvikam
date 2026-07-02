@@ -195,6 +195,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Purchase Invoice', path: '/bakery/receive/snb?tab=purchase-invoice', icon: <Receipt className="size-4" />, group: 'Operations' },
         { label: 'Purchase Return', path: '/bakery/receive/snb?tab=purchase-return', icon: <RotateCcw className="size-4" />, group: 'Operations' },
         { label: 'Advance Orders', path: '/bakery/receive/snb?tab=advance', icon: <ClipboardList className="size-4" />, group: 'Sales' },
+        { label: 'Daily Closure', path: '/bakery/receive/snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Dump / Damage / Transfer Out', path: '/bakery/receive/snb?tab=stock-movements', icon: <Truck className="size-4" />, group: 'Stock' },
         { label: 'Stock Count', path: '/bakery/receive/snb?tab=stock-count', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
       ];

@@ -129,6 +129,54 @@ export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: B
   );
 }
 
+type ReturnInvoice = {
+  id: string;
+  supplier_name: string;
+  invoice_number: string;
+  invoice_date: string;
+  total_amount: number | string;
+  balance_amount: number | string;
+  payment_method: string | null;
+  sync_status: string;
+  revision_pending: boolean;
+  created_by: string | null;
+  created_at: string;
+};
+
+type ReturnItem = {
+  id: string;
+  item_name: string;
+  quantity: number | string;
+  synced_quantity: number | string;
+  unit: string;
+  rate: number | string;
+  tax: number | string;
+  discount: number | string;
+  returnedQuantity: number;
+  returnableQuantity: number;
+  returnQuantity: string;
+  itemReason: string;
+};
+
+type ReturnRow = {
+  id: string;
+  return_no: string;
+  supplier_name: string;
+  invoice_number: string;
+  return_date: string;
+  reason_type: string;
+  settlement_type: string;
+  total_amount: number | string;
+  entered_by: string;
+  status: string;
+  created_at: string;
+};
+
+type PriorReturnItem = {
+  purchase_invoice_item_id: string;
+  quantity: number | string;
+};
+
 export function SnbPurchaseInvoicePanel() {
   const user = useAuthStore((state) => state.currentUser);
   const fetchBranchData = useBranchStore((state) => state.fetchBranchData);
@@ -200,7 +248,13 @@ export function SnbPurchaseReturnPanel() {
   const loadBase = useCallback(async () => {
     setLoading(true);
     const [invoiceResult, historyResult] = await Promise.all([
-      supabase.from("snb_purchase_invoices").select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,payment_method,sync_status,created_by,created_at").neq("sync_status", "Not Synced").order("created_at", { ascending: false }).limit(500),
+      supabase
+        .from("snb_purchase_invoices")
+        .select("id,supplier_name,invoice_number,invoice_date,total_amount,balance_amount,payment_method,sync_status,revision_pending,created_by,created_at")
+        .eq("sync_status", "Synced")
+        .eq("revision_pending", false)
+        .order("created_at", { ascending: false })
+        .limit(500),
       supabase.from("snb_purchase_returns").select("id,return_no,supplier_name,invoice_number,return_date,reason_type,settlement_type,total_amount,entered_by,status,created_at").order("created_at", { ascending: false }).limit(500),
     ]);
     setLoading(false);
@@ -210,17 +264,75 @@ export function SnbPurchaseReturnPanel() {
 
   useEffect(() => { void loadBase(); }, [loadBase]);
   useEffect(() => {
-    if (!invoiceId) { setItems([]); return; }
+    if (!invoiceId) {
+      setItems([]);
+      return;
+    }
+
     void (async () => {
       setLoading(true);
-      const { data, error: itemError } = await supabase.from("snb_purchase_invoice_items").select("id,item_name,quantity,synced_quantity,unit,rate,tax,discount").eq("purchase_invoice_id", invoiceId).order("item_name");
+      setError("");
+
+      const { data: invoiceItems, error: itemError } = await supabase
+        .from("snb_purchase_invoice_items")
+        .select("id,item_name,quantity,synced_quantity,unit,rate,tax,discount")
+        .eq("purchase_invoice_id", invoiceId)
+        .order("item_name");
+
+      if (itemError) {
+        setLoading(false);
+        setError(itemError.message);
+        return;
+      }
+
+      const baseItems = (invoiceItems || []) as Array<
+        Omit<ReturnItem, "returnedQuantity" | "returnableQuantity" | "returnQuantity" | "itemReason">
+      >;
+      const itemIds = baseItems.map((item) => item.id);
+      let priorReturns: PriorReturnItem[] = [];
+
+      if (itemIds.length > 0) {
+        const { data: returnedRows, error: returnedError } = await supabase
+          .from("snb_purchase_return_items")
+          .select("purchase_invoice_item_id,quantity")
+          .in("purchase_invoice_item_id", itemIds);
+
+        if (returnedError) {
+          setLoading(false);
+          setError(returnedError.message);
+          return;
+        }
+
+        priorReturns = (returnedRows || []) as PriorReturnItem[];
+      }
+
+      const returnedByItem = new Map<string, number>();
+      for (const row of priorReturns) {
+        returnedByItem.set(
+          row.purchase_invoice_item_id,
+          (returnedByItem.get(row.purchase_invoice_item_id) || 0) + Number(row.quantity || 0),
+        );
+      }
+
+      setItems(
+        baseItems.map((item) => {
+          const returnedQuantity = returnedByItem.get(item.id) || 0;
+          const returnableQuantity = Math.max(0, Number(item.synced_quantity || 0) - returnedQuantity);
+          return {
+            ...item,
+            returnedQuantity,
+            returnableQuantity,
+            returnQuantity: "",
+            itemReason: "",
+          };
+        }),
+      );
       setLoading(false);
-      if (itemError) setError(itemError.message);
-      else setItems(((data || []) as Omit<ReturnItem, "returnQuantity" | "itemReason">[]).map((item) => ({ ...item, returnQuantity: "", itemReason: "" })));
     })();
   }, [invoiceId]);
 
   const stockFor = (itemName: string) => stock.find((item) => normal(item.itemName) === normal(itemName));
+  const selectedInvoice = invoices.find((invoice) => invoice.id === invoiceId);
   const selected = items.filter((item) => Number(item.returnQuantity || 0) > 0);
   const estimated = selected.reduce((sum, item) => {
     const qty = Number(item.returnQuantity || 0); const originalQty = Number(item.quantity || 0); const ratio = originalQty > 0 ? qty / originalQty : 0;
@@ -229,13 +341,24 @@ export function SnbPurchaseReturnPanel() {
 
   const submit = async () => {
     setError(""); setSuccess("");
-    if (!invoiceId) return setError("Select a synced purchase invoice.");
+    if (!invoiceId || !selectedInvoice) return setError("Select a fully synced purchase invoice.");
+    if (selectedInvoice.sync_status !== "Synced" || selectedInvoice.revision_pending) {
+      return setError("Re-sync the edited purchase invoice before creating a return.");
+    }
+    if (form.returnDate > todayInput()) return setError("Return date cannot be in the future.");
+    if (form.returnDate < selectedInvoice.invoice_date) return setError("Return date cannot be before the invoice date.");
     if (!selected.length) return setError("Enter a return quantity for at least one item.");
     if (form.remarks.trim().length < 5) return setError("Enter clear return remarks.");
     for (const item of selected) {
-      const qty = Number(item.returnQuantity || 0); const available = Number(stockFor(item.item_name)?.availableQuantity ?? stockFor(item.item_name)?.quantity ?? 0); const invoiceQty = Number(item.synced_quantity ?? item.quantity ?? 0);
-      if (qty <= 0 || qty > invoiceQty + 0.0001) return setError(`${item.item_name}: invalid return quantity.`);
-      if (qty > available + 0.0001) return setError(`${item.item_name}: only ${formatQty(available, item.unit)} is available in live stock.`);
+      const qty = Number(item.returnQuantity || 0);
+      const live = stockFor(item.item_name);
+      const available = Number(live?.availableQuantity ?? live?.quantity ?? 0);
+      if (qty <= 0 || qty > item.returnableQuantity + 0.0001) {
+        return setError(`${item.item_name}: only ${formatQty(item.returnableQuantity, item.unit)} remains returnable.`);
+      }
+      if (qty > available + 0.0001) {
+        return setError(`${item.item_name}: only ${formatQty(available, live?.unit || item.unit)} is unreserved in live stock.`);
+      }
       if (item.itemReason.trim().length < 3) return setError(`Enter item details for ${item.item_name}.`);
     }
     if (form.settlementType === "Credit Note" && !form.creditNoteNo.trim()) return setError("Credit note number is required.");
@@ -264,9 +387,17 @@ export function SnbPurchaseReturnPanel() {
     <div className="grid h-full min-h-0 gap-3 overflow-auto xl:grid-cols-[minmax(380px,1fr)_minmax(0,1fr)]">
       <section className={cn(panelClass, "p-3")}>
         <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Stock deduction is automatic</p><h2 className="font-display text-lg font-black">New Purchase Return</h2></div><RotateCcw className="size-5 text-amber-600" /></div>
-        <Field label="Synced Purchase Invoice"><select className={inputClass} value={invoiceId} onChange={(event) => { setInvoiceId(event.target.value); setError(""); }}><option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name}</option>)}</select></Field>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Return Date"><input type="date" max={todayInput()} className={inputClass} value={form.returnDate} onChange={(event) => setForm({ ...form, returnDate: event.target.value })} /></Field><Field label="Reason"><select className={inputClass} value={form.reasonType} onChange={(event) => setForm({ ...form, reasonType: event.target.value })}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputClass} value={form.settlementType} onChange={(event) => setForm({ ...form, settlementType: event.target.value })}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>No Financial Adjustment</option></select></Field>{form.settlementType === "Credit Note" ? <Field label="Credit Note No"><input className={inputClass} value={form.creditNoteNo} onChange={(event) => setForm({ ...form, creditNoteNo: event.target.value })} /></Field> : ["Cash Refund", "Bank Refund"].includes(form.settlementType) ? <Field label="Reference No"><input className={inputClass} value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} /></Field> : <div />}</div>
-        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); return <div key={item.id} className="rounded-2xl border border-border bg-slate-50 p-2.5"><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Invoice: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Live: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div><input type="number" min="0" step="0.001" value={item.returnQuantity} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: event.target.value } : line))} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none" /></div><input value={item.itemReason} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line))} placeholder="Damage / return details" className="mt-2 h-9 w-full rounded-xl border border-border px-3 text-xs font-bold outline-none" /></div>; })}</div>
+        <Field label="Synced Purchase Invoice"><select className={inputClass} value={invoiceId} onChange={(event) => {
+          const nextInvoiceId = event.target.value;
+          const nextInvoice = invoices.find((invoice) => invoice.id === nextInvoiceId);
+          setInvoiceId(nextInvoiceId);
+          setError("");
+          if (nextInvoice && form.returnDate < nextInvoice.invoice_date) {
+            setForm((current) => ({ ...current, returnDate: nextInvoice.invoice_date }));
+          }
+        }}><option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} · {invoice.supplier_name}</option>)}</select></Field>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Return Date"><input type="date" min={selectedInvoice?.invoice_date} max={todayInput()} className={inputClass} value={form.returnDate} onChange={(event) => setForm({ ...form, returnDate: event.target.value })} /></Field><Field label="Reason"><select className={inputClass} value={form.reasonType} onChange={(event) => setForm({ ...form, reasonType: event.target.value })}><option>Damaged</option><option>Expired</option><option>Quality Issue</option><option>Short Received</option><option>Wrong Item</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputClass} value={form.settlementType} onChange={(event) => setForm({ ...form, settlementType: event.target.value })}><option>Credit Note</option><option>Replacement</option><option>Cash Refund</option><option>Bank Refund</option><option>No Financial Adjustment</option></select></Field>{form.settlementType === "Credit Note" ? <Field label="Credit Note No"><input className={inputClass} value={form.creditNoteNo} onChange={(event) => setForm({ ...form, creditNoteNo: event.target.value })} /></Field> : ["Cash Refund", "Bank Refund"].includes(form.settlementType) ? <Field label="Reference No"><input className={inputClass} value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} /></Field> : <div />}</div>
+        <div className="mt-3 space-y-2">{loading && invoiceId ? <div className="flex justify-center py-8"><Loader2 className="size-5 animate-spin" /></div> : items.map((item) => { const live = stockFor(item.item_name); return <div key={item.id} className="rounded-2xl border border-border bg-slate-50 p-2.5"><div className="flex items-center justify-between gap-2"><div><p className="text-xs font-black">{item.item_name}</p><p className="text-[10px] font-semibold text-muted-foreground">Purchased: {formatQty(Number(item.synced_quantity ?? item.quantity), item.unit)} · Returned: {formatQty(item.returnedQuantity, item.unit)} · Returnable: {formatQty(item.returnableQuantity, item.unit)} · Live unreserved: {formatQty(Number(live?.availableQuantity ?? live?.quantity ?? 0), live?.unit || item.unit)}</p></div><input type="number" min="0" max={Math.min(item.returnableQuantity, Number(live?.availableQuantity ?? live?.quantity ?? 0))} step="0.001" disabled={item.returnableQuantity <= 0} value={item.returnQuantity} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, returnQuantity: event.target.value } : line))} placeholder="Qty" className="h-9 w-24 rounded-xl border border-border px-2 text-right text-xs font-black outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div><input value={item.itemReason} onChange={(event) => setItems((current) => current.map((line) => line.id === item.id ? { ...line, itemReason: event.target.value } : line))} placeholder="Damage / return details" className="mt-2 h-9 w-full rounded-xl border border-border px-3 text-xs font-bold outline-none" /></div>; })}</div>
         <div className="mt-3"><Field label="Remarks"><textarea className={textareaClass} value={form.remarks} onChange={(event) => setForm({ ...form, remarks: event.target.value })} /></Field></div>
         <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2"><span className="text-xs font-black text-amber-800">Estimated return value</span><strong>{money(estimated)}</strong></div>
         <div className="mt-3"><StatusMessage error={error} success={success} /></div>
@@ -279,6 +410,7 @@ export function SnbPurchaseReturnPanel() {
 
 export type StockMovementMode = "Dump" | "Damage" | "Trans Out";
 type WasteRow = { id: string; log_type: StockMovementMode; item_name: string; quantity: number | string; unit: string; reason: string; verified_by: string; created_by_username: string; created_at: string };
+type WasteLine = { lineId: string; itemName: string; barcode?: number; quantity: string; unit: string };
 
 export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const { items: catalogItems } = useOperationalBranchCatalog("SNB");
@@ -286,31 +418,59 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const user = useAuthStore((state) => state.currentUser);
   const userName = user?.displayName || user?.username || "SNB Order";
   const first = catalogItems[0];
-  const [form, setForm] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: first?.uom === "Kgs" ? "kg" : "pcs", reason: "", verifiedBy: userName, confirmed: false });
+  const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: first?.uom === "Kgs" ? "kg" : "pcs" });
+  const [lines, setLines] = useState<WasteLine[]>([]);
+  const [meta, setMeta] = useState({ reason: "", verifiedBy: userName, confirmed: false });
   const [history, setHistory] = useState<WasteRow[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  useEffect(() => { if (!form.itemName && first) setForm((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: first.uom === "Kgs" ? "kg" : "pcs" })); }, [first, form.itemName]);
+  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: first.uom === "Kgs" ? "kg" : "pcs" })); }, [first, lineDraft.itemName]);
+  // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
+  useEffect(() => { setLines([]); setError(""); setSuccess(""); }, [mode]);
   const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
   useEffect(() => { void loadRows(); }, [loadRows]);
-  const stockRow = stock.find((item) => form.barcode != null && item.itemBarcode != null ? item.itemBarcode === form.barcode : normal(item.itemName) === normal(form.itemName));
-  const available = Number(stockRow?.availableQuantity ?? stockRow?.quantity ?? 0);
-  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setForm((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs" })); };
+
+  const stockFor = (itemName: string, barcode?: number) => stock.find((item) => barcode != null && item.itemBarcode != null ? item.itemBarcode === barcode : normal(item.itemName) === normal(itemName));
+  const draftStockRow = stockFor(lineDraft.itemName, lineDraft.barcode);
+  const draftAvailable = Number(draftStockRow?.availableQuantity ?? draftStockRow?.quantity ?? 0);
+  // Account for quantities of the same item already queued in this batch, so a second line for the same item is checked against what's actually left.
+  const queuedForDraftItem = lines.filter((line) => (lineDraft.barcode != null && line.barcode != null) ? line.barcode === lineDraft.barcode : normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+  const draftRemaining = Math.max(0, draftAvailable - queuedForDraftItem);
+
+  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setLineDraft((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs" })); };
+
+  const addLine = () => {
+    setError("");
+    const qty = Number(lineDraft.quantity || 0);
+    if (!lineDraft.itemName || qty <= 0) return setError("Choose an item and enter a valid quantity.");
+    if (qty > draftRemaining) return setError(`Only ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)} is available for ${lineDraft.itemName} (after items already added).`);
+    setLines((current) => [...current, { lineId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, itemName: lineDraft.itemName, barcode: lineDraft.barcode, quantity: lineDraft.quantity, unit: lineDraft.unit }]);
+    setLineDraft((current) => ({ ...current, quantity: "" }));
+  };
+  const removeLine = (lineId: string) => setLines((current) => current.filter((line) => line.lineId !== lineId));
+
   const submit = async () => {
-    setError(""); setSuccess(""); const qty = Number(form.quantity || 0);
-    if (!form.itemName || qty <= 0) return setError("Choose an item and enter a valid quantity.");
-    if (qty > available) return setError(`Only ${formatQty(available, stockRow?.unit || form.unit)} is available.`);
-    if (form.reason.trim().length < 3 || !form.verifiedBy.trim()) return setError("Reason and verifier are required.");
-    if (!form.confirmed) return setError("Confirm the physical verification before posting.");
+    setError(""); setSuccess("");
+    if (lines.length === 0) return setError("Add at least one item to the list before posting.");
+    if (meta.reason.trim().length < 3 || !meta.verifiedBy.trim()) return setError("Reason and verifier are required.");
+    if (!meta.confirmed) return setError("Confirm the physical verification before posting.");
     setSaving(true);
-    const { error: saveError } = await supabase.rpc("record_branch_waste_secure", { p_branch: "SNB", p_log_type: mode, p_item_barcode: form.barcode || null, p_item_name: form.itemName, p_quantity: qty, p_unit: form.unit, p_reason: form.reason.trim(), p_verified_by: form.verifiedBy.trim(), p_checklist: ["Quantity physically verified", `Entered by SNB Order - ${userName}`] });
+    const { error: saveError } = await supabase.rpc("record_branch_waste_batch_secure", {
+      p_branch: "SNB",
+      p_log_type: mode,
+      p_items: lines.map((line) => ({ itemBarcode: line.barcode ?? null, itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
+      p_reason: meta.reason.trim(),
+      p_verified_by: meta.verifiedBy.trim(),
+      p_checklist: ["Quantity physically verified", `Entered by SNB Order - ${userName}`],
+    });
     setSaving(false);
     if (saveError) return setError(saveError.message);
-    setSuccess(`${mode === "Trans Out" ? "Transfer Out" : mode} posted and shared with SNB Admin.`);
-    setForm((current) => ({ ...current, quantity: "", reason: "", confirmed: false }));
+    setSuccess(`${lines.length} item${lines.length > 1 ? "s" : ""} posted as ${mode === "Trans Out" ? "Transfer Out" : mode} and shared with SNB Admin.`);
+    setLines([]);
+    setMeta((current) => ({ ...current, reason: "", confirmed: false }));
     await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData("SNB")]);
   };
   const title = mode === "Trans Out" ? "Transfer Out" : mode;
@@ -318,7 +478,39 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
 
   return (
     <div className="grid h-full min-h-0 gap-3 overflow-auto xl:grid-cols-[minmax(340px,0.85fr)_minmax(0,1.15fr)]">
-      <section className={cn(panelClass, "p-3")}><div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Live stock deduction</p><h2 className="font-display text-lg font-black">New {title}</h2></div><Icon className="size-5 text-amber-600" /></div><div className="space-y-3"><Field label="Item" hint={`Available now: ${formatQty(available, stockRow?.unit || form.unit)}`}><select className={inputClass} value={form.itemName} onChange={(event) => choose(event.target.value)}>{catalogItems.map((item) => <option key={item.barcode}>{item.name}</option>)}</select></Field><div className="grid grid-cols-2 gap-3"><Field label="Quantity"><input type="number" min="0.001" step="0.001" className={inputClass} value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field><Field label="Unit"><input className={inputClass} value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} /></Field></div><Field label="Reason / Destination"><textarea className={textareaClass} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder={mode === "Trans Out" ? "Destination and transfer reason" : `${title} reason`} /></Field><Field label="Verified By"><input className={inputClass} value={form.verifiedBy} onChange={(event) => setForm({ ...form, verifiedBy: event.target.value })} /></Field><label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={form.confirmed} onChange={(event) => setForm({ ...form, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm the quantity was physically checked and may be deducted from usable SNB stock.</span></label><StatusMessage error={error} success={success} /><button type="button" onClick={() => void submit()} disabled={saving} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title}</button></div></section>
+      <section className={cn(panelClass, "p-3")}>
+        <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Live stock deduction</p><h2 className="font-display text-lg font-black">New {title}</h2></div><Icon className="size-5 text-amber-600" /></div>
+        <div className="space-y-3">
+          <Field label="Item" hint={`Available now: ${formatQty(draftRemaining, draftStockRow?.unit || lineDraft.unit)}`}>
+            <select className={inputClass} value={lineDraft.itemName} onChange={(event) => choose(event.target.value)}>{catalogItems.map((item) => <option key={item.barcode}>{item.name}</option>)}</select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantity"><input type="number" min="0.001" step="0.001" className={inputClass} value={lineDraft.quantity} onChange={(event) => setLineDraft({ ...lineDraft, quantity: event.target.value })} /></Field>
+            <Field label="Unit"><input className={inputClass} value={lineDraft.unit} onChange={(event) => setLineDraft({ ...lineDraft, unit: event.target.value })} /></Field>
+          </div>
+          <button type="button" onClick={addLine} className={cn(primaryButton, "w-full bg-amber-600")}><Plus className="size-4" /> Add item to list</button>
+
+          {lines.length > 0 && (
+            <div className="rounded-2xl border border-border bg-slate-50 p-2.5">
+              <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-500">{lines.length} item{lines.length > 1 ? "s" : ""} queued for this {title.toLowerCase()}</p>
+              <div className="space-y-1.5">
+                {lines.map((line) => (
+                  <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
+                    <div className="text-xs font-bold"><span className="font-black">{line.itemName}</span> · {formatQty(Number(line.quantity), line.unit)}</div>
+                    <button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Field label="Reason / Destination"><textarea className={textareaClass} value={meta.reason} onChange={(event) => setMeta({ ...meta, reason: event.target.value })} placeholder={mode === "Trans Out" ? "Destination and transfer reason" : `${title} reason`} /></Field>
+          <Field label="Verified By"><input className={inputClass} value={meta.verifiedBy} onChange={(event) => setMeta({ ...meta, verifiedBy: event.target.value })} /></Field>
+          <label className="flex items-start gap-2 rounded-xl border border-border bg-slate-50 p-3 text-xs font-bold"><input type="checkbox" checked={meta.confirmed} onChange={(event) => setMeta({ ...meta, confirmed: event.target.checked })} className="mt-0.5" /><span>I confirm every item's quantity was physically checked and may be deducted from usable SNB stock.</span></label>
+          <StatusMessage error={error} success={success} />
+          <button type="button" onClick={() => void submit()} disabled={saving || lines.length === 0} className={cn(primaryButton, "w-full")}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Post {title} ({lines.length} item{lines.length === 1 ? "" : "s"})</button>
+        </div>
+      </section>
       <section className={cn(panelClass, "min-h-[420px] overflow-auto")}><div className="sticky top-0 flex items-center justify-between border-b border-border bg-white p-3"><h3 className="text-sm font-black">{title} History</h3><button type="button" onClick={() => void loadRows()} className="grid size-9 place-items-center rounded-xl border border-border"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button></div>{history.length === 0 ? <div className="p-8 text-center text-sm font-bold text-muted-foreground">No {title.toLowerCase()} records found.</div> : <div className="divide-y divide-border">{history.map((row) => <article key={row.id} className="p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-black">{row.item_name}</p><p className="text-xs font-bold text-muted-foreground">{formatQty(Number(row.quantity), row.unit)} · {row.reason}</p></div><span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{title}</span></div><p className="mt-2 text-[10px] font-semibold text-muted-foreground">Verified by {row.verified_by} · Entered by {row.created_by_username} · {new Date(row.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</p></article>)}</div>}</section>
     </div>
   );

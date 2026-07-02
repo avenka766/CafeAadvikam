@@ -386,6 +386,8 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           itemBarcode:   d.item_barcode != null ? Number(d.item_barcode) : undefined,
           itemName:      d.item_name,
           quantity:      Number(d.quantity),
+          reservedQuantity: 0,
+          availableQuantity: Number(d.quantity),
           unit:          (d.unit === 'pcs' ? 'pcs' : 'kg') as 'pcs' | 'kg',
           receivedAt:    d.received_at,
           dispatchedBy:  d.dispatched_by,
@@ -857,7 +859,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         );
       } else {
         stock[branch] = [...stock[branch], {
-          itemBarcode: inc.itemBarcode, itemName: inc.itemName, quantity: inc.quantity, unit: inc.unit, minThreshold: 10, price: null,
+          itemBarcode: inc.itemBarcode, itemName: inc.itemName, quantity: inc.quantity,
+          reservedQuantity: 0, availableQuantity: inc.quantity,
+          unit: inc.unit, minThreshold: 10, price: null,
         }];
       }
       return { incoming, stock };
