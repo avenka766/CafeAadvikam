@@ -1524,7 +1524,7 @@ function SalesReturnsTab(props: any) {
                   Type: r.type,
                   Number: r.no,
                   Date: fmtDateTime(r.date),
-                  Person: r.person,
+                  CashierName: r.person,
                   GrossSales: r.gross,
                   ReturnAmount: r.returns,
                   NetSales: r.net,
@@ -1543,7 +1543,7 @@ function SalesReturnsTab(props: any) {
             "Type",
             "No",
             "Date",
-            "Person",
+            "Cashier Name",
             "Gross Sales",
             "Return Amount",
             "Net Sales",
@@ -2990,6 +2990,8 @@ export function PurchaseInvoicesTab({
   const [itemSearch, setItemSearch] = useState("");
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [syncFilter, setSyncFilter] = useState<"all" | "synced" | "not-synced">("all");
+  const [invoiceFromDate, setInvoiceFromDate] = useState("");
+  const [invoiceToDate, setInvoiceToDate] = useState("");
   const [lines, setLines] = useState<PurchaseLine[]>([]);
   const [syncedBaseline, setSyncedBaseline] = useState<Array<{ itemName: string; quantity: number; unit?: PurchaseUnit }>>([]);
   const [saving, setSaving] = useState(false);
@@ -3105,9 +3107,15 @@ export function PurchaseInvoicesTab({
         purchase.invoiceNo.toLowerCase().includes(query) ||
         purchase.supplier.toLowerCase().includes(query) ||
         itemText.includes(query);
-      return syncMatches && searchMatches;
+      const invoiceDateKey = purchase.invoiceDate
+        ? purchase.invoiceDate.slice(0, 10)
+        : localDateKey(purchase.createdAt);
+      const dateMatches =
+        (!invoiceFromDate || invoiceDateKey >= invoiceFromDate) &&
+        (!invoiceToDate || invoiceDateKey <= invoiceToDate);
+      return syncMatches && searchMatches && dateMatches;
     });
-  }, [invoiceSearch, rows, syncFilter]);
+  }, [invoiceFromDate, invoiceSearch, invoiceToDate, rows, syncFilter]);
 
   const selectedPurchase = editingPurchaseId
     ? rows.find((purchase) => purchase.id === editingPurchaseId)
@@ -3628,7 +3636,7 @@ export function PurchaseInvoicesTab({
           </div>
         }
       >
-        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_160px_160px_auto]">
           <label className="relative">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -3650,12 +3658,28 @@ export function PurchaseInvoicesTab({
               <option value="synced">Synced</option>
             </select>
           </label>
-          {(invoiceSearch || syncFilter !== "all") && (
+          <input
+            type="date"
+            className={inputCls}
+            value={invoiceFromDate}
+            onChange={(event) => setInvoiceFromDate(event.target.value)}
+            aria-label="Invoice date from"
+          />
+          <input
+            type="date"
+            className={inputCls}
+            value={invoiceToDate}
+            onChange={(event) => setInvoiceToDate(event.target.value)}
+            aria-label="Invoice date to"
+          />
+          {(invoiceSearch || syncFilter !== "all" || invoiceFromDate || invoiceToDate) && (
             <button
               className={cn(btnCls, "bg-slate-100 text-slate-700")}
               onClick={() => {
                 setInvoiceSearch("");
                 setSyncFilter("all");
+                setInvoiceFromDate("");
+                setInvoiceToDate("");
               }}
             >
               <X className="size-4" /> Clear
@@ -3664,7 +3688,7 @@ export function PurchaseInvoicesTab({
         </div>
 
         <DataTable
-          headers={["Invoice", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
+          headers={["Invoice", "Date", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
           rows={visibleRows.map((purchase) => {
             const balance = balanceFor(purchase);
             const paidAmount = paidFor(purchase);
@@ -3675,14 +3699,19 @@ export function PurchaseInvoicesTab({
             return [
               <div key="invoice" className="min-w-[130px]">
                 <p className="font-black text-slate-950">{purchase.invoiceNo}</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {fmtDate(purchase.invoiceDate || purchase.createdAt)}
-                </p>
                 {purchase.lastEditedBy && (
                   <p className="mt-1 text-[10px] font-bold text-blue-600">
                     Edited by {purchase.lastEditedBy}
                   </p>
                 )}
+              </div>,
+              <div key="date" className="min-w-[110px]">
+                <p className="font-black text-slate-800 tabular-nums">
+                  {purchase.invoiceDate ? purchase.invoiceDate.slice(0, 10) : localDateKey(purchase.createdAt)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {fmtDate(purchase.invoiceDate || purchase.createdAt)}
+                </p>
               </div>,
               <div key="supplier" className="min-w-[140px]">
                 <p className="font-black text-slate-800">{purchase.supplier}</p>
