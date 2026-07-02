@@ -1104,7 +1104,6 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const [dbCounterSession, setDbCounterSession] = useState<null | { id: string; openingCash: number; openedAt: string; cashier: string; cashierUserId: string; cashierDisplayName?: string; denominations?: Record<string,string> }>(null);
   const user = currentUser?.username || currentUser?.displayName || 'Cashier';
   const isSnbOrder = source === 'snb-order' && branch === 'SNB';
-  const auditActor = isSnbOrder ? `SNB Order - ${user}` : user;
   const denominations = [500,200,100,50,20,10,5,2,1];
   const denomTotal = (values: Record<number,string>) => denominations.reduce((sum, d) => sum + d * Number(values[d] || 0), 0);
   const openTotal = denomTotal(openDenominations);
@@ -1113,11 +1112,21 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     && record.date === todayIso()
     && record.active !== false
     && (currentUser?.id ? record.cashierUserId === currentUser.id : record.cashier === user));
+  // Many branches (e.g. SNB) share one login across multiple people at the counter,
+  // so the actual on-duty person's name (typed in the "Cashier Name" field when
+  // opening the counter) should be attributed everywhere, not the shared login's
+  // own username/display name.
+  const activeCashierName = localCounterOpenRecord?.cashier
+    || dbCounterSession?.cashierDisplayName
+    || dbCounterSession?.cashier
+    || openCashier.trim()
+    || user;
+  const auditActor = isSnbOrder ? `SNB Order - ${activeCashierName}` : activeCashierName;
   const branchCounterOpenRecord = useMemo(() => localCounterOpenRecord ?? (dbCounterSession ? {
     id: dbCounterSession.id,
     branch,
     date: todayIso(),
-    cashier: dbCounterSession.cashier,
+    cashier: dbCounterSession.cashierDisplayName || dbCounterSession.cashier,
     cashierUserId: dbCounterSession.cashierUserId,
     counterSessionId: dbCounterSession.id,
     openingCash: dbCounterSession.openingCash,
@@ -1518,10 +1527,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     const openingDenominations = Object.fromEntries(
       Object.entries(openDenominations).map(([denom, count]) => [String(denom), String(count || '')]),
     );
+    const operatorName = openCashier.trim();
     const { data, error: openError } = await supabase.rpc('open_branch_counter_session_secure', {
       p_branch: branch,
       p_opening_cash: openTotal,
       p_opening_denominations: openingDenominations,
+      p_operator_name: operatorName || null,
     });
     if (openError) {
       setOpenSavedMessage(`Could not open cashier counter: ${openError.message}`);
@@ -1535,12 +1546,12 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     const record = openCounter({
       branch,
       date: todayIso(),
-      cashier: user,
+      cashier: operatorName || user,
       cashierUserId: currentUser.id,
       counterSessionId: String(inserted.id),
       openingCash: Number(inserted.opening_cash || 0),
       denominations: openingDenominations,
-      openedBy: auditActor,
+      openedBy: String(inserted.cashier_display_name || operatorName || user),
     });
     setDbCounterSession({
       id: String(inserted.id),
@@ -1691,8 +1702,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
         </div>
         <div className="mt-4 grid gap-3 xl:grid-cols-[260px_minmax(0,1fr)_180px]">
           <div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier</label>
-            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
+            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Cashier Name (on duty)</label>
+            <input value={openCashier} onChange={(e)=>setOpenCashier(e.target.value)} disabled={Boolean(branchCounterOpenRecord)} placeholder="Enter your name" className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:bg-slate-100 disabled:text-slate-500" />
           </div>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
             {denominations.map((denom) => (
