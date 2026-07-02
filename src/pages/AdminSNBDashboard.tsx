@@ -2090,12 +2090,34 @@ function printWasteLog(entry: any, branchLabel: string) {
   printHtml(`${branchLabel} Waste Log - ${entry.itemName}`, body);
 }
 
+function printWasteLogBatch(entries: Array<{ itemName: string; quantity: number; unit: string }>, logType: string, reason: string, verifiedBy: string, createdBy: string, checklist: string[], branchLabel: string) {
+  const itemRows = entries
+    .map((entry) => `<div class="row"><span>${entry.itemName}</span><b>${entry.quantity} ${entry.unit}</b></div>`)
+    .join("");
+  const rows = [
+    ["Reason", reason],
+    ["Verified By", verifiedBy],
+    ["Logged By", createdBy],
+  ];
+  const checklistHtml = checklist.length
+    ? `<div class="dash"></div><div class="b">Checklist Confirmed</div>${checklist
+        .map((c: string) => `<div class="row"><span>&#10003; ${c}</span></div>`)
+        .join("")}`
+    : "";
+  const body = `<div class="stamp">WASTE LOG — ${String(logType).toUpperCase()} (${entries.length} ITEMS)</div><h2 class="c">${branchLabel}</h2><div class="dash"></div><div class="b">Items</div>${itemRows}<div class="dash"></div>${rows
+    .map(([label, value]) => `<div class="row"><span>${label}</span><b>${value}</b></div>`)
+    .join("")}${checklistHtml}<div class="dash"></div><div class="c">Stock updated automatically · Printed ${new Date().toLocaleString("en-IN")}</div>`;
+  printHtml(`${branchLabel} Waste Log - ${entries.length} items`, body);
+}
+
 function WasteLogsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
   const { wasteLogs, addWasteLog } = useBranchOpsStore();
   const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
-  const [form, setForm] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs", reason: "", verifiedBy: "", checklist: [] as string[] });
+  const [lineDraft, setLineDraft] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs" });
+  const [lines, setLines] = useState<Array<{ lineId: string; itemName: string; quantity: string; unit: string }>>([]);
+  const [meta, setMeta] = useState({ reason: "", verifiedBy: "", checklist: [] as string[] });
   const transferOutChecklist = [
     "Verify standard quantity in box or Kgs or Pcs before transfer",
     "Cross-check all box or Kgs or Pcs before transfer-out and sync",
@@ -2111,56 +2133,97 @@ function WasteLogsTab({ userName }: { userName: string }) {
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
   const rows = wasteLogs.filter((w) => w.branch === BRANCH);
   const [validationError, setValidationError] = useState("");
-  const save = async () => {
-    const qty = Number(form.quantity);
+  const [saving, setSaving] = useState(false);
+
+  // Reset the queued list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
+  useEffect(() => { setLines([]); setValidationError(""); }, [subTab]);
+
+  const stockRowFor = (itemName: string) => {
+    const catalogItem = catalogItems.find((item) => normal(item.name) === normal(itemName));
+    return (stock[BRANCH] || []).find((stockItem) =>
+      catalogItem?.barcode != null && stockItem.itemBarcode != null
+        ? stockItem.itemBarcode === catalogItem.barcode
+        : normal(stockItem.itemName) === normal(itemName),
+    );
+  };
+  const draftCurrentQty = Number(stockRowFor(lineDraft.itemName)?.quantity || 0);
+  const queuedForDraftItem = lines.filter((line) => normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+  const draftRemaining = Math.max(0, draftCurrentQty - queuedForDraftItem);
+
+  const addLine = () => {
     setValidationError("");
-    if (!form.itemName || !Number.isFinite(qty) || qty <= 0) {
+    const qty = Number(lineDraft.quantity);
+    if (!lineDraft.itemName || !Number.isFinite(qty) || qty <= 0) {
       setValidationError("Enter a valid quantity greater than zero.");
       return;
     }
-    if (!form.reason.trim() || !form.verifiedBy.trim()) {
+    if (qty > draftRemaining) {
+      setValidationError(`Cannot queue ${qty} ${lineDraft.unit} for ${lineDraft.itemName}; only ${draftRemaining} available (after items already added).`);
+      return;
+    }
+    setLines((current) => [...current, { lineId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, itemName: lineDraft.itemName, quantity: lineDraft.quantity, unit: lineDraft.unit }]);
+    setLineDraft((current) => ({ ...current, quantity: "" }));
+  };
+  const removeLine = (lineId: string) => setLines((current) => current.filter((line) => line.lineId !== lineId));
+
+  const save = async () => {
+    setValidationError("");
+    if (lines.length === 0) {
+      setValidationError("Add at least one item to the list before saving.");
+      return;
+    }
+    if (!meta.reason.trim() || !meta.verifiedBy.trim()) {
       setValidationError("Reason and Verified By are mandatory.");
       return;
     }
-    if (checklistOptions.some((item) => !form.checklist.includes(item))) {
+    if (checklistOptions.some((item) => !meta.checklist.includes(item))) {
       setValidationError("Complete every checklist item before saving.");
       return;
     }
-    const catalogItem = catalogItems.find((item) => normal(item.name) === normal(form.itemName));
-    const currentRow = (stock[BRANCH] || []).find((stockItem) =>
-      catalogItem?.barcode != null && stockItem.itemBarcode != null
-        ? stockItem.itemBarcode === catalogItem.barcode
-        : normal(stockItem.itemName) === normal(form.itemName),
-    );
-    const currentQty = Number(currentRow?.quantity || 0);
-    if (qty > currentQty) {
-      setValidationError(`Cannot deduct ${qty} ${form.unit}; available stock is ${currentQty}.`);
-      return;
-    }
+    setSaving(true);
     try {
-      const { error: rpcError } = await supabase.rpc("record_branch_waste_secure", {
+      const { error: rpcError } = await supabase.rpc("record_branch_waste_batch_secure", {
         p_branch: BRANCH,
         p_log_type: subTab,
-        p_item_barcode: catalogItem?.barcode ?? null,
-        p_item_name: currentRow?.itemName || form.itemName,
-        p_quantity: qty,
-        p_unit: form.unit,
-        p_reason: form.reason.trim(),
-        p_verified_by: form.verifiedBy.trim(),
-        p_checklist: form.checklist,
+        p_items: lines.map((line) => {
+          const catalogItem = catalogItems.find((item) => normal(item.name) === normal(line.itemName));
+          const currentRow = stockRowFor(line.itemName);
+          return {
+            itemBarcode: catalogItem?.barcode ?? null,
+            itemName: currentRow?.itemName || line.itemName,
+            quantity: Number(line.quantity),
+            unit: line.unit,
+          };
+        }),
+        p_reason: meta.reason.trim(),
+        p_verified_by: meta.verifiedBy.trim(),
+        p_checklist: meta.checklist,
       });
       if (rpcError) {
-        const missingRpc = /record_branch_waste_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
+        const missingRpc = /record_branch_waste_batch_secure|could not find the function|function .* does not exist/i.test(rpcError.message);
         if (missingRpc) {
           throw new Error("Stock movement service is temporarily unavailable. Refresh the dashboard and retry.");
         }
         throw rpcError;
       }
-      addWasteLog({ branch: BRANCH, logType: subTab, itemName: form.itemName, quantity: qty, unit: form.unit, reason: form.reason, verifiedBy: form.verifiedBy, checklist: form.checklist, createdBy: userName });
-      printWasteLog({ ...form, quantity: qty, logType: subTab, createdBy: userName }, "SNB");
-      setForm({ ...form, quantity: "", reason: "", verifiedBy: "", checklist: [] });
+      for (const line of lines) {
+        addWasteLog({ branch: BRANCH, logType: subTab, itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit, reason: meta.reason, verifiedBy: meta.verifiedBy, checklist: meta.checklist, createdBy: userName });
+      }
+      printWasteLogBatch(
+        lines.map((line) => ({ itemName: line.itemName, quantity: Number(line.quantity), unit: line.unit })),
+        subTab,
+        meta.reason,
+        meta.verifiedBy,
+        userName,
+        meta.checklist,
+        "SNB",
+      );
+      setLines([]);
+      setMeta({ reason: "", verifiedBy: "", checklist: [] });
     } catch (saveError) {
       setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
+    } finally {
+      setSaving(false);
     }
   };
   return (
@@ -2171,23 +2234,39 @@ function WasteLogsTab({ userName }: { userName: string }) {
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel title={`${subTab} Entry`} icon={<Trash2 className="size-4" />}>
           <div className="space-y-3">
-            <Field label="Item"><select className={inputCls} value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
+            <Field label="Item" hint={`In stock: ${draftRemaining} ${lineDraft.unit}`}><select className={inputCls} value={lineDraft.itemName} onChange={(e) => setLineDraft({ ...lineDraft, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Quantity"><input type="number" className={inputCls} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></Field>
-              <Field label="Unit"><select className={inputCls} value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
+              <Field label="Quantity"><input type="number" className={inputCls} value={lineDraft.quantity} onChange={(e) => setLineDraft({ ...lineDraft, quantity: e.target.value })} /></Field>
+              <Field label="Unit"><select className={inputCls} value={lineDraft.unit} onChange={(e) => setLineDraft({ ...lineDraft, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
             </div>
-            <Field label="Reason"><textarea className={inputCls} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} /></Field>
-            <Field label="Verified By"><input className={inputCls} value={form.verifiedBy} onChange={(e) => setForm({ ...form, verifiedBy: e.target.value })} /></Field>
+            <button type="button" onClick={addLine} className={cn(btnCls, "w-full bg-amber-500 text-white")}><Plus className="size-4" /> Add item to list</button>
+
+            {lines.length > 0 && (
+              <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
+                <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-500">{lines.length} item{lines.length > 1 ? "s" : ""} queued for this {subTab === "Trans Out" ? "transfer out" : subTab.toLowerCase()}</p>
+                <div className="space-y-1.5">
+                  {lines.map((line) => (
+                    <div key={line.lineId} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-slate-200">
+                      <div className="text-sm font-bold"><span className="font-black">{line.itemName}</span> · {line.quantity} {line.unit}</div>
+                      <button type="button" onClick={() => removeLine(line.lineId)} className="grid size-7 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Field label="Reason"><textarea className={inputCls} value={meta.reason} onChange={(e) => setMeta({ ...meta, reason: e.target.value })} /></Field>
+            <Field label="Verified By"><input className={inputCls} value={meta.verifiedBy} onChange={(e) => setMeta({ ...meta, verifiedBy: e.target.value })} /></Field>
             <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
               {checklistOptions.map((item) => (
                 <label key={item} className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-700">
-                  <input type="checkbox" checked={form.checklist.includes(item)} onChange={(e) => setForm((f) => ({ ...f, checklist: e.target.checked ? [...f.checklist, item] : f.checklist.filter((x) => x !== item) }))} />
+                  <input type="checkbox" checked={meta.checklist.includes(item)} onChange={(e) => setMeta((f) => ({ ...f, checklist: e.target.checked ? [...f.checklist, item] : f.checklist.filter((x) => x !== item) }))} />
                   {item}
                 </label>
               ))}
             </div>
             {validationError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{validationError}</p>}
-            <button onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white")}>Save Waste Log</button>
+            <button onClick={save} disabled={saving || lines.length === 0} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>{saving ? "Saving…" : `Save Waste Log (${lines.length} item${lines.length === 1 ? "" : "s"})`}</button>
           </div>
         </Panel>
         <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
