@@ -241,6 +241,8 @@ export interface PurchaseRecord {
   tax: number;
   discount?: number;
   total: number;
+  amountBeforeRoundOff?: number;
+  roundOff?: number;
   createdAt: string;
   enteredBy: string;
   paidAmount: number;
