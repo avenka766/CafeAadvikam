@@ -231,14 +231,6 @@ function fmtDate(iso: string) {
   });
 }
 
-function cashierLabel(row: any) {
-  const username = String(row?.cashier_username || "").trim();
-  if (username) return username;
-  const displayName = String(row?.cashier_display_name || "").trim();
-  if (displayName) return displayName;
-  return "Legacy / Unattributed";
-}
-
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString("en-IN", {
     day: "2-digit",
@@ -259,6 +251,11 @@ function normal(name: string) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
+
+// Same round-off convention as branch sales billing: 2-decimal money rounding,
+// and whole-rupee rounding for the final payable total.
+const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const roundWholeRupee = (value: number) => Math.round(Math.max(0, value));
 
 function isSyncedPurchaseStatus(value: unknown) {
   const status = normal(String(value ?? ""));
@@ -1425,9 +1422,6 @@ function RupeeBreakdown({ breakdown }: { breakdown: any }) {
 }
 
 function SalesReturnsTab(props: any) {
-  const billerByBillNo = new Map<string, string>(
-    (props.branchBills || []).map((b: any) => [b.billNo, b.biller]),
-  );
   const salesRows = [
     ...props.branchBills.map((b: any) => ({
       type: "Sale",
@@ -1435,7 +1429,6 @@ function SalesReturnsTab(props: any) {
       date: b.createdAt,
       customer: b.creditCustomerName || "-",
       person: b.salesperson,
-      cashier: b.biller || "Legacy / Unattributed",
       gross: b.total,
       returns: 0,
       net: b.total,
@@ -1447,7 +1440,6 @@ function SalesReturnsTab(props: any) {
       date: s.soldAt,
       customer: "-",
       person: s.soldBy,
-      cashier: s.soldBy || "Legacy / Unattributed",
       gross: (s.unitPrice ?? 0) * s.quantitySold,
       returns: 0,
       net: (s.unitPrice ?? 0) * s.quantitySold,
@@ -1459,7 +1451,6 @@ function SalesReturnsTab(props: any) {
       date: r.createdAt,
       customer: r.originalBillNo,
       person: r.returnedBy,
-      cashier: billerByBillNo.get(r.originalBillNo) || r.returnedBy || "Legacy / Unattributed",
       gross: 0,
       returns: r.total,
       net: -r.total,
@@ -1473,7 +1464,6 @@ function SalesReturnsTab(props: any) {
         date: m.dateTime,
         customer: m.remarks || "-",
         person: m.enteredBy,
-        cashier: m.enteredBy || "Legacy / Unattributed",
         gross: m.amount,
         returns: 0,
         net: m.amount,
@@ -1485,7 +1475,6 @@ function SalesReturnsTab(props: any) {
       date: p.createdAt,
       customer: p.remarks || "-",
       person: p.collectedBy,
-      cashier: p.collectedBy || "Legacy / Unattributed",
       gross: p.amount,
       returns: 0,
       net: p.amount,
@@ -1540,8 +1529,7 @@ function SalesReturnsTab(props: any) {
                   Type: r.type,
                   Number: r.no,
                   Date: fmtDateTime(r.date),
-                  SalespersonName: r.person,
-                  CashierName: r.cashier,
+                  Person: r.person,
                   GrossSales: r.gross,
                   ReturnAmount: r.returns,
                   NetSales: r.net,
@@ -1560,8 +1548,7 @@ function SalesReturnsTab(props: any) {
             "Type",
             "No",
             "Date",
-            "Salesperson Name",
-            "Cashier Name",
+            "Person",
             "Gross Sales",
             "Return Amount",
             "Net Sales",
@@ -1585,7 +1572,6 @@ function SalesReturnsTab(props: any) {
             r.no,
             fmtDateTime(r.date),
             r.person,
-            r.cashier,
             money(r.gross),
             money(r.returns),
             <span
@@ -2696,12 +2682,12 @@ function CashierClosureTab(props: any) {
         <Kpi label="Mismatches" value={mismatches} icon={<AlertTriangle className="size-5" />} tone={mismatches ? "red" : "green"} />
         <Kpi label="Net Difference" value={money(totalDifference)} icon={<IndianRupee className="size-5" />} tone={Math.abs(totalDifference) < 0.01 ? "green" : "red"} />
       </div>
-      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: cashierLabel(row), OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
+      <Panel title="Per-Cashier Counter Sessions" icon={<CalendarClock className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Cashier_Closures.xls", rows.map((row: any) => ({ BusinessDate: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", Status: row.status, OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel</button>}>
         <DataTable
           headers={["Date", "Cashier Login", "Session", "Status", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Cash", "UPI", "Card", "Credit Collected", "Advance", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]}
           rows={rows.map((row: any) => [
             row.business_date,
-            cashierLabel(row),
+            row.cashier_display_name || row.cashier_username || "Legacy / Unattributed",
             `${fmtDateTime(row.opened_at)}${row.closed_at ? ` → ${fmtDateTime(row.closed_at)}` : ""}`,
             <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>,
             money(asNumber(row.opening_cash)),
@@ -3009,8 +2995,6 @@ export function PurchaseInvoicesTab({
   const [itemSearch, setItemSearch] = useState("");
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [syncFilter, setSyncFilter] = useState<"all" | "synced" | "not-synced">("all");
-  const [invoiceFromDate, setInvoiceFromDate] = useState("");
-  const [invoiceToDate, setInvoiceToDate] = useState("");
   const [lines, setLines] = useState<PurchaseLine[]>([]);
   const [syncedBaseline, setSyncedBaseline] = useState<Array<{ itemName: string; quantity: number; unit?: PurchaseUnit }>>([]);
   const [saving, setSaving] = useState(false);
@@ -3126,15 +3110,9 @@ export function PurchaseInvoicesTab({
         purchase.invoiceNo.toLowerCase().includes(query) ||
         purchase.supplier.toLowerCase().includes(query) ||
         itemText.includes(query);
-      const invoiceDateKey = purchase.invoiceDate
-        ? purchase.invoiceDate.slice(0, 10)
-        : localDateKey(purchase.createdAt);
-      const dateMatches =
-        (!invoiceFromDate || invoiceDateKey >= invoiceFromDate) &&
-        (!invoiceToDate || invoiceDateKey <= invoiceToDate);
-      return syncMatches && searchMatches && dateMatches;
+      return syncMatches && searchMatches;
     });
-  }, [invoiceFromDate, invoiceSearch, invoiceToDate, rows, syncFilter]);
+  }, [invoiceSearch, rows, syncFilter]);
 
   const selectedPurchase = editingPurchaseId
     ? rows.find((purchase) => purchase.id === editingPurchaseId)
@@ -3248,7 +3226,9 @@ export function PurchaseInvoicesTab({
         Number(line.discount || 0),
     );
 
-  const invoiceTotal = lines.reduce((sum, line) => sum + lineTotal(line), 0);
+  const invoiceAmountBeforeRoundOff = roundMoney(lines.reduce((sum, line) => sum + lineTotal(line), 0));
+  const invoiceRoundOff = roundMoney(roundWholeRupee(invoiceAmountBeforeRoundOff) - invoiceAmountBeforeRoundOff);
+  const invoiceTotal = roundWholeRupee(invoiceAmountBeforeRoundOff);
 
   const chooseItem = (itemName: string) => {
     const item = itemFromCatalog(itemName);
@@ -3479,7 +3459,9 @@ export function PurchaseInvoicesTab({
       setNotice("Enter a clear reason for editing this synced purchase invoice.");
       return;
     }
-    const total = normalizedLines.reduce((sum, line) => sum + line.total, 0);
+    const rawTotal = roundMoney(normalizedLines.reduce((sum, line) => sum + line.total, 0));
+    const total = roundWholeRupee(rawTotal);
+    const roundOff = roundMoney(total - rawTotal);
     if (selectedPurchase && total + 0.001 < paidFor(selectedPurchase)) {
       setNotice(`Invoice total cannot be below the already paid amount of ${money(paidFor(selectedPurchase))}.`);
       return;
@@ -3498,6 +3480,8 @@ export function PurchaseInvoicesTab({
       tax: normalizedLines.reduce((sum, line) => sum + line.tax, 0),
       discount: normalizedLines.reduce((sum, line) => sum + Number(line.discount || 0), 0),
       total,
+      amountBeforeRoundOff: rawTotal,
+      roundOff,
       paymentMethod: selectedPurchase?.paymentMethod || ("credit" as const),
       remarks: form.remarks.trim(),
     };
@@ -3655,7 +3639,7 @@ export function PurchaseInvoicesTab({
           </div>
         }
       >
-        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_160px_160px_auto]">
+        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
           <label className="relative">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -3677,28 +3661,12 @@ export function PurchaseInvoicesTab({
               <option value="synced">Synced</option>
             </select>
           </label>
-          <input
-            type="date"
-            className={inputCls}
-            value={invoiceFromDate}
-            onChange={(event) => setInvoiceFromDate(event.target.value)}
-            aria-label="Invoice date from"
-          />
-          <input
-            type="date"
-            className={inputCls}
-            value={invoiceToDate}
-            onChange={(event) => setInvoiceToDate(event.target.value)}
-            aria-label="Invoice date to"
-          />
-          {(invoiceSearch || syncFilter !== "all" || invoiceFromDate || invoiceToDate) && (
+          {(invoiceSearch || syncFilter !== "all") && (
             <button
               className={cn(btnCls, "bg-slate-100 text-slate-700")}
               onClick={() => {
                 setInvoiceSearch("");
                 setSyncFilter("all");
-                setInvoiceFromDate("");
-                setInvoiceToDate("");
               }}
             >
               <X className="size-4" /> Clear
@@ -3707,7 +3675,7 @@ export function PurchaseInvoicesTab({
         </div>
 
         <DataTable
-          headers={["Invoice", "Date", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
+          headers={["Invoice", "Supplier", "Items", "Total", "Balance", "Payment", "Stock", "Actions"]}
           rows={visibleRows.map((purchase) => {
             const balance = balanceFor(purchase);
             const paidAmount = paidFor(purchase);
@@ -3718,19 +3686,14 @@ export function PurchaseInvoicesTab({
             return [
               <div key="invoice" className="min-w-[130px]">
                 <p className="font-black text-slate-950">{purchase.invoiceNo}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {fmtDate(purchase.invoiceDate || purchase.createdAt)}
+                </p>
                 {purchase.lastEditedBy && (
                   <p className="mt-1 text-[10px] font-bold text-blue-600">
                     Edited by {purchase.lastEditedBy}
                   </p>
                 )}
-              </div>,
-              <div key="date" className="min-w-[110px]">
-                <p className="font-black text-slate-800 tabular-nums">
-                  {purchase.invoiceDate ? purchase.invoiceDate.slice(0, 10) : localDateKey(purchase.createdAt)}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {fmtDate(purchase.invoiceDate || purchase.createdAt)}
-                </p>
               </div>,
               <div key="supplier" className="min-w-[140px]">
                 <p className="font-black text-slate-800">{purchase.supplier}</p>
@@ -3970,7 +3933,7 @@ export function PurchaseInvoicesTab({
               <Panel
                 title={`Invoice Items (${lines.length})`}
                 icon={<ShoppingCart className="size-4" />}
-                action={<p className="text-sm font-black text-slate-950">Total: {money(invoiceTotal)}</p>}
+                action={<p className="text-sm font-black text-slate-950">Before round-off: {money(invoiceAmountBeforeRoundOff)} · Round-off {invoiceRoundOff >= 0 ? "+" : ""}{money(invoiceRoundOff)} · Total: {money(invoiceTotal)}</p>}
               >
                 {lines.length ? (
                   <div className="overflow-x-auto rounded-2xl border border-slate-200">
@@ -4127,6 +4090,7 @@ export function PurchaseInvoicesTab({
               <div>
                 <p className="text-xs font-black uppercase tracking-wide text-slate-400">Invoice Total</p>
                 <p className="text-2xl font-black tabular-nums text-slate-950">{money(invoiceTotal)}</p>
+                <p className="text-xs font-bold text-slate-500">Before round-off {money(invoiceAmountBeforeRoundOff)} · Round-off {invoiceRoundOff >= 0 ? "+" : ""}{money(invoiceRoundOff)}</p>
                 {selectedPurchase && paidFor(selectedPurchase) > 0 && (
                   <p className="text-xs font-bold text-slate-500">Already paid: {money(paidFor(selectedPurchase))}</p>
                 )}
@@ -5288,8 +5252,8 @@ function DailyClosureTab({ userName, ...props }: any) {
         <DataTable headers={["Date", "Closed Counters", "Open Counters", "Gross", "Discounts", "Returns", "Net", "Cash", "UPI", "Card", "Credit Sales", "Credit Collected", "Advance", "Expected Cash", "Counted Cash", "Difference"]} rows={dailyRows.map((row) => [row.business_date, asNumber(row.closed_counter_count), asNumber(row.open_counter_count), money(asNumber(row.gross_sales)), money(asNumber(row.discounts)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.cash_sales)), money(asNumber(row.upi_sales)), money(asNumber(row.card_sales)), money(asNumber(row.credit_sales)), money(asNumber(row.credit_collected)), money(asNumber(row.advance_collected)), money(asNumber(row.expected_cash)), money(asNumber(row.counted_cash)), <span key="difference" className={cn("font-black", Math.abs(asNumber(row.difference)) < 0.01 ? "text-emerald-700" : "text-red-600")}>{money(asNumber(row.difference))}</span>])} empty="No consolidated daily closure data found for the selected date range." />
       </Panel>
 
-      <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: cashierLabel(row), Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
-        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, cashierLabel(row), <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
+      <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
+        <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
       </Panel>
     </div>
   );
