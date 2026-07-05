@@ -31,7 +31,23 @@ const sessionAwareFetch: typeof fetch = async (input, init: RequestInit = {}) =>
   try {
     const response = await fetch(input, { ...init, headers });
     if (typeof window !== 'undefined') {
-      if (!response.ok) window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: { message: `Server returned ${response.status}`, status: response.status, at: Date.now() } }));
+      if (!response.ok) {
+        // Peek at the body (without consuming it for the real caller) to see if this
+        // is specifically an expired/invalid app session, so the UI can show a clear
+        // "please log in again" message and redirect, instead of a generic error banner.
+        let sessionExpired = false;
+        try {
+          const bodyText = await response.clone().text();
+          sessionExpired = /SESSION_REQUIRED/i.test(bodyText);
+        } catch {
+          // Body wasn't readable (e.g. binary/stream) — fall through to the generic banner.
+        }
+        if (sessionExpired) {
+          window.dispatchEvent(new CustomEvent('cafe:session-expired', { detail: { at: Date.now() } }));
+        } else {
+          window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: { message: `Server returned ${response.status}`, status: response.status, at: Date.now() } }));
+        }
+      }
       else window.dispatchEvent(new Event('cafe:data-recovered'));
     }
     return response;
