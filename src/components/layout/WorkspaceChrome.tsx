@@ -276,6 +276,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Daily Closure Report', path: '/admin-snb?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Branch Reports', path: '/admin-snb?tab=reports', icon: <FileText className="size-4" />, group: 'Reports' },
         { label: 'Stock Audit', path: '/admin-snb?tab=audit-stock', icon: <ClipboardCheck className="size-4" />, group: 'Reports' },
+        { label: 'History', path: '/admin-snb?tab=history', icon: <History className="size-4" />, group: 'Reports' },
         { label: 'Admin Notifications', path: '/admin-snb?tab=notifications', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Items', path: '/admin-snb/items', icon: <Settings2 className="size-4" />, group: 'Admin' },
       ];
