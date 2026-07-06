@@ -1,6 +1,7 @@
 // src/pages/AdminSNBDashboard.tsx
 // SNB Admin Dashboard – manager control center for sales, returns, stock, purchase, balance, salesperson, closure and reports.
 import {
+  Fragment,
   isValidElement,
   useEffect,
   useMemo,
@@ -1442,6 +1443,7 @@ function buildSalesRows(props: any) {
       returns: 0,
       net: b.total,
       payment: b.paymentMode,
+      items: b.items || [],
     })),
     ...props.legacySalesRows.map((s: any) => ({
       type: "Sale",
@@ -1454,6 +1456,7 @@ function buildSalesRows(props: any) {
       returns: 0,
       net: (s.unitPrice ?? 0) * s.quantitySold,
       payment: s.paymentMethod || "-",
+      items: [{ itemName: s.itemName, quantity: s.quantitySold, unit: s.unit || "", price: s.unitPrice ?? 0, discount: 0, tax: 0, lineTotal: (s.unitPrice ?? 0) * s.quantitySold }],
     })),
     ...props.branchReturns.map((r: any) => ({
       type: "Return",
@@ -1466,6 +1469,7 @@ function buildSalesRows(props: any) {
       returns: r.total,
       net: -r.total,
       payment: "refund",
+      items: r.items || [],
     })),
     ...(props.movementInRange || [])
       .filter((m: any) => m.direction === "in" && /advance/i.test(m.purpose || ""))
@@ -1480,6 +1484,7 @@ function buildSalesRows(props: any) {
         returns: 0,
         net: m.amount,
         payment: m.paymentMode,
+        items: [],
       })),
     ...(props.creditPaymentsInRange || []).map((p: any) => ({
       type: "Credit Collected",
@@ -1492,6 +1497,7 @@ function buildSalesRows(props: any) {
       returns: 0,
       net: p.amount,
       payment: p.paymentMode,
+      items: [],
     })),
 
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -5313,6 +5319,7 @@ function HistoryTab(props: any) {
   const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
   const historyRows = buildSalesRows(props);
   const itemsSoldRows = db.itemSales || [];
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
   const exportAll = () =>
     downloadExcelWorkbook(`SNB_History_${props.fromDate}_to_${props.toDate}.xls`, [
@@ -5329,6 +5336,25 @@ function HistoryTab(props: any) {
           NetSales: r.net,
           Payment: r.payment,
         })),
+      },
+      {
+        name: "Bill Items",
+        rows: historyRows.flatMap((r: any) =>
+          (r.items || []).map((item: any) => ({
+            Type: r.type,
+            BillNo: r.no,
+            Date: fmtDateTime(r.date),
+            Salesperson: r.person,
+            Cashier: r.cashier,
+            Item: item.itemName,
+            Quantity: item.quantity,
+            Unit: item.unit || "",
+            UnitPrice: item.price,
+            Discount: item.discount || 0,
+            Tax: item.tax || 0,
+            LineTotal: item.lineTotal,
+          })),
+        ),
       },
       {
         name: "Items Sold",
@@ -5358,39 +5384,115 @@ function HistoryTab(props: any) {
           </button>
         }
       >
-        <DataTable
-          headers={["Type", "No", "Date", "Salesperson", "Cashier", "Gross Sales", "Return Amount", "Net Sales", "Payment"]}
-          rows={historyRows.map((r: any) => [
-            <StatusBadge
-              key="t"
-              tone={
-                r.type === "Return"
-                  ? "red"
-                  : r.type === "Advance"
-                    ? "blue"
-                    : r.type === "Credit Collected"
-                      ? "amber"
-                      : "green"
-              }
-            >
-              {r.type}
-            </StatusBadge>,
-            r.no,
-            fmtDateTime(r.date),
-            r.person,
-            r.cashier,
-            money(r.gross),
-            money(r.returns),
-            <span
-              key="n"
-              className={cn("font-black", r.net < 0 ? "text-red-600" : "text-emerald-700")}
-            >
-              {money(r.net)}
-            </span>,
-            String(r.payment).toUpperCase(),
-          ])}
-          empty="No history records for selected date range."
-        />
+        <div className="overflow-auto rounded-xl border border-slate-200">
+          <table className="w-full min-w-[960px] text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50">
+              <tr className="text-left text-[10px] font-black uppercase tracking-wide text-slate-500">
+                <th className="p-2">Type</th>
+                <th className="p-2">No</th>
+                <th className="p-2">Date</th>
+                <th className="p-2">Salesperson</th>
+                <th className="p-2">Cashier</th>
+                <th className="p-2 text-right">Gross Sales</th>
+                <th className="p-2 text-right">Return Amount</th>
+                <th className="p-2 text-right">Net Sales</th>
+                <th className="p-2">Payment</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historyRows.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="p-6 text-center font-bold text-slate-500">
+                    No history records for selected date range.
+                  </td>
+                </tr>
+              ) : (
+                historyRows.map((r: any, index: number) => {
+                  const rowKey = `${r.type}-${r.no}-${index}`;
+                  const hasItems = (r.items || []).length > 0;
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr className="border-t">
+                        <td className="p-2">
+                          <StatusBadge
+                            tone={
+                              r.type === "Return"
+                                ? "red"
+                                : r.type === "Advance"
+                                  ? "blue"
+                                  : r.type === "Credit Collected"
+                                    ? "amber"
+                                    : "green"
+                            }
+                          >
+                            {r.type}
+                          </StatusBadge>
+                        </td>
+                        <td className="p-2 font-black">
+                          {hasItems ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1"
+                              onClick={() => setExpandedRow(expandedRow === rowKey ? null : rowKey)}
+                            >
+                              <ChevronDown className={cn("size-4 transition", expandedRow === rowKey && "rotate-180")} />
+                              {r.no}
+                            </button>
+                          ) : (
+                            r.no
+                          )}
+                        </td>
+                        <td className="p-2 text-xs">{fmtDateTime(r.date)}</td>
+                        <td className="p-2">{r.person}</td>
+                        <td className="p-2">{r.cashier}</td>
+                        <td className="p-2 text-right font-black">{money(r.gross)}</td>
+                        <td className="p-2 text-right font-black">{money(r.returns)}</td>
+                        <td className={cn("p-2 text-right font-black", r.net < 0 ? "text-red-600" : "text-emerald-700")}>
+                          {money(r.net)}
+                        </td>
+                        <td className="p-2 uppercase">{String(r.payment)}</td>
+                      </tr>
+                      {expandedRow === rowKey && hasItems && (
+                        <tr className="border-t bg-slate-50">
+                          <td colSpan={9} className="p-2">
+                            <div className="overflow-x-auto">
+                              <table className="w-full min-w-[620px] text-xs">
+                                <thead>
+                                  <tr className="text-left uppercase text-slate-500">
+                                    <th className="p-2">Item</th>
+                                    <th className="p-2 text-right">Qty</th>
+                                    <th className="p-2">Unit</th>
+                                    <th className="p-2 text-right">Unit Price</th>
+                                    <th className="p-2 text-right">Discount</th>
+                                    <th className="p-2 text-right">Tax</th>
+                                    <th className="p-2 text-right">Line Total</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {r.items.map((item: any, itemIndex: number) => (
+                                    <tr key={`${item.itemName}-${itemIndex}`} className="border-t">
+                                      <td className="p-2 font-bold">{item.itemName}</td>
+                                      <td className="p-2 text-right">{item.quantity}</td>
+                                      <td className="p-2">{item.unit || "-"}</td>
+                                      <td className="p-2 text-right">{money(item.price)}</td>
+                                      <td className="p-2 text-right">{money(item.discount || 0)}</td>
+                                      <td className="p-2 text-right">{money(item.tax || 0)}</td>
+                                      <td className="p-2 text-right font-black">{money(item.lineTotal)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </Panel>
       <Panel title="Items Sold" icon={<Package className="size-4" />}>
         <DataTable
