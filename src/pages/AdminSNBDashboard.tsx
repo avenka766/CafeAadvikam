@@ -105,6 +105,7 @@ type TabId =
   | "closure"
   | "reports"
   | "audit-stock"
+  | "history"
   | "notifications";
 
 const TABS: Array<{
@@ -183,6 +184,12 @@ const TABS: Array<{
     id: "audit-stock",
     label: "Stock Audit",
     icon: PackageCheck,
+    adminOnly: true,
+  },
+  {
+    id: "history",
+    label: "History",
+    icon: History,
     adminOnly: true,
   },
   {
@@ -1087,6 +1094,7 @@ export default function AdminSNBDashboard() {
           setNotice={setNotice}
         />
       )}
+      {tab === "history" && <HistoryTab {...commonProps} />}
       {tab === "notifications" && <NotificationsTab userName={userName} />}
     </main>
   );
@@ -1421,14 +1429,15 @@ function RupeeBreakdown({ breakdown }: { breakdown: any }) {
   );
 }
 
-function SalesReturnsTab(props: any) {
-  const salesRows = [
+function buildSalesRows(props: any) {
+  return [
     ...props.branchBills.map((b: any) => ({
       type: "Sale",
       no: b.billNo,
       date: b.createdAt,
       customer: b.creditCustomerName || "-",
       person: b.salesperson,
+      cashier: b.biller || "-",
       gross: b.total,
       returns: 0,
       net: b.total,
@@ -1440,6 +1449,7 @@ function SalesReturnsTab(props: any) {
       date: s.soldAt,
       customer: "-",
       person: s.soldBy,
+      cashier: s.soldBy || "-",
       gross: (s.unitPrice ?? 0) * s.quantitySold,
       returns: 0,
       net: (s.unitPrice ?? 0) * s.quantitySold,
@@ -1451,6 +1461,7 @@ function SalesReturnsTab(props: any) {
       date: r.createdAt,
       customer: r.originalBillNo,
       person: r.returnedBy,
+      cashier: r.returnedBy || "-",
       gross: 0,
       returns: r.total,
       net: -r.total,
@@ -1464,6 +1475,7 @@ function SalesReturnsTab(props: any) {
         date: m.dateTime,
         customer: m.remarks || "-",
         person: m.enteredBy,
+        cashier: m.enteredBy || "-",
         gross: m.amount,
         returns: 0,
         net: m.amount,
@@ -1475,12 +1487,18 @@ function SalesReturnsTab(props: any) {
       date: p.createdAt,
       customer: p.remarks || "-",
       person: p.collectedBy,
+      cashier: p.collectedBy || "-",
       gross: p.amount,
       returns: 0,
       net: p.amount,
       payment: p.paymentMode,
     })),
+
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+function SalesReturnsTab(props: any) {
+  const salesRows = buildSalesRows(props);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
@@ -1529,7 +1547,8 @@ function SalesReturnsTab(props: any) {
                   Type: r.type,
                   Number: r.no,
                   Date: fmtDateTime(r.date),
-                  Person: r.person,
+                  Salesperson: r.person,
+                  Cashier: r.cashier,
                   GrossSales: r.gross,
                   ReturnAmount: r.returns,
                   NetSales: r.net,
@@ -1548,7 +1567,8 @@ function SalesReturnsTab(props: any) {
             "Type",
             "No",
             "Date",
-            "Person",
+            "Salesperson",
+            "Cashier",
             "Gross Sales",
             "Return Amount",
             "Net Sales",
@@ -1572,6 +1592,7 @@ function SalesReturnsTab(props: any) {
             r.no,
             fmtDateTime(r.date),
             r.person,
+            r.cashier,
             money(r.gross),
             money(r.returns),
             <span
@@ -1657,7 +1678,36 @@ function StockTab(props: any) {
           tone="blue"
         />
       </div>
-      <Panel title="Stock Register" icon={<Package className="size-4" />}>
+      <Panel
+        title="Stock Register"
+        icon={<Package className="size-4" />}
+        action={
+          <button
+            className={cn(btnCls, "bg-slate-950 text-white")}
+            onClick={() =>
+              csvDownload(
+                `SNB_Stock_${dateInput()}.xls`,
+                enrichedRows.map((item: any) => ({
+                  Item: item.itemName,
+                  Category: item.category,
+                  Barcode: item.itemBarcode || "-",
+                  SystemStock: item.current,
+                  Minimum: item.minimum,
+                  Shortage: item.shortage,
+                  Unit: item.unit,
+                  Value: item.stockValue,
+                  Status: item.status,
+                  ReorderSuggestion: item.reorder,
+                  LastChange: item.lastChange ? fmtDateTime(item.lastChange) : "-",
+                })),
+              )
+            }
+          >
+            <Download className="size-4" />
+            Export
+          </button>
+        }
+      >
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(120px,1fr))]">
           <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-3 py-2">
             <Search className="size-4 text-slate-400" />
@@ -5254,6 +5304,110 @@ function DailyClosureTab({ userName, ...props }: any) {
 
       <Panel title="Cashier Session Drill-down" icon={<UserRound className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("SNB_Daily_Closure_Cashier_Detail.xls", sessionRows.map((row) => ({ Date: row.business_date, CashierLogin: row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", Status: row.status, OpenedAt: row.opened_at, ClosedAt: row.closed_at || "", OpeningCash: asNumber(row.opening_cash), GrossSales: asNumber(row.gross_sales), Discounts: asNumber(row.discounts), Returns: asNumber(row.returns), NetSales: asNumber(row.net_sales), CashSales: asNumber(row.cash_sales), UPISales: asNumber(row.upi_sales), CardSales: asNumber(row.card_sales), CreditSales: asNumber(row.credit_sales), CreditCollected: asNumber(row.credit_collected), AdvanceCollected: asNumber(row.advance_collected), Expenses: asNumber(row.expenses), SupplierPayments: asNumber(row.supplier_payments), BankDeposits: asNumber(row.bank_deposits), ExpectedCash: asNumber(row.expected_cash), CountedCash: asNumber(row.counted_cash), Difference: asNumber(row.difference), Bills: asNumber(row.bill_count), Notes: row.notes || "" })))}><Download className="size-4" /> Excel Detail</button>}>
         <DataTable headers={["Date", "Cashier Login", "Status", "Opened", "Closed", "Opening", "Gross", "Returns", "Net", "Expected", "Counted", "Difference", "Bills", "Expenses", "Supplier Payments", "Bank Deposits", "Notes"]} rows={sessionRows.map((row) => [row.business_date, row.cashier_display_name || row.cashier_username || "Legacy / Unattributed", <StatusBadge key="status" tone={row.status === "closed" ? "green" : "amber"}>{row.status}</StatusBadge>, fmtDateTime(row.opened_at), row.closed_at ? fmtDateTime(row.closed_at) : "-", money(asNumber(row.opening_cash)), money(asNumber(row.gross_sales)), money(asNumber(row.returns)), money(asNumber(row.net_sales)), money(asNumber(row.expected_cash)), row.status === "closed" ? money(asNumber(row.counted_cash)) : "-", row.status === "closed" ? money(asNumber(row.difference)) : "-", asNumber(row.bill_count), money(asNumber(row.expenses)), money(asNumber(row.supplier_payments)), money(asNumber(row.bank_deposits)), row.notes || "-"])} empty="No cashier sessions found for the selected date range." />
+      </Panel>
+    </div>
+  );
+}
+
+function HistoryTab(props: any) {
+  const db = props.dbReports as ReturnType<typeof useSnbAdminReports>;
+  const historyRows = buildSalesRows(props);
+  const itemsSoldRows = db.itemSales || [];
+
+  const exportAll = () =>
+    downloadExcelWorkbook(`SNB_History_${props.fromDate}_to_${props.toDate}.xls`, [
+      {
+        name: "Branch History",
+        rows: historyRows.map((r: any) => ({
+          Type: r.type,
+          Number: r.no,
+          Date: fmtDateTime(r.date),
+          Salesperson: r.person,
+          Cashier: r.cashier,
+          GrossSales: r.gross,
+          ReturnAmount: r.returns,
+          NetSales: r.net,
+          Payment: r.payment,
+        })),
+      },
+      {
+        name: "Items Sold",
+        rows: itemsSoldRows.map((row: any) => ({
+          Date: row.business_date,
+          Item: row.item_name,
+          Unit: row.unit || "",
+          Quantity: asNumber(row.quantity_sold),
+          Gross: asNumber(row.gross_sales),
+          Discount: asNumber(row.item_discount),
+          Tax: asNumber(row.tax),
+          Net: asNumber(row.net_item_sales),
+          Bills: asNumber(row.bill_count),
+        })),
+      },
+    ]);
+
+  return (
+    <div className="space-y-4">
+      <Panel
+        title="SNB Branch History"
+        icon={<History className="size-4" />}
+        action={
+          <button className={cn(btnCls, "bg-slate-950 text-white")} onClick={exportAll}>
+            <Download className="size-4" />
+            Export Excel
+          </button>
+        }
+      >
+        <DataTable
+          headers={["Type", "No", "Date", "Salesperson", "Cashier", "Gross Sales", "Return Amount", "Net Sales", "Payment"]}
+          rows={historyRows.map((r: any) => [
+            <StatusBadge
+              key="t"
+              tone={
+                r.type === "Return"
+                  ? "red"
+                  : r.type === "Advance"
+                    ? "blue"
+                    : r.type === "Credit Collected"
+                      ? "amber"
+                      : "green"
+              }
+            >
+              {r.type}
+            </StatusBadge>,
+            r.no,
+            fmtDateTime(r.date),
+            r.person,
+            r.cashier,
+            money(r.gross),
+            money(r.returns),
+            <span
+              key="n"
+              className={cn("font-black", r.net < 0 ? "text-red-600" : "text-emerald-700")}
+            >
+              {money(r.net)}
+            </span>,
+            String(r.payment).toUpperCase(),
+          ])}
+          empty="No history records for selected date range."
+        />
+      </Panel>
+      <Panel title="Items Sold" icon={<Package className="size-4" />}>
+        <DataTable
+          headers={["Date", "Item", "Unit", "Qty", "Gross", "Discount", "Tax", "Net", "Bills"]}
+          rows={itemsSoldRows.map((row: any) => [
+            row.business_date,
+            row.item_name,
+            row.unit || "-",
+            asNumber(row.quantity_sold),
+            money(asNumber(row.gross_sales)),
+            money(asNumber(row.item_discount)),
+            money(asNumber(row.tax)),
+            money(asNumber(row.net_item_sales)),
+            asNumber(row.bill_count),
+          ])}
+          empty="No item-wise sales for this date range."
+        />
       </Panel>
     </div>
   );
