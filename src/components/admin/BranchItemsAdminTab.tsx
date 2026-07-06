@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Hash, Pencil, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, Download, Hash, Pencil, Plus, Search, X } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore } from '@/branch/branchStore';
+import { downloadExcel } from '@/lib/excelDownload';
 import {
   catalogCategories,
   useBranchCatalogStore,
@@ -120,6 +121,25 @@ export default function BranchItemsAdminTab({ branch }: { branch: CatalogBranch 
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative min-w-56 flex-1"><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search item or barcode" className="w-full rounded-xl border bg-background py-2 pl-9 pr-3 text-sm" /></div>
       <select className="rounded-xl border bg-background px-3 py-2 text-sm" value={category} onChange={(e) => setCategory(e.target.value)}><option>All</option>{categories.map((value) => <option key={value}>{value}</option>)}</select>
+      <button
+        onClick={() => downloadExcel(
+          `${branch}_Items_${new Date().toISOString().slice(0, 10)}.xls`,
+          `${branch} Items`,
+          filtered.map((item) => {
+            const row = stockByBarcode.get(item.barcode) ?? stock[branch].find((entry) => normal(entry.itemName) === normal(item.name));
+            return {
+              Barcode: item.barcode,
+              Item: item.name,
+              Category: item.category,
+              Unit: item.uom,
+              Price: item.price,
+              SystemStock: Number(row?.quantity ?? 0),
+              Status: item.active ? 'Active' : 'Inactive',
+            };
+          }),
+        )}
+        className="inline-flex items-center gap-1.5 rounded-xl border bg-background px-3 py-2 text-sm font-semibold"
+      ><Download className="size-4" />Export</button>
       <button onClick={() => setDialog('new')} className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"><Plus className="size-4" />Add Item</button>
     </div>
     <div className="overflow-x-auto rounded-2xl border bg-card">
