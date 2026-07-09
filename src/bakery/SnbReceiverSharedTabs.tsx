@@ -418,7 +418,10 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const user = useAuthStore((state) => state.currentUser);
   const userName = user?.displayName || user?.username || "SNB Order";
   const first = catalogItems[0];
-  const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: first?.uom === "Kgs" ? "kg" : "pcs" });
+  const unitFor = (name: string, catalogUom?: string) =>
+    stock.find((item) => normal(item.itemName) === normal(name))?.unit
+    || (catalogUom === "Kgs" ? "kg" : "pcs");
+  const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: unitFor(first?.name || "", first?.uom) });
   const [lines, setLines] = useState<WasteLine[]>([]);
   const [meta, setMeta] = useState({ reason: "", verifiedBy: userName, confirmed: false });
   const [history, setHistory] = useState<WasteRow[]>([]);
@@ -427,7 +430,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: first.uom === "Kgs" ? "kg" : "pcs" })); }, [first, lineDraft.itemName]);
+  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: unitFor(first.name, first.uom) })); }, [first, lineDraft.itemName]);
   // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
   useEffect(() => { setLines([]); setError(""); setSuccess(""); }, [mode]);
   const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
@@ -440,7 +443,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const queuedForDraftItem = lines.filter((line) => (lineDraft.barcode != null && line.barcode != null) ? line.barcode === lineDraft.barcode : normal(line.itemName) === normal(lineDraft.itemName)).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   const draftRemaining = Math.max(0, draftAvailable - queuedForDraftItem);
 
-  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setLineDraft((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: item?.uom === "Kgs" ? "kg" : "pcs" })); };
+  const choose = (name: string) => { const item = catalogItems.find((entry) => entry.name === name); setLineDraft((current) => ({ ...current, itemName: name, barcode: item?.barcode, unit: unitFor(name, item?.uom) })); };
 
   const addLine = () => {
     setError("");
@@ -486,7 +489,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Quantity"><input type="number" min="0.001" step="0.001" className={inputClass} value={lineDraft.quantity} onChange={(event) => setLineDraft({ ...lineDraft, quantity: event.target.value })} /></Field>
-            <Field label="Unit"><input className={inputClass} value={lineDraft.unit} onChange={(event) => setLineDraft({ ...lineDraft, unit: event.target.value })} /></Field>
+            <Field label="Unit"><input className={cn(inputClass, "bg-slate-100 text-slate-500")} value={lineDraft.unit} readOnly disabled title="Unit is fixed to the item's live stock unit" /></Field>
           </div>
           <button type="button" onClick={addLine} className={cn(primaryButton, "w-full bg-amber-600")}><Plus className="size-4" /> Add item to list</button>
 
