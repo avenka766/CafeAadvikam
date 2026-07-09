@@ -213,6 +213,7 @@ export interface CreditSale {
   status: 'pending' | 'partial' | 'settled';
   notes: string | null;
   billNo: string;
+  discountAmount?: number;
 }
 
 export interface CreditPayment {
@@ -289,6 +290,13 @@ interface BranchState {
       collectedBy?: string;
       collectedRole?: string;
     },
+  ) => Promise<string | null>;
+  applyCreditDiscount: (
+    branch: Branch,
+    saleId: string,
+    discountAmount: number,
+    reason?: string,
+    approvedBy?: string,
   ) => Promise<string | null>;
   fetchCreditSales: (branch: Branch) => Promise<void>;
   fetchCreditPayments: (branch: Branch) => Promise<void>;
@@ -1150,6 +1158,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
           notes:         d.notes ?? null,
           billNo:        d.bill_no ?? '',
+          discountAmount: Number(d.discount_amount ?? 0),
         }));
       return { creditSales };
     });
@@ -1346,6 +1355,50 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         createdAt: now,
       }, ...creditPayments[branch]];
       return { creditSales, creditPayments };
+    });
+    return null;
+  },
+
+  applyCreditDiscount: async (branch, saleId, discountAmount, reason, approvedBy) => {
+    const sale = get().creditSales[branch].find((s) => s.id === saleId);
+    if (!sale) return 'Credit sale not found';
+    if (discountAmount <= 0) return 'Discount amount must be positive';
+    if (discountAmount > sale.creditAmount) return 'Discount cannot exceed the pending balance';
+
+    const { error } = await supabase.rpc('apply_branch_credit_discount', {
+      p_branch: branch,
+      p_credit_sale_id: saleId,
+      p_discount_amount: discountAmount,
+      p_reason: reason ?? null,
+      p_approved_by: approvedBy ?? 'Admin',
+    });
+    if (error) {
+      const missingRpc = /apply_branch_credit_discount|could not find the function|function .* does not exist/i.test(error.message);
+      return missingRpc
+        ? 'Discount feature is not installed in Supabase. Run the 20260709120000_branch_credit_discount.sql migration first.'
+        : `Failed to apply discount: ${error.message}`;
+    }
+
+    const now = new Date().toISOString();
+    const newDue = Math.max(0, sale.creditAmount - discountAmount);
+    const isSettled = newDue <= 0;
+
+    set((s) => {
+      const creditSales = { ...s.creditSales };
+      creditSales[branch] = creditSales[branch].map((cs) =>
+        cs.id === saleId
+          ? {
+              ...cs,
+              creditAmount: newDue,
+              discountAmount: (cs.discountAmount ?? 0) + discountAmount,
+              status: isSettled ? 'settled' : (cs.amountPaid > 0 ? 'partial' : 'pending'),
+              settledAt: isSettled ? now : cs.settledAt,
+              notes: [cs.notes, `Discount of ₹${discountAmount} applied${reason ? ' — ' + reason : ''} on ${now.slice(0, 10)}`]
+                .filter(Boolean).join('\n'),
+            }
+          : cs
+      );
+      return { creditSales };
     });
     return null;
   },
