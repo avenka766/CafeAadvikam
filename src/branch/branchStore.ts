@@ -14,6 +14,25 @@ type BranchRealtimeSubscription = {
 };
 
 const branchRealtimeSubscriptions = new Map<string, BranchRealtimeSubscription>();
+const branchRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Coalesces bursts of realtime events (e.g. a single checkout fires a
+// branch_stock UPDATE *and* a branch_sales INSERT within milliseconds) into
+// one fetchBranchData() call instead of several stacked ones. This was
+// causing visible billing-screen lag at busy branches since every other
+// open terminal at that branch was re-running the full 7-query fetch for
+// every single event.
+function scheduleBranchRefetch(branch: Branch) {
+  const existing = branchRefetchTimers.get(branch);
+  if (existing) clearTimeout(existing);
+  branchRefetchTimers.set(
+    branch,
+    setTimeout(() => {
+      branchRefetchTimers.delete(branch);
+      void useBranchStore.getState().fetchBranchData(branch);
+    }, 600),
+  );
+}
 
 const isMissingRpcError = (message: string) =>
   /could not find the function|function .* does not exist|schema cache/i.test(message);
@@ -313,23 +332,51 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         { data: priceData },
         { data: advanceData },
         { data: creditData },
+        { data: openAdvanceData },
+        { data: openCreditData },
       ] = await Promise.all([
-        supabase.from('branch_stock').select('*').eq('branch', branch).order('updated_at', { ascending: false }).limit(2000),
-        supabase.from('branch_sales').select('*').eq('branch', branch)
+        supabase.from('branch_stock')
+          .select('item_barcode,item_name,quantity,reserved_quantity,updated_at,last_updated_at,unit,min_threshold')
+          .eq('branch', branch).order('updated_at', { ascending: false }).limit(2000),
+        supabase.from('branch_sales')
+          .select('id,item_barcode,item_name,quantity_sold,sold_at,sold_by,branch,payment_method,unit_price,bill_no')
+          .eq('branch', branch)
           .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
-        supabase.from('branch_incoming').select('*').eq('branch', branch)
+        supabase.from('branch_incoming')
+          .select('id,item_barcode,item_name,quantity,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
+          .eq('branch', branch)
           .order('received_at', { ascending: false }).limit(500),
-        supabase.from('branch_thresholds').select('*').eq('branch', branch),
+        supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch),
         supabase.from('bakery_items').select('name, price'),
-        supabase.from('branch_advance_orders').select('*')
+        supabase.from('branch_advance_orders')
+          .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
           .order('created_at', { ascending: false })
           .limit(1000),
-        supabase.from('branch_credit_sales').select('*')
+        supabase.from('branch_credit_sales')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no')
           .eq('branch', branch)
           .order('created_at', { ascending: false })
           .limit(1000),
+        // BUG FIX: same class of bug as the salesperson roster — an old
+        // advance order or credit sale that's still unsettled represents
+        // money owed / a delivery still due, and must not disappear just
+        // because 1000 *newer* orders/sales have piled up since it was
+        // created. Fetch open ones separately, unbounded by recency, and
+        // merge below.
+        supabase.from('branch_advance_orders')
+          .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
+          .eq('branch', branch)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(2000),
+        supabase.from('branch_credit_sales')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no')
+          .eq('branch', branch)
+          .neq('status', 'settled')
+          .order('created_at', { ascending: false })
+          .limit(2000),
       ]);
 
       // Build a name → price lookup from bakery_items
@@ -398,7 +445,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           disputedAt:    d.disputed_at ?? null,
         }));
 
-        advanceOrders[branch] = (advanceData || []).map((d) => ({
+        advanceOrders[branch] = [
+          ...(advanceData || []),
+          ...((openAdvanceData || []).filter((o) => !(advanceData || []).some((a) => a.id === o.id))),
+        ].map((d) => ({
           id:             d.id,
           branch:         d.branch as Branch,
           customerName:   d.customer_name ?? null,
@@ -421,7 +471,10 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         (thresholdData || []).forEach((d) => { tMap[d.item_name] = d.threshold; });
         thresholds[branch] = tMap;
 
-        creditSales[branch] = (creditData || [])
+        creditSales[branch] = [
+          ...(creditData || []),
+          ...((openCreditData || []).filter((o) => !(creditData || []).some((c) => c && c.id === o.id))),
+        ]
           .filter((d): d is NonNullable<typeof d> => d != null && d.id != null)
           .map((d) => ({
             id:            d.id,
@@ -1336,19 +1389,19 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'branch_stock', filter: `branch=eq.${branch}` },
-        () => { get().fetchBranchData(branch); },
+        () => { scheduleBranchRefetch(branch); },
       )
       // branch_incoming changes (new dispatches from packing, confirmations)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'branch_incoming', filter: `branch=eq.${branch}` },
-        () => { get().fetchBranchData(branch); },
+        () => { scheduleBranchRefetch(branch); },
       )
       // branch_sales changes (new sales so today's log is always current)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'branch_sales', filter: `branch=eq.${branch}` },
-        () => { get().fetchBranchData(branch); },
+        () => { scheduleBranchRefetch(branch); },
       )
       .subscribe();
 

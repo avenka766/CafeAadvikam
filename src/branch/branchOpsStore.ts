@@ -884,22 +884,36 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 1000 : 2000); // EGRESS FIX: reduced from 5000
 
-    // BUG FIX: master/reference records (salesperson, supplier, cashier profile)
-    // are created once, rarely, with old timestamps — unlike transactional
-    // records (bills, sales, purchases, etc.) which are created constantly.
-    // The main opQuery above is ordered newest-first and capped by row count
-    // to control egress, which is correct for transactional data but wrong
-    // for reference data: as a branch's transaction volume grows, these old
-    // reference records get pushed past the limit and silently disappear
-    // (this is exactly what happened to the salesperson roster, and would
-    // eventually happen to suppliers and cashier profiles too). Fetch all
-    // reference-type records in a separate, un-truncated-by-volume query so
-    // this class of bug can't recur for any of them.
-    const REFERENCE_RECORD_TYPES = ["salesperson", "supplier", "cashier_profile"] as const;
+    // BUG FIX: two classes of records must never be truncated by the
+    // recency+row-count cap on opQuery above, and both were vulnerable to
+    // the exact same failure that hit the salesperson roster:
+    //  1. Master/reference data (salesperson, supplier, cashier profile) —
+    //     created once, rarely, with old timestamps.
+    //  2. Outstanding/pending business state that can sit open for a long
+    //     time before resolution — held bills awaiting recall, quotations
+    //     awaiting acceptance, advance cake orders awaiting delivery,
+    //     purchase orders awaiting fulfillment, store orders awaiting
+    //     dispatch. An old-but-still-open record of any of these is just as
+    //     real a bug as a missing salesperson (e.g. a held bill from last
+    //     week silently vanishing from Recall, or an advance order for a
+    //     future event date disappearing).
+    // Both classes are fetched here, unbounded by recency, so growth in
+    // ordinary transaction volume (bills, sales, cash movements, etc.) can
+    // never push them out of the window again.
+    const PERSISTENT_RECORD_TYPES = [
+      "salesperson",
+      "supplier",
+      "cashier_profile",
+      "hold_bill",
+      "quotation",
+      "advance_order",
+      "purchase_order",
+      "store_order",
+    ] as const;
     let referenceQuery = supabase
       .from("branch_operation_records")
       .select("record_type, record_id, payload, created_at")
-      .in("record_type", REFERENCE_RECORD_TYPES as unknown as string[])
+      .in("record_type", PERSISTENT_RECORD_TYPES as unknown as string[])
       .order("created_at", { ascending: false })
       .limit(5000);
 
@@ -921,12 +935,34 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 200 : 1000);
 
+    // BUG FIX: same class of bug again — a stock count report still
+    // "Pending Admin Review" or a complaint that's still "Open"/"In Review"
+    // needs to stay visible until resolved, not just while it's within the
+    // most recent 200-1000 rows. These are lower-volume than bills/holds so
+    // less likely to hit the ceiling, but the failure mode is identical, so
+    // fixed the same way: fetch open/pending ones unbounded, merge below.
+    let openStockCountQuery = supabase
+      .from("branch_stock_count_reports")
+      .select("*")
+      .eq("status", "Pending Admin Review")
+      .order("created_at", { ascending: false })
+      .limit(2000);
+
+    let openComplaintQuery = supabase
+      .from("branch_complaint_tickets")
+      .select("*")
+      .neq("status", "Resolved")
+      .order("created_at", { ascending: false })
+      .limit(2000);
+
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
       referenceQuery = referenceQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
       complaintQuery = complaintQuery.eq("branch", sessionBranch);
+      openStockCountQuery = openStockCountQuery.eq("branch", sessionBranch);
+      openComplaintQuery = openComplaintQuery.eq("branch", sessionBranch);
     }
 
     const [
@@ -936,6 +972,8 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
       { data: complaintRows, error: complaintError },
+      { data: openStockCountRows },
+      { data: openComplaintRows },
     ] = await Promise.all([
       supabase
         .from("app_state")
@@ -947,6 +985,8 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       stockCountQuery,
       varianceQuery,
       complaintQuery,
+      openStockCountQuery,
+      openComplaintQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -967,8 +1007,20 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     if (complaintError && !/branch_complaint_tickets|does not exist|schema cache/i.test(complaintError.message)) {
       console.error("[branchOpsStore] Supabase complaint load failed:", complaintError.message);
     }
+    const mergedStockCountRows = [
+      ...((stockCountRows || []) as Array<Record<string, unknown>>),
+      ...((openStockCountRows || []) as Array<Record<string, unknown>>).filter(
+        (o) => !(stockCountRows || []).some((r: any) => r.id === o.id),
+      ),
+    ];
+    const mergedComplaintRows = [
+      ...((complaintRows || []) as Array<Record<string, unknown>>),
+      ...((openComplaintRows || []) as Array<Record<string, unknown>>).filter(
+        (o) => !(complaintRows || []).some((r: any) => r.id === o.id),
+      ),
+    ];
     const dedicatedRows: BranchOperationRecordRow[] = [
-      ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
+      ...(mergedStockCountRows as Array<Record<string, unknown>>).map((row) => ({
         record_type: "stock_count_report",
         record_id: String(row.id),
         created_at: String(row.created_at),
@@ -1004,7 +1056,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
           createdAt: String(row.created_at),
         } satisfies BranchStockVarianceRecord),
       })),
-      ...((complaintRows || []) as Array<Record<string, unknown>>).map((row) => ({
+      ...(mergedComplaintRows as Array<Record<string, unknown>>).map((row) => ({
         record_type: "complaint",
         record_id: String(row.id),
         created_at: String(row.created_at),
