@@ -2400,7 +2400,7 @@ function QuotationsTab({ userName }: { userName: string }) {
 }
 
 function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
-  const { creditSales, creditPayments, settleCreditSale, fetchBranchData, fetchCreditPayments } = useBranchStore();
+  const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchBranchData, fetchCreditPayments } = useBranchStore();
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
   const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
@@ -2413,6 +2413,11 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const selected = pending.find((credit) => credit.id === selectedId);
+
+  const [discountAmount, setDiscountAmount] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
+  const [applyingDiscount, setApplyingDiscount] = useState(false);
+  const [discountMessage, setDiscountMessage] = useState("");
 
   useEffect(() => {
     if (selectedId && !pending.some((credit) => credit.id === selectedId)) {
@@ -2444,6 +2449,23 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
     setAmount("");
     setReference("");
     setRemarks("");
+  };
+
+  const applyDiscount = async () => {
+    const value = Number(discountAmount);
+    setDiscountMessage("");
+    if (!selected) return setDiscountMessage("Select a pending credit bill.");
+    if (!Number.isFinite(value) || value <= 0) return setDiscountMessage("Enter a valid discount amount.");
+    if (value > selected.creditAmount + 0.001) return setDiscountMessage(`Discount cannot exceed ${money(selected.creditAmount)}.`);
+    setApplyingDiscount(true);
+    const error = await applyCreditDiscount(BRANCH, selected.id, value, discountReason.trim() || undefined, userName);
+    setApplyingDiscount(false);
+    if (error) return setDiscountMessage(error);
+    await Promise.all([fetchBranchData(BRANCH), fetchCreditPayments(BRANCH)]);
+    setDiscountMessage(`Discount of ${money(value)} applied to ${selected.billNo}.`);
+    setSelectedId("");
+    setDiscountAmount("");
+    setDiscountReason("");
   };
 
   return (
@@ -2507,6 +2529,47 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
               {saving ? <RefreshCcw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
               {saving ? "Saving…" : "Save Credit Collection"}
             </button>
+          </div>
+        </Panel>
+        <Panel title="Give Credit Discount" icon={<WalletCards className="size-4" />}>
+          <div className="space-y-3">
+            <Field label="Pending Credit Bill">
+              <select
+                className={inputCls}
+                value={selectedId}
+                onChange={(e) => {
+                  const credit = pending.find((row) => row.id === e.target.value);
+                  setSelectedId(e.target.value);
+                  setDiscountAmount(credit ? String(credit.creditAmount) : "");
+                  setDiscountMessage("");
+                }}
+              >
+                <option value="">Select bill</option>
+                {pending.map((credit) => (
+                  <option key={credit.id} value={credit.id}>
+                    {credit.billNo} · {credit.customerName} · Due {money(credit.creditAmount)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {selected && (
+              <div className="rounded-2xl bg-amber-50 p-3 text-sm font-bold text-slate-700 ring-1 ring-amber-200">
+                <div className="flex justify-between gap-3"><span>Customer</span><b>{selected.customerName}</b></div>
+                <div className="mt-1 flex justify-between gap-3"><span>Balance</span><b className="text-red-600">{money(selected.creditAmount)}</b></div>
+              </div>
+            )}
+            <Field label="Discount Amount">
+              <input type="number" min="0.01" max={selected?.creditAmount || undefined} step="0.01" className={inputCls} value={discountAmount} onChange={(e) => { setDiscountAmount(e.target.value); setDiscountMessage(""); }} />
+            </Field>
+            <Field label="Reason (optional)">
+              <input className={inputCls} value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="e.g. loyal customer, minor complaint" />
+            </Field>
+            {discountMessage && <p className={cn("rounded-2xl p-3 text-sm font-black ring-1", discountMessage.startsWith("Discount of") ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : "bg-red-50 text-red-700 ring-red-100")}>{discountMessage}</p>}
+            <button disabled={applyingDiscount || !selected} onClick={applyDiscount} className={cn(btnCls, "w-full bg-amber-600 text-white disabled:cursor-not-allowed disabled:opacity-50")}>
+              {applyingDiscount ? <RefreshCcw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              {applyingDiscount ? "Saving…" : "Apply Discount"}
+            </button>
+            <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
         <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", credits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
