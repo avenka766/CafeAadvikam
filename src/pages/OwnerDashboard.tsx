@@ -1017,8 +1017,14 @@ function WasteLogsTab() {
   const [entries, setEntries] = useState<Array<{
     id: string; food_item: string; quantity: string; logged_at: string;
   }>>([]);
-  // Branch waste logs from branchOpsStore
-  const { wasteLogs } = useBranchOpsStore();
+  // Branch waste logs — shared with SNB Order / SNB Admin / VRSNB Admin via
+  // the `branch_waste_logs` Supabase table (previously read from a local-only
+  // branchOpsStore that never synced, so entries made elsewhere never showed here).
+  const [wasteLogs, setWasteLogs] = useState<Array<{
+    id: string; branch: string; logType: string; itemName: string;
+    quantity: number; unit: string; reason: string; createdBy: string; createdAt: string;
+  }>>([]);
+  const [branchWasteLoading, setBranchWasteLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeSource, setActiveSource] = useState<'kitchen' | 'branches'>('kitchen');
@@ -1043,12 +1049,40 @@ function WasteLogsTab() {
   }, [fromDate, toDate]);
 
   // Filter branch waste logs by date range
+  useEffect(() => {
+    let cancelled = false;
+    const fetchBranchWaste = async () => {
+      setBranchWasteLoading(true);
+      const { data, error: err } = await supabase
+        .from('branch_waste_logs')
+        .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
+        .gte('created_at', `${fromDate}T00:00:00`)
+        .lte('created_at', `${toDate}T23:59:59`)
+        .order('created_at', { ascending: false })
+        .limit(2000);
+      if (cancelled) return;
+      if (!err && data) {
+        setWasteLogs(data.map((d: any) => ({
+          id: d.id,
+          branch: d.branch,
+          logType: d.log_type,
+          itemName: d.item_name,
+          quantity: Number(d.quantity || 0),
+          unit: d.unit,
+          reason: d.reason || '',
+          createdBy: d.created_by_username || '',
+          createdAt: d.created_at,
+        })));
+      }
+      setBranchWasteLoading(false);
+    };
+    void fetchBranchWaste();
+    return () => { cancelled = true; };
+  }, [fromDate, toDate]);
+
   const filteredBranchWaste = useMemo(() => {
-    return wasteLogs.filter(log => {
-      const d = new Date(log.createdAt);
-      return d >= new Date(`${fromDate}T00:00:00`) && d <= new Date(`${toDate}T23:59:59`);
-    }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [wasteLogs, fromDate, toDate]);
+    return wasteLogs.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [wasteLogs]);
 
   const dailyWasteCount = useMemo(() => {
     const counts: Record<string, number> = {};

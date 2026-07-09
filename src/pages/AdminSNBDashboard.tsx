@@ -2173,12 +2173,45 @@ function printWasteLogBatch(entries: Array<{ itemName: string; quantity: number;
 
 function WasteLogsTab({ userName }: { userName: string }) {
   const catalogItems = useSNBCatalog();
-  const { wasteLogs, addWasteLog } = useBranchOpsStore();
+  const { addWasteLog } = useBranchOpsStore();
   const { stock } = useBranchStore();
   const [subTab, setSubTab] = useState<"Dump" | "Damage" | "Trans Out">("Dump");
   const [lineDraft, setLineDraft] = useState({ itemName: catalogItems[0]?.name || "", quantity: "", unit: "pcs" });
   const [lines, setLines] = useState<Array<{ lineId: string; itemName: string; quantity: string; unit: string }>>([]);
   const [meta, setMeta] = useState({ reason: "", verifiedBy: "", checklist: [] as string[] });
+  // Waste logs are shared across SNB Order, SNB Admin, and Owner via the
+  // `branch_waste_logs` Supabase table (written by record_branch_waste_batch_secure).
+  // The previous version read only from the local branchOpsStore, so entries
+  // made from SNB Order never showed here and vice-versa across devices.
+  const [rows, setRows] = useState<Array<{ id: string; logType: string; itemName: string; quantity: number; unit: string; reason: string; verifiedBy: string; createdBy: string; createdAt: string; checklist: string[] }>>([]);
+  const [rowsLoading, setRowsLoading] = useState(true);
+  const loadRows = async () => {
+    setRowsLoading(true);
+    const { data, error: loadError } = await supabase
+      .from("branch_waste_logs")
+      .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist")
+      .eq("branch", BRANCH)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    setRowsLoading(false);
+    if (!loadError && data) {
+      setRows(
+        data.map((d: any) => ({
+          id: d.id,
+          logType: d.log_type === "Trans Out" ? "Trans Out" : d.log_type,
+          itemName: d.item_name,
+          quantity: Number(d.quantity || 0),
+          unit: d.unit,
+          reason: d.reason || "",
+          verifiedBy: d.verified_by || "",
+          createdBy: d.created_by_username || "",
+          createdAt: d.created_at,
+          checklist: Array.isArray(d.checklist) ? d.checklist : [],
+        })),
+      );
+    }
+  };
+  useEffect(() => { void loadRows(); }, []);
   const transferOutChecklist = [
     "Verify standard quantity in box or Kgs or Pcs before transfer",
     "Cross-check all box or Kgs or Pcs before transfer-out and sync",
@@ -2192,12 +2225,18 @@ function WasteLogsTab({ userName }: { userName: string }) {
   const checklistOptions = subTab === "Trans Out"
     ? transferOutChecklist
     : ["Item counted", "Reason checked", "Verified by responsible person", "Stock adjustment required"];
-  const rows = wasteLogs.filter((w) => w.branch === BRANCH);
   const [validationError, setValidationError] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Reset the queued list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
   useEffect(() => { setLines([]); setValidationError(""); }, [subTab]);
+  useEffect(() => {
+    if (lineDraft.itemName) {
+      const correctUnit = stockRowFor(lineDraft.itemName)?.unit;
+      if (correctUnit && correctUnit !== lineDraft.unit) setLineDraft((current) => ({ ...current, unit: correctUnit }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lineDraft.itemName, stock]);
 
   const stockRowFor = (itemName: string) => {
     const catalogItem = catalogItems.find((item) => normal(item.name) === normal(itemName));
@@ -2281,6 +2320,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
       );
       setLines([]);
       setMeta({ reason: "", verifiedBy: "", checklist: [] });
+      await loadRows();
     } catch (saveError) {
       setValidationError(saveError instanceof Error ? saveError.message : "Unable to save waste log");
     } finally {
@@ -2295,10 +2335,10 @@ function WasteLogsTab({ userName }: { userName: string }) {
       <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
         <Panel title={`${subTab} Entry`} icon={<Trash2 className="size-4" />}>
           <div className="space-y-3">
-            <Field label="Item" hint={`In stock: ${draftRemaining} ${lineDraft.unit}`}><select className={inputCls} value={lineDraft.itemName} onChange={(e) => setLineDraft({ ...lineDraft, itemName: e.target.value })}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
+            <Field label="Item" hint={`In stock: ${draftRemaining} ${lineDraft.unit}`}><select className={inputCls} value={lineDraft.itemName} onChange={(e) => { const unit = stockRowFor(e.target.value)?.unit || "pcs"; setLineDraft({ ...lineDraft, itemName: e.target.value, unit }); }}>{catalogItems.map((i) => <option key={i.name}>{i.name}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Quantity"><input type="number" className={inputCls} value={lineDraft.quantity} onChange={(e) => setLineDraft({ ...lineDraft, quantity: e.target.value })} /></Field>
-              <Field label="Unit"><select className={inputCls} value={lineDraft.unit} onChange={(e) => setLineDraft({ ...lineDraft, unit: e.target.value })}><option>pcs</option><option>kg</option><option>g</option><option>box</option></select></Field>
+              <Field label="Unit"><input className={cn(inputCls, "bg-slate-100 text-slate-500")} value={lineDraft.unit} readOnly disabled title="Unit is fixed to the item's live stock unit" /></Field>
             </div>
             <button type="button" onClick={addLine} className={cn(btnCls, "w-full bg-amber-500 text-white")}><Plus className="size-4" /> Add item to list</button>
 
@@ -2330,7 +2370,7 @@ function WasteLogsTab({ userName }: { userName: string }) {
             <button onClick={save} disabled={saving || lines.length === 0} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:cursor-not-allowed disabled:opacity-50")}>{saving ? "Saving…" : `Save Waste Log (${lines.length} item${lines.length === 1 ? "" : "s"})`}</button>
           </div>
         </Panel>
-        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button>}>
+        <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
           <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
         </Panel>
       </div>

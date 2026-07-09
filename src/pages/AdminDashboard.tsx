@@ -235,7 +235,7 @@ function AdminDashboard() {
     useShallow(s => ({ orders: s.orders, polling: s.polling, startPolling: s.startPolling, stopPolling: s.stopPolling }))
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
-  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, wasteLogs, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
+  const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
   const { invoices, load: loadInvoices } = useInvoiceStore();
   const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
@@ -246,6 +246,38 @@ function AdminDashboard() {
 
   useEffect(() => { startPolling(90); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { BRANCHES.forEach(branch => void fetchBranchData(branch)); void fetchStockMismatches(); }, [fetchBranchData, fetchStockMismatches]);
+  // Branch waste (dump/damage/transfer-out) is shared across SNB Order, SNB Admin,
+  // VRSNB Admin, Owner, and here via the `branch_waste_logs` Supabase table.
+  // This used to read a local-only branchOpsStore that never synced across devices.
+  const [wasteLogs, setWasteLogs] = useState<Array<{
+    id: string; branch: string; logType: string; itemName: string;
+    quantity: number; unit: string; reason: string; verifiedBy: string; createdAt: string;
+  }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('branch_waste_logs')
+        .select('id,branch,log_type,item_name,quantity,unit,reason,verified_by,created_at')
+        .gte('created_at', `${fromDate}T00:00:00`)
+        .lte('created_at', `${toDate}T23:59:59`)
+        .order('created_at', { ascending: false })
+        .limit(2000);
+      if (cancelled || error || !data) return;
+      setWasteLogs(data.map((d: any) => ({
+        id: d.id,
+        branch: d.branch,
+        logType: d.log_type,
+        itemName: d.item_name,
+        quantity: Number(d.quantity || 0),
+        unit: d.unit,
+        reason: d.reason || '',
+        verifiedBy: d.verified_by || '',
+        createdAt: d.created_at,
+      })));
+    })();
+    return () => { cancelled = true; };
+  }, [fromDate, toDate]);
   useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
   const loadPublicOrders = useCallback(async () => {
     setPublicOrdersLoading(true);
