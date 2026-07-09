@@ -884,6 +884,19 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 1000 : 2000); // EGRESS FIX: reduced from 5000
 
+    // BUG FIX: "salesperson" records are master/reference data — created once,
+    // rarely, with old timestamps. As branch transaction volume grew, the
+    // limit above (ordered newest-first) started cutting these old records
+    // off entirely once a branch passed ~1000-2000 more-recent operation
+    // records, silently wiping the salesperson dropdown in prod. Fetch these
+    // separately and unbounded by recency so they're never truncated.
+    let salespersonQuery = supabase
+      .from("branch_operation_records")
+      .select("record_type, record_id, payload, created_at")
+      .eq("record_type", "salesperson")
+      .order("created_at", { ascending: false })
+      .limit(2000);
+
     let stockCountQuery = supabase
       .from("branch_stock_count_reports")
       .select("*")
@@ -904,6 +917,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
 
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
+      salespersonQuery = salespersonQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
       complaintQuery = complaintQuery.eq("branch", sessionBranch);
@@ -912,6 +926,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     const [
       { data, error },
       { data: opRows, error: opError },
+      { data: salespersonRows, error: salespersonError },
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
       { data: complaintRows, error: complaintError },
@@ -922,6 +937,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         .eq("key", name)
         .maybeSingle(),
       opQuery,
+      salespersonQuery,
       stockCountQuery,
       varianceQuery,
       complaintQuery,
@@ -932,6 +948,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     }
     if (opError && !/branch_operation_records|does not exist|schema cache/i.test(opError.message)) {
       console.error("[branchOpsStore] Supabase operation recovery load failed:", opError.message);
+    }
+    if (salespersonError && !/branch_operation_records|does not exist|schema cache/i.test(salespersonError.message)) {
+      console.error("[branchOpsStore] Supabase salesperson recovery load failed:", salespersonError.message);
     }
     if (stockCountError && !/branch_stock_count_reports|does not exist|schema cache/i.test(stockCountError.message)) {
       console.error("[branchOpsStore] Supabase stock count load failed:", stockCountError.message);
@@ -998,7 +1017,13 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     ];
     return mergeOperationRecordsIntoState(
       (data?.value as StorageValue<BranchOpsState> | null) ?? null,
-      [...((opRows || []) as BranchOperationRecordRow[]), ...dedicatedRows],
+      [
+        ...((opRows || []) as BranchOperationRecordRow[]),
+        ...((salespersonRows || []) as BranchOperationRecordRow[]).filter(
+          (sp) => !(opRows || []).some((op: any) => op.record_type === sp.record_type && op.record_id === sp.record_id),
+        ),
+        ...dedicatedRows,
+      ],
     );
   },
   setItem: async (name, value) => {
