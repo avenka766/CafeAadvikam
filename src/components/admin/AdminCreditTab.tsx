@@ -14,7 +14,7 @@ import {
 } from 'recharts';
 import {
   IndianRupee, Users, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, Filter, Loader2, Download,
+  ChevronDown, ChevronUp, Filter, Loader2, Download, Percent,
 } from 'lucide-react';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -62,11 +62,28 @@ function KpiCard({
 
 // ── Expandable credit sale card ───────────────────────────────────────────────
 function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
-  const { settleCreditSale } = useBranchStore();
+  const { settleCreditSale, applyCreditDiscount } = useBranchStore();
   const [open, setOpen] = useState(false);
   const [settleAmt, setSettleAmt] = useState('');
   const [settling, setSettling] = useState(false);
   const [settleError, setSettleError] = useState('');
+
+  const [showDiscount, setShowDiscount] = useState(false);
+  const [discountAmt, setDiscountAmt] = useState('');
+  const [discountReason, setDiscountReason] = useState('');
+  const [applyingDiscount, setApplyingDiscount] = useState(false);
+  const [discountError, setDiscountError] = useState('');
+
+  const handleApplyDiscount = async () => {
+    const amt = parseFloat(discountAmt);
+    if (isNaN(amt) || amt <= 0) { setDiscountError('Enter a valid amount'); return; }
+    if (amt > sale.creditAmount) { setDiscountError('Discount exceeds balance due'); return; }
+    setApplyingDiscount(true); setDiscountError('');
+    const err = await applyCreditDiscount(sale.branch, sale.id, amt, discountReason || undefined);
+    setApplyingDiscount(false);
+    if (err) setDiscountError(err);
+    else { setDiscountAmt(''); setDiscountReason(''); setShowDiscount(false); }
+  };
 
   const isOverdue =
     sale.status !== 'settled' &&
@@ -256,7 +273,73 @@ function CreditCard({ sale }: { sale: CreditSale & { branch: Branch } }) {
                   <AlertCircle className="size-3 shrink-0" />{settleError}
                 </p>
               )}
+
+              {/* ── Give Discount ── */}
+              <div className="pt-1">
+                {!showDiscount ? (
+                  <button
+                    onClick={() => setShowDiscount(true)}
+                    className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 hover:underline"
+                  >
+                    <Percent className="size-3" />Give a discount instead
+                  </button>
+                ) : (
+                  <div className="bg-amber-50/60 border border-amber-200 rounded-xl p-2.5 space-y-2">
+                    <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                      Give Discount (write off balance — not counted as cash collected)
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <IndianRupee className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                        <input
+                          type="number"
+                          placeholder={`Max ${formatCurrency(sale.creditAmount)}`}
+                          value={discountAmt}
+                          onChange={e => { setDiscountAmt(e.target.value); setDiscountError(''); }}
+                          className="w-full pl-7 pr-2 py-2 rounded-xl bg-background border border-border text-sm font-body focus:outline-none focus:ring-2 focus:ring-amber-400/40"
+                        />
+                      </div>
+                      <button
+                        onClick={handleApplyDiscount}
+                        disabled={applyingDiscount || !discountAmt}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 text-white text-sm font-bold active:scale-95 disabled:opacity-50 transition"
+                      >
+                        {applyingDiscount
+                          ? <Loader2 className="size-3.5 animate-spin" />
+                          : <Percent className="size-3.5" />}
+                        {applyingDiscount ? '…' : 'Apply'}
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Reason (optional, e.g. loyal customer, minor complaint)"
+                      value={discountReason}
+                      onChange={e => setDiscountReason(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-border text-xs bg-background"
+                    />
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => { setShowDiscount(false); setDiscountError(''); }}
+                        className="text-[11px] text-muted-foreground hover:underline"
+                      >
+                        Cancel
+                      </button>
+                      {discountError && (
+                        <p className="text-[11px] text-destructive flex items-center gap-1">
+                          <AlertCircle className="size-3 shrink-0" />{discountError}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
+          )}
+
+          {!!sale.discountAmount && sale.discountAmount > 0 && (
+            <p className="text-[10px] text-amber-700">
+              Total discount given on this bill: {formatCurrency(sale.discountAmount)}
+            </p>
           )}
         </div>
       )}
