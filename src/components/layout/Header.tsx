@@ -1,8 +1,9 @@
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, Wifi, ShieldCheck } from 'lucide-react';
+import { LogOut, Wifi, ShieldCheck, LayoutPanelTop } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
 import { useVenueStore } from '@/stores/venueStore';
+import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
 import cafeLogo from '@/assets/cafe-logo.png';
 import { cn } from '@/lib/utils';
 
@@ -31,6 +32,8 @@ export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { activeVenue } = useVenueStore();
+  const snbTabStripExpanded = useSnbTabStripStore((s) => s.expanded);
+  const toggleSnbTabStrip = useSnbTabStripStore((s) => s.toggle);
 
   const handleLogout = () => {
     logout();
@@ -100,6 +103,23 @@ export default function Header() {
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
+          {isBranchCounterRoute && !isVrsnbRoute && (
+            <button
+              type="button"
+              onClick={toggleSnbTabStrip}
+              aria-label={snbTabStripExpanded ? 'Hide tabs' : 'Show tabs'}
+              title={snbTabStripExpanded ? 'Hide tabs' : 'Show tabs'}
+              className={cn(
+                'flex items-center justify-center rounded-lg border transition-colors',
+                isCompactCounterRoute ? 'size-7' : 'size-8',
+                snbTabStripExpanded
+                  ? 'border-white/25 bg-white/20 text-white'
+                  : 'border-white/10 bg-white/[0.08] text-white/70 hover:bg-white/[0.14]',
+              )}
+            >
+              <LayoutPanelTop className="size-3.5" />
+            </button>
+          )}
           <div className={cn('hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] text-[11px] font-bold text-white/70', isCompactCounterRoute ? 'lg:flex px-2.5 py-1' : 'sm:flex px-3 py-1.5')}>
             <Wifi className="size-3.5 text-emerald-300" /> Online
           </div>

@@ -149,6 +149,10 @@ export default function BottomNav() {
   if (!currentUser) return null;
   // Cafe Biller navigation is rendered in the compact top command bar.
   if (currentUser.role === 'billing') return null;
+  // SNB branch billing now has its own in-page tab strip (Bill/Advance/Returns/
+  // History/Payment/Closure/Alerts) in the billing top bar, so the floating
+  // bottom nav is redundant here. VRSNB keeps the bottom nav unchanged.
+  if (currentUser.role === 'branch_snb') return null;
 
   const navItems: NavItem[] = [];
 
