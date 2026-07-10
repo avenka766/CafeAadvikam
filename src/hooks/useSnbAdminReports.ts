@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 export type SnbCounterCalculatedRow = {
@@ -367,8 +367,15 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
+  // Guards against out-of-order responses: if the user changes the date range
+  // (e.g. "7 Days" then quickly "Custom" one day) before the first, slower
+  // request finishes, the earlier request's result must never overwrite the
+  // later one. Each refresh() call gets a ticket; only the most recent
+  // ticket's response is applied to state.
+  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     const range = { fromDate, toDate };
@@ -445,6 +452,10 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       rows(12) as SnbPurchaseReturnItemRow[],
       workflow?.purchaseReturnItems ?? [],
     ], (row) => String(row.id || `${row.purchase_return_id}|${row.purchase_invoice_item_id}`));
+
+    // A newer refresh() started while this one was in flight — discard this
+    // stale result instead of letting it overwrite fresher data.
+    if (requestId !== requestIdRef.current) return;
 
     setData({
       counterTotals: rows(0) as SnbCounterCalculatedRow[],
