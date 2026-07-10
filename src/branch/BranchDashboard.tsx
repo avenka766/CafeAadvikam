@@ -36,6 +36,7 @@ import {
 import type { Branch } from './types';
 import { BRANCH_COLORS, BRANCH_LABELS } from './types';
 import { useBranchOpsStore, money } from './branchOpsStore';
+import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
 
 type TabId =
   | 'bill'
@@ -117,6 +118,7 @@ export default function BranchDashboard({ branch }: Props) {
     subscribeToStock, fetchStockMismatches, fetchCreditPayments,
   } = useBranchStore();
   const { bills, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
+  const tabStripExpanded = useSnbTabStripStore((s) => s.expanded);
 
   const initializedRef = useRef<Branch | null>(null);
   const alertedDeliveryIdsRef = useRef<Set<string>>(new Set());
@@ -144,8 +146,7 @@ export default function BranchDashboard({ branch }: Props) {
     if (t.id === 'salesperson') return canViewSalespersonReport;
     return !t.adminOnly || isAdminUser;
   }), [branch, canViewReports, canViewSalespersonReport, isAdminUser]);
-  const requestedTab = searchParams.get('tab') as TabId | null;
-  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
+  const requestedTab = searchParams.get('tab') as TabId | null;  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
   const openTab = useCallback((id: TabId | string) => {
     const next = id as TabId;
     if (next === 'bill') setSearchParams({});
@@ -295,8 +296,37 @@ export default function BranchDashboard({ branch }: Props) {
 
   return (
     <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
-      <div className="grid h-full min-h-0 p-1.5 sm:p-2">
-        <main className={cn('h-full min-h-0 min-w-0 overflow-hidden border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'rounded-[1.35rem]' : 'rounded-[1.6rem]')}>
+      <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
+        {branch === 'SNB' && tabStripExpanded && (
+          <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
+            {tabs
+              .filter((t) => (['bill', 'advance', 'returns', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
+              .map((t) => {
+                const Icon = t.icon;
+                const isActive = t.id === tab;
+                const badge = t.id === 'alerts' ? notifications.filter((n) => n.branch === branch && n.status === 'Unread').length : 0;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => { openTab(t.id); useSnbTabStripStore.getState().collapse(); }}
+                    className={cn(
+                      'relative inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-black transition-colors',
+                      isActive ? 'bg-slate-950 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                    )}
+                  >
+                    <Icon className="size-3" />{t.id === 'payment-edit' ? 'Payment' : t.id === 'bill' ? 'Bill' : t.label}
+                    {badge > 0 && (
+                      <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-red-500 text-[8px] font-black text-white">
+                        {badge > 9 ? '9+' : badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+          </div>
+        )}
+        <main className={cn('h-full min-h-0 min-w-0 flex-1 overflow-hidden border border-slate-200 bg-white/70 shadow-lg shadow-slate-200/50', tab === 'bill' ? 'rounded-[1.35rem]' : 'rounded-[1.6rem]')}>
           <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'branch-compact-tab overflow-hidden p-1.5 sm:p-2')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
