@@ -2,7 +2,7 @@
 
 export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'baker' | 'packing';
 
-export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'packed' | 'dispatched';
+export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'partially_packed' | 'packed' | 'dispatched';
 
 export interface BakeryOrderItem {
   itemId: string;
@@ -40,6 +40,8 @@ export interface BakeryOrder {
   expectedOutput?: number;
   materialsCalculatedAt?: string;
   preparedItems?: PreparedItem[];
+  /** Items the baker has entered a prepared quantity for but not yet sent to packing. */
+  stagedItems?: PreparedItem[];
   sentToPackingAt?: string;
   dispatchLog?: DispatchEntry[];
   targetBranch?: Branch;

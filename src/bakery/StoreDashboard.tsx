@@ -1144,7 +1144,7 @@ function StoreHistoryTab() {
     return () => unsubOrders();
   }, [fetchOrders, subscribeOrders]);
 
-  const historyOrders = orders.filter(o => ['baking', 'packed', 'dispatched'].includes(o.status));
+  const historyOrders = orders.filter(o => ['baking', 'partially_packed', 'packed', 'dispatched'].includes(o.status));
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -1631,7 +1631,7 @@ export default function StoreDashboard() {
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
   const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
-  const sentOrders = orders.filter(o => ['baking','packed','dispatched'].includes(o.status));
+  const sentOrders = orders.filter(o => ['baking','partially_packed','packed','dispatched'].includes(o.status));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {

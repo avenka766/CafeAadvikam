@@ -177,9 +177,9 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
     .filter(entry => businessDate(entry.dispatchedAt) === date)
     .map(entry => ({ order, entry }))), [orders, date]);
 
-  const packedOrders = useMemo(() => orders.filter(order => ['packed','dispatched'].includes(order.status) && businessDate(order.sentToPackingAt || order.createdAt) === date), [orders, date]);
+  const packedOrders = useMemo(() => orders.filter(order => ['partially_packed','packed','dispatched'].includes(order.status) && businessDate(order.sentToPackingAt || order.createdAt) === date), [orders, date]);
   const dispatchedOrderIds = useMemo(() => new Set(dayDispatches.map(row => row.order.id)), [dayDispatches]);
-  const pendingOrders = useMemo(() => orders.filter(order => order.status === 'packed').length, [orders]);
+  const pendingOrders = useMemo(() => orders.filter(order => order.status === 'packed' || order.status === 'partially_packed').length, [orders]);
 
   const branchSummary = useMemo(() => {
     const result: Record<Branch, { kg: number; pcs: number; orders: number; ids: Set<string> }> = {
@@ -207,7 +207,7 @@ export default function PackingDailyClosureTab({ onCounterStatusChange }: { onCo
   }, [dayDispatches]);
 
   const leftoverRows = useMemo(() => orders.flatMap(order => {
-    if (!['packed','dispatched'].includes(order.status)) return [];
+    if (!['partially_packed','packed','dispatched'].includes(order.status)) return [];
     return (order.preparedItems ?? []).flatMap(prepared => {
       const source = order.items.find(item => item.itemId === prepared.itemId || item.itemName === prepared.itemName);
       const dispatches = (order.dispatchLog ?? []).filter(entry => entry.itemName === prepared.itemName);

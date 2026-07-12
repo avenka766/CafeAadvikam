@@ -329,7 +329,7 @@ export function BakeryItemsPanel() {
   const unpricedCount = items.filter(i => i.enabled && i.price == null).length;
 
   // M-09 FIX: block delete if the item appears in any active/pending bakery order
-  const ACTIVE_STATUSES = new Set(['pending', 'baking', 'packed']);
+  const ACTIVE_STATUSES = new Set(['pending', 'baking', 'partially_packed', 'packed']);
   const getActiveOrdersForItem = (itemId: string) =>
     orders.filter(o =>
       ACTIVE_STATUSES.has(o.status) &&

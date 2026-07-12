@@ -190,7 +190,7 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const { submitDispatch } = useBakeryStore();
   const { currentUser }   = useAuthStore();
 
-  const [expanded,         setExpanded]         = useState(order.status === 'packed');
+  const [expanded,         setExpanded]         = useState(order.status === 'packed' || order.status === 'partially_packed');
   const [dispatchingItems, setDispatchingItems] = useState<Set<string>>(new Set());
   const [dispatchError,    setDispatchError]    = useState<string | null>(null);
   const transferBranch: Branch = order.targetBranch ?? 'SNB';
@@ -210,8 +210,6 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   }, [order.preparedItems, order.items]);
 
   const isCustomItem   = (itemId: string) => order.items.find(i => i.itemId === itemId)?.isCustom ?? false;
-  const allConfirmed   = packedEntries.length > 0 && packedEntries.every(e => e.confirmed);
-  const confirmedCount = packedEntries.filter(e => e.confirmed).length;
 
   const confirmEntry = (idx: number) => setPackedEntries(prev => prev.map((e, i) => {
     if (i !== idx) return e;
@@ -245,6 +243,16 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
     });
     return r;
   }, [preparedItems, dispatchLog, packedEntries]);
+
+  // An item that's already been fully sent to the branch shouldn't block the
+  // "confirm all" gate or show a confusing repeat "Confirm/Undo" prompt — it's
+  // simply done.
+  const isFullySentItem = (itemName: string) => {
+    const s = stockByItem[itemName];
+    return (s?.dispatched ?? 0) > 0 && (s?.available ?? 0) <= 0;
+  };
+  const allConfirmed   = packedEntries.length > 0 && packedEntries.every(e => e.confirmed || isFullySentItem(e.itemName));
+  const confirmedCount = packedEntries.filter(e => e.confirmed || isFullySentItem(e.itemName)).length;
 
   const allDispatched = preparedItems.length > 0 && preparedItems.every(p => (stockByItem[p.itemName]?.available ?? 1) <= 0);
 
@@ -333,6 +341,11 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                 {branchMeta.icon} {order.targetBranch}
               </span>
             )}
+            {order.status === 'partially_packed' && (
+              <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-700 border-amber-200">
+                ↗ More items coming from baker
+              </span>
+            )}
           </div>
           <p className="text-[10px] font-body text-muted-foreground mt-0.5">
             {confirmedCount}/{packedEntries.length} confirmed · {preparedItems.map(p => p.itemName).join(', ')}
@@ -364,7 +377,30 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
               <p className="text-xs font-body font-bold text-foreground">Confirm Packed Quantities</p>
             </div>
             <div className="space-y-2">
-              {packedEntries.map((entry, idx) => (
+              {packedEntries.map((entry, idx) => {
+                const itemStock = stockByItem[entry.itemName];
+                const fullySent = (itemStock?.dispatched ?? 0) > 0 && (itemStock?.available ?? 0) <= 0;
+
+                if (fullySent) {
+                  return (
+                    <div key={entry.itemId} className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-sm font-body font-semibold text-emerald-900 truncate">{entry.itemName}</p>
+                          <p className="text-[10px] font-body text-emerald-700">
+                            Fully sent to {transferBranch} · {itemStock?.dispatched} {itemStock?.unit}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-body font-bold px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 shrink-0">
+                        DONE
+                      </span>
+                    </div>
+                  );
+                }
+
+                return (
                 <div key={entry.itemId} className={cn(
                   'rounded-xl border p-3.5 transition-all',
                   entry.confirmed ? 'border-emerald-200 bg-emerald-50/60' : 'border-border bg-muted/20'
@@ -423,7 +459,8 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Lock/unlock indicator */}
@@ -476,6 +513,18 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
                 </div>
                 {preparedItems.map(p => {
                   const stock = stockByItem[p.itemName];
+                  const fullySent = (stock?.dispatched ?? 0) > 0 && (stock?.available ?? 0) <= 0;
+                  if (fullySent) {
+                    return (
+                      <div key={p.itemId} className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+                        <div>
+                          <p className="text-xs font-bold text-emerald-900">{p.itemName}</p>
+                          <p className="text-[10px] text-emerald-700">✓ Already sent — nothing pending</p>
+                        </div>
+                        <CheckCircle2 className="size-4 text-emerald-600" />
+                      </div>
+                    );
+                  }
                   const value = transferQty[p.itemName] ?? String(stock?.available ?? 0);
                   return <div key={p.itemId} className="grid grid-cols-[1fr_110px_54px] items-center gap-2 rounded-xl border border-border bg-background p-3">
                     <div><p className="text-xs font-bold">{p.itemName}</p><p className="text-[10px] text-muted-foreground">Available: {stock?.available ?? 0} {stock?.unit ?? 'kg'}</p></div>
@@ -785,11 +834,11 @@ export default function PackingDashboard() {
   }, [activeTab, refreshPackingCounter]);
 
   const packingOrders = useMemo(
-    () => orders.filter(o => ['packed', 'dispatched'].includes(o.status)),
+    () => orders.filter(o => ['partially_packed', 'packed', 'dispatched'].includes(o.status)),
     [orders],
   );
   const readyToPackOrders = useMemo(
-    () => packingOrders.filter(o => o.status === 'packed'),
+    () => packingOrders.filter(o => o.status === 'packed' || o.status === 'partially_packed'),
     [packingOrders],
   );
   const dispatchedOrders = useMemo(
@@ -820,7 +869,7 @@ export default function PackingDashboard() {
   }, [branchFilter, dispatchedOrders, search]);
 
   const leftoverRows = useMemo(() => orders.flatMap(order => {
-    if (!['packed', 'dispatched'].includes(order.status)) return [];
+    if (!['partially_packed', 'packed', 'dispatched'].includes(order.status)) return [];
     if (branchFilter !== 'all' && order.targetBranch !== branchFilter) return [];
 
     return (order.preparedItems ?? []).flatMap(prepared => {

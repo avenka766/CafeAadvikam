@@ -15,6 +15,9 @@ interface BakeryState {
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
   sendToBaker: (orderId: string) => Promise<void>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
+  addStagedItem: (orderId: string, item: PreparedItem) => Promise<void>;
+  removeStagedItem: (orderId: string, itemId: string) => Promise<void>;
+  sendStagedToPacking: (orderId: string) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
   subscribe: () => () => void; // returns unsubscribe fn
@@ -32,6 +35,7 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     expectedOutput: d.expected_output as number | undefined,
     materialsCalculatedAt: d.materials_calculated_at as string | undefined,
     preparedItems: (d.prepared_items as PreparedItem[]) || [],
+    stagedItems: (d.staged_items as PreparedItem[]) || [],
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
     targetBranch: d.target_branch as Branch | undefined,
@@ -224,6 +228,127 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }
   },
 
+  // Baker enters a prepared qty for one item and taps "Add" — this is saved
+  // immediately (not just held in the browser) so a refresh or the 15s
+  // background poll never loses in-progress work. Does NOT touch status or
+  // send anything to packing yet.
+  addStagedItem: async (orderId, item) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) return;
+    const existing = order.stagedItems ?? [];
+    const updated = [...existing.filter(s => s.itemId !== item.itemId), item];
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update({ staged_items: updated })
+      .eq('id', orderId);
+    if (error) throw error;
+    set(s => ({
+      orders: s.orders.map(o => o.id === orderId ? { ...o, stagedItems: updated } : o),
+    }));
+  },
+
+  // Baker removes an item from the staged (not-yet-sent) table before sending,
+  // moving it back to "Pending".
+  removeStagedItem: async (orderId, itemId) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) return;
+    const updated = (order.stagedItems ?? []).filter(s => s.itemId !== itemId);
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update({ staged_items: updated })
+      .eq('id', orderId);
+    if (error) throw error;
+    set(s => ({
+      orders: s.orders.map(o => o.id === orderId ? { ...o, stagedItems: updated } : o),
+    }));
+  },
+
+  // Sends whatever is currently staged to Packing. Items not yet staged stay
+  // pending on the order — the order only fully leaves "Orders" once every
+  // item has been sent across one or more of these batches.
+  sendStagedToPacking: async (orderId) => {
+    const order = get().orders.find(o => o.id === orderId);
+    if (!order) return;
+    const staged = order.stagedItems ?? [];
+    if (staged.length === 0) return;
+
+    const existingPrepared = order.preparedItems ?? [];
+    const mergedPrepared = [
+      ...existingPrepared.filter(p => !staged.some(s => s.itemId === p.itemId)),
+      ...staged,
+    ];
+    const isFullyPrepared = order.items.every(i => mergedPrepared.some(p => p.itemId === i.itemId));
+    const newStatus: WorkflowStatus = isFullyPrepared ? 'packed' : 'partially_packed';
+
+    const updatePayload: Record<string, unknown> = {
+      prepared_items: mergedPrepared,
+      staged_items: [],
+      status: newStatus,
+    };
+    const sentToPackingAt = isFullyPrepared ? new Date().toISOString() : order.sentToPackingAt;
+    if (isFullyPrepared) updatePayload.sent_to_packing_at = sentToPackingAt;
+
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update(updatePayload)
+      .eq('id', orderId);
+    if (error) throw error;
+
+    set(s => ({
+      orders: s.orders.map(o =>
+        o.id === orderId
+          ? { ...o, preparedItems: mergedPrepared, stagedItems: [], status: newStatus, sentToPackingAt }
+          : o
+      ),
+    }));
+
+    if (order.notes) {
+      const { useAuthStore } = await import('@/stores/authStore');
+      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
+      const user = useAuthStore.getState().currentUser;
+      const by = user?.displayName || user?.username || 'Baker';
+      const orderNo = order.notes.split('|')[0]?.trim();
+      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'packing', by);
+    }
+
+    // Only run the shortage check once the order is fully prepared — comparing
+    // a partial batch against the full order would falsely flag every
+    // not-yet-staged item as a 100% shortage.
+    if (isFullyPrepared) {
+      const { kgToPcs } = await import('./itemMatcher');
+      const shortages = order.items
+        .map(item => {
+          const prep = mergedPrepared.find(p => p.itemId === item.itemId);
+          const isPcs = item.dispatchUnit === 'pcs';
+          const requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
+          const prepKg = prep?.quantityPrepared ?? 0;
+          const prepared = isPcs && item.weightGrams != null
+            ? (kgToPcs(prepKg, item.weightGrams) ?? prepKg)
+            : prepKg;
+          return { itemName: item.itemName, requested, prepared, unit: isPcs ? 'pcs' : 'kg' };
+        })
+        .filter(x => x.prepared < x.requested - 0.001);
+      if (shortages.length > 0) {
+        void useNotificationStore.getState()
+          .pushBakerShortage(orderId, String(order.orderNumber), shortages);
+      }
+    }
+
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId:   user.id,
+        staffName: user.displayName,
+        role:      user.role,
+        action:    'Submitted Prepared Items',
+        detail:    `Order #${order.orderNumber} — ${staged.length} item(s) sent to packing${isFullyPrepared ? ' (order complete)' : ' (partial)'}`,
+        branch:    order.targetBranch,
+      });
+    }
+  },
+
   submitDispatch: async (orderId, entry) => {
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
 
@@ -276,7 +401,20 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       // kg items: standard comparison
       return totalDispatched >= p.quantityPrepared - 0.001;
     });
-    const newStatus: WorkflowStatus = allFullyDispatched ? 'dispatched' : 'packed';
+    // BUG FIX: `allFullyDispatched` only looks at items the baker has already sent
+    // (prepared_items) — it says nothing about whether the baker still has items
+    // left to prepare. Without this check, dispatching the *partial* batch that
+    // was sent so far would prematurely stamp the whole order 'dispatched', even
+    // though other items are still sitting unprepared with the baker. That made
+    // the order vanish from the Baker's Orders tab with those items unreachable.
+    // Only allow 'packed'/'dispatched' once every item on the order has actually
+    // been sent to packing at least once; otherwise stay 'partially_packed' so
+    // the order (and its still-pending items) remains visible to the baker.
+    const isOrderFullyPrepared = orderItems.length > 0 &&
+      orderItems.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
+    const newStatus: WorkflowStatus = !isOrderFullyPrepared
+      ? 'partially_packed'
+      : allFullyDispatched ? 'dispatched' : 'packed';
 
     const { error } = await supabase.rpc('append_bakery_dispatch_log', {
       p_order_id: orderId,
@@ -466,7 +604,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       }
       return totalDispatched >= p.quantityPrepared - 0.001;
     });
-    const newStatus: WorkflowStatus = allStillCovered ? 'dispatched' : 'packed';
+    const isOrderFullyPrepared = order.items.length > 0 &&
+      order.items.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
+    const newStatus: WorkflowStatus = !isOrderFullyPrepared
+      ? 'partially_packed'
+      : allStillCovered ? 'dispatched' : 'packed';
 
     const { error } = await supabase
       .from('bakery_orders')

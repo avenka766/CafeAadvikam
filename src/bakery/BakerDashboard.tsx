@@ -563,59 +563,113 @@ function DailyClosureTab() {
 
 // ─── Active baking card ───────────────────────────────────────────────────────
 function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
-  const { submitPrepared } = useBakeryStore();
+  const { addStagedItem, removeStagedItem, sendStagedToPacking } = useBakeryStore();
   const [expanded, setExpanded] = useState(true);
 
-  // FIX M-18: removed initialised guard — useEffect now reruns when order.id or
-  // order.updatedAt changes so prep quantities stay in sync with realtime updates.
-  const [prepQty, setPrepQty] = useState<Record<string, string>>({});
-  useEffect(() => {
-    setPrepQty(Object.fromEntries(order.items.map(i => [i.itemId, String(i.quantity)])));
-  }, [order.id, order.updatedAt, order.items]);
+  const preparedItems = order.preparedItems ?? [];
+  const stagedItems = order.stagedItems ?? [];
 
-  const [submitting, setSubmitting] = useState(false);
-  const [done,       setDone]       = useState(false);
+  // Items still needing attention: not yet sent to packing, not yet staged.
+  const pendingItems = order.items.filter(
+    i => !preparedItems.some(p => p.itemId === i.itemId) && !stagedItems.some(s => s.itemId === i.itemId)
+  );
+
+  const [pickerItemId, setPickerItemId] = useState<string>('');
+  const [pickerQty, setPickerQty] = useState<string>('');
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Reset the picker whenever the pending list changes shape (e.g. after Add / Send).
+  useEffect(() => {
+    if (pickerItemId && !pendingItems.some(i => i.itemId === pickerItemId)) {
+      setPickerItemId('');
+      setPickerQty('');
+    }
+  }, [pendingItems, pickerItemId]);
+
+  const [addingId,   setAddingId]   = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [sending,    setSending]    = useState(false);
   const [error,      setError]      = useState<string | null>(null);
 
-  // BUG #15 FIX: was >= 0 which allowed submitting 0 qty, stalling packing permanently.
-  // FIX M-17: use parseInt + isFinite to reject scientific notation (1e3) and Infinity.
-  const valid = order.items.every(i => {
-    const v = Number.parseFloat(prepQty[i.itemId] ?? '');
-    const minimum = i.dispatchUnit === 'pcs' ? 1 : 0.01;
-    return Number.isFinite(v) && v >= minimum;
-  });
+  const isFullyPrepared = pendingItems.length === 0 && stagedItems.length === 0;
+  const pickerItem = pendingItems.find(i => i.itemId === pickerItemId) ?? null;
 
-  const handleSend = async () => {
-    setSubmitting(true); setError(null);
-    const prepared: PreparedItem[] = order.items.map(item => ({
-      itemId: item.itemId, itemName: item.itemName,
-      quantityPrepared: Number.parseFloat(prepQty[item.itemId] ?? String(item.quantity)),
-      preparedAt: new Date().toISOString(),
-      dispatchUnit: item.originalPcs != null ? 'kg' : (item.dispatchUnit ?? 'kg'),
-    }));
+  const filteredPending = pickerSearch.trim()
+    ? pendingItems.filter(i => i.itemName.toLowerCase().includes(pickerSearch.trim().toLowerCase()))
+    : pendingItems;
+
+  const selectPickerItem = (item: BakeryOrderItem) => {
+    setPickerItemId(item.itemId);
+    setPickerQty(String(item.quantity));
+    setPickerSearch('');
+    setPickerOpen(false);
+  };
+
+  const handleAdd = async () => {
+    if (!pickerItem) return;
+    const qty = Number.parseFloat(pickerQty);
+    const minimum = pickerItem.dispatchUnit === 'pcs' ? 1 : 0.01;
+    if (!Number.isFinite(qty) || qty < minimum) {
+      setError('Enter a valid prepared quantity.');
+      return;
+    }
+    setError(null);
+    setAddingId(pickerItem.itemId);
     try {
-      await submitPrepared(order.id, prepared);
-      setDone(true);
+      await addStagedItem(order.id, {
+        itemId: pickerItem.itemId,
+        itemName: pickerItem.itemName,
+        quantityPrepared: qty,
+        preparedAt: new Date().toISOString(),
+        dispatchUnit: pickerItem.originalPcs != null ? 'kg' : (pickerItem.dispatchUnit ?? 'kg'),
+      });
+      setPickerItemId('');
+      setPickerQty('');
     } catch {
-      setError('Failed — please try again.');
+      setError('Failed to add — please try again.');
     } finally {
-      setSubmitting(false);
+      setAddingId(null);
     }
   };
 
+  const handleRemoveStaged = async (itemId: string) => {
+    setRemovingId(itemId);
+    try {
+      await removeStagedItem(order.id, itemId);
+    } catch {
+      setError('Failed to remove — please try again.');
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  const handleSend = async () => {
+    setSending(true); setError(null);
+    try {
+      await sendStagedToPacking(order.id);
+    } catch {
+      setError('Failed to send — please try again.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const getUnitLabel = (item: BakeryOrderItem) => (item.dispatchUnit === 'pcs' && item.weightGrams == null ? 'pcs' : 'kg');
+
   return (
     <div className={cn(
-      'rounded-2xl border overflow-hidden transition-all',
-      done ? 'border-emerald-200 bg-emerald-50/40' : 'border-orange-200 bg-orange-50/20'
+      'rounded-2xl border overflow-visible transition-all',
+      isFullyPrepared ? 'border-emerald-200 bg-emerald-50/40' : 'border-orange-200 bg-orange-50/20'
     )}>
       {/* Card header */}
-      <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20 transition-colors"
+      <button className="w-full px-4 py-3.5 flex items-center gap-3 text-left active:bg-muted/20 transition-colors rounded-t-2xl"
         onClick={() => setExpanded(v => !v)}>
         <div className={cn(
           'size-9 rounded-xl flex items-center justify-center shrink-0',
-          done ? 'bg-emerald-100' : 'bg-orange-100'
+          isFullyPrepared ? 'bg-emerald-100' : 'bg-orange-100'
         )}>
-          {done
+          {isFullyPrepared
             ? <CheckCircle2 className="size-5 text-emerald-600" />
             : <Flame className="size-5 text-orange-500" />}
         </div>
@@ -624,11 +678,13 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
             <span className="font-display font-bold text-foreground text-sm">Order #{order.orderNumber}</span>
             <span className={cn(
               'text-[9px] font-body font-bold px-2 py-0.5 rounded-full border',
-              done
-                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+              order.status === 'partially_packed'
+                ? 'bg-purple-100 text-purple-700 border-purple-200'
                 : 'bg-orange-100 text-orange-700 border-orange-200'
             )}>
-              {done ? '✓ SENT TO PACKING' : '🔥 BAKING'}
+              {order.status === 'partially_packed'
+                ? `↗ PARTIALLY SENT (${preparedItems.length}/${order.items.length})`
+                : '🔥 BAKING'}
             </span>
           </div>
           <p className="text-[11px] font-body text-muted-foreground mt-0.5 truncate">
@@ -642,42 +698,145 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
 
       {expanded && (
         <div className="border-t border-orange-100 px-4 pb-4 pt-3 space-y-4">
-          {/* Items */}
-          <div className="space-y-2.5">
-            {order.items.map(item => {
-              const meta = BAKERY_ITEMS.find(b => b.id === item.itemId);
-              return (
-                <div key={item.itemId}
-                  className="flex items-center gap-3 bg-background rounded-xl border border-border px-3 py-2.5">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-base leading-none">{meta?.icon ?? '🍬'}</span>
-                      <p className="text-sm font-body font-semibold text-foreground truncate">{item.itemName}</p>
-                      {item.isCustom && (
-                        <span className="text-[9px] font-body font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0">CUSTOM</span>
-                      )}
+
+          {/* Already sent to packing */}
+          {preparedItems.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-body font-bold text-emerald-700 uppercase tracking-wide">
+                ✓ Already sent to packing ({preparedItems.length})
+              </p>
+              <div className="space-y-1">
+                {preparedItems.map(p => {
+                  const source = order.items.find(i => i.itemId === p.itemId);
+                  return (
+                    <div key={p.itemId} className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                      <span className="text-xs font-body font-semibold text-emerald-900 truncate">{p.itemName}</span>
+                      <span className="text-xs font-body font-bold text-emerald-700 shrink-0">
+                        {p.quantityPrepared} {source ? getUnitLabel(source) : 'kg'}
+                      </span>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Staged (added, not yet sent) */}
+          {stagedItems.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-body font-bold text-amber-700 uppercase tracking-wide">
+                Ready to send ({stagedItems.length})
+              </p>
+              <div className="space-y-1">
+                {stagedItems.map(s => {
+                  const source = order.items.find(i => i.itemId === s.itemId);
+                  return (
+                    <div key={s.itemId} className="flex items-center justify-between gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-body font-semibold text-amber-900 truncate">{s.itemName}</p>
+                        <p className="text-[10px] font-body text-amber-700">
+                          {s.quantityPrepared} {source ? getUnitLabel(source) : 'kg'} prepared
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleRemoveStaged(s.itemId)}
+                        disabled={removingId === s.itemId}
+                        className="text-[10px] font-body font-bold text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 shrink-0 disabled:opacity-50"
+                      >
+                        {removingId === s.itemId ? '…' : 'Remove'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Pending — pick an item to prepare */}
+          {pendingItems.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-wide">
+                Pending ({pendingItems.length}) — pick an item to prepare
+              </p>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(v => !v)}
+                  className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <span className={cn('truncate', !pickerItem && 'text-muted-foreground')}>
+                    {pickerItem ? pickerItem.itemName : 'Select an item…'}
+                  </span>
+                  <ChevronDown className="size-4 text-muted-foreground shrink-0" />
+                </button>
+
+                {pickerOpen && (
+                  <div className="absolute z-10 mt-1 w-full rounded-xl border border-border bg-card shadow-lg overflow-hidden">
+                    <div className="p-2 border-b border-border">
+                      <div className="relative">
+                        <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          autoFocus
+                          value={pickerSearch}
+                          onChange={e => setPickerSearch(e.target.value)}
+                          placeholder="Search item…"
+                          className="w-full h-9 pl-8 pr-2 rounded-lg border border-border bg-background text-xs font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        />
+                      </div>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      {filteredPending.length === 0 ? (
+                        <p className="text-xs font-body text-muted-foreground text-center py-3">No matching items</p>
+                      ) : filteredPending.map(item => {
+                        const meta = BAKERY_ITEMS.find(b => b.id === item.itemId);
+                        return (
+                          <button
+                            key={item.itemId}
+                            type="button"
+                            onClick={() => selectPickerItem(item)}
+                            className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-muted/40 transition-colors"
+                          >
+                            <span className="text-sm leading-none">{meta?.icon ?? '🍬'}</span>
+                            <span className="text-xs font-body font-semibold text-foreground truncate flex-1">{item.itemName}</span>
+                            <span className="text-[10px] font-body text-muted-foreground shrink-0">{getRequestedQtyLabel(item)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {pickerItem && (
+                <div className="flex items-center gap-3 bg-background rounded-xl border border-border px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-body font-semibold text-foreground truncate">{pickerItem.itemName}</p>
                     <p className="text-[10px] font-body text-muted-foreground mt-0.5">
-                      Requested: <span className="font-bold text-foreground">{getRequestedQtyLabel(item)}</span>
+                      Requested: <span className="font-bold text-foreground">{getRequestedQtyLabel(pickerItem)}</span>
                     </p>
-                    <AttachmentPreview name={item.attachmentName} dataUrl={item.attachmentDataUrl} />
+                    <AttachmentPreview name={pickerItem.attachmentName} dataUrl={pickerItem.attachmentDataUrl} />
                   </div>
                   <div className="flex flex-col items-center gap-1 shrink-0">
                     <input
-                      type="number" min={0} step={item.dispatchUnit === 'pcs' && item.weightGrams == null ? 1 : 0.25}
-                      value={prepQty[item.itemId] ?? item.quantity}
-                      onChange={e => setPrepQty(p => ({ ...p, [item.itemId]: e.target.value }))}
-                      disabled={done}
-                      className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                      type="number" min={0} step={pickerItem.dispatchUnit === 'pcs' && pickerItem.weightGrams == null ? 1 : 0.25}
+                      value={pickerQty}
+                      onChange={e => setPickerQty(e.target.value)}
+                      className="w-20 h-10 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
                     />
-                    <span className="text-[9px] font-body font-bold text-muted-foreground">
-                      {item.dispatchUnit === 'pcs' && item.weightGrams == null ? 'pcs' : 'kg'} prepared
-                    </span>
+                    <span className="text-[9px] font-body font-bold text-muted-foreground">{getUnitLabel(pickerItem)} prepared</span>
                   </div>
+                  <button
+                    onClick={handleAdd}
+                    disabled={addingId === pickerItem.itemId}
+                    className="h-10 px-4 rounded-xl bg-orange-500 text-white text-xs font-body font-bold shrink-0 disabled:opacity-50 active:scale-95"
+                  >
+                    {addingId === pickerItem.itemId ? <Loader2 className="size-4 animate-spin" /> : 'Add'}
+                  </button>
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </div>
+          )}
 
           {/* U-14 FIX: show special order notes so baker never misses custom instructions */}
           {order.notes && (
@@ -699,19 +858,20 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
 
           {error && <p className="text-xs font-body text-destructive text-center">{error}</p>}
 
-          <button onClick={handleSend} disabled={submitting || done || !valid}
-            className={cn(
-              'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50',
-              done
-                ? 'bg-emerald-100 text-emerald-700'
-                : 'bg-orange-500 text-white shadow-lg shadow-orange-200'
-            )}>
-            {submitting
-              ? <Loader2 className="size-4 animate-spin" />
-              : done
-              ? <><CheckCircle2 className="size-4" /> Sent to Packing</>
-              : <><Send className="size-4" /> Send to Packing</>}
-          </button>
+          {stagedItems.length > 0 && (
+            <button onClick={handleSend} disabled={sending}
+              className="w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 bg-orange-500 text-white shadow-lg shadow-orange-200">
+              {sending
+                ? <Loader2 className="size-4 animate-spin" />
+                : <><Send className="size-4" /> Send {stagedItems.length} item{stagedItems.length > 1 ? 's' : ''} to Packing</>}
+            </button>
+          )}
+
+          {isFullyPrepared && (
+            <div className="flex items-center justify-center gap-2 text-emerald-700 text-xs font-body font-bold py-2">
+              <CheckCircle2 className="size-4" /> All items sent to packing
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1025,7 +1185,7 @@ export default function BakerDashboard() {
 
   const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
   const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const bakingOrders = orders.filter(o => o.status === 'baking');
+  const bakingOrders = orders.filter(o => o.status === 'baking' || o.status === 'partially_packed');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
   const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
