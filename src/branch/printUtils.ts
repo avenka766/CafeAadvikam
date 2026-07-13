@@ -185,7 +185,7 @@ function safeHtml(value: unknown): string {
 }
 const inr = (n: number) => `₹${Number(n || 0).toFixed(2)}`;
 
-export function printBranchCashierClosure(input: {
+export type BranchCashierClosurePrintInput = {
   branch: import('./types').Branch;
   cashier: string;
   date: string;
@@ -202,7 +202,12 @@ export function printBranchCashierClosure(input: {
   notes?: string;
   bills: Array<{ billNo: string; createdAt: string; customerName?: string; paymentMode: string; total: number; biller: string }>;
   refundRows: Array<{ returnNo: string; originalBillNo: string; createdAt: string; paymentMode: string; reason: string; cashier: string; amount: number }>;
-}) {
+};
+
+export function printBranchCashierClosure(
+  input: BranchCashierClosurePrintInput,
+  options: { silent?: boolean } = {},
+) {
   const printedAt = new Date().toLocaleString('en-IN');
   const billRowsHtml = input.bills.length === 0
     ? '<tr><td colspan="6" class="muted center">No bills closed for this date.</td></tr>'
@@ -221,9 +226,7 @@ export function printBranchCashierClosure(input: {
     ? '<tr><td colspan="7" class="muted center">No refunds in this counter session.</td></tr>'
     : input.refundRows.map((r) => `<tr><td>${safeHtml(r.returnNo)}</td><td>${safeHtml(r.originalBillNo)}</td><td>${safeHtml(new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td><td>${safeHtml(r.paymentMode.toUpperCase())}</td><td>${safeHtml(r.reason)}</td><td>${safeHtml(r.cashier)}</td><td class="right strong">-${safeHtml(inr(r.amount))}</td></tr>`).join('');
 
-  const win = window.open('', '_blank', 'width=920,height=900');
-  if (!win) return;
-  win.document.write(`<!DOCTYPE html><html><head><title>${safeHtml(BRANCH_LABELS[input.branch])} Cashier Closure</title>
+  const html = `<!DOCTYPE html><html><head><title>${safeHtml(BRANCH_LABELS[input.branch])} Cashier Closure</title>
     <style>
       @page { size: A4; margin: 7mm; }
       * { box-sizing: border-box; }
@@ -314,7 +317,14 @@ export function printBranchCashierClosure(input: {
       <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
     </main>
     <script>window.onload=()=>window.print()</script>
-    </body></html>`);
+    </body></html>`;
+  if (options.silent) {
+    printThermalHtml(html);
+    return;
+  }
+  const win = window.open('', '_blank', 'width=920,height=900');
+  if (!win) return;
+  win.document.write(html);
   win.document.close();
 }
 
