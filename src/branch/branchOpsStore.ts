@@ -6,6 +6,11 @@ import type { Branch } from "./types";
 
 type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit";
 const roundMoney = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const qtyValue = (value: number | string | null | undefined) => {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+const qtyChanged = (left: number, right: number) => Math.abs(left - right) > 0.001;
 type PoStatus =
   | "Draft"
   | "Approved"
@@ -156,6 +161,11 @@ export interface CakeAdvanceOrder {
   attachmentName?: string;
   attachmentDataUrl?: string;
   orderValue: number;
+  // Snapshot of what was originally placed, kept alongside the live
+  // orderValue/cakeKg once those are corrected at closing time — lets the UI
+  // show "order placed" vs "received from packing" side by side.
+  originalOrderValue?: number;
+  originalCakeKg?: string;
   advanceAmount: number;
   balanceAmount: number;
   salesperson: string;
@@ -241,8 +251,6 @@ export interface PurchaseRecord {
   tax: number;
   discount?: number;
   total: number;
-  amountBeforeRoundOff?: number;
-  roundOff?: number;
   createdAt: string;
   enteredBy: string;
   paidAmount: number;
@@ -376,11 +384,6 @@ export interface CashierClosure {
   duplicateBills: number;
   creditSales?: number;
   creditCollections?: number;
-  totalSales?: number;
-  advanceCollections?: number;
-  expenses?: number;
-  purchasePayments?: number;
-  bankDeposits?: number;
   notes: string;
   createdAt: string;
 }
@@ -616,6 +619,7 @@ interface BranchOpsState {
     by: string,
   ) => void;
   markAdvanceSentToStore: (id: string) => void;
+  syncAdvanceCakeDispatch: (orderNo: string, dispatchedQty: number, by: string) => void;
   addQuotation: (
     quote: Omit<QuotationRecord, "id" | "quoteNo" | "createdAt" | "status">,
   ) => QuotationRecord;
@@ -811,7 +815,6 @@ const mergeOperationRecordsIntoState = (
     ["bills", "advance_final_bill"],
     ["creditSales", "credit_sale"],
     ["holds", "hold_bill"],
-    ["salespeople", "salesperson"],
     ["advanceCakeOrders", "advance_order"],
     ["quotations", "quotation"],
     ["returns", "return"],
@@ -884,39 +887,6 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 1000 : 2000); // EGRESS FIX: reduced from 5000
 
-    // BUG FIX: two classes of records must never be truncated by the
-    // recency+row-count cap on opQuery above, and both were vulnerable to
-    // the exact same failure that hit the salesperson roster:
-    //  1. Master/reference data (salesperson, supplier, cashier profile) —
-    //     created once, rarely, with old timestamps.
-    //  2. Outstanding/pending business state that can sit open for a long
-    //     time before resolution — held bills awaiting recall, quotations
-    //     awaiting acceptance, advance cake orders awaiting delivery,
-    //     purchase orders awaiting fulfillment, store orders awaiting
-    //     dispatch. An old-but-still-open record of any of these is just as
-    //     real a bug as a missing salesperson (e.g. a held bill from last
-    //     week silently vanishing from Recall, or an advance order for a
-    //     future event date disappearing).
-    // Both classes are fetched here, unbounded by recency, so growth in
-    // ordinary transaction volume (bills, sales, cash movements, etc.) can
-    // never push them out of the window again.
-    const PERSISTENT_RECORD_TYPES = [
-      "salesperson",
-      "supplier",
-      "cashier_profile",
-      "hold_bill",
-      "quotation",
-      "advance_order",
-      "purchase_order",
-      "store_order",
-    ] as const;
-    let referenceQuery = supabase
-      .from("branch_operation_records")
-      .select("record_type, record_id, payload, created_at")
-      .in("record_type", PERSISTENT_RECORD_TYPES as unknown as string[])
-      .order("created_at", { ascending: false })
-      .limit(5000);
-
     let stockCountQuery = supabase
       .from("branch_stock_count_reports")
       .select("*")
@@ -935,45 +905,19 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 200 : 1000);
 
-    // BUG FIX: same class of bug again — a stock count report still
-    // "Pending Admin Review" or a complaint that's still "Open"/"In Review"
-    // needs to stay visible until resolved, not just while it's within the
-    // most recent 200-1000 rows. These are lower-volume than bills/holds so
-    // less likely to hit the ceiling, but the failure mode is identical, so
-    // fixed the same way: fetch open/pending ones unbounded, merge below.
-    let openStockCountQuery = supabase
-      .from("branch_stock_count_reports")
-      .select("*")
-      .eq("status", "Pending Admin Review")
-      .order("created_at", { ascending: false })
-      .limit(2000);
-
-    let openComplaintQuery = supabase
-      .from("branch_complaint_tickets")
-      .select("*")
-      .neq("status", "Resolved")
-      .order("created_at", { ascending: false })
-      .limit(2000);
-
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
-      referenceQuery = referenceQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
       complaintQuery = complaintQuery.eq("branch", sessionBranch);
-      openStockCountQuery = openStockCountQuery.eq("branch", sessionBranch);
-      openComplaintQuery = openComplaintQuery.eq("branch", sessionBranch);
     }
 
     const [
       { data, error },
       { data: opRows, error: opError },
-      { data: referenceRows, error: referenceError },
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
       { data: complaintRows, error: complaintError },
-      { data: openStockCountRows },
-      { data: openComplaintRows },
     ] = await Promise.all([
       supabase
         .from("app_state")
@@ -981,12 +925,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
         .eq("key", name)
         .maybeSingle(),
       opQuery,
-      referenceQuery,
       stockCountQuery,
       varianceQuery,
       complaintQuery,
-      openStockCountQuery,
-      openComplaintQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -994,9 +935,6 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     }
     if (opError && !/branch_operation_records|does not exist|schema cache/i.test(opError.message)) {
       console.error("[branchOpsStore] Supabase operation recovery load failed:", opError.message);
-    }
-    if (referenceError && !/branch_operation_records|does not exist|schema cache/i.test(referenceError.message)) {
-      console.error("[branchOpsStore] Supabase reference-data recovery load failed:", referenceError.message);
     }
     if (stockCountError && !/branch_stock_count_reports|does not exist|schema cache/i.test(stockCountError.message)) {
       console.error("[branchOpsStore] Supabase stock count load failed:", stockCountError.message);
@@ -1007,20 +945,8 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     if (complaintError && !/branch_complaint_tickets|does not exist|schema cache/i.test(complaintError.message)) {
       console.error("[branchOpsStore] Supabase complaint load failed:", complaintError.message);
     }
-    const mergedStockCountRows = [
-      ...((stockCountRows || []) as Array<Record<string, unknown>>),
-      ...((openStockCountRows || []) as Array<Record<string, unknown>>).filter(
-        (o) => !(stockCountRows || []).some((r: any) => r.id === o.id),
-      ),
-    ];
-    const mergedComplaintRows = [
-      ...((complaintRows || []) as Array<Record<string, unknown>>),
-      ...((openComplaintRows || []) as Array<Record<string, unknown>>).filter(
-        (o) => !(complaintRows || []).some((r: any) => r.id === o.id),
-      ),
-    ];
     const dedicatedRows: BranchOperationRecordRow[] = [
-      ...(mergedStockCountRows as Array<Record<string, unknown>>).map((row) => ({
+      ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
         record_type: "stock_count_report",
         record_id: String(row.id),
         created_at: String(row.created_at),
@@ -1056,7 +982,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
           createdAt: String(row.created_at),
         } satisfies BranchStockVarianceRecord),
       })),
-      ...(mergedComplaintRows as Array<Record<string, unknown>>).map((row) => ({
+      ...((complaintRows || []) as Array<Record<string, unknown>>).map((row) => ({
         record_type: "complaint",
         record_id: String(row.id),
         created_at: String(row.created_at),
@@ -1075,13 +1001,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     ];
     return mergeOperationRecordsIntoState(
       (data?.value as StorageValue<BranchOpsState> | null) ?? null,
-      [
-        ...((opRows || []) as BranchOperationRecordRow[]),
-        ...((referenceRows || []) as BranchOperationRecordRow[]).filter(
-          (ref) => !(opRows || []).some((op: any) => op.record_type === ref.record_type && op.record_id === ref.record_id),
-        ),
-        ...dedicatedRows,
-      ],
+      [...((opRows || []) as BranchOperationRecordRow[]), ...dedicatedRows],
     );
   },
   setItem: async (name, value) => {
@@ -1772,94 +1692,81 @@ export const useBranchOpsStore = create<BranchOpsState>()(
         set((s) => ({ holds: s.holds.filter((h) => h.id !== id) })),
       clearHolds: (branch) =>
         set((s) => ({ holds: s.holds.filter((h) => h.branch !== branch) })),
-      addSalesperson: (branch, name, user, details = {}) => {
-        const newSalesperson: SalespersonProfile = {
-          id: uid("sp"),
-          branch,
-          name: name.trim(),
-          mobile: details.mobile ?? "",
-          address: details.address ?? "",
-          role: details.role ?? "Salesperson",
-          active: details.active ?? true,
-          status:
-            details.status ??
-            ((details.active ?? true) ? "Active" : "Inactive"),
-          joiningDate:
-            details.joiningDate ?? new Date().toISOString().slice(0, 10),
-          assignedBranch: details.assignedBranch ?? branch,
-          remarks: details.remarks ?? "",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
+      addSalesperson: (branch, name, user, details = {}) =>
         set((s) => ({
-          salespeople: [newSalesperson, ...s.salespeople],
+          salespeople: [
+            {
+              id: uid("sp"),
+              branch,
+              name: name.trim(),
+              mobile: details.mobile ?? "",
+              address: details.address ?? "",
+              role: details.role ?? "Salesperson",
+              active: details.active ?? true,
+              status:
+                details.status ??
+                ((details.active ?? true) ? "Active" : "Inactive"),
+              joiningDate:
+                details.joiningDate ?? new Date().toISOString().slice(0, 10),
+              assignedBranch: details.assignedBranch ?? branch,
+              remarks: details.remarks ?? "",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+            ...s.salespeople,
+          ],
           auditLogs: [
             audit(branch, user, "Add Salesperson", "-", name.trim()),
             ...s.auditLogs,
           ],
-        }));
-        // DATA-03 FIX: mirror to branch_operation_records so a new salesperson
-        // survives even if another device's stale local copy of the shared
-        // app_state blob gets persisted afterwards and would otherwise clobber
-        // this addition (see mergeOperationRecordsIntoState recovery merge).
-        mirrorOperationRecord(branch, "salesperson", newSalesperson.id, newSalesperson, {
-          recordNo: newSalesperson.mobile,
-          status: newSalesperson.status,
-          actor: user,
-        });
-      },
+        })),
       updateSalesperson: (id, name, active, user, details = {}) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
-          if (!prev) return s;
-          const updated: SalespersonProfile = {
-            ...prev,
-            ...details,
-            name: name.trim(),
-            active,
-            status: details.status ?? (active ? "Active" : "Inactive"),
-            updatedAt: new Date().toISOString(),
-          };
-          mirrorOperationRecord(prev.branch, "salesperson", id, updated, {
-            recordNo: updated.mobile,
-            status: updated.status,
-            actor: user,
-          });
           return {
-            salespeople: s.salespeople.map((p) => (p.id === id ? updated : p)),
-            auditLogs: [
-              audit(
-                prev.branch,
-                user,
-                "Update Salesperson",
-                `${prev.name}/${prev.active}`,
-                `${name}/${active}`,
-              ),
-              ...s.auditLogs,
-            ],
+            salespeople: s.salespeople.map((p) =>
+              p.id === id
+                ? {
+                    ...p,
+                    ...details,
+                    name: name.trim(),
+                    active,
+                    status: details.status ?? (active ? "Active" : "Inactive"),
+                    updatedAt: new Date().toISOString(),
+                  }
+                : p,
+            ),
+            auditLogs: prev
+              ? [
+                  audit(
+                    prev.branch,
+                    user,
+                    "Update Salesperson",
+                    `${prev.name}/${prev.active}`,
+                    `${name}/${active}`,
+                  ),
+                  ...s.auditLogs,
+                ]
+              : s.auditLogs,
           };
         }),
       removeSalesperson: (id, user) =>
         set((s) => {
           const prev = s.salespeople.find((p) => p.id === id);
-          if (!prev) return s;
-          mirrorOperationRecord(prev.branch, "salesperson", id, { ...prev, active: false, status: "Deleted" }, {
-            recordNo: prev.mobile,
-            status: "Deleted",
-            actor: user,
-          });
           return {
             salespeople: s.salespeople.filter((p) => p.id !== id),
-            auditLogs: [
-              audit(
-                prev.branch,
-                user,
-                "Delete Salesperson",
-                prev.name,
-                "-",
-              ),
-              ...s.auditLogs,
-            ],
+            auditLogs: prev
+              ? [
+                  audit(
+                    prev.branch,
+                    user,
+                    "Delete Salesperson",
+                    prev.name,
+                    "-",
+                  ),
+                  ...s.auditLogs,
+                ]
+              : s.auditLogs,
           };
         }),
       addAdvanceCakeOrder: (order) => {
@@ -2028,6 +1935,57 @@ export const useBranchOpsStore = create<BranchOpsState>()(
             ],
             auditLogs: [
               audit(prev.branch, by, "Advance Store Status", prev.storeStatus || "-", storeStatus),
+              ...s.auditLogs,
+            ],
+          };
+        }),
+      // Called when Packing dispatches a cake order with the ACTUAL prepared/dispatched
+      // quantity. Keeps the originally-placed qty/value as a snapshot (originalCakeKg /
+      // originalOrderValue) while updating the live cakeKg/items/orderValue/balance so the
+      // branch closing modal can show "placed" vs "received from packing".
+      syncAdvanceCakeDispatch: (orderNo, dispatchedQty, by) =>
+        set((s) => {
+          const prev = s.advanceCakeOrders.find((o) => o.orderNo === orderNo);
+          if (!prev || !dispatchedQty || dispatchedQty <= 0) return {};
+          const firstLine = prev.items?.[0];
+          const lineQty = qtyValue(firstLine?.quantity);
+          const lineTotal = qtyValue(firstLine?.lineTotal);
+          const placedQty = qtyValue(prev.originalCakeKg) || lineQty || qtyValue(prev.cakeKg);
+          const placedOrderValue = qtyValue(prev.originalOrderValue)
+            || (lineQty > 0 && lineTotal > 0 ? lineTotal : 0)
+            || prev.orderValue;
+          // Guard: if this order was already synced once (originalCakeKg snapshot exists)
+          // and the incoming "dispatched" quantity matches the originally placed quantity,
+          // this is a stale/duplicate resubmit (e.g. packer re-clicked without changing the
+          // prefilled qty) — ignore it so it doesn't clobber the real received quantity and
+          // swap "placed" vs "received" in the branch closing modal.
+          if (prev.originalCakeKg !== undefined && !qtyChanged(dispatchedQty, placedQty)) {
+            return {};
+          }
+          const rate = firstLine?.price || (placedQty > 0 ? placedOrderValue / placedQty : prev.orderValue);
+          const newOrderValue = Math.round(rate * dispatchedQty * 100) / 100;
+          const newBalance = Math.round((newOrderValue - (prev.advanceAmount || 0)) * 100) / 100;
+          const next: CakeAdvanceOrder = {
+            ...prev,
+            originalCakeKg: prev.originalCakeKg ?? String(placedQty),
+            originalOrderValue: prev.originalOrderValue ?? placedOrderValue,
+            cakeKg: String(dispatchedQty),
+            items: prev.items && prev.items.length > 0
+              ? prev.items.map((line, idx) => (idx === 0 ? { ...line, quantity: dispatchedQty, lineTotal: newOrderValue } : line))
+              : prev.items,
+            orderValue: newOrderValue,
+            balanceAmount: newBalance,
+          };
+          mirrorOperationRecord(prev.branch, "advance_order", prev.id, next, {
+            recordNo: prev.orderNo,
+            amount: next.orderValue,
+            status: prev.status,
+            actor: by,
+          });
+          return {
+            advanceCakeOrders: s.advanceCakeOrders.map((o) => (o.id === prev.id ? next : o)),
+            auditLogs: [
+              audit(prev.branch, by, "Advance Cake Dispatch Qty", `${placedQty}`, `${dispatchedQty}`),
               ...s.auditLogs,
             ],
           };
