@@ -22,7 +22,7 @@ import {
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
-import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip, printCounterCloseSlip } from '../printUtils';
+import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip } from '../printUtils';
 import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order' };
@@ -644,7 +644,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       ? storeLines
       : orderType === 'custom'
         ? (customLines.length > 0 ? customLines : [{ itemName: custom.itemName.trim(), quantity: Number(custom.quantity || 0), unit: custom.unit, price: Number(custom.price || 0), tax:0, discount:0, lineTotal: Number(custom.quantity || 0) * Number(custom.price || 0) }])
-        : [{ itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakePrice.total / cakeWeight : 0, tax:0, discount:0, lineTotal: cakePrice.total }];
+        : [{ barcode: selectedCakeType?.catalogBarcode, itemName: cakeItemName, quantity: cakeWeight, unit:'kg' as const, price: cakeWeight > 0 ? cakePrice.total / cakeWeight : 0, tax:0, discount:0, lineTotal: cakePrice.total }];
     const orderValue = sourceLines.reduce((sum, line)=>sum+line.lineTotal,0);
     if (orderType === 'cake' && (!selectedCakeType || cakeWeight <= 0 || !cake.flavor.trim() || !cake.shape.trim())) {
       setError('Cream type, cake type, weight, flavor and shape are mandatory.');
@@ -682,7 +682,8 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
         orderType === 'cake' ? `${cake.creamType} · ${selectedCakeType?.name || ''} · ${cake.flavor} · ${cake.shape} · ${cake.designType}` : '',
         orderType === 'cake' ? cake.designNotes : orderType === 'custom' ? custom.notes : 'Existing SNB stock advance order',
       ].filter(Boolean).join(' | ');
-      const { error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure', {
+      const { error: receiverError } = await supabase.rpc('create_snb_order_advance_order_secure_v2', {
+        p_order_no: orderNo,
         p_customer_name: common.customerName.trim(),
         p_items: receiverItems,
         p_subtotal: orderValue,
@@ -794,7 +795,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
       if (missingLine) {
         const available = stockQty(branchStock, missingLine.itemName, missingLine.barcode);
-        return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock.`);
+        return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock. Confirm the dispatched cake in Stock / Incoming, then try again.`);
       }
     }
     if (balanceAmount < 0) return fail('Final balance cannot be negative. Reduce the discount or increase the quantity.');
@@ -818,7 +819,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     if (!finalResult?.billNo || !finalResult.invoiceNo) return fail('Final invoice was not returned by Supabase.');
     const { billNo, invoiceNo } = finalResult;
     if (orderKind !== 'custom') await fetchBranchData(branch);
-    if (balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    if (balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: auditActor, referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
     // balance portion tagged with usedMode. Previously the entire order value was
@@ -1720,16 +1721,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     closeCounter(branch, todayIso(), auditActor, currentUser?.id);
     setDbCounterSession(null);
     addNotification({ branch, type: 'closure', title: `${isSnbOrder ? 'SNB Order' : branch} cashier counter closed`, details: `${auditActor} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: auditActor });
-    printCounterCloseSlip({
-      branch,
-      cashier: auditActor,
-      openingCash: Number(opening || 0),
-      cash, upi, card,
-      creditSales: creditSalesTotal,
-      creditCollected: creditCollectionTotal,
-      expected, counted: countedCash, difference: diff,
-      billsCount: counterTodayBills.length,
-    });
+    printClosure({ silent: true });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setOpening('0');
@@ -1801,8 +1793,8 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     });
   };
 
-  const printClosure = () => printBranchCashierClosure({
-    branch, cashier: user,
+  const printClosure = (options: { silent?: boolean } = {}) => printBranchCashierClosure({
+    branch, cashier: auditActor,
     date: new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }),
     totalSales, advanceCollected: advanceCollectedToday, totalSalesIncAdvance,
     billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
@@ -1814,7 +1806,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     notes,
     bills: counterTodayBills.map((b) => ({ billNo: b.billNo, createdAt: b.createdAt, customerName: b.creditCustomerName, paymentMode: b.paymentMode, total: b.total, biller: b.biller })),
     refundRows: todayReturns.map((r) => ({ returnNo: r.returnNo, originalBillNo: r.originalBillNo, createdAt: r.createdAt, paymentMode: r.returnPayMode || r.originalPaymentMode || 'cash', reason: r.reason, cashier: r.returnedBy, amount: Number(r.refundAmount ?? r.total), creditAdjusted: Number(r.creditAdjusted ?? 0), grossReturn: r.total })),
-  });
+  }, options);
 
   const exportClosure = () => {
     const rows = [
@@ -1877,7 +1869,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
           <button onClick={() => { void fetchCreditSales(branch); void fetchCreditPayments(branch); void loadClosureLedger(); void loadOpenSession(); void loadCounterSnapshot(); }} disabled={ledgerLoading} className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-bold flex items-center gap-2 active:scale-95 disabled:opacity-50">
             <RotateCcw className={cn("size-4", ledgerLoading && "animate-spin")} />Refresh
           </button>
-          <button onClick={printClosure} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
+          <button onClick={() => printClosure()} className="h-11 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground flex items-center gap-2 active:scale-95">
             <Printer className="size-4" />Print Closure
           </button>
           <button onClick={() => { void save(); }} disabled={!branchCounterOpenRecord} className="h-11 rounded-xl bg-orange-500 px-4 text-sm font-black text-white shadow-lg shadow-orange-200 flex items-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">
