@@ -319,6 +319,119 @@ export function printBranchCashierClosure(input: {
 }
 
 
+// ─── Thermal cashier counter open/close slip ───────────────────────────────
+// Unlike printBranchCashierClosure (a detailed A4 audit report opened in a
+// new tab, still available via the manual "Print Closure" button), this is
+// a compact 80mm thermal receipt auto-printed the moment the counter is
+// opened or closed, via the same silent iframe approach used for bills so
+// it goes straight to the thermal printer with no popup window.
+function printThermalHtml(html: string) {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.bottom = '0';
+  frame.style.width = '1px';
+  frame.style.height = '1px';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  document.body.appendChild(frame);
+  const target = frame.contentWindow;
+  if (!target) { frame.remove(); return; }
+  let cleaned = false;
+  const cleanup = () => { if (cleaned) return; cleaned = true; frame.remove(); };
+  target.onafterprint = cleanup;
+  window.setTimeout(cleanup, 60_000);
+  target.document.open();
+  target.document.write(html);
+  target.document.close();
+}
+
+const THERMAL_SLIP_STYLE = `
+  @page{size:80mm auto;margin:3mm}
+  body{font-family:Arial,sans-serif;font-size:11px;color:#111;width:72mm;margin:0}
+  .c{text-align:center}
+  .bold{font-weight:900}
+  .brand{font-size:18px;font-weight:900;letter-spacing:.04em;text-align:center;margin:4px 0}
+  .stamp{border:2px solid #111;padding:4px 8px;text-align:center;font-weight:900;font-size:13px;margin:6px 0;letter-spacing:.06em}
+  .dash{border-top:1px dashed #111;margin:6px 0}
+  .row{display:flex;justify-content:space-between;gap:6px;padding:2px 0}
+  .row b{font-weight:900}
+  .foot{margin-top:8px;text-align:center;font-size:10px}
+`;
+
+export function printCounterOpenSlip(input: {
+  branch: import('./types').Branch;
+  cashier: string;
+  openingCash: number;
+  denominations?: Record<string, string | number>;
+  openedAt?: string;
+}) {
+  const openedAt = input.openedAt ? new Date(input.openedAt) : new Date();
+  const denomRows = Object.entries(input.denominations || {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([denom, count]) => `<div class="row"><span>₹${safeHtml(denom)} × ${safeHtml(count)}</span><b>${safeHtml(inr(Number(denom) * Number(count)))}</b></div>`)
+    .join('');
+  const html = `<!doctype html><html><head><title>Counter Open ${safeHtml(input.branch)}</title><style>${THERMAL_SLIP_STYLE}</style></head><body>
+    <div class="brand">${safeHtml(BRANCH_LABELS[input.branch])}</div>
+    <div class="c">Cashier Counter</div>
+    <div class="stamp">COUNTER OPENED</div>
+    <div class="dash"></div>
+    <div class="row"><span>Cashier</span><b>${safeHtml(input.cashier)}</b></div>
+    <div class="row"><span>Date</span><b>${safeHtml(openedAt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }))}</b></div>
+    <div class="row"><span>Time</span><b>${safeHtml(openedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</b></div>
+    <div class="dash"></div>
+    <div class="row bold"><span>Opening Cash</span><span>${safeHtml(inr(input.openingCash))}</span></div>
+    ${denomRows ? `<div class="dash"></div>${denomRows}` : ''}
+    <div class="dash"></div>
+    <div class="foot">Verify the float above before starting billing.</div>
+    <script>window.onload=()=>window.print()</script>
+  </body></html>`;
+  printThermalHtml(html);
+}
+
+export function printCounterCloseSlip(input: {
+  branch: import('./types').Branch;
+  cashier: string;
+  openingCash: number;
+  cash: number; upi: number; card: number;
+  creditSales: number; creditCollected: number;
+  expected: number; counted: number; difference: number;
+  billsCount: number;
+  closedAt?: string;
+}) {
+  const closedAt = input.closedAt ? new Date(input.closedAt) : new Date();
+  const totalCollection = input.cash + input.upi + input.card;
+  const html = `<!doctype html><html><head><title>Counter Close ${safeHtml(input.branch)}</title><style>${THERMAL_SLIP_STYLE}</style></head><body>
+    <div class="brand">${safeHtml(BRANCH_LABELS[input.branch])}</div>
+    <div class="c">Cashier Counter</div>
+    <div class="stamp">COUNTER CLOSED</div>
+    <div class="dash"></div>
+    <div class="row"><span>Cashier</span><b>${safeHtml(input.cashier)}</b></div>
+    <div class="row"><span>Date</span><b>${safeHtml(closedAt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }))}</b></div>
+    <div class="row"><span>Time</span><b>${safeHtml(closedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</b></div>
+    <div class="dash"></div>
+    <div class="row"><span>Bills Closed</span><b>${input.billsCount}</b></div>
+    <div class="row"><span>Cash</span><span>${safeHtml(inr(input.cash))}</span></div>
+    <div class="row"><span>UPI</span><span>${safeHtml(inr(input.upi))}</span></div>
+    <div class="row"><span>Card</span><span>${safeHtml(inr(input.card))}</span></div>
+    <div class="row bold"><span>Total Collection</span><span>${safeHtml(inr(totalCollection))}</span></div>
+    <div class="dash"></div>
+    <div class="row"><span>Credit Sales</span><span>${safeHtml(inr(input.creditSales))}</span></div>
+    <div class="row"><span>Credit Collected</span><span>${safeHtml(inr(input.creditCollected))}</span></div>
+    <div class="dash"></div>
+    <div class="row"><span>Opening Cash</span><span>${safeHtml(inr(input.openingCash))}</span></div>
+    <div class="row"><span>Expected Cash</span><span>${safeHtml(inr(input.expected))}</span></div>
+    <div class="row"><span>Physical Cash</span><span>${safeHtml(inr(input.counted))}</span></div>
+    <div class="row bold"><span>Difference</span><span>${safeHtml(inr(input.difference))}</span></div>
+    <div class="dash"></div>
+    <div class="foot">Counter closed. Signature: ____________________</div>
+    <script>window.onload=()=>window.print()</script>
+  </body></html>`;
+  printThermalHtml(html);
+}
+
 export async function printCounterBill(bill: BranchBillRecord, duplicate = false) {
   // Allocate the controlled copy first, then print through an off-screen iframe.
   // This avoids opening or leaving a visible "Preparing print" browser page.
