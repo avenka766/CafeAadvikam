@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardCheck,
-  CreditCard, Download, FileClock, FileText, Gift, History, IndianRupee, Landmark, Package,
+  CreditCard, Download, FileClock, FileText, Gift, History, IndianRupee, Landmark, Loader2, Package,
   Plus, Printer, Receipt, RotateCcw, Search, ShieldCheck, Smartphone, Store, Trash2,
   Truck, UserRound, WalletCards, XCircle,
 } from 'lucide-react';
@@ -22,7 +22,7 @@ import {
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
-import { printCounterBill, printHtml, printBranchCashierClosure } from '../printUtils';
+import { printCounterBill, printHtml, printBranchCashierClosure, printCounterOpenSlip, printCounterCloseSlip } from '../printUtils';
 import { CAKE_DESIGNS, CAKE_DRAWING_CHARGE, CAKE_PHOTO_CHARGE, cakeTypesFor, calculateCakePrice, findCakeType, type CakeCreamType, type CakeDesignType } from '../cakePricing';
 
 type ModuleProps = { branch: Branch; branchStock: StockItem[]; branchSales?: SaleRecord[]; onOpenTab?: (tab: string) => void; source?: 'branch' | 'snb-order' };
@@ -117,6 +117,11 @@ type SavedClosureRow = {
 const num = (value: number | string | null | undefined) => Number(value ?? 0);
 const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 const todayIso = () => businessDate();
+const qtyValue = (value: number | string | null | undefined) => {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+const qtyChanged = (left: number, right: number) => Math.abs(left - right) > 0.001;
 
 type FieldProps = { label: string; children: React.ReactNode };
 function Field({ label, children }: FieldProps) {
@@ -446,6 +451,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const [collectingId, setCollectingId] = useState<string | null>(null);
   const [collectMode, setCollectMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [sendingToStore, setSendingToStore] = useState<string | null>(null);
+  const [closingOrder, setClosingOrder] = useState<{ order: CakeAdvanceOrder; payMode: 'cash' | 'upi' | 'card' } | null>(null);
   const [common, setCommon] = useState({ slipNumber:'', customerName:'', mobile:'', deliveryDate:'', deliveryTime:'', advanceAmount:'', paymentMode:'cash', salesperson:'' });
   const [storePick, setStorePick] = useState({ itemName: items[0]?.name || '', quantity:'1' });
   const [storeLines, setStoreLines] = useState<BranchBillItem[]>([]);
@@ -597,18 +603,37 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   };
   const sendCakeToStoreDashboard = async (order: CakeAdvanceOrder) => {
     if (branch === 'Cafe') throw new Error('Cafe cake orders cannot be sent to the bakery branch workflow.');
-    const cakeLine = order.items?.[0];
-    const bakeryItems: BakeryOrderItem[] = [{
-      itemId: `${order.orderNo}-0`,
-      itemName: cakeLine?.itemName || `${order.creamType || ''} ${order.cakeTypeName || ''} ${order.flavor}`.trim(),
-      quantity: cakeLine?.quantity || Number(order.cakeKg || 1),
-      isCustom: true,
-      dispatchUnit: 'kg',
-      attachmentName: order.attachmentName,
-      attachmentDataUrl: order.attachmentDataUrl,
-    }];
-    const notes = `${order.orderNo}${order.slipNumber ? ` | Slip ${order.slipNumber}` : ''} | ${order.customerName} | ${order.mobile} | Delivery ${order.deliveryDate} ${order.deliveryTime || ''} | ${order.creamType || ''} ${order.cakeTypeName || ''} ${order.cakeKg}kg ${order.shape} | Flavor: ${order.flavor} | Design: ${order.designType || 'Normal'} | ${order.designNotes || ''}${order.attachmentName ? ` | Attachment: ${order.attachmentName}` : ''}`;
-    await submitBakeryOrder(bakeryItems, `${user} - ${branch} cake advance`, branch, notes);
+    // Cake-type advance orders go ONLY to the Cake Master queue now — they
+    // used to also get logged into the generic bakery/store order queue via
+    // submitBakeryOrder(), which meant every cake order still showed up in
+    // Store even after Cake Master existed. That call is removed here on
+    // purpose; non-cake "store" advance orders still use the separate
+    // sendToStoreDashboard() function untouched.
+    const { error: cakeMasterError } = await supabase.rpc('submit_cake_master_order', {
+      p_branch: branch,
+      p_order_no: order.orderNo,
+      p_source_order_id: order.id,
+      p_slip_number: order.slipNumber || null,
+      p_customer_name: order.customerName,
+      p_mobile: order.mobile,
+      p_delivery_date: order.deliveryDate || null,
+      p_delivery_time: order.deliveryTime || null,
+      p_cake_kg: order.cakeKg,
+      p_flavor: order.flavor,
+      p_shape: order.shape,
+      p_cream_type: order.creamType || null,
+      p_message_on_cake: order.messageOnCake || null,
+      p_design_notes: order.designNotes || null,
+      p_attachment_data_url: order.attachmentDataUrl || null,
+      p_order_value: order.orderValue,
+      p_advance_amount: order.advanceAmount,
+      p_balance_amount: order.balanceAmount,
+      p_quantity: order.items?.[0]?.quantity || Number(order.cakeKg || 1),
+    });
+    if (cakeMasterError) {
+      console.error('[sendCakeToStoreDashboard] Cake Master queue sync failed:', cakeMasterError.message);
+      throw new Error(`Could not send order to Cake Master: ${cakeMasterError.message}`);
+    }
   };
   const saveAdvance = async (orderType: 'store' | 'custom' | 'cake') => {
     if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
@@ -730,49 +755,77 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     setStoreLines([]); setCustomLines([]); setCustom({ itemName:'', quantity:'1', unit:'pcs', price:'', notes:'', attachmentName:'', attachmentDataUrl:'' }); setCake({ cakeKg:'', creamType:'Butter Cream', cakeTypeId:'butter-birthday', flavor:'', shape:'', designType:'Normal', drawingWork:false, photoWork:false, messageOnCake:'', designNotes:'', attachmentName:'', attachmentDataUrl:'' });
     setError('');
   };
-  const finalInvoice = async (o: CakeAdvanceOrder, payMode?: 'cash' | 'upi' | 'card') => {
-    if (!counterOpenToday) { setError('Open the cashier counter before collecting advance payments.'); return; }
+  const finalInvoice = async (
+    o: CakeAdvanceOrder,
+    payMode?: 'cash' | 'upi' | 'card',
+    closingOverrides?: { quantity: number; discount: number },
+  ): Promise<string | null> => {
+    const fail = (message: string) => {
+      setError(message);
+      return message;
+    };
+    if (!counterOpenToday) return fail('Open the cashier counter before collecting advance payments.');
+    setError('');
+    try {
     const usedMode = payMode || finalPaymentMode;
-    const orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
+    const closingQty = resolveAdvanceClosingQuantities(o);
+    let orderLines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }];
+    let orderTotal = o.orderValue;
+    let balanceAmount = o.balanceAmount;
+    const discountAmount = closingOverrides?.discount || 0;
+    // Only single-line orders (the common case for cake orders) support an
+    // edited quantity, since the actual cake weight/count is often a bit off
+    // from the original estimate. The bill value and balance recompute from
+    // the edited quantity at the item's original rate, then the discount is
+    // subtracted on top.
+    if (closingOverrides && orderLines.length === 1) {
+      const rate = closingQty.rate || (orderLines[0].price > 0 ? orderLines[0].price : orderLines[0].quantity > 0 ? orderLines[0].lineTotal / orderLines[0].quantity : orderLines[0].price);
+      const newLineTotal = Math.round((closingOverrides.quantity * rate - discountAmount) * 100) / 100;
+      orderLines = [{ ...orderLines[0], quantity: closingOverrides.quantity, discount: discountAmount, lineTotal: newLineTotal }];
+      orderTotal = newLineTotal;
+      balanceAmount = Math.round((newLineTotal - (o.advanceAmount || 0)) * 100) / 100;
+    } else if (closingOverrides && discountAmount > 0) {
+      orderTotal = Math.round((o.orderValue - discountAmount) * 100) / 100;
+      balanceAmount = Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100;
+    }
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
     if (orderKind === 'cake' && !stockAlreadyReserved) {
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
       if (missingLine) {
         const available = stockQty(branchStock, missingLine.itemName, missingLine.barcode);
-        setError(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock.`);
-        return;
+        return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock.`);
       }
     }
+    if (balanceAmount < 0) return fail('Final balance cannot be negative. Reduce the discount or increase the quantity.');
     const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order', {
       p_branch: branch,
       p_order_no: o.orderNo,
       p_items: orderLines,
-      p_order_total: o.orderValue,
-      p_balance_amount: o.balanceAmount,
+      p_order_total: orderTotal,
+      p_balance_amount: balanceAmount,
       p_payment_mode: usedMode,
       p_salesperson: o.salesperson,
       p_biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
       p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved,
     });
     if (finalError) {
-      setError(/finalize_branch_advance_order|could not find the function|schema cache/i.test(finalError.message)
+      return fail(/finalize_branch_advance_order|could not find the function|schema cache/i.test(finalError.message)
         ? 'Advance finalization RPC is not installed. Run 20260621_finalize_branch_advance_rpc.sql before completing advance orders.'
         : `Advance order was not finalized: ${finalError.message}`);
-      return;
     }
     const finalResult = finalData as { billNo?: string; invoiceNo?: number } | null;
-    if (!finalResult?.billNo || !finalResult.invoiceNo) { setError('Final invoice was not returned by Supabase.'); return; }
+    if (!finalResult?.billNo || !finalResult.invoiceNo) return fail('Final invoice was not returned by Supabase.');
     const { billNo, invoiceNo } = finalResult;
     if (orderKind !== 'custom') await fetchBranchData(branch);
-    if (o.balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: o.balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    if (balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: currentUser?.displayName || 'Staff', referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
     // balance portion tagged with usedMode. Previously the entire order value was
     // tagged with usedMode only, overstating that method and understating the advance method
     // in cash/upi/card KPI breakdowns on Admin dashboards.
     const advancePortion = o.advanceAmount || 0;
-    const balancePortion = o.orderValue - advancePortion;
+    const balancePortion = orderTotal - advancePortion;
     const finalBillPaymentMode = balancePortion > 0 ? usedMode : (o.paymentMode as typeof usedMode);
     const finalBillSplit = advancePortion > 0 && balancePortion > 0 ? {
       [o.paymentMode]: advancePortion,
@@ -783,23 +836,42 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       billNo,
       invoiceNo,
       items: orderLines,
-      subtotal: o.orderValue,
-      discount: 0,
+      subtotal: orderTotal + discountAmount,
+      discount: discountAmount,
       tax: 0,
-      total: o.orderValue,
-      tendered: o.orderValue,
+      total: orderTotal,
+      tendered: orderTotal,
       balance: 0,
       paymentMode: finalBillPaymentMode,
       split: finalBillSplit,
       salesperson: o.salesperson,
       biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
     });
-    updateAdvanceStatus(o.id, 'Paid In Full', isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'), { finalInvoiceBillNo: billNo, balanceAmount: 0 });
+    // FIX: previously only status/balance were saved back onto the order record,
+    // so an edited closing quantity (and the resulting recalculated value) never
+    // stuck to the order itself — the bill was right, but the order's own
+    // quantity/value kept showing the originally placed amount. Persist the
+    // final quantity and value here too, alongside what was originally ordered,
+    // so both are visible and the record matches the bill that was produced.
+    updateAdvanceStatus(o.id, 'Paid In Full', isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'), {
+      finalInvoiceBillNo: billNo,
+      balanceAmount: 0,
+      orderValue: orderTotal,
+      items: orderLines,
+      cakeKg: orderLines[0] ? String(orderLines[0].quantity) : o.cakeKg,
+      originalOrderValue: closingQty.placedOrderValue || o.originalOrderValue || o.orderValue,
+      originalCakeKg: String(closingQty.placedQty || qtyValue(o.originalCakeKg) || qtyValue(o.cakeKg)),
+    });
     void printCounterBill(finalBill, false);
     setCollectingId(null);
+    setClosingOrder(null);
+    return null;
+    } catch (invoiceError) {
+      return fail(invoiceError instanceof Error ? `Advance order could not be closed: ${invoiceError.message}` : 'Advance order could not be closed.');
+    }
   };
 
-  return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
+  return <><div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     {receiverCounterLoading && isSnbOrder && <div className="xl:col-span-2 rounded-2xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm font-black text-blue-800">Checking the SNB Order counter...</div>}
     {!receiverCounterLoading && !counterOpenToday && <div className="xl:col-span-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-black text-amber-800">Open the counter in the Daily Closure tab before taking or collecting an advance order.</div>}
     <Section title="Advance Order" icon={<Gift className="size-5"/>}>
@@ -918,14 +990,159 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       </div>
     }>
       {pipelineView === 'active' ? (
-        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` · Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' · ')}{o.designCharge ? ` · Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':'Send to Store'}</SoftButton>}{o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>void finalInvoice(o, collectMode)} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton></div>}</>) : (<PrimaryButton onClick={()=>void finalInvoice(o, o.paymentMode)} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>)}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
+        <div className="space-y-3">{activeOrders.length === 0 ? <p className="rounded-2xl bg-slate-50 p-6 text-center font-bold text-slate-500">No active advance orders.</p> : activeOrders.map(o=>{ const lines = o.items && o.items.length > 0 ? o.items : [{ itemName: o.flavor, quantity: Number(o.cakeKg || 0), unit: o.shape === 'Kgs' ? 'kg' as const : 'pcs' as const, price: o.orderValue / Math.max(Number(o.cakeKg || 1), 1), tax:0, discount:0, lineTotal:o.orderValue }]; const isCollecting = collectingId === o.id; return <div key={o.id} className="rounded-3xl border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-lg font-black">{o.orderNo}{o.slipNumber ? ` · Slip ${o.slipNumber}` : ''} - {o.customerName}</p><p className="text-sm font-bold text-slate-500">{o.mobile} - {lines.map((line)=>`${line.itemName} ${line.quantity} ${line.unit}`).join(', ')} - Delivery {o.deliveryDate} {o.deliveryTime}</p>{(o.creamType || o.cakeTypeName || o.designType) && <p className="mt-1 text-xs font-black text-fuchsia-700">{[o.creamType, o.cakeTypeName, o.flavor, o.designType].filter(Boolean).join(' · ')}{o.designCharge ? ` · Design +${money(o.designCharge)}` : ''}</p>}{o.attachmentName && <p className="mt-1 text-xs font-black text-emerald-700">Attachment: {o.attachmentName}</p>}</div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-700">{o.storeStatus || o.status}</span></div><div className="mt-3 grid gap-2 sm:grid-cols-4"><Kpi label="Order" value={money(o.orderValue)} icon={<Receipt className="size-4"/>}/><Kpi label="Advance" value={money(o.advanceAmount)} icon={<Banknote className="size-4"/>} tone="green"/><Kpi label="Balance" value={money(o.balanceAmount)} icon={<IndianRupee className="size-4"/>} tone="amber"/><div className="flex flex-col justify-center gap-2">{!o.sentToStoreAt && <SoftButton onClick={async()=>{setSendingToStore(o.id); try { if ((o.orderType || 'cake') === 'cake') await sendCakeToStoreDashboard(o); else await sendToStoreDashboard(o, lines); markAdvanceSentToStore(o.id); } catch (sendError) { setError(sendError instanceof Error ? sendError.message : 'Failed to send order to store.'); } finally { setSendingToStore(null); }}} disabled={sendingToStore===o.id}><Store className="size-4"/>{sendingToStore===o.id?'Sending...':((o.orderType || 'cake') === 'cake' ? 'Send to Cake Master' : 'Send to Store')}</SoftButton>}{(() => { const needsDispatchSync = !!o.sentToStoreAt && o.storeStatus !== 'dispatched'; return o.balanceAmount > 0 ? (<><SoftButton onClick={()=>setCollectingId(isCollecting ? null : o.id)}><IndianRupee className="size-4"/>Collect Remaining ({money(o.balanceAmount)})</SoftButton>{isCollecting && <div className="mt-2 space-y-2 rounded-2xl bg-slate-50 p-3"><Select value={collectMode} onChange={e=>setCollectMode(e.target.value as typeof collectMode)} className="text-xs"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: collectMode })} disabled={needsDispatchSync} className="w-full text-xs">Confirm & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch — stock must sync to this branch first.</p>}</div>}</>) : (<><PrimaryButton onClick={()=>setClosingOrder({ order: o, payMode: o.paymentMode })} disabled={needsDispatchSync} className="w-full text-xs"><Printer className="size-4"/>Complete & Print Final Bill</PrimaryButton>{needsDispatchSync && <p className="mt-1 text-[11px] font-bold text-amber-600">Waiting for packing to dispatch — stock must sync to this branch first.</p>}</>); })()}</div></div>{o.sentToStoreAt && <div className="mt-3 flex flex-wrap items-center gap-1 rounded-2xl bg-slate-50 p-2 text-xs font-black">{(()=>{ const stageOrder = ['store','baking','packing','dispatched'] as const; const reachedIdx = o.storeStatus ? stageOrder.indexOf(o.storeStatus) : -1; return stageOrder.map((stage, idx, arr)=>{ const done = idx <= reachedIdx; const labels = { store:'Store', baking:'Baking', packing:'Packing', dispatched:'Dispatched' }; return <span key={stage} className="inline-flex items-center gap-1"><span className={cn('rounded-xl px-2 py-1', done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500')}>{labels[stage]}</span>{idx < arr.length - 1 && <span className="text-slate-300">-</span>}</span>; }); })()}<span className="ml-auto text-slate-500">{o.storeStatusHistory && o.storeStatusHistory.length > 0 ? (o.storeAcceptedBy && `${o.storeStatus} by ${o.storeAcceptedBy} - ${new Date(o.storeStatusHistory.at(-1)!.at).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })}`) : `Sent to store ${new Date(o.sentToStoreAt).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit' })} - awaiting store`}</span></div>}</div>; })}</div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[720px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Slip No</th><th className="p-3">Customer</th><th className="p-3">Cake / Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={6} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3 font-bold">{o.slipNumber || '-'}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3"><p>{[o.creamType, o.cakeTypeName, o.flavor].filter(Boolean).join(' · ') || o.deliveryDate}</p><p className="text-xs text-slate-500">Delivery {o.deliveryDate} {o.deliveryTime || ''}</p></td><td className="p-3 text-right font-black">{money(o.orderValue)}</td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
+        <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[720px] text-sm"><thead><tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><th className="p-3">Order No</th><th className="p-3">Slip No</th><th className="p-3">Customer</th><th className="p-3">Cake / Delivery</th><th className="p-3 text-right">Order Value</th><th className="p-3 text-right">Paid</th></tr></thead><tbody>{historyOrders.length === 0 ? <tr><td colSpan={6} className="p-6 text-center font-bold text-slate-500">No completed orders yet.</td></tr> : historyOrders.map(o=><tr key={o.id} className="border-t"><td className="p-3 font-black">{o.orderNo}</td><td className="p-3 font-bold">{o.slipNumber || '-'}</td><td className="p-3"><p className="font-bold">{o.customerName}</p><p className="text-xs text-slate-500">{o.mobile}</p></td><td className="p-3"><p>{[o.creamType, o.cakeTypeName, o.flavor].filter(Boolean).join(' · ') || o.deliveryDate}</p><p className="text-xs text-slate-500">Delivery {o.deliveryDate} {o.deliveryTime || ''}</p></td><td className="p-3 text-right font-black">
+              {o.originalOrderValue !== undefined && Math.abs(o.originalOrderValue - o.orderValue) > 0.01 ? (
+                <><span className="mr-1 text-xs font-bold text-slate-400 line-through">{money(o.originalOrderValue)}</span><span className="text-emerald-700">{money(o.orderValue)}</span></>
+              ) : money(o.orderValue)}
+            </td><td className="p-3 text-right"><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">Paid</span></td></tr>)}</tbody></table></div>
       )}
     </Section>
-  </div>;
+  </div>
+  {closingOrder && (
+    <ClosingConfirmModal
+      order={closingOrder.order}
+      payMode={closingOrder.payMode}
+      onCancel={() => setClosingOrder(null)}
+      onConfirm={(overrides) => finalInvoice(closingOrder.order, closingOrder.payMode, overrides)}
+    />
+  )}
+  </>;
 }
 function makeLine(item: BranchCatalogItem, qty: number): BranchBillItem { return { barcode: item.barcode, itemName: item.name, quantity: qty, unit: item.uom === 'Kgs' ? 'kg' : 'pcs', price: item.price, tax: 0, discount: 0, lineTotal: qty * item.price }; }
+
+type ClosingQuantityInfo = {
+  placedQty: number;
+  receivedQty: number;
+  rate: number;
+  placedOrderValue: number;
+};
+
+function resolveAdvanceClosingQuantities(order: CakeAdvanceOrder): ClosingQuantityInfo {
+  const firstLine = order.items?.[0];
+  const lineQty = qtyValue(firstLine?.quantity);
+  const cakeQty = qtyValue(order.cakeKg);
+  const originalQty = qtyValue(order.originalCakeKg);
+  const lineTotal = qtyValue(firstLine?.lineTotal);
+  const linePrice = qtyValue(firstLine?.price);
+  const originalOrderValue = qtyValue(order.originalOrderValue);
+  const currentOrderValue = qtyValue(order.orderValue);
+
+  let placedQty = originalQty || lineQty || cakeQty;
+  let receivedQty = lineQty || cakeQty || placedQty;
+  const lineAndCakeDiffer = lineQty > 0 && cakeQty > 0 && qtyChanged(lineQty, cakeQty);
+  const originalLooksLikeReceived = originalQty > 0 && cakeQty > 0 && !qtyChanged(originalQty, cakeQty) && lineAndCakeDiffer;
+
+  if (lineAndCakeDiffer && (!originalQty || originalLooksLikeReceived)) {
+    placedQty = lineQty;
+    receivedQty = cakeQty;
+  } else if (originalQty > 0) {
+    placedQty = originalQty;
+    receivedQty = lineQty > 0 && qtyChanged(lineQty, placedQty)
+      ? lineQty
+      : cakeQty > 0 && qtyChanged(cakeQty, placedQty)
+        ? cakeQty
+        : (lineQty || cakeQty || placedQty);
+  }
+
+  const rate = linePrice
+    || (lineQty > 0 && lineTotal > 0 ? lineTotal / lineQty : 0)
+    || (placedQty > 0 && originalOrderValue > 0 ? originalOrderValue / placedQty : 0)
+    || (receivedQty > 0 && currentOrderValue > 0 ? currentOrderValue / receivedQty : 0)
+    || currentOrderValue;
+  const placedOrderValue = originalOrderValue || (placedQty > 0 && rate > 0 ? roundMoney(placedQty * rate) : currentOrderValue);
+
+  return { placedQty, receivedQty, rate, placedOrderValue };
+}
+
+function ClosingConfirmModal({
+  order, payMode, onCancel, onConfirm,
+}: {
+  order: CakeAdvanceOrder;
+  payMode: 'cash' | 'upi' | 'card';
+  onCancel: () => void;
+  onConfirm: (overrides: { quantity: number; discount: number }) => Promise<string | null | void>;
+}) {
+  const isSingleLine = (order.items?.length ?? 1) <= 1;
+  const closingQty = resolveAdvanceClosingQuantities(order);
+  const { placedQty, receivedQty: receivedQtyDefault, rate } = closingQty;
+  const [quantity, setQuantity] = useState(String(receivedQtyDefault));
+  const [discount, setDiscount] = useState('0');
+  const [confirming, setConfirming] = useState(false);
+  const [modalError, setModalError] = useState('');
+
+  const qtyNum = isSingleLine ? Math.max(0, Number(quantity) || 0) : receivedQtyDefault;
+  const discountNum = Math.max(0, Number(discount) || 0);
+  const totalBillValue = isSingleLine ? Math.round(qtyNum * rate * 100) / 100 : order.orderValue;
+  const finalBalance = Math.round((totalBillValue - discountNum - (order.advanceAmount || 0)) * 100) / 100;
+
+  useEffect(() => {
+    setQuantity(String(receivedQtyDefault));
+  }, [order.id, receivedQtyDefault]);
+
+  const handleConfirm = async () => {
+    setModalError('');
+    setConfirming(true);
+    try {
+      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum });
+      if (errorMessage) setModalError(errorMessage);
+    } catch (confirmError) {
+      setModalError(confirmError instanceof Error ? confirmError.message : 'Advance order could not be closed.');
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl">
+        <h3 className="text-lg font-black text-slate-950">Confirm Order Closing</h3>
+        <p className="mt-0.5 text-sm font-bold text-slate-500">{order.orderNo} · {order.customerName}</p>
+
+        <div className="mt-4 space-y-3">
+          {Math.abs(placedQty - receivedQtyDefault) > 0.001 && (
+            <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+              Order placed: {placedQty} · Received from packing: {receivedQtyDefault}
+            </div>
+          )}
+          <Field label="Order Placed Quantity">
+            <Input type="number" min="0" step="0.01" value={placedQty} disabled className="opacity-60" />
+          </Field>
+          <Field label="Received from Packing (editable)">
+            <Input type="number" min="0" step="0.01" value={quantity} disabled={!isSingleLine} onChange={(e) => setQuantity(e.target.value)} />
+          </Field>
+          {!isSingleLine && <p className="-mt-2 text-[11px] font-bold text-slate-400">This order has multiple items — quantity is fixed; only the discount can be adjusted here.</p>}
+          <Field label="Discount Amount">
+            <Input type="number" min="0" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
+          </Field>
+
+          <div className="space-y-1.5 rounded-2xl bg-slate-50 p-3 text-sm font-bold">
+            <div className="flex justify-between"><span className="text-slate-500">Total Bill Value</span><span className="text-slate-900">{money(totalBillValue)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Discount</span><span className="text-red-600">- {money(discountNum)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Less: Advance Received</span><span className="text-red-600">- {money(order.advanceAmount || 0)}</span></div>
+            <div className="mt-1 flex justify-between border-t border-slate-200 pt-1.5 text-base"><span className="font-black text-slate-950">Final Balance Payable</span><span className={cn('font-black', finalBalance < 0 ? 'text-red-600' : 'text-emerald-700')}>{money(finalBalance)}</span></div>
+          </div>
+          {finalBalance < 0 && <p className="text-xs font-bold text-red-600">Final balance can't be negative — reduce the discount or increase the quantity.</p>}
+          {modalError && <p className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{modalError}</p>}
+        </div>
+
+        <div className="mt-5 flex gap-2">
+          <SoftButton type="button" onClick={onCancel} disabled={confirming} className="flex-1">Cancel</SoftButton>
+          <PrimaryButton
+            type="button"
+            disabled={confirming || finalBalance < 0 || qtyNum <= 0}
+            onClick={() => void handleConfirm()}
+            className="flex-1"
+          >
+            {confirming ? <Loader2 className="size-4 animate-spin" /> : <Printer className="size-4" />}
+            {confirming ? 'Closing...' : 'Confirm & Close'}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function QuotationTab({ branch, branchStock, onOpenTab }: ModuleProps) {
   const { quotations, addQuotation, updateQuotationStatus } = useBranchOpsStore();
@@ -1503,6 +1720,16 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     closeCounter(branch, todayIso(), auditActor, currentUser?.id);
     setDbCounterSession(null);
     addNotification({ branch, type: 'closure', title: `${isSnbOrder ? 'SNB Order' : branch} cashier counter closed`, details: `${auditActor} closed the counter. Collection ${money(totalCollection)}; cash difference ${money(diff)}; UPI difference ${money(upiDifference)}.`, raisedBy: auditActor });
+    printCounterCloseSlip({
+      branch,
+      cashier: auditActor,
+      openingCash: Number(opening || 0),
+      cash, upi, card,
+      creditSales: creditSalesTotal,
+      creditCollected: creditCollectionTotal,
+      expected, counted: countedCash, difference: diff,
+      billsCount: counterTodayBills.length,
+    });
     setOpenSavedMessage('');
     setSavedMessage('Cashier closure saved. The counter is now closed and can be opened again.');
     setOpening('0');
@@ -1565,6 +1792,13 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     setOpening(String(record.openingCash));
     setCounterSnapshot({ advanceCash:0, advanceUpi:0, advanceCard:0, advanceBank:0, advanceInitial:0, advanceBalance:0, advanceTotal:0, paymentCount:0 });
     setOpenSavedMessage(`Counter opened at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} by ${isSnbOrder ? 'SNB Order - ' : ''}${record.cashier}. Opening cash: ${money(record.openingCash)}`);
+    printCounterOpenSlip({
+      branch,
+      cashier: record.cashier,
+      openingCash: record.openingCash,
+      denominations: openingDenominations,
+      openedAt: String(inserted.opened_at),
+    });
   };
 
   const printClosure = () => printBranchCashierClosure({
