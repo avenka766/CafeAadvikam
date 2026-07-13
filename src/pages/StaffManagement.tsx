@@ -16,7 +16,7 @@ const ROLE_GROUPS = [
   },
   {
     label: '🥐 Bakery Workflow',
-    roles: ['receiver_vrsnb', 'receiver_snb', 'store', 'baker', 'packing'] as UserRole[],
+    roles: ['receiver_vrsnb', 'receiver_snb', 'store', 'baker', 'cake_master', 'packing'] as UserRole[],
   },
   {
     label: '🏬 Branch Sales',
@@ -37,6 +37,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
   receiver_snb:    'SNB Receiver',
   store:           'Store',
   baker:           'Baker',
+  cake_master:     'Cake Master',
   packing:         'Packing',
   branch_vrsnb:    'VR SNB Branch',
   branch_snb:      'SNB Branch',
@@ -55,6 +56,7 @@ const ROLE_COLORS: Record<UserRole, string> = {
   receiver_snb:    'bg-amber-100 text-amber-800',
   store:           'bg-cyan-100 text-cyan-800',
   baker:           'bg-rose-100 text-rose-800',
+  cake_master:     'bg-fuchsia-100 text-fuchsia-800',
   packing:         'bg-indigo-100 text-indigo-800',
   branch_vrsnb:    'bg-blue-100 text-blue-800',
   branch_snb:      'bg-amber-100 text-amber-700',

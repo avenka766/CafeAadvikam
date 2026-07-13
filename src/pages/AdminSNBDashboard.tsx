@@ -42,6 +42,7 @@ import {
   AlertTriangle,
   Banknote,
   ArrowUpDown,
+  Eye,
   BarChart3,
   Bell,
   BookOpenCheck,
@@ -3154,6 +3155,10 @@ export function PurchaseInvoicesTab({
   const [itemSearch, setItemSearch] = useState("");
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [syncFilter, setSyncFilter] = useState<"all" | "synced" | "not-synced">("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateSort, setDateSort] = useState<"newest" | "oldest">("newest");
+  const [viewingPurchase, setViewingPurchase] = useState<PurchaseRecord | null>(null);
   const [lines, setLines] = useState<PurchaseLine[]>([]);
   const [syncedBaseline, setSyncedBaseline] = useState<Array<{ itemName: string; quantity: number; unit?: PurchaseUnit }>>([]);
   const [saving, setSaving] = useState(false);
@@ -3254,7 +3259,7 @@ export function PurchaseInvoicesTab({
 
   const visibleRows = useMemo(() => {
     const query = invoiceSearch.trim().toLowerCase();
-    return rows.filter((purchase) => {
+    const filtered = rows.filter((purchase) => {
       const isSynced = purchase.syncedToStock || purchase.syncStatus === "Synced";
       const syncMatches =
         syncFilter === "all" ||
@@ -3269,9 +3274,19 @@ export function PurchaseInvoicesTab({
         purchase.invoiceNo.toLowerCase().includes(query) ||
         purchase.supplier.toLowerCase().includes(query) ||
         itemText.includes(query);
-      return syncMatches && searchMatches;
+      const invoiceDateKey = (purchase.invoiceDate || localDateKey(purchase.createdAt)).slice(0, 10);
+      const dateMatches =
+        (!dateFrom || invoiceDateKey >= dateFrom) &&
+        (!dateTo || invoiceDateKey <= dateTo);
+      return syncMatches && searchMatches && dateMatches;
     });
-  }, [invoiceSearch, rows, syncFilter]);
+    return filtered.sort((a, b) => {
+      const aKey = a.invoiceDate || localDateKey(a.createdAt);
+      const bKey = b.invoiceDate || localDateKey(b.createdAt);
+      const diff = new Date(aKey).getTime() - new Date(bKey).getTime();
+      return dateSort === "newest" ? -diff : diff;
+    });
+  }, [invoiceSearch, rows, syncFilter, dateFrom, dateTo, dateSort]);
 
   const selectedPurchase = editingPurchaseId
     ? rows.find((purchase) => purchase.id === editingPurchaseId)
@@ -3790,6 +3805,32 @@ export function PurchaseInvoicesTab({
               <Download className="size-4" /> Export
             </button>
             <button
+              className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+              onClick={() =>
+                csvDownload(
+                  "SNB_Purchase_Invoices_Itemwise.xls",
+                  visibleRows.flatMap((purchase) =>
+                    purchaseLines(purchase).map((line) => ({
+                      Invoice: purchase.invoiceNo,
+                      Date: purchase.invoiceDate || localDateKey(purchase.createdAt),
+                      Supplier: purchase.supplier,
+                      Item: line.itemName,
+                      Quantity: line.quantity,
+                      Unit: line.unit,
+                      Rate: line.cost,
+                      Tax: line.tax || 0,
+                      Discount: line.discount || 0,
+                      LineTotal: line.total,
+                      InvoiceTotal: purchase.total,
+                      SyncStatus: purchase.syncStatus ?? "Not Synced",
+                    })),
+                  ),
+                )
+              }
+            >
+              <Download className="size-4" /> Export (Item-wise)
+            </button>
+            <button
               className={cn(btnCls, "bg-slate-950 text-white")}
               onClick={openCreate}
             >
@@ -3798,7 +3839,7 @@ export function PurchaseInvoicesTab({
           </div>
         }
       >
-        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+        <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_150px_150px_auto_auto]">
           <label className="relative">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -3820,12 +3861,35 @@ export function PurchaseInvoicesTab({
               <option value="synced">Synced</option>
             </select>
           </label>
-          {(invoiceSearch || syncFilter !== "all") && (
+          <input
+            type="date"
+            className={inputCls}
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+            title="Invoice date from"
+          />
+          <input
+            type="date"
+            className={inputCls}
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+            title="Invoice date to"
+          />
+          <button
+            className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}
+            onClick={() => setDateSort((current) => (current === "newest" ? "oldest" : "newest"))}
+            title="Toggle date sort order"
+          >
+            <ArrowUpDown className="size-4" /> {dateSort === "newest" ? "Newest first" : "Oldest first"}
+          </button>
+          {(invoiceSearch || syncFilter !== "all" || dateFrom || dateTo) && (
             <button
               className={cn(btnCls, "bg-slate-100 text-slate-700")}
               onClick={() => {
                 setInvoiceSearch("");
                 setSyncFilter("all");
+                setDateFrom("");
+                setDateTo("");
               }}
             >
               <X className="size-4" /> Clear
@@ -3878,6 +3942,12 @@ export function PurchaseInvoicesTab({
                 {purchase.syncStatus ?? "Not Synced"}
               </StatusBadge>,
               <div key="actions" className="flex min-w-[210px] flex-wrap gap-2">
+                <button
+                  onClick={() => setViewingPurchase(purchase)}
+                  className={cn(btnCls, "bg-slate-50 px-3 py-1.5 text-slate-700 ring-1 ring-slate-200")}
+                >
+                  <Eye className="size-3.5" /> View
+                </button>
                 <button
                   onClick={() => void openEdit(purchase)}
                   className={cn(btnCls, "bg-blue-50 px-3 py-1.5 text-blue-700 ring-1 ring-blue-100")}
@@ -4282,6 +4352,75 @@ export function PurchaseInvoicesTab({
                         : "Save Invoice"}
                 </button>
               </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {viewingPurchase && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setViewingPurchase(null); }}
+        >
+          <section className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-600">Purchase Invoice</p>
+                <h3 className="text-lg font-black text-slate-950">{viewingPurchase.invoiceNo}</h3>
+              </div>
+              <button onClick={() => setViewingPurchase(null)} className="rounded-full p-2 hover:bg-slate-100">
+                <X className="size-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm sm:grid-cols-4">
+                <div><p className="text-[10px] font-bold uppercase text-slate-400">Supplier</p><p className="font-black text-slate-900">{viewingPurchase.supplier}</p></div>
+                <div><p className="text-[10px] font-bold uppercase text-slate-400">Invoice Date</p><p className="font-black text-slate-900">{fmtDate(viewingPurchase.invoiceDate || viewingPurchase.createdAt)}</p></div>
+                <div><p className="text-[10px] font-bold uppercase text-slate-400">Payment</p><p className="font-black text-slate-900 capitalize">{viewingPurchase.paymentMethod || "credit"}</p></div>
+                <div><p className="text-[10px] font-bold uppercase text-slate-400">Stock Status</p><p className="font-black text-slate-900">{viewingPurchase.syncStatus ?? "Not Synced"}</p></div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
+                <table className="w-full min-w-[500px] text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                      <th className="p-3">Item</th>
+                      <th className="p-3 text-right">Qty</th>
+                      <th className="p-3 text-right">Rate</th>
+                      <th className="p-3 text-right">Tax</th>
+                      <th className="p-3 text-right">Discount</th>
+                      <th className="p-3 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchaseLines(viewingPurchase).map((line, idx) => (
+                      <tr key={`${line.itemName}-${idx}`} className="border-t">
+                        <td className="p-3 font-bold text-slate-800">{line.itemName}</td>
+                        <td className="p-3 text-right tabular-nums">{line.quantity} {line.unit}</td>
+                        <td className="p-3 text-right tabular-nums">{money(line.cost)}</td>
+                        <td className="p-3 text-right tabular-nums">{money(line.tax || 0)}</td>
+                        <td className="p-3 text-right tabular-nums">{money(line.discount || 0)}</td>
+                        <td className="p-3 text-right font-black tabular-nums">{money(line.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 space-y-1.5 rounded-2xl bg-slate-50 p-4 text-sm font-bold">
+                <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="text-slate-900">{money(viewingPurchase.total)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Paid</span><span className="text-slate-900">{money(paidFor(viewingPurchase))}</span></div>
+                <div className="flex justify-between border-t border-slate-200 pt-1.5 text-base"><span className="font-black text-slate-950">Balance</span><span className="font-black text-slate-950">{money(balanceFor(viewingPurchase))}</span></div>
+              </div>
+              {viewingPurchase.remarks && (
+                <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">{viewingPurchase.remarks}</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button onClick={() => setViewingPurchase(null)} className={cn(btnCls, "bg-slate-100 text-slate-700")}>Close</button>
+              <button onClick={() => { setViewingPurchase(null); void openEdit(viewingPurchase); }} className={cn(btnCls, "bg-slate-950 text-white")}>
+                <Pencil className="size-3.5" /> Edit This Invoice
+              </button>
             </div>
           </section>
         </div>
