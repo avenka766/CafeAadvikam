@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import BranchBillingProTab from '@/branch/tabs/BranchBillingProTab';
 import { useBranchStore } from '@/branch/branchStore';
 import PackingTransferInTab from './PackingTransferInTab';
+import PackingCakeOrdersTab from './PackingCakeOrdersTab';
 import PackingDailyClosureTab from './PackingDailyClosureTab';
 import { getPackingCounterStatus } from './packingCounter';
 
@@ -33,9 +34,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure';
+type ActiveTab  = 'orders' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure' | 'cake-orders';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'cake-orders', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -1008,14 +1009,16 @@ export default function PackingDashboard() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'cake-orders' ? 'Cake dispatch' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'cake-orders' ? 'Cake Orders' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
                   ? 'Review baker-prepared orders, confirm packed quantity, and dispatch stock to branches.'
+                  : activeTab === 'cake-orders'
+                  ? 'Cake Master orders ready for packing — dispatch each one to the branch that ordered it.'
                   : activeTab === 'leftover'
                   ? 'Every prepared gram that has not yet been dispatched is listed here.'
                   : activeTab === 'dispatched'
@@ -1051,6 +1054,8 @@ export default function PackingDashboard() {
 
           {activeTab === 'transfer-in' ? (
             <PackingTransferInTab />
+          ) : activeTab === 'cake-orders' ? (
+            <PackingCakeOrdersTab />
           ) : activeTab === 'billing' ? (
             <div className="min-h-[70vh] space-y-3">
               {packingCounterError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{packingCounterError}</div>}
