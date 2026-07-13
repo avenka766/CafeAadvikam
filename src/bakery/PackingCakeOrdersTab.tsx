@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
 
 interface CakeOrderRow {
   id: string;
@@ -18,6 +19,9 @@ interface CakeOrderRow {
   prepared_quantity: number | null;
   flavor: string | null;
   shape: string | null;
+  cream_type: string | null;
+  updated_at: string | null;
+  created_at: string | null;
   status: string;
 }
 
@@ -37,7 +41,7 @@ export default function PackingCakeOrdersTab() {
     setLoading(true);
     const { data, error: err } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,status')
+      .select('id,branch,order_no,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,updated_at,created_at,status')
       .in('status', ['Ready for Packing', 'Packed'])
       .order('delivery_date', { ascending: true });
     setLoading(false);
@@ -59,26 +63,26 @@ export default function PackingCakeOrdersTab() {
   const dispatch = async (order: CakeOrderRow) => {
     setBusyId(order.id);
     const actor = currentUser?.displayName || currentUser?.username || 'Packing';
-    // Pack then dispatch in one action — packing staff only sees these once
-    // Cake Master has already finished baking, so there's no separate
-    // "confirm packed quantity" step needed like regular items.
-    if (order.status === 'Ready for Packing') {
-      await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Packed', p_actor: actor });
-    }
-    const { error: err } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Dispatched', p_actor: actor });
-    setBusyId(null);
-    if (err) { setError(err.message); return; }
-    // BUG FIX: the RPC above only updates cake_master_orders — it never wrote the
-    // dispatched quantity back onto the branch's advance order (cakeKg/items/orderValue),
-    // so the branch closing modal kept showing the originally-placed qty. Sync it here,
-    // and mark the branch's advance-order timeline as "dispatched" so the branch side
-    // knows stock has synced before it's allowed to close the final bill.
-    const dispatchedQty = order.prepared_quantity ?? Number(order.cake_kg || 0);
-    if (order.order_no && dispatchedQty > 0) {
+    try {
+      if (order.status === 'Ready for Packing') {
+        const { error: packedError } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Packed', p_actor: actor });
+        if (packedError) throw new Error(packedError.message);
+      }
+
+      // Keep cakes on the same confirm-into-stock path as regular dispatches.
+      const { dispatchedQty } = await ensureCakeDispatchIncoming(order, actor);
+      const { error: dispatchError } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Dispatched', p_actor: actor });
+      if (dispatchError) throw new Error(dispatchError.message);
+
       useBranchOpsStore.getState().syncAdvanceCakeDispatch(order.order_no, dispatchedQty, actor);
       useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(order.order_no, 'dispatched', actor);
+      setError('');
+      await load();
+    } catch (dispatchError) {
+      setError(dispatchError instanceof Error ? dispatchError.message : 'Cake dispatch failed.');
+    } finally {
+      setBusyId(null);
     }
-    await load();
   };
 
   return (
