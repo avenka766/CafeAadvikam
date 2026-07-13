@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  CalendarClock,
+  Cake,
   Clock3,
   FileText,
   Flame,
@@ -72,6 +74,7 @@ const PAGE_META: Array<{ match: RegExp; meta: PageMeta }> = [
   { match: /^\/qr-menu/, meta: { title: 'QR Menu Manager', eyebrow: 'Digital menu', description: 'Generate and manage QR menu access for modern table ordering.', accent: 'QR • Tables • Share' } },
   { match: /^\/bakery\/store/, meta: { title: 'Store Dashboard', eyebrow: 'Store room', description: 'Stock, purchase orders, invoices, custom requirements and bakery reports in a store-first layout.', accent: 'Stock • PO • Invoice' } },
   { match: /^\/bakery\/baker/, meta: { title: 'Baker Dashboard', eyebrow: 'Baking team', description: 'Active baking orders, completed work and daily closure in one clean workspace.', accent: 'Orders • Completed • Closure' } },
+  { match: /^\/bakery\/cake-master/, meta: { title: 'Cake Master Dashboard', eyebrow: 'Custom cakes', description: "Advance cake orders from both branches, today's deliveries first, through to Packing.", accent: 'Accept • Bake • Send to Packing' } },
   { match: /^\/bakery\/packing/, meta: { title: 'Packing Dashboard', eyebrow: 'Packing desk', description: 'Pack active baker orders, review dispatched orders, and close the packing day.', accent: 'Pack • Dispatch • Closure' } },
   { match: /^\/bakery\/receive/, meta: { title: 'Order Receiver', eyebrow: 'Branch demand', description: 'Place requirements, review order history and receive discrepancy notifications.', accent: 'Order • History • Alerts' } },
   { match: /^\/bakery\/items/, meta: { title: 'Item Master Studio', eyebrow: 'Master data', description: 'Cafe and bakery item management with clearer category, price and availability controls.', accent: 'Cafe • Bakery • Recipes' } },
@@ -166,9 +169,15 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Completed', path: '/bakery/baker?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
         { label: 'Daily Closure', path: '/bakery/baker?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
       ];
+    case 'cake_master':
+      return [
+        { label: "Today's Deliveries", path: '/bakery/cake-master', icon: <CalendarClock className="size-4" />, group: 'Main' },
+        { label: 'All Orders', path: '/bakery/cake-master?tab=all', icon: <ClipboardList className="size-4" />, group: 'Main' },
+      ];
     case 'packing':
       return [
         { label: 'Packing Orders / Transfer Out', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
+        { label: 'Cake Orders', path: '/bakery/packing?tab=cake-orders', icon: <Cake className="size-4" />, group: 'Main' },
         { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Main' },
         { label: 'Billing', path: '/bakery/packing?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
         { label: 'Leftover Items', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },

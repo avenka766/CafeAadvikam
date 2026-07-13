@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Administrator', order_taker: 'Order Staff', billing: 'Billing',
   kitchen: 'Kitchen', receiver_vrsnb: 'VRSNB Receiver', receiver_snb: 'SNB Receiver', store: 'Store',
-  baker: 'Baker', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
+  baker: 'Baker', cake_master: 'Cake Master', packing: 'Packing', branch_vrsnb: 'VR SNB Branch',
   branch_snb: 'SNB Branch', branch_hosur: 'Hosur Branch',
   // N-04: previously missing role labels
   admin_vrsnb: 'VRSNB Admin', admin_snb: 'SNB Admin', owner: 'Owner',
