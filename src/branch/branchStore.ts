@@ -5,6 +5,7 @@ import type { Branch } from './types';
 import { BAKERY_ITEMS } from '@/bakery/types';
 import { useBranchCatalogStore } from '@/stores/branchCatalogStore';
 import { useAuthStore } from '@/stores/authStore';
+import { cakeIncomingDispatchId, ensureCakeDispatchIncoming, type CakeDispatchSource } from './cakeDispatchSync';
 
 const normalizeStockName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -352,7 +353,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .gte('sold_at', thirtyDaysAgo.toISOString())
           .order('sold_at', { ascending: false }),
         supabase.from('branch_incoming')
-          .select('id,item_barcode,item_name,quantity,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
+          .select('id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed,dispute_reason,disputed_by,disputed_at')
           .eq('branch', branch)
           .order('received_at', { ascending: false }).limit(500),
         supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch),
@@ -769,6 +770,16 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .not('dispatch_log', 'is', null)
       .gte('created_at', sixMonthsAgo.toISOString());
 
+    const { data: dispatchedCakeOrders, error: cakeDispatchError } = await supabase
+      .from('cake_master_orders')
+      .select('id,branch,order_no,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
+      .eq('branch', branch)
+      .eq('status', 'Dispatched')
+      .gte('created_at', sixMonthsAgo.toISOString());
+    if (cakeDispatchError && !/cake_master_orders|does not exist|schema cache/i.test(cakeDispatchError.message)) {
+      console.error('[syncIncoming] dispatched cake load failed:', cakeDispatchError.message);
+    }
+
     if (!orders) {
       // Even if dispatch_log sync finds nothing, re-fetch branch_incoming directly
       // to pick up any records written by submitDispatch that may have been missed
@@ -784,6 +795,18 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const existingDispatchIds = new Set(
       (existingIncoming || []).map((d) => d.dispatch_id).filter(Boolean),
     );
+
+    // Recover cake orders dispatched before cake dispatch was connected to the
+    // branch Incoming workflow. The deterministic id makes retries harmless.
+    for (const cakeOrder of (dispatchedCakeOrders || []) as CakeDispatchSource[]) {
+      if (existingDispatchIds.has(cakeIncomingDispatchId(cakeOrder.id))) continue;
+      try {
+        const { dispatchId } = await ensureCakeDispatchIncoming(cakeOrder, 'Packing');
+        existingDispatchIds.add(dispatchId);
+      } catch (cakeIncomingError) {
+        console.error('[syncIncoming] cake dispatch recovery failed:', cakeIncomingError);
+      }
+    }
 
     const newEntries: {
       dispatch_id: string; item_name: string; item_barcode: number | null; quantity: number; unit: string;
