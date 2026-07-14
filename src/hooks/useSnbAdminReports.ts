@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import type { BranchBillRecord, ReturnRecord } from "@/branch/branchOpsStore";
 
 export type SnbCounterCalculatedRow = {
   counter_session_id: string;
@@ -264,6 +265,8 @@ type ReportState = {
   supplierPayments: SnbSupplierPaymentRow[];
   purchaseReturns: SnbPurchaseReturnRow[];
   purchaseReturnItems: SnbPurchaseReturnItemRow[];
+  operationBills: BranchBillRecord[];
+  operationReturns: ReturnRecord[];
 };
 
 type SnbPurchaseWorkflowSnapshot = {
@@ -288,7 +291,50 @@ const EMPTY: ReportState = {
   supplierPayments: [],
   purchaseReturns: [],
   purchaseReturnItems: [],
+  operationBills: [],
+  operationReturns: [],
 };
+
+type SnbOperationHistory = {
+  operationBills: BranchBillRecord[];
+  operationReturns: ReturnRecord[];
+};
+
+async function fetchSnbOperationHistory(fromDate: string, toDate: string): Promise<SnbOperationHistory> {
+  const pageSize = 1000;
+  const maxRows = 30000;
+  const rows: Array<{ record_type: string; payload: unknown; created_at: string }> = [];
+  const fromIso = new Date(`${fromDate}T00:00:00+05:30`).toISOString();
+  const toExclusive = new Date(`${toDate}T00:00:00+05:30`);
+  toExclusive.setDate(toExclusive.getDate() + 1);
+
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const { data, error } = await supabase
+      .from('branch_operation_records')
+      .select('record_type,payload,created_at')
+      .eq('branch', 'SNB')
+      .in('record_type', ['bill', 'advance_final_bill', 'return'])
+      .gte('created_at', fromIso)
+      .lt('created_at', toExclusive.toISOString())
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`branch_operation_records history: ${error.message}`);
+    const page = (data || []) as Array<{ record_type: string; payload: unknown; created_at: string }>;
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+
+  const bills = new Map<string, BranchBillRecord>();
+  const returns = new Map<string, ReturnRecord>();
+  rows.forEach((row) => {
+    const payload = row.payload as Partial<BranchBillRecord & ReturnRecord> | null;
+    if (!payload?.id) return;
+    const hydrated = { ...payload, createdAt: payload.createdAt || row.created_at };
+    if (row.record_type === 'return') returns.set(String(payload.id), hydrated as ReturnRecord);
+    else bills.set(String(payload.id), hydrated as BranchBillRecord);
+  });
+  return { operationBills: Array.from(bills.values()), operationReturns: Array.from(returns.values()) };
+}
 
 async function fetchPaged(
   table: string,
@@ -367,15 +413,8 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  // Guards against out-of-order responses: if the user changes the date range
-  // (e.g. "7 Days" then quickly "Custom" one day) before the first, slower
-  // request finishes, the earlier request's result must never overwrite the
-  // later one. Each refresh() call gets a ticket; only the most recent
-  // ticket's response is applied to state.
-  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     const range = { fromDate, toDate };
@@ -394,9 +433,11 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at" }),
       fetchPaged("snb_purchase_return_items", { orderColumn: "created_at" }),
       fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
+      fetchSnbOperationHistory(fromDate, toDate),
     ]);
 
     const workflowResult = results[13];
+    const operationHistoryResult = results[14];
     const workflow = workflowResult.status === "fulfilled"
       ? workflowResult.value as SnbPurchaseWorkflowSnapshot
       : null;
@@ -416,6 +457,14 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       const directPurchaseSourcesFailed = results[8].status === "rejected" || results[9].status === "rejected";
       if (directPurchaseSourcesFailed && !isMissingOptionalWorkflowRpc(workflowError)) errors.push(workflowError);
     }
+    if (operationHistoryResult.status === 'rejected') {
+      errors.push(operationHistoryResult.reason instanceof Error
+        ? operationHistoryResult.reason.message
+        : String(operationHistoryResult.reason));
+    }
+    const operationHistory = operationHistoryResult.status === 'fulfilled'
+      ? operationHistoryResult.value as SnbOperationHistory
+      : { operationBills: [], operationReturns: [] };
 
     const purchaseInvoices = mergeRows<SnbPurchaseInvoiceRow>([
       rows(9) as SnbPurchaseInvoiceRow[],
@@ -453,10 +502,6 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       workflow?.purchaseReturnItems ?? [],
     ], (row) => String(row.id || `${row.purchase_return_id}|${row.purchase_invoice_item_id}`));
 
-    // A newer refresh() started while this one was in flight — discard this
-    // stale result instead of letting it overwrite fresher data.
-    if (requestId !== requestIdRef.current) return;
-
     setData({
       counterTotals: rows(0) as SnbCounterCalculatedRow[],
       counterSessions: rows(1) as SnbCounterSessionRow[],
@@ -471,6 +516,8 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       supplierPayments,
       purchaseReturns,
       purchaseReturnItems,
+      operationBills: operationHistory.operationBills,
+      operationReturns: operationHistory.operationReturns,
     });
     setError(errors.join(" | "));
     setRefreshedAt(new Date().toISOString());
