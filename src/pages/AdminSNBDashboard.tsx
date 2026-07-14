@@ -23,7 +23,7 @@ import {
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
-import { printHtml } from "@/branch/printUtils";
+import { printAccountingVoucher, printHtml } from "@/branch/printUtils";
 import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
@@ -88,6 +88,7 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "stock-synced"
   | "update-stock"
   | "suppliers"
   | "expenses"
@@ -119,6 +120,7 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "stock-synced", label: "Stock Synced", icon: PackageCheck, adminOnly: true },
   { id: "update-stock", label: "Update Stock", icon: Pencil, adminOnly: true },
   { id: "suppliers", label: "Suppliers", icon: Truck, adminOnly: true },
   { id: "expenses", label: "Expenses", icon: Banknote, adminOnly: true },
@@ -1034,6 +1036,7 @@ export default function AdminSNBDashboard() {
           {...commonProps}
         />
       )}
+      {tab === "stock-synced" && <StockSyncedTab fromDate={fromDate} toDate={toDate} />}
       {tab === "update-stock" && (
         <UpdateStockTab
           userName={userName}
@@ -1997,6 +2000,21 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
     mode: "cash",
   });
   const rows = expenses.filter((e) => e.branch === BRANCH);
+  const printExpense = (expense: (typeof rows)[number]) => {
+    printAccountingVoucher({
+      voucherType: "Expense Voucher",
+      voucherNo: expense.id,
+      voucherDate: fmtDate(expense.expenseDate),
+      createdAt: expense.createdAt,
+      debitAccount: `Expense - ${expense.category}`,
+      creditAccount: `${expense.mode.toUpperCase()} Account`,
+      amount: expense.amount,
+      paymentMode: expense.mode,
+      narration: expense.description,
+      reference: expense.id,
+      createdBy: expense.enteredBy,
+    });
+  };
   const save = () => {
     const amount = Number(form.amount);
     if (!form.category.trim() || !form.description.trim() || !amount) return;
@@ -2027,9 +2045,159 @@ function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
           </div>
         </Panel>
         <Panel title="Expense History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Expenses.xls", rows.map((e) => ({ Date: e.expenseDate, Category: e.category, Details: e.description, Amount: e.amount, Mode: e.mode, EnteredBy: e.enteredBy })))}><Download className="size-4" /> Excel</button>}>
-          <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy])} empty="No expenses added." />
+          <DataTable headers={["Date", "Category", "Details", "Amount", "Mode", "Entered By", "Action"]} rows={rows.map((e) => [fmtDate(e.expenseDate), e.category, e.description, money(e.amount), e.mode.toUpperCase(), e.enteredBy, <button key={`print-${e.id}`} className={cn(btnCls, "bg-slate-100 px-3 py-1.5 text-slate-700")} onClick={() => printExpense(e)}><Printer className="size-4" /> Print</button>])} empty="No expenses added." />
         </Panel>
       </div>
+    </div>
+  );
+}
+
+type StockSyncedRow = {
+  id: string;
+  source: "Purchase" | "SNB Incoming";
+  syncedAt: string;
+  reference: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  oldQuantity: number | null;
+  newQuantity: number | null;
+  syncedBy: string;
+  status: string;
+  details: string;
+};
+
+function StockSyncedTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
+  const catalogItems = useSNBCatalog();
+  const [rows, setRows] = useState<StockSyncedRow[]>([]);
+  const [source, setSource] = useState<"all" | "purchase" | "incoming">("all");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      const fromIso = startOfDay(fromDate).toISOString();
+      const toIso = endOfDay(toDate).toISOString();
+      const pageSize = 1000;
+      const adjustments: any[] = [];
+      const incoming: any[] = [];
+
+      try {
+        for (let from = 0; from < 30_000; from += pageSize) {
+          const { data, error: queryError } = await supabase
+            .from("branch_stock_adjustments")
+            .select("id,item_name,old_quantity,new_quantity,delta,reason,adjusted_by,reference_id,notes,adjusted_at")
+            .eq("branch", BRANCH)
+            .in("reason", ["Purchase Invoice Stock Sync", "Purchase Invoice Re-sync"])
+            .gte("adjusted_at", fromIso)
+            .lte("adjusted_at", toIso)
+            .order("adjusted_at", { ascending: false })
+            .range(from, from + pageSize - 1);
+          if (queryError) throw new Error(`Purchase stock sync history: ${queryError.message}`);
+          adjustments.push(...(data || []));
+          if ((data || []).length < pageSize) break;
+        }
+
+        for (let from = 0; from < 30_000; from += pageSize) {
+          const { data, error: queryError } = await supabase
+            .from("branch_incoming")
+            .select("id,dispatch_id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed")
+            .eq("branch", BRANCH)
+            .eq("confirmed", true)
+            .gte("received_at", fromIso)
+            .lte("received_at", toIso)
+            .order("received_at", { ascending: false })
+            .range(from, from + pageSize - 1);
+          if (queryError) throw new Error(`SNB incoming sync history: ${queryError.message}`);
+          incoming.push(...(data || []));
+          if ((data || []).length < pageSize) break;
+        }
+
+        if (cancelled) return;
+        const unitByName = new Map(catalogItems.map((item) => [normal(item.name), item.uom === "Kgs" ? "kg" : "pcs"]));
+        const purchaseRows: StockSyncedRow[] = adjustments.map((row) => ({
+          id: `purchase:${row.id}`,
+          source: "Purchase",
+          syncedAt: String(row.adjusted_at || ""),
+          reference: String(row.reference_id || "-"),
+          itemName: String(row.item_name || "-"),
+          quantity: asNumber(row.delta),
+          unit: unitByName.get(normal(String(row.item_name || ""))) || "",
+          oldQuantity: row.old_quantity == null ? null : asNumber(row.old_quantity),
+          newQuantity: row.new_quantity == null ? null : asNumber(row.new_quantity),
+          syncedBy: String(row.adjusted_by || "-"),
+          status: String(row.reason || "").includes("Re-sync") ? "Re-synced" : "Synced",
+          details: String(row.notes || row.reason || "Purchase invoice stock sync"),
+        }));
+        const incomingRows: StockSyncedRow[] = incoming.map((row) => ({
+          id: `incoming:${row.id}`,
+          source: "SNB Incoming",
+          syncedAt: String(row.received_at || ""),
+          reference: String(row.dispatch_id || row.id || "-"),
+          itemName: String(row.item_name || "-"),
+          quantity: asNumber(row.quantity),
+          unit: String(row.unit || unitByName.get(normal(String(row.item_name || ""))) || ""),
+          oldQuantity: null,
+          newQuantity: null,
+          syncedBy: String(row.dispatched_by || "-"),
+          status: row.disputed ? "Confirmed after dispute" : "Confirmed",
+          details: `Confirmed incoming stock${row.item_barcode ? ` · Barcode ${row.item_barcode}` : ""}`,
+        }));
+        setRows([...purchaseRows, ...incomingRows].sort((a, b) => new Date(b.syncedAt).getTime() - new Date(a.syncedAt).getTime()));
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Unable to load stock sync history.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [catalogItems, fromDate, refreshKey, toDate]);
+
+  const filteredRows = useMemo(() => {
+    const query = normal(search);
+    return rows.filter((row) => {
+      if (source === "purchase" && row.source !== "Purchase") return false;
+      if (source === "incoming" && row.source !== "SNB Incoming") return false;
+      return !query || normal(`${row.reference} ${row.itemName} ${row.syncedBy} ${row.details} ${row.status}`).includes(query);
+    });
+  }, [rows, search, source]);
+  const purchaseCount = rows.filter((row) => row.source === "Purchase").length;
+  const incomingCount = rows.filter((row) => row.source === "SNB Incoming").length;
+  const uniqueItems = new Set(rows.map((row) => normal(row.itemName))).size;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Sync Records" value={rows.length} icon={<Database className="size-5" />} tone="blue" />
+        <Kpi label="Purchase Sync" value={purchaseCount} icon={<ShoppingCart className="size-5" />} tone="green" />
+        <Kpi label="SNB Incoming" value={incomingCount} icon={<PackageCheck className="size-5" />} tone="amber" />
+        <Kpi label="Items Covered" value={uniqueItems} icon={<Package className="size-5" />} tone="purple" />
+      </div>
+
+      <Panel
+        title="Stock Synced Register"
+        icon={<PackageCheck className="size-4" />}
+        action={<div className="flex flex-wrap gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => setRefreshKey((value) => value + 1)} disabled={loading}><RefreshCcw className={cn("size-4", loading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Stock_Synced.xls", filteredRows.map((row) => ({ DateTime: row.syncedAt, Source: row.source, Reference: row.reference, Item: row.itemName, SyncedQuantity: row.quantity, Unit: row.unit, Before: row.oldQuantity, After: row.newQuantity, SyncedBy: row.syncedBy, Status: row.status, Details: row.details })))}><Download className="size-4" /> Excel</button></div>}
+      >
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="inline-flex rounded-2xl bg-slate-100 p-1">
+            {([['all', 'All'], ['purchase', 'Purchase'], ['incoming', 'SNB Incoming']] as const).map(([value, label]) => <button key={value} onClick={() => setSource(value)} className={cn("rounded-xl px-4 py-2 text-xs font-black", source === value ? "bg-slate-950 text-white shadow" : "text-slate-600")}>{label}</button>)}
+          </div>
+          <div className="relative w-full lg:max-w-sm"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" /><input className={cn(inputCls, "pl-9")} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reference, item or user" /></div>
+        </div>
+        {error && <div className="mb-4 rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</div>}
+        <DataTable
+          headers={["Date & Time", "Source", "Reference", "Item", "Synced Qty", "Before", "After", "Synced / Sent By", "Status", "Details"]}
+          rows={filteredRows.map((row) => [fmtDateTime(row.syncedAt), <StatusBadge key="source" tone={row.source === "Purchase" ? "green" : "blue"}>{row.source}</StatusBadge>, row.reference, row.itemName, <span key="qty" className={cn("font-black tabular-nums", row.quantity < 0 ? "text-red-600" : "text-emerald-700")}>{row.quantity > 0 ? "+" : ""}{row.quantity} {row.unit}</span>, row.oldQuantity == null ? "-" : row.oldQuantity, row.newQuantity == null ? "-" : row.newQuantity, row.syncedBy, row.status, row.details])}
+          empty={loading ? "Loading stock sync history..." : "No stock sync records found for the selected date range."}
+        />
+      </Panel>
     </div>
   );
 }
@@ -4884,6 +5052,61 @@ function SupplierPaymentsTab({
   };
 
   const paymentRows = dbReports.supplierPayments;
+  const paymentBatches = useMemo(() => {
+    const invoiceNumbers = new Map(dbReports.purchaseInvoices.map((invoice) => [invoice.id, invoice.invoice_number]));
+    const batches = new Map<string, {
+      id: string;
+      supplierName: string;
+      paymentDate: string;
+      amount: number;
+      paymentMethod: string;
+      referenceNo: string;
+      remarks: string;
+      paidBy: string;
+      allocations: Array<{ label: string; amount: number }>;
+    }>();
+    paymentRows.forEach((payment) => {
+      const batchId = payment.payment_batch_id || payment.id;
+      const existing = batches.get(batchId) || {
+        id: batchId,
+        supplierName: payment.supplier_name,
+        paymentDate: payment.payment_date,
+        amount: 0,
+        paymentMethod: payment.payment_method,
+        referenceNo: payment.reference_no || "",
+        remarks: payment.remarks || "",
+        paidBy: payment.paid_by || "-",
+        allocations: [],
+      };
+      const allocationAmount = asNumber(payment.amount);
+      existing.amount += allocationAmount;
+      existing.allocations.push({
+        label: payment.purchase_invoice_id
+          ? invoiceNumbers.get(payment.purchase_invoice_id) || payment.purchase_invoice_id
+          : "Unallocated payment",
+        amount: allocationAmount,
+      });
+      batches.set(batchId, existing);
+    });
+    return Array.from(batches.values()).sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
+  }, [dbReports.purchaseInvoices, paymentRows]);
+
+  const printSupplierPayment = (batch: (typeof paymentBatches)[number]) => {
+    printAccountingVoucher({
+      voucherType: "Supplier Payment Voucher",
+      voucherNo: batch.id,
+      voucherDate: fmtDate(batch.paymentDate),
+      createdAt: batch.paymentDate,
+      debitAccount: `Supplier - ${batch.supplierName}`,
+      creditAccount: `${batch.paymentMethod.toUpperCase()} Account`,
+      amount: batch.amount,
+      paymentMode: batch.paymentMethod,
+      narration: batch.remarks,
+      reference: batch.referenceNo || batch.id,
+      createdBy: batch.paidBy,
+      allocationLines: batch.allocations,
+    });
+  };
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -4975,7 +5198,7 @@ function SupplierPaymentsTab({
       </div>
 
       <Panel title="Supplier Payment History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Supplier_Payments.xls", paymentRows.map((payment) => ({ Date: payment.payment_date, Supplier: payment.supplier_name, InvoiceId: payment.purchase_invoice_id || "", Amount: asNumber(payment.amount), Mode: payment.payment_method, Reference: payment.reference_no || "", BatchId: payment.payment_batch_id || "", BatchTotal: asNumber(payment.batch_total), PaidBy: payment.paid_by || "", Remarks: payment.remarks || "" })))}><Download className="size-4" /> Excel</button>}>
-        <DataTable headers={["Date", "Supplier", "Amount", "Mode", "Reference", "Batch Total", "Paid By", "Remarks"]} rows={paymentRows.map((payment) => [fmtDateTime(payment.payment_date), payment.supplier_name, money(asNumber(payment.amount)), payment.payment_method.toUpperCase(), payment.reference_no || "-", money(asNumber(payment.batch_total || payment.amount)), payment.paid_by || "-", payment.remarks || "-"])} empty="No supplier payments found for the selected date range." />
+        <DataTable headers={["Date", "Supplier", "Invoices", "Batch Amount", "Mode", "Reference", "Paid By", "Remarks", "Action"]} rows={paymentBatches.map((batch) => [fmtDateTime(batch.paymentDate), batch.supplierName, batch.allocations.map((allocation) => allocation.label).join(", ") || "-", money(batch.amount), batch.paymentMethod.toUpperCase(), batch.referenceNo || "-", batch.paidBy, batch.remarks || "-", <button key={`print-${batch.id}`} className={cn(btnCls, "bg-slate-100 px-3 py-1.5 text-slate-700")} onClick={() => printSupplierPayment(batch)}><Printer className="size-4" /> Print</button>])} empty="No supplier payments found for the selected date range." />
       </Panel>
     </div>
   );
