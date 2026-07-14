@@ -185,23 +185,139 @@ function safeHtml(value: unknown): string {
 }
 const inr = (n: number) => `₹${Number(n || 0).toFixed(2)}`;
 
+const SMALL_NUMBER_WORDS = [
+  'Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+  'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+  'Seventeen', 'Eighteen', 'Nineteen',
+];
+const TENS_WORDS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+function numberBelowThousandToWords(value: number): string {
+  const number = Math.floor(Math.max(0, value));
+  if (number < 20) return SMALL_NUMBER_WORDS[number];
+  if (number < 100) {
+    const remainder = number % 10;
+    return `${TENS_WORDS[Math.floor(number / 10)]}${remainder ? ` ${SMALL_NUMBER_WORDS[remainder]}` : ''}`;
+  }
+  const remainder = number % 100;
+  return `${SMALL_NUMBER_WORDS[Math.floor(number / 100)]} Hundred${remainder ? ` ${numberBelowThousandToWords(remainder)}` : ''}`;
+}
+
+function amountInIndianWords(value: number): string {
+  const amount = Math.round(Math.max(0, Number(value || 0)) * 100) / 100;
+  const rupees = Math.floor(amount);
+  const paise = Math.round((amount - rupees) * 100);
+  if (rupees === 0) return paise ? `Zero Rupees and ${numberBelowThousandToWords(paise)} Paise Only` : 'Zero Rupees Only';
+
+  const groups: Array<[number, string]> = [
+    [10_000_000, 'Crore'],
+    [100_000, 'Lakh'],
+    [1_000, 'Thousand'],
+  ];
+  let remaining = rupees;
+  const words: string[] = [];
+  for (const [divisor, label] of groups) {
+    const group = Math.floor(remaining / divisor);
+    if (group > 0) {
+      words.push(`${numberBelowThousandToWords(group)} ${label}`);
+      remaining %= divisor;
+    }
+  }
+  if (remaining > 0) words.push(numberBelowThousandToWords(remaining));
+  return `${words.join(' ')} Rupees${paise ? ` and ${numberBelowThousandToWords(paise)} Paise` : ''} Only`;
+}
+
+export type AccountingVoucherPrintInput = {
+  voucherType: 'Expense Voucher' | 'Supplier Payment Voucher';
+  voucherNo: string;
+  voucherDate: string;
+  createdAt?: string;
+  debitAccount: string;
+  creditAccount: string;
+  amount: number;
+  paymentMode: string;
+  narration: string;
+  reference?: string;
+  createdBy: string;
+  allocationLines?: Array<{ label: string; amount: number }>;
+};
+
+export function printAccountingVoucher(input: AccountingVoucherPrintInput) {
+  const amount = Number(input.amount || 0);
+  const allocationRows = (input.allocationLines || []).map((line) => `
+    <tr><td>${safeHtml(line.label)}</td><td class="right">${safeHtml(inr(line.amount))}</td></tr>`).join('');
+  const createdAt = new Date(input.createdAt || input.voucherDate);
+  const createdTime = Number.isNaN(createdAt.getTime()) ? '-' : createdAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const html = `<!doctype html><html><head><title>${safeHtml(input.voucherType)} ${safeHtml(input.voucherNo)}</title><style>
+    @page{size:A4;margin:10mm}*{box-sizing:border-box}body{margin:0;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:11px;background:#fff}
+    .voucher{border:1.5px solid #111;min-height:270mm;padding:12px;display:flex;flex-direction:column}
+    .company{text-align:center;line-height:1.35}.company h1{font-size:18px;margin:0 0 2px}.company p{margin:0}
+    .meta{display:grid;grid-template-columns:1fr auto;gap:20px;margin-top:15px}.meta p{margin:2px 0}.right{text-align:right}.center{text-align:center}
+    .title{text-align:center;margin:14px 0 8px}.title h2{font-size:18px;margin:0;text-transform:uppercase}.mode{font-size:14px;font-weight:800;margin-top:7px;text-transform:uppercase}
+    table{width:100%;border-collapse:collapse}th,td{border:1px solid #777;padding:7px;vertical-align:top}th{font-size:10px;text-transform:uppercase;background:#f5f5f5}.amount{font-weight:800;text-align:right;white-space:nowrap}
+    .ledger{min-height:92px}.narration{margin-top:18px;white-space:pre-wrap}.allocations{margin-top:14px}.allocations h3{font-size:11px;margin:0 0 5px;text-transform:uppercase}
+    .spacer{flex:1}.signatures{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin-top:28px}.signature{border-top:1px solid #111;padding-top:5px;text-align:center}
+    .words{display:grid;grid-template-columns:1fr 180px;border:1px solid #777;margin-top:16px;font-weight:800}.words div{padding:8px}.words div+div{border-left:1px solid #777;text-align:right}
+    @media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}.voucher{min-height:275mm}}
+  </style></head><body><main class="voucher">
+    <header class="company"><h1>SRI NANJUNDESHWARA BAKERY</h1><p>Berigai, Krishnagiri, Tamil Nadu</p><p>SNB Branch Accounts</p></header>
+    <section class="meta"><div><p><b>Date:</b> ${safeHtml(input.voucherDate)}</p><p><b>Time:</b> ${safeHtml(createdTime)}</p></div><div class="right"><p><b>Voucher No.:</b> ${safeHtml(input.voucherNo)}</p><p><b>Reference:</b> ${safeHtml(input.reference || '-')}</p></div></section>
+    <section class="title"><h2>${safeHtml(input.voucherType)}</h2><div class="mode">${safeHtml(input.paymentMode)}</div></section>
+    <table class="ledger"><thead><tr><th>Title and Narration</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead><tbody>
+      <tr><td><b>${safeHtml(input.debitAccount)}</b></td><td class="amount">${safeHtml(inr(amount))}</td><td></td></tr>
+      <tr><td><b>${safeHtml(input.creditAccount)}</b></td><td></td><td class="amount">${safeHtml(inr(amount))}</td></tr>
+    </tbody></table>
+    <div class="narration"><b>Payment Remarks:</b> ${safeHtml(input.narration || '-')}</div>
+    ${allocationRows ? `<section class="allocations"><h3>Invoice Allocations</h3><table><thead><tr><th>Invoice / Reference</th><th class="right">Amount</th></tr></thead><tbody>${allocationRows}</tbody></table></section>` : ''}
+    <div class="spacer"></div>
+    <section class="signatures"><div class="signature">Created By: ${safeHtml(input.createdBy)}</div><div class="signature">Checked By</div><div class="signature">Approved By</div><div class="signature">Received By</div></section>
+    <section class="words"><div>Paid INR ${safeHtml(amountInIndianWords(amount))}</div><div>${safeHtml(inr(amount))}</div></section>
+  </main><script>window.onload=()=>window.print()</script></body></html>`;
+  const win = window.open('', '_blank', 'width=920,height=900');
+  if (!win) return;
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+
 export type BranchCashierClosurePrintInput = {
   branch: import('./types').Branch;
   cashier: string;
+  counterSessionId?: string;
   date: string;
+  openedAt?: string;
+  closedAt?: string;
+  grossSalesBeforeDiscount: number;
+  discounts: number;
   totalSales: number;
   advanceCollected: number;
+  advanceInitial: number;
+  advanceBalance: number;
+  advanceCash: number;
+  advanceUpi: number;
+  advanceCard: number;
+  advanceBank: number;
+  advancePaymentCount: number;
   totalSalesIncAdvance: number;
   billsCount: number;
   cancelledCount: number;
   cash: number; upi: number; card: number; splitTotal: number;
   actualUpi: number; upiDifference: number; upiNotes?: string;
   creditSales: number; creditCollected: number;
-  openingCash: number; expenses: number; refunds: number;
+  creditCollectionCash: number; creditCollectionUpi: number; creditCollectionCard: number; creditCollectionOther: number;
+  openingCash: number; expenses: number; supplierPayments: number; bankDeposits: number; cashOutflows: number; refunds: number;
   expected: number; counted: number; difference: number;
+  openingDenominations?: Record<string, string | number>;
+  closingDenominations?: Record<string, string | number>;
   notes?: string;
   bills: Array<{ billNo: string; createdAt: string; customerName?: string; paymentMode: string; total: number; biller: string }>;
-  refundRows: Array<{ returnNo: string; originalBillNo: string; createdAt: string; paymentMode: string; reason: string; cashier: string; amount: number }>;
+  refundRows: Array<{ returnNo: string; originalBillNo: string; createdAt: string; paymentMode: string; reason: string; cashier: string; amount: number; creditAdjusted?: number; grossReturn?: number }>;
+  advanceRows: Array<{ createdAt: string; purpose: string; paymentMode: string; amount: number; reference: string; enteredBy: string }>;
+  creditSaleRows: Array<{ createdAt: string; billNo: string; customerName: string; amountPaid: number; creditAmount: number; status: string; soldBy: string }>;
+  creditCollectionRows: Array<{ createdAt: string; billNo: string; amount: number; paymentMode: string; reference: string; collectedBy: string }>;
+  expenseRows: Array<{ createdAt: string; category: string; description: string; amount: number; mode: string; enteredBy: string }>;
+  supplierPaymentRows: Array<{ createdAt: string; supplier: string; amount: number; mode: string; reference: string; paidBy: string }>;
+  bankDepositRows: Array<{ createdAt: string; bankAccount: string; amount: number; paymentMode: string; reference: string; enteredBy: string }>;
 };
 
 export function printBranchCashierClosure(
@@ -223,8 +339,32 @@ export function printBranchCashierClosure(
   const notesHtml = input.notes?.trim() ? `<div class="notes"><b>Closure Notes</b><p>${safeHtml(input.notes)}</p></div>` : '';
   const upiNotesHtml = input.upiNotes?.trim() ? `<div class="notes"><b>UPI Audit Remarks</b><p>${safeHtml(input.upiNotes)}</p></div>` : '';
   const refundRowsHtml = input.refundRows.length === 0
-    ? '<tr><td colspan="7" class="muted center">No refunds in this counter session.</td></tr>'
-    : input.refundRows.map((r) => `<tr><td>${safeHtml(r.returnNo)}</td><td>${safeHtml(r.originalBillNo)}</td><td>${safeHtml(new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td><td>${safeHtml(r.paymentMode.toUpperCase())}</td><td>${safeHtml(r.reason)}</td><td>${safeHtml(r.cashier)}</td><td class="right strong">-${safeHtml(inr(r.amount))}</td></tr>`).join('');
+    ? '<tr><td colspan="9" class="muted center">No refunds in this counter session.</td></tr>'
+    : input.refundRows.map((r) => `<tr><td>${safeHtml(r.returnNo)}</td><td>${safeHtml(r.originalBillNo)}</td><td>${safeHtml(new Date(r.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}</td><td>${safeHtml(r.paymentMode.toUpperCase())}</td><td>${safeHtml(r.reason)}</td><td>${safeHtml(r.cashier)}</td><td class="right">${safeHtml(inr(r.grossReturn ?? r.amount))}</td><td class="right">${safeHtml(inr(r.creditAdjusted ?? 0))}</td><td class="right strong">-${safeHtml(inr(r.amount))}</td></tr>`).join('');
+  const timeLabel = (value: string) => new Date(value).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const advanceRowsHtml = input.advanceRows.length === 0
+    ? '<tr><td colspan="6" class="muted center">No itemized advance collections in this session.</td></tr>'
+    : input.advanceRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.purpose)}</td><td>${safeHtml(row.paymentMode.toUpperCase())}</td><td>${safeHtml(row.reference || '-')}</td><td>${safeHtml(row.enteredBy)}</td><td class="right strong">${safeHtml(inr(row.amount))}</td></tr>`).join('');
+  const creditSaleRowsHtml = input.creditSaleRows.length === 0
+    ? '<tr><td colspan="7" class="muted center">No credit sales in this session.</td></tr>'
+    : input.creditSaleRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.billNo)}</td><td>${safeHtml(row.customerName)}</td><td class="right">${safeHtml(inr(row.amountPaid))}</td><td class="right strong">${safeHtml(inr(row.creditAmount))}</td><td>${safeHtml(row.status)}</td><td>${safeHtml(row.soldBy)}</td></tr>`).join('');
+  const creditCollectionRowsHtml = input.creditCollectionRows.length === 0
+    ? '<tr><td colspan="6" class="muted center">No credit collections in this session.</td></tr>'
+    : input.creditCollectionRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.billNo)}</td><td>${safeHtml(row.paymentMode.toUpperCase())}</td><td>${safeHtml(row.reference || '-')}</td><td>${safeHtml(row.collectedBy)}</td><td class="right strong">${safeHtml(inr(row.amount))}</td></tr>`).join('');
+  const expenseRowsHtml = input.expenseRows.length === 0
+    ? '<tr><td colspan="6" class="muted center">No expenses in this session.</td></tr>'
+    : input.expenseRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.category)}</td><td>${safeHtml(row.description)}</td><td>${safeHtml(row.mode.toUpperCase())}</td><td>${safeHtml(row.enteredBy)}</td><td class="right strong">${safeHtml(inr(row.amount))}</td></tr>`).join('');
+  const supplierPaymentRowsHtml = input.supplierPaymentRows.length === 0
+    ? '<tr><td colspan="6" class="muted center">No supplier payments in this session.</td></tr>'
+    : input.supplierPaymentRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.supplier)}</td><td>${safeHtml(row.mode.toUpperCase())}</td><td>${safeHtml(row.reference || '-')}</td><td>${safeHtml(row.paidBy)}</td><td class="right strong">${safeHtml(inr(row.amount))}</td></tr>`).join('');
+  const bankDepositRowsHtml = input.bankDepositRows.length === 0
+    ? '<tr><td colspan="6" class="muted center">No bank deposits in this session.</td></tr>'
+    : input.bankDepositRows.map((row) => `<tr><td>${safeHtml(timeLabel(row.createdAt))}</td><td>${safeHtml(row.bankAccount)}</td><td>${safeHtml(row.paymentMode)}</td><td>${safeHtml(row.reference || '-')}</td><td>${safeHtml(row.enteredBy)}</td><td class="right strong">${safeHtml(inr(row.amount))}</td></tr>`).join('');
+  const denominationRows = (values?: Record<string, string | number>) => Object.entries(values || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => Number(b) - Number(a))
+    .map(([denomination, count]) => `<tr><td>INR ${safeHtml(denomination)} x ${safeHtml(count)}</td><td class="right">${safeHtml(inr(Number(denomination) * Number(count)))}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="muted center">No denomination count entered.</td></tr>';
 
   const html = `<!DOCTYPE html><html><head><title>${safeHtml(BRANCH_LABELS[input.branch])} Cashier Closure</title>
     <style>
@@ -265,6 +405,9 @@ export function printBranchCashierClosure(
           <div class="badge">${safeHtml(input.date)}</div>
         </div>
         <div class="right muted">
+          <div><b>Session:</b> ${safeHtml(input.counterSessionId || '-')}</div>
+          <div><b>Opened:</b> ${safeHtml(input.openedAt ? new Date(input.openedAt).toLocaleString('en-IN') : '-')}</div>
+          <div><b>Closed:</b> ${safeHtml(input.closedAt ? new Date(input.closedAt).toLocaleString('en-IN') : printedAt)}</div>
           <div><b>Closed by:</b> ${safeHtml(input.cashier)}</div>
           <div><b>Printed:</b> ${safeHtml(printedAt)}</div>
         </div>
@@ -289,11 +432,27 @@ export function printBranchCashierClosure(
         <section class="section"><h2>Cash Counter</h2><table><tbody>
           <tr><td>Opening Cash</td><td class="right">${safeHtml(inr(input.openingCash))}</td></tr>
           <tr><td>System Cash Collection</td><td class="right">${safeHtml(inr(input.cash))}</td></tr>
-          <tr><td>Cash Expenses</td><td class="right">${safeHtml(inr(input.expenses))}</td></tr>
-          <tr><td>Refunds</td><td class="right">${safeHtml(inr(input.refunds))}</td></tr>
+          <tr><td>Cash Outflows</td><td class="right">-${safeHtml(inr(input.cashOutflows))}</td></tr>
           <tr><td>Expected Cash</td><td class="right">${safeHtml(inr(input.expected))}</td></tr>
           <tr><td>Physical Cash</td><td class="right">${safeHtml(inr(input.counted))}</td></tr>
           <tr><td class="strong">Cash Difference</td><td class="right strong">${safeHtml(inr(input.difference))}</td></tr>
+        </tbody></table></section>
+      </div>
+
+      <div class="totals">
+        <section class="section"><h2>Sales Calculation</h2><table><tbody>
+          <tr><td>Gross Before Discount</td><td class="right">${safeHtml(inr(input.grossSalesBeforeDiscount))}</td></tr>
+          <tr><td>Discounts</td><td class="right">-${safeHtml(inr(input.discounts))}</td></tr>
+          <tr><td>Refunds / Returns</td><td class="right">-${safeHtml(inr(input.refunds))}</td></tr>
+          <tr><td>Normal Net Sales</td><td class="right strong">${safeHtml(inr(input.totalSales))}</td></tr>
+          <tr><td>Advance Collected</td><td class="right strong">${safeHtml(inr(input.advanceCollected))}</td></tr>
+          <tr><td>Total Activity</td><td class="right strong">${safeHtml(inr(input.totalSalesIncAdvance))}</td></tr>
+        </tbody></table></section>
+        <section class="section"><h2>Cash Outflow Calculation</h2><table><tbody>
+          <tr><td>Expenses</td><td class="right">${safeHtml(inr(input.expenses))}</td></tr>
+          <tr><td>Supplier Payments</td><td class="right">${safeHtml(inr(input.supplierPayments))}</td></tr>
+          <tr><td>Bank Deposits</td><td class="right">${safeHtml(inr(input.bankDeposits))}</td></tr>
+          <tr><td class="strong">Cash-mode Outflows Used</td><td class="right strong">${safeHtml(inr(input.cashOutflows))}</td></tr>
         </tbody></table></section>
       </div>
 
@@ -310,9 +469,41 @@ export function printBranchCashierClosure(
         <div class="card"><div class="label">Normal Sales</div><div class="value">${safeHtml(inr(input.totalSales))}</div></div>
       </div>
 
+      <div class="totals">
+        <section class="section"><h2>Advance Collection Breakdown</h2><table><tbody>
+          <tr><td>Initial Advance</td><td class="right">${safeHtml(inr(input.advanceInitial))}</td></tr>
+          <tr><td>Balance Collection</td><td class="right">${safeHtml(inr(input.advanceBalance))}</td></tr>
+          <tr><td>Cash</td><td class="right">${safeHtml(inr(input.advanceCash))}</td></tr>
+          <tr><td>UPI</td><td class="right">${safeHtml(inr(input.advanceUpi))}</td></tr>
+          <tr><td>Card</td><td class="right">${safeHtml(inr(input.advanceCard))}</td></tr>
+          <tr><td>Bank / Other</td><td class="right">${safeHtml(inr(input.advanceBank))}</td></tr>
+          <tr><td>Payment Entries</td><td class="right">${safeHtml(input.advancePaymentCount)}</td></tr>
+          <tr><td class="strong">Total Advance Collected</td><td class="right strong">${safeHtml(inr(input.advanceCollected))}</td></tr>
+        </tbody></table></section>
+        <section class="section"><h2>Credit Collection Breakdown</h2><table><tbody>
+          <tr><td>Credit Sales Raised</td><td class="right">${safeHtml(inr(input.creditSales))}</td></tr>
+          <tr><td>Collected by Cash</td><td class="right">${safeHtml(inr(input.creditCollectionCash))}</td></tr>
+          <tr><td>Collected by UPI</td><td class="right">${safeHtml(inr(input.creditCollectionUpi))}</td></tr>
+          <tr><td>Collected by Card</td><td class="right">${safeHtml(inr(input.creditCollectionCard))}</td></tr>
+          <tr><td>Collected by Bank / Other</td><td class="right">${safeHtml(inr(input.creditCollectionOther))}</td></tr>
+          <tr><td class="strong">Total Credit Collected</td><td class="right strong">${safeHtml(inr(input.creditCollected))}</td></tr>
+        </tbody></table></section>
+      </div>
+
+      <div class="totals">
+        <section class="section"><h2>Opening Denominations</h2><table><tbody>${denominationRows(input.openingDenominations)}</tbody></table></section>
+        <section class="section"><h2>Closing Denominations</h2><table><tbody>${denominationRows(input.closingDenominations)}</tbody></table></section>
+      </div>
+
       ${upiNotesHtml}
       ${notesHtml}
-      <section class="section"><h2>Refund Register</h2><table><thead><tr><th>Return</th><th>Original Bill</th><th>Time</th><th>Mode</th><th>Reason</th><th>Cashier</th><th class="right">Amount</th></tr></thead><tbody>${refundRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Advance Collection Register</h2><table><thead><tr><th>Time</th><th>Purpose</th><th>Mode</th><th>Reference</th><th>Entered By</th><th class="right">Amount</th></tr></thead><tbody>${advanceRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Credit Sales Register</h2><table><thead><tr><th>Time</th><th>Bill</th><th>Customer</th><th class="right">Paid</th><th class="right">Credit</th><th>Status</th><th>Sold By</th></tr></thead><tbody>${creditSaleRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Credit Collection Register</h2><table><thead><tr><th>Time</th><th>Bill</th><th>Mode</th><th>Reference</th><th>Collected By</th><th class="right">Amount</th></tr></thead><tbody>${creditCollectionRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Expense Register</h2><table><thead><tr><th>Time</th><th>Category</th><th>Description</th><th>Mode</th><th>Entered By</th><th class="right">Amount</th></tr></thead><tbody>${expenseRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Supplier Payment Register</h2><table><thead><tr><th>Time</th><th>Supplier</th><th>Mode</th><th>Reference</th><th>Paid By</th><th class="right">Amount</th></tr></thead><tbody>${supplierPaymentRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Bank Deposit Register</h2><table><thead><tr><th>Time</th><th>Bank Account</th><th>Mode</th><th>Reference</th><th>Entered By</th><th class="right">Amount</th></tr></thead><tbody>${bankDepositRowsHtml}</tbody></table></section>
+      <section class="section"><h2>Refund Register</h2><table><thead><tr><th>Return</th><th>Original Bill</th><th>Time</th><th>Mode</th><th>Reason</th><th>Cashier</th><th class="right">Gross</th><th class="right">Credit Adjusted</th><th class="right">Refund</th></tr></thead><tbody>${refundRowsHtml}</tbody></table></section>
       <section class="section"><h2>Closed Bills</h2><table><thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th>Payment</th><th class="right">Paid</th><th>Cashier</th></tr></thead><tbody>${billRowsHtml}</tbody></table></section>
       <div class="footer"><div class="sign">Cashier Signature</div><div class="sign">Manager Signature</div></div>
     </main>
