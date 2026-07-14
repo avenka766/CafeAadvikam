@@ -520,23 +520,25 @@ export default function AdminSNBDashboard() {
   }, [stock, catalogItems]);
   const branchSalesRows = useMemo(() => sales[BRANCH] || [], [sales]);
   const branchBills = useMemo(
-    () =>
-      bills.filter(
+    () => dbReports.refreshedAt
+      ? dbReports.operationBills
+      : bills.filter(
         (b) => b.branch === BRANCH && inRange(b.createdAt, fromDate, toDate),
       ),
-    [bills, fromDate, toDate],
+    [bills, dbReports.operationBills, dbReports.refreshedAt, fromDate, toDate],
   );
   const branchReturns = useMemo(
-    () =>
-      returns.filter(
+    () => dbReports.refreshedAt
+      ? dbReports.operationReturns
+      : returns.filter(
         (r) => r.branch === BRANCH && inRange(r.createdAt, fromDate, toDate),
       ),
-    [returns, fromDate, toDate],
+    [returns, dbReports.operationReturns, dbReports.refreshedAt, fromDate, toDate],
   );
   const billedBillNos = useMemo(
     () =>
-      new Set(bills.filter((b) => b.branch === BRANCH).map((b) => b.billNo)),
-    [bills],
+      new Set(branchBills.map((b) => b.billNo)),
+    [branchBills],
   );
   const legacySalesRows = useMemo(
     () =>
