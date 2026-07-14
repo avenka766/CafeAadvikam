@@ -14,6 +14,7 @@ import {
   Store,
   Flame,
   Package,
+  PackageCheck,
   ShoppingCart,
   Settings2,
   BarChart3,
@@ -350,6 +351,11 @@ export default function BottomNav() {
         label: "Stock",
         icon: <Package className="size-5" />,
         path: "/admin-snb?tab=stock",
+      },
+      {
+        label: "Stock Synced",
+        icon: <PackageCheck className="size-5" />,
+        path: "/admin-snb?tab=stock-synced",
       },
       {
         label: "Update Stock",
