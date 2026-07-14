@@ -838,10 +838,13 @@ const mergeOperationRecordsIntoState = (
 
   for (const [stateKey, recordType] of buckets) {
     const current = Array.isArray(state[stateKey]) ? ([...(state[stateKey] as unknown[])] as Array<{ id?: string; createdAt?: string }>) : [];
-    const recovered = rows
+    const recoveredRows = rows
       .filter((row) => row.record_type === recordType)
       .map((row) => row.payload as { id?: string; createdAt?: string })
       .filter((payload) => payload?.id);
+    const recovered = Array.from(
+      new Map(recoveredRows.map((payload) => [payload.id, payload])).values(),
+    );
     if (recovered.length > 0) {
       const recoveredIds = new Set(recovered.map((item) => item.id));
       (state as unknown as Record<string, unknown[]>)[stateKey as string] = [...recovered, ...current.filter((item) => !recoveredIds.has(item.id))]
@@ -905,11 +908,22 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 200 : 1000);
 
+    // Expense history is sparse but can be older than the high-volume general
+    // operation feed. Load it separately so billing activity cannot push valid
+    // historical expenses beyond the operation query limit.
+    let expenseQuery = supabase
+      .from("branch_operation_records")
+      .select("record_type, record_id, payload, created_at")
+      .eq("record_type", "expense")
+      .order("created_at", { ascending: false })
+      .limit(sessionBranch ? 2000 : 5000);
+
     if (sessionBranch) {
       opQuery = opQuery.eq("branch", sessionBranch);
       stockCountQuery = stockCountQuery.eq("branch", sessionBranch);
       varianceQuery = varianceQuery.eq("branch", sessionBranch);
       complaintQuery = complaintQuery.eq("branch", sessionBranch);
+      expenseQuery = expenseQuery.eq("branch", sessionBranch);
     }
 
     const [
@@ -918,6 +932,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       { data: stockCountRows, error: stockCountError },
       { data: varianceRows, error: varianceError },
       { data: complaintRows, error: complaintError },
+      { data: expenseRows, error: expenseError },
     ] = await Promise.all([
       supabase
         .from("app_state")
@@ -928,6 +943,7 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
       stockCountQuery,
       varianceQuery,
       complaintQuery,
+      expenseQuery,
     ]);
     if (error) {
       console.error("[branchOpsStore] Supabase load failed:", error.message);
@@ -944,6 +960,9 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     }
     if (complaintError && !/branch_complaint_tickets|does not exist|schema cache/i.test(complaintError.message)) {
       console.error("[branchOpsStore] Supabase complaint load failed:", complaintError.message);
+    }
+    if (expenseError && !/branch_operation_records|does not exist|schema cache/i.test(expenseError.message)) {
+      console.error("[branchOpsStore] Supabase expense history load failed:", expenseError.message);
     }
     const dedicatedRows: BranchOperationRecordRow[] = [
       ...((stockCountRows || []) as Array<Record<string, unknown>>).map((row) => ({
@@ -1001,7 +1020,11 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
     ];
     return mergeOperationRecordsIntoState(
       (data?.value as StorageValue<BranchOpsState> | null) ?? null,
-      [...((opRows || []) as BranchOperationRecordRow[]), ...dedicatedRows],
+      [
+        ...((opRows || []) as BranchOperationRecordRow[]),
+        ...((expenseRows || []) as BranchOperationRecordRow[]),
+        ...dedicatedRows,
+      ],
     );
   },
   setItem: async (name, value) => {
