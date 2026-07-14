@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import type { Branch } from './types';
+import { findCakeType } from './cakePricing';
 
 export type CakeDispatchSource = {
   id: string;
@@ -28,6 +29,7 @@ type AdvancePayload = {
   orderNo: string;
   items?: AdvanceLine[];
   cakeKg?: string;
+  cakeTypeId?: string;
   originalCakeKg?: string;
   orderValue: number;
   originalOrderValue?: number;
@@ -69,6 +71,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
 
   const now = new Date().toISOString();
   const dispatchId = cakeIncomingDispatchId(order.id);
+  const catalogBarcode = firstLine.barcode ?? findCakeType(advance.cakeTypeId || '')?.catalogBarcode;
   const { data: existingIncoming, error: incomingLookupError } = await supabase
     .from('branch_incoming')
     .select('id')
@@ -82,7 +85,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
       dispatch_id: dispatchId,
       branch: order.branch,
       item_name: firstLine.itemName,
-      item_barcode: firstLine.barcode ?? null,
+      item_barcode: catalogBarcode ?? null,
       quantity: dispatchedQty,
       unit: firstLine.unit || 'kg',
       received_at: order.updated_at || now,
@@ -105,7 +108,7 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
     originalOrderValue: advance.originalOrderValue ?? placedValue,
     cakeKg: String(dispatchedQty),
     items: (advance.items || []).map((line, index) => index === 0
-      ? { ...line, quantity: dispatchedQty, lineTotal: orderValue }
+      ? { ...line, barcode: line.barcode ?? catalogBarcode, quantity: dispatchedQty, lineTotal: orderValue }
       : line),
     orderValue,
     balanceAmount: Math.round((orderValue - quantity(advance.advanceAmount)) * 100) / 100,
