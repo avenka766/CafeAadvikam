@@ -213,25 +213,33 @@ export function BranchBillHistoryProTab({ branch }: ModuleProps) {
     const load = async () => {
       setLoadingLedger(true);
       setLedgerMessage('');
-      const { data, error } = await supabase
-        .from('branch_bill_headers')
-        .select('*, branch_bill_items(*), branch_sale_payments(payment_mode, amount)')
-        .eq('branch', branch)
-        .order('created_at', { ascending: false })
-        .limit(500);
+      const allRows: LedgerBillRow[] = [];
+      let loadError: { message: string } | null = null;
+      for (let from = 0; from < 30000; from += 1000) {
+        const { data, error } = await supabase
+          .from('branch_bill_headers')
+          .select('*, branch_bill_items(*), branch_sale_payments(payment_mode, amount)')
+          .eq('branch', branch)
+          .order('created_at', { ascending: false })
+          .range(from, from + 999);
+        if (error) { loadError = error; break; }
+        const page = (data || []) as LedgerBillRow[];
+        allRows.push(...page);
+        if (page.length < 1000) break;
+      }
 
       if (!active) return;
-      if (error) {
-        const missingLedger = /branch_bill_headers|does not exist|schema cache/i.test(error.message);
+      if (loadError) {
+        const missingLedger = /branch_bill_headers|does not exist|schema cache/i.test(loadError.message);
         setLedgerBills([]);
         setLedgerMessage(missingLedger
           ? 'Supabase bill ledger is not installed yet. Run 20260614_branch_core_tables.sql and 20260614_branch_atomic_checkout_rpc.sql, then this history will load from Supabase.'
-          : `Could not load Supabase bill history: ${error.message}`);
+          : `Could not load Supabase bill history: ${loadError.message}`);
         setLoadingLedger(false);
         return;
       }
 
-      const mapped = ((data || []) as LedgerBillRow[]).map((row) => {
+      const mapped = allRows.map((row) => {
         const items = (row.branch_bill_items || []).map((item) => ({
           itemName: item.item_name,
           quantity: num(item.quantity),
@@ -1179,8 +1187,20 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const [returning, setReturning] = useState(false);
   const [returnError, setReturnError] = useState('');
 
-  const find = () => {
-    const bill = bills.find((row)=>row.branch===branch && row.billNo.toLowerCase()===billNo.trim().toLowerCase()) || null;
+  const find = async () => {
+    const normalizedBillNo = billNo.trim();
+    let bill = bills.find((row)=>row.branch===branch && row.billNo.toLowerCase()===normalizedBillNo.toLowerCase()) || null;
+    if (!bill && normalizedBillNo) {
+      const { data, error } = await supabase
+        .from('branch_operation_records')
+        .select('payload')
+        .eq('branch', branch)
+        .in('record_type', ['bill', 'advance_final_bill'])
+        .ilike('record_no', normalizedBillNo)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.payload) bill = data.payload as BranchBillRecord;
+    }
     setSelected(bill);
     setQtys({});
     setReturnError(bill ? '' : 'Bill not found.');
@@ -1248,7 +1268,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     <Section title="Return Bill" icon={<RotateCcw className="size-5"/>}>
       <div className="space-y-3">
-        <Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')find();}} placeholder={`${branch}-0001`}/><PrimaryButton onClick={find}>Search</PrimaryButton></div></Field>
+        <Field label="Search bill number"><div className="flex gap-2"><Input value={billNo} onChange={(e)=>setBillNo(e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')void find();}} placeholder={`${branch}-0001`}/><PrimaryButton onClick={()=>void find()}>Search</PrimaryButton></div></Field>
         {selected && <div className="rounded-2xl bg-slate-50 p-3">
           <p className="font-black">{selected.billNo} · {money(selected.total)}</p>
           <p className="text-xs font-bold uppercase text-slate-500">Original payment: {selected.paymentMode}</p>
