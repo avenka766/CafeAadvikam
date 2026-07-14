@@ -54,8 +54,10 @@ const packageJson = packageJsonText ? JSON.parse(packageJsonText) : null;
 const authStore = read('src/stores/authStore.ts') ?? '';
 const branchBilling = read('src/branch/tabs/BranchBillingProTab.tsx') ?? '';
 const bottomNav = read('src/components/layout/BottomNav.tsx') ?? '';
+const workspaceChrome = read('src/components/layout/WorkspaceChrome.tsx') ?? '';
 const hosurDashboard = read('src/pages/HosurDashboard.tsx') ?? '';
 const branchBusinessModules = read('src/branch/tabs/BranchBusinessModules.tsx') ?? '';
+const printUtils = read('src/branch/printUtils.ts') ?? '';
 const adminSnb = read('src/pages/AdminSNBDashboard.tsx') ?? '';
 const adminVrsnb = read('src/pages/AdminVRSNBDashboard.tsx') ?? '';
 const bakeryOrderPage = read('src/pages/BakeryOrderPage.tsx') ?? '';
@@ -412,6 +414,37 @@ check(
     && branchBusinessModules.includes('.range(from, from + 999)')
     && branchBusinessModules.includes(".from('branch_operation_records')"),
   'Sparse operational history, date-scoped Admin bills/returns, Bill History pages and old-bill return lookup must not regress to a newest-row-only cache.',
+);
+
+check(
+  'Expense and supplier vouchers plus stock sync audit remain available',
+  printUtils.includes('printAccountingVoucher')
+    && printUtils.includes('amountInIndianWords')
+    && adminSnb.includes('voucherType: "Expense Voucher"')
+    && adminSnb.includes('voucherType: "Supplier Payment Voucher"')
+    && adminSnb.includes('id: "stock-synced"')
+    && workspaceChrome.includes("/admin-snb?tab=stock-synced")
+    && bottomNav.includes("/admin-snb?tab=stock-synced")
+    && adminSnb.includes('.from("branch_stock_adjustments")')
+    && adminSnb.includes('.from("branch_incoming")')
+    && adminSnb.includes('SNB_Stock_Synced.xls'),
+  'Saved expense/payment records must retain printable vouchers and SNB Admin must retain the combined purchase/incoming stock-sync register.',
+);
+
+check(
+  'Saved branch closure prints the complete counter session audit',
+  branchBusinessModules.includes('printClosure({ silent: true })')
+    && branchBusinessModules.includes('advanceRows: todayAdvancePayments.map')
+    && branchBusinessModules.includes('creditSaleRows: todayCreditSales.map')
+    && branchBusinessModules.includes('creditCollectionRows: todayCreditCollections.map')
+    && branchBusinessModules.includes('expenseRows: todayExpenseEntries.map')
+    && branchBusinessModules.includes('supplierPaymentRows: todayPurchasePayments.map')
+    && branchBusinessModules.includes('bankDepositRows: todayBankDeposits.map')
+    && printUtils.includes('Advance Collection Breakdown')
+    && printUtils.includes('Credit Collection Breakdown')
+    && printUtils.includes('Opening Denominations')
+    && printUtils.includes('Closed Bills'),
+  'Save Closure must automatically print the same complete open-to-close audit as the manual Print Closure action.',
 );
 
 check(
