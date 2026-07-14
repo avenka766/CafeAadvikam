@@ -790,6 +790,12 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       balanceAmount = Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100;
     }
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
+    const legacyCakeBarcode = orderKind === 'cake' ? findCakeType(o.cakeTypeId || '')?.catalogBarcode : undefined;
+    if (legacyCakeBarcode != null) {
+      orderLines = orderLines.map((line, index) => index === 0 && line.barcode == null
+        ? { ...line, barcode: legacyCakeBarcode }
+        : line);
+    }
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
     if (orderKind === 'cake' && !stockAlreadyReserved) {
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
