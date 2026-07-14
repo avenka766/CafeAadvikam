@@ -1532,11 +1532,13 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
   const creditCollectionCash = todayCreditCollections.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const creditCollectionUpi = todayCreditCollections.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const creditCollectionCard = todayCreditCollections.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
-  const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
+  const creditCollectionOther = todayCreditCollections.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
+  const creditCollectionDigital = creditCollectionUpi + creditCollectionCard + creditCollectionOther;
   const creditCollectionTotal = closureLedger ? num(closureLedger.credit_collected) : creditCollectionCash + creditCollectionDigital;
   const advanceCash = isSnbOrder ? counterSnapshot.advanceCash : todayAdvancePayments.filter((m) => m.paymentMode === 'cash').reduce((s, m) => s + m.amount, 0);
   const advanceUpi = isSnbOrder ? counterSnapshot.advanceUpi : todayAdvancePayments.filter((m) => m.paymentMode === 'upi').reduce((s, m) => s + m.amount, 0);
   const advanceCard = isSnbOrder ? counterSnapshot.advanceCard : todayAdvancePayments.filter((m) => m.paymentMode === 'card').reduce((s, m) => s + m.amount, 0);
+  const advanceBank = isSnbOrder ? counterSnapshot.advanceBank : todayAdvancePayments.filter((m) => !['cash', 'upi', 'card'].includes(m.paymentMode)).reduce((s, m) => s + m.amount, 0);
   const advanceDigital = isSnbOrder ? counterSnapshot.advanceUpi + counterSnapshot.advanceCard + counterSnapshot.advanceBank : todayAdvancePayments.filter((m) => m.paymentMode !== 'cash').reduce((s, m) => s + m.amount, 0);
   // Payment totals shown in closure are NET collections after refunds.
   // The ledger RPC also stores net totals, so no second subtraction is applied in ledger mode.
@@ -1821,17 +1823,34 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
 
   const printClosure = (options: { silent?: boolean } = {}) => printBranchCashierClosure({
     branch, cashier: auditActor,
+    counterSessionId: activeSessionId,
     date: new Date(`${todayIso()}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }),
+    openedAt: branchCounterOpenRecord?.openedAt,
+    closedAt: new Date().toISOString(),
+    grossSalesBeforeDiscount, discounts,
     totalSales, advanceCollected: advanceCollectedToday, totalSalesIncAdvance,
+    advanceInitial: advancePaid, advanceBalance: advanceFull,
+    advanceCash, advanceUpi, advanceCard, advanceBank,
+    advancePaymentCount: isSnbOrder ? counterSnapshot.paymentCount : todayAdvancePayments.length,
     billsCount: counterTodayBills.length, cancelledCount: todayReturns.length,
     cash, upi, card, splitTotal,
     actualUpi, upiDifference, upiNotes: upiAuditNotes,
     creditSales: creditSalesTotal, creditCollected: creditCollectionTotal,
-    openingCash: Number(opening || 0), expenses: cashOutflows, refunds,
+    creditCollectionCash, creditCollectionUpi, creditCollectionCard, creditCollectionOther,
+    openingCash: Number(opening || 0), expenses: expenseTotal, supplierPayments: supplierPaymentTotal,
+    bankDeposits: bankDepositTotal, cashOutflows, refunds,
     expected, counted: countedCash, difference: diff,
+    openingDenominations: branchCounterOpenRecord?.denominations,
+    closingDenominations: closeDenominations,
     notes,
     bills: counterTodayBills.map((b) => ({ billNo: b.billNo, createdAt: b.createdAt, customerName: b.creditCustomerName, paymentMode: b.paymentMode, total: b.total, biller: b.biller })),
     refundRows: todayReturns.map((r) => ({ returnNo: r.returnNo, originalBillNo: r.originalBillNo, createdAt: r.createdAt, paymentMode: r.returnPayMode || r.originalPaymentMode || 'cash', reason: r.reason, cashier: r.returnedBy, amount: Number(r.refundAmount ?? r.total), creditAdjusted: Number(r.creditAdjusted ?? 0), grossReturn: r.total })),
+    advanceRows: todayAdvancePayments.map((movement) => ({ createdAt: movement.dateTime, purpose: movement.purpose, paymentMode: movement.paymentMode, amount: movement.amount, reference: movement.referenceNumber, enteredBy: movement.enteredBy })),
+    creditSaleRows: todayCreditSales.map((sale) => ({ createdAt: sale.createdAt, billNo: sale.billNo, customerName: sale.customerName, amountPaid: sale.amountPaid, creditAmount: sale.creditAmount, status: sale.status, soldBy: sale.soldBy })),
+    creditCollectionRows: todayCreditCollections.map((payment) => ({ createdAt: payment.createdAt, billNo: payment.billNo, amount: payment.amount, paymentMode: payment.paymentMode, reference: payment.reference || '', collectedBy: payment.collectedBy })),
+    expenseRows: todayExpenseEntries.map((expense) => ({ createdAt: expense.createdAt, category: expense.category, description: expense.description, amount: expense.amount, mode: expense.mode, enteredBy: expense.enteredBy })),
+    supplierPaymentRows: todayPurchasePayments.map((payment) => ({ createdAt: payment.createdAt, supplier: payment.supplier, amount: payment.amount, mode: payment.mode, reference: payment.reference, paidBy: payment.paidBy })),
+    bankDepositRows: todayBankDeposits.map((deposit) => ({ createdAt: deposit.createdAt, bankAccount: deposit.bankAccount, amount: deposit.amount, paymentMode: deposit.paymentMode, reference: deposit.transactionRef || deposit.slipNo, enteredBy: deposit.enteredBy })),
   }, options);
 
   const exportClosure = () => {
