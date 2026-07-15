@@ -1,11 +1,12 @@
 // src/bakery/PackingCakeOrdersTab.tsx
 import { useCallback, useEffect, useState } from 'react';
-import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt } from 'lucide-react';
+import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Printer } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
+import { printHtml } from '@/branch/printUtils';
 
 interface CakeOrderRow {
   id: string;
@@ -20,6 +21,8 @@ interface CakeOrderRow {
   flavor: string | null;
   shape: string | null;
   cream_type: string | null;
+  message_on_cake: string | null;
+  design_notes: string | null;
   updated_at: string | null;
   created_at: string | null;
   status: string;
@@ -28,6 +31,46 @@ interface CakeOrderRow {
 function fmtDate(d?: string | null) {
   if (!d) return '—';
   return new Date(`${d}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function printPackingChecklist(order: CakeOrderRow, packingUser: string) {
+  const checks = [
+    'Order number, customer and destination branch matched',
+    'Cream type, flavour and shape verified',
+    'Prepared weight checked and written below',
+    'Cake message and spelling verified',
+    'Design notes / reference matched',
+    'Finish, damage and temperature checked',
+    'Board, box, knife, candles and accessories checked',
+    'Delivery date and time verified before dispatch',
+  ];
+  printHtml(`Packing Checklist ${order.order_no}`, `
+    <div class="stamp">Cake Packing Checklist</div>
+    <h2>${escapeHtml(order.branch)} - ${escapeHtml(order.order_no)}</h2>
+    <div class="card">
+      <div class="row"><span>Customer</span><b>${escapeHtml(order.customer_name || 'Customer')}</b></div>
+      <div class="row"><span>Slip Number</span><b>${escapeHtml(order.slip_number || '-')}</b></div>
+      <div class="row"><span>Delivery</span><b>${escapeHtml(fmtDate(order.delivery_date))} ${escapeHtml(order.delivery_time || '')}</b></div>
+      <div class="row"><span>Cake</span><b>${escapeHtml(order.cream_type || '-')} / ${escapeHtml(order.flavor || '-')} / ${escapeHtml(order.shape || '-')}</b></div>
+      <div class="row"><span>Ordered Weight</span><b>${escapeHtml(order.cake_kg || '-')} kg</b></div>
+      <div class="row"><span>Prepared Weight</span><b>${escapeHtml(order.prepared_quantity ?? '-')} kg</b></div>
+      <div class="row"><span>Message</span><b>${escapeHtml(order.message_on_cake || '-')}</b></div>
+      <div class="row"><span>Design Notes</span><b>${escapeHtml(order.design_notes || '-')}</b></div>
+    </div>
+    <section class="section"><h3>Final Packing Checks</h3>
+      <table><tbody>${checks.map((check) => `<tr><td style="width:34px;font-size:20px">&#9633;</td><td>${escapeHtml(check)}</td><td style="width:150px">Initial: __________</td></tr>`).join('')}</tbody></table>
+    </section>
+    <div class="card">
+      <div class="row"><span>Actual Weight Rechecked</span><b>____________ kg</b></div>
+      <div class="row"><span>Packed By</span><b>${escapeHtml(packingUser)}</b></div>
+      <div class="row"><span>Packer Signature</span><b>________________________</b></div>
+      <div class="row"><span>Dispatch Handover</span><b>________________________</b></div>
+      <div class="row"><span>Date / Time</span><b>________________________</b></div>
+    </div>`);
 }
 
 export default function PackingCakeOrdersTab() {
@@ -41,7 +84,7 @@ export default function PackingCakeOrdersTab() {
     setLoading(true);
     const { data, error: err } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,updated_at,created_at,status')
+      .select('id,branch,order_no,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status')
       .in('status', ['Ready for Packing', 'Packed'])
       .order('delivery_date', { ascending: true });
     setLoading(false);
@@ -130,15 +173,20 @@ export default function PackingCakeOrdersTab() {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              disabled={busyId === order.id}
-              onClick={() => void dispatch(order)}
-              className="flex shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50"
-            >
-              {busyId === order.id ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              Dispatch to {order.branch}
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button type="button" onClick={() => printPackingChecklist(order, currentUser?.displayName || currentUser?.username || 'Packing')} className="flex items-center gap-2 rounded-xl border border-border bg-white px-3 py-2.5 text-sm font-black text-foreground active:scale-95">
+                <Printer className="size-4" /> Print Checklist
+              </button>
+              <button
+                type="button"
+                disabled={busyId === order.id}
+                onClick={() => void dispatch(order)}
+                className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white active:scale-95 disabled:opacity-50"
+              >
+                {busyId === order.id ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                Dispatch to {order.branch}
+              </button>
+            </div>
           </div>
         ))}
       </div>
