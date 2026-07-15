@@ -78,6 +78,8 @@ const branchUpiClosureAuditMigration = read('supabase/migrations/20260701024500_
 const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_branch_closure_schema_cache_rpc.sql') ?? '';
 const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
 const branchCheckoutCacheRefreshMigration = read('supabase/migrations/20260701080000_refresh_branch_checkout_v4_schema_cache.sql') ?? '';
+const advanceFinalRefundMigration = read('supabase/migrations/20260715120000_fix_advance_final_stock_refunds.sql') ?? '';
+const packingCakeOrdersTab = read('src/bakery/PackingCakeOrdersTab.tsx') ?? '';
 const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
 const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
@@ -377,6 +379,27 @@ check(
     && completeBranchFixMigration.includes('branch_stock_reservations')
     && completeBranchFixMigration.includes('record_completed_branch_advance_sale'),
   'Part-paid advance orders must reserve stock and must not be counted as completed sales before fulfilment.',
+);
+
+check(
+  'Advance cake finalization matches dispatched stock and supports refunds atomically',
+  branchBusinessModules.includes("supabase.rpc('finalize_branch_advance_order_v2'")
+    && branchBusinessModules.includes('recordAdvanceRefund')
+    && branchBusinessModules.includes('Additional Charges')
+    && advanceFinalRefundMigration.includes("lower(btrim(item_name)) = lower(btrim(line->>'itemName'))")
+    && advanceFinalRefundMigration.includes("payment_stage in ('advance','balance')")
+    && advanceFinalRefundMigration.includes("'Advance overpayment refund for '")
+    && advanceFinalRefundMigration.includes('branch_return_records'),
+  'Final advance billing must prefer the exact dispatched item, allow a validated refund mode, and record the refund in the closure ledger.',
+);
+
+check(
+  'Packing cake orders provide a printable verification checklist',
+  packingCakeOrdersTab.includes('printPackingChecklist')
+    && packingCakeOrdersTab.includes('Print Checklist')
+    && packingCakeOrdersTab.includes('message_on_cake')
+    && packingCakeOrdersTab.includes('Actual Weight Rechecked'),
+  'Packing must be able to print the full cake verification checklist before dispatch.',
 );
 
 check(
