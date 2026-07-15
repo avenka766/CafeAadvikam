@@ -64,6 +64,7 @@ const bakeryOrderPage = read('src/pages/BakeryOrderPage.tsx') ?? '';
 const branchCatalogStore = read('src/stores/branchCatalogStore.ts') ?? '';
 const recipeStore = read('src/bakery/recipeStore.ts') ?? '';
 const storeDashboard = read('src/bakery/StoreDashboard.tsx') ?? '';
+const bakeryStore = read('src/bakery/bakeryStore.ts') ?? '';
 const invoiceStore = read('src/bakery/invoiceStore.ts') ?? '';
 const adminInvoicesTab = read('src/bakery/AdminInvoicesTab.tsx') ?? '';
 const razorpayFunction = read('supabase/functions/create-razorpay-order/index.ts') ?? '';
@@ -79,6 +80,7 @@ const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_b
 const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
 const branchCheckoutCacheRefreshMigration = read('supabase/migrations/20260701080000_refresh_branch_checkout_v4_schema_cache.sql') ?? '';
 const advanceFinalRefundMigration = read('supabase/migrations/20260715120000_fix_advance_final_stock_refunds.sql') ?? '';
+const storePartialBakerSendMigration = read('supabase/migrations/20260716110000_store_category_partial_baker_send.sql') ?? '';
 const packingCakeOrdersTab = read('src/bakery/PackingCakeOrdersTab.tsx') ?? '';
 const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
 const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
@@ -231,6 +233,18 @@ check(
     && recipeStore.includes("from('bakery_recipes')")
     && recipeStore.includes('postgres_changes'),
   'Recipe Management, production requirements and stock deductions must share bakery_recipes.',
+);
+
+check(
+  'Store groups orders by recipe category and sends only selected items to Baker',
+  storeDashboard.includes("['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others']")
+    && storeDashboard.includes('Selected for Baker')
+    && storeDashboard.includes('Unselected items will remain in this Store order')
+    && bakeryStore.includes("supabase.rpc('send_selected_bakery_items_to_baker'")
+    && storePartialBakerSendMigration.includes('remaining_items')
+    && storePartialBakerSendMigration.includes('store_send_request_id')
+    && storePartialBakerSendMigration.includes("status = 'baking'"),
+  'Store must use the live recipe categories, retain unselected lines, and use an idempotent atomic partial-send RPC.',
 );
 
 check(
