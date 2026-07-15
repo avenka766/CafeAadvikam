@@ -45,6 +45,9 @@ export interface BakeryOrder {
   sentToPackingAt?: string;
   dispatchLog?: DispatchEntry[];
   targetBranch?: Branch;
+  /** Original Store order number when this is a partial batch sent to Baker. */
+  storeSourceOrderNumber?: number;
+  storeSendRequestId?: string;
   /** U-14 FIX: special instructions or notes attached to the bakery order */
   notes?: string;
 }

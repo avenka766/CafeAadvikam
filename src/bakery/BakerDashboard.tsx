@@ -676,6 +676,7 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-display font-bold text-foreground text-sm">Order #{order.orderNumber}</span>
+            {order.storeSourceOrderNumber && order.storeSourceOrderNumber !== order.orderNumber && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-blue-700">From Store order #{order.storeSourceOrderNumber}</span>}
             <span className={cn(
               'text-[9px] font-body font-bold px-2 py-0.5 rounded-full border',
               order.status === 'partially_packed'

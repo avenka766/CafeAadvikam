@@ -1,5 +1,5 @@
 // src/bakery/StoreDashboard.tsx (Redesigned)
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Store, Calculator, ChevronDown, ChevronUp, ArrowRight,
@@ -13,6 +13,7 @@ import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import { useRecipeStore } from './recipeStore';
+import { useBakeryItemsStore } from './bakeryItemsStore';
 import type { BakeryOrder } from './types';
 import { cn } from '@/lib/utils';
 import {
@@ -33,6 +34,18 @@ import type { DeductionContext } from './storeStockStore';
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report', 'recipes'];
+const STORE_ORDER_CATEGORIES = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'] as const;
+type StoreOrderCategory = typeof STORE_ORDER_CATEGORIES[number];
+
+function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
+  const normalizedName = normaliseName(item.itemName);
+  const liveCategory = liveItems.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
+  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
+  const category = liveCategory || fallbackCategory;
+  return STORE_ORDER_CATEGORIES.includes(category as StoreOrderCategory) && category !== 'Others'
+    ? category as StoreOrderCategory
+    : 'Others';
+}
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -174,7 +187,14 @@ function stockUnitLabel(unit: StockUnit | string): string {
 }
 
 // ─── Item Row (per-item raw materials + stock status) ────────────────────────
-function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items'][number] }) {
+function ItemRow({ order, item, category, selectionEnabled = false, selected = false, onToggle }: {
+  order: BakeryOrder;
+  item: BakeryOrder['items'][number];
+  category: StoreOrderCategory;
+  selectionEnabled?: boolean;
+  selected?: boolean;
+  onToggle?: () => void;
+}) {
   const [showMats, setShowMats] = useState(false);
   const mats = useMemo(() => matForItem(item), [item]);
   const hasMats = mats.length > 0;
@@ -203,15 +223,17 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
   return (
     <div className={cn(
       "rounded-xl border bg-muted/30 overflow-hidden",
-      anyOut ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
+      selected ? "border-primary bg-primary/5" : anyOut ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
     )}>
       {/* Item header */}
       <div className="flex items-center gap-2 px-3 py-2.5">
+        {selectionEnabled && <input type="checkbox" checked={selected} onChange={onToggle} aria-label={`Select ${item.itemName}`} className="size-4 shrink-0 accent-primary" />}
         <span className="text-base leading-none shrink-0">
           {BAKERY_ITEMS.find(b => b.id === item.itemId)?.icon ?? '🍬'}
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-body font-semibold text-foreground">{item.itemName}</p>
+          <span className="mt-1 inline-flex rounded-md bg-background px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground ring-1 ring-border">{category}</span>
           {item.originalPcs != null && item.weightGrams != null && (
             <p className="text-[10px] font-body text-blue-600">
               {item.originalPcs} pcs → {item.quantity} kg
@@ -322,6 +344,7 @@ function ItemRow({ order, item }: { order: BakeryOrder; item: BakeryOrder['items
 function OrderCard({ order }: { order: BakeryOrder }) {
   const { sendToBaker, acceptOrder } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
+  const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
 
   const [expanded,   setExpanded]   = useState(true);
@@ -330,11 +353,28 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const [sending,    setSending]    = useState(false);
   const [sent,       setSent]       = useState(order.status !== 'pending' && order.status !== 'processing');
   const [sendError,  setSendError]  = useState<string | null>(null);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
+  const sendRequest = useRef<{ signature: string; id: string } | null>(null);
 
   useEffect(() => {
     setAccepted(order.status !== 'pending');
     setSent(order.status !== 'pending' && order.status !== 'processing');
   }, [order.status]);
+
+  useEffect(() => {
+    setSelectedIndexes(current => current.filter(index => index < order.items.length));
+    sendRequest.current = null;
+  }, [order.items]);
+
+  const categorizedItems = useMemo(() => STORE_ORDER_CATEGORIES.map(category => ({
+    category,
+    items: order.items.map((item, index) => ({ item, index, category: storeOrderCategory(item, bakeryItems) })).filter(entry => entry.category === category),
+  })).filter(group => group.items.length > 0), [order.items, bakeryItems]);
+
+  const selectedEntries = useMemo(() => selectedIndexes
+    .map(index => ({ item: order.items[index], index }))
+    .filter((entry): entry is { item: BakeryOrder['items'][number]; index: number } => Boolean(entry.item)), [selectedIndexes, order.items]);
 
   const handleAccept = async () => {
     setAccepting(true); setSendError(null);
@@ -351,7 +391,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   // Collect all materials across items for stock deduction on send
   const allMats = useMemo(() => {
     const combined: { material: string; quantity: number; unit: string }[] = [];
-    for (const item of order.items) {
+    for (const { item } of selectedEntries) {
       for (const m of matForItem(item)) {
         const existing = combined.find(x => x.material === m.material);
         if (existing) existing.quantity = parseFloat((existing.quantity + m.quantity).toFixed(4));
@@ -359,12 +399,12 @@ function OrderCard({ order }: { order: BakeryOrder }) {
       }
     }
     return combined;
-  }, [order]);
+  }, [selectedEntries]);
 
   // Bug 1 fix: anyOut must be computed in OrderCard scope (was only defined in ItemRow)
   const { items: stockItems } = useStoreStockStore();
   const anyOut = useMemo(() => {
-    for (const item of order.items) {
+    for (const { item } of selectedEntries) {
       const mats = matForItem(item);
       for (const m of mats) {
         const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
@@ -378,17 +418,20 @@ function OrderCard({ order }: { order: BakeryOrder }) {
       }
     }
     return false;
-  }, [order.items, stockItems]);
+  }, [selectedEntries, stockItems]);
 
   const handleSendToBaker = async () => {
-    if (sent) return; // Bug 2 fix: guard against double-fire before React disables the button
-    setSending(true); setSendError(null);
+    if (sent || selectedIndexes.length === 0) return;
+    setSending(true); setSendError(null); setSendNotice(null);
     try {
-      // BUG-FIX: sendToBaker FIRST — if it fails, no stock deducted (was reversed before)
-      await sendToBaker(order.id);
-      setSent(true);
+      const signature = [...selectedIndexes].sort((a, b) => a - b).join(',');
+      if (!sendRequest.current || sendRequest.current.signature !== signature) {
+        sendRequest.current = { signature, id: crypto.randomUUID() };
+      }
+      const result = await sendToBaker(order.id, selectedIndexes, sendRequest.current.id);
+      setSent(result.remainingCount === 0);
 
-      // Deduct materials after confirmed send — pass unit (BUG-FIX) and audit ctx
+      // Deduct only the selected lines after the atomic Baker send succeeds.
       if (allMats.length > 0) {
         const ctx: DeductionContext = {
           orderId:     order.id,
@@ -401,8 +444,13 @@ function OrderCard({ order }: { order: BakeryOrder }) {
         );
         if (warn) console.warn('Stock deduction note:', warn);
       }
-    } catch {
-      setSendError('Failed to send — please try again.');
+      setSelectedIndexes([]);
+      sendRequest.current = null;
+      setSendNotice(result.remainingCount > 0
+        ? `${selectedEntries.length} selected item${selectedEntries.length === 1 ? '' : 's'} sent to Baker. ${result.remainingCount} item${result.remainingCount === 1 ? '' : 's'} remain in this Store order.`
+        : 'All selected items were sent to Baker.');
+    } catch (sendFailure) {
+      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to send selected items. Please try again.');
     } finally {
       setSending(false);
     }
@@ -412,6 +460,19 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     VRSNB: 'bg-blue-50 text-blue-700 border-blue-200',
     SNB:   'bg-amber-50 text-amber-700 border-amber-200',
     Hosur: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  };
+
+  const toggleIndex = (index: number) => {
+    setSendError(null);
+    setSendNotice(null);
+    setSelectedIndexes(current => current.includes(index) ? current.filter(value => value !== index) : [...current, index]);
+  };
+
+  const toggleCategory = (indexes: number[]) => {
+    const allSelected = indexes.every(index => selectedIndexes.includes(index));
+    setSelectedIndexes(current => allSelected
+      ? current.filter(index => !indexes.includes(index))
+      : Array.from(new Set([...current, ...indexes])));
   };
 
   return (
@@ -458,12 +519,39 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
       {expanded && (
         <div className="border-t border-border/50 px-4 pb-4 pt-3 space-y-2.5">
-          {/* Per-item rows */}
-          {order.items.map((item, i) => (
-            <ItemRow key={i} order={order} item={item} />
-          ))}
+          {accepted && !sent && <p className="rounded-xl bg-primary/5 px-3 py-2 text-xs font-semibold text-primary">Select the items to send now. Unselected items will remain in this Store order.</p>}
+
+          {categorizedItems.map(group => {
+            const groupIndexes = group.items.map(entry => entry.index);
+            const allGroupSelected = groupIndexes.every(index => selectedIndexes.includes(index));
+            return <section key={group.category} className="space-y-2 rounded-xl border border-border bg-muted/20 p-2.5">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <div className="flex items-center gap-2"><span className="text-xs font-black text-foreground">{group.category}</span><span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{group.items.length}</span></div>
+                {accepted && !sent && <button type="button" onClick={() => toggleCategory(groupIndexes)} className="text-[10px] font-bold text-primary hover:underline">{allGroupSelected ? 'Clear category' : 'Select category'}</button>}
+              </div>
+              {group.items.map(({ item, index, category }) => <ItemRow
+                key={`${item.itemId}-${index}`}
+                order={order}
+                item={item}
+                category={category}
+                selectionEnabled={accepted && !sent}
+                selected={selectedIndexes.includes(index)}
+                onToggle={() => toggleIndex(index)}
+              />)}
+            </section>;
+          })}
+
+          {accepted && !sent && selectedEntries.length > 0 && <div className="overflow-hidden rounded-xl border border-primary/20 bg-card">
+            <div className="flex items-center justify-between bg-primary/5 px-3 py-2"><p className="text-xs font-black text-primary">Selected for Baker</p><span className="text-[10px] font-bold text-primary">{selectedEntries.length} item{selectedEntries.length === 1 ? '' : 's'}</span></div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[420px] text-xs">
+              <thead className="bg-muted/40 text-left text-[9px] uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Category</th><th className="px-3 py-2 text-right">Quantity</th><th className="w-10"></th></tr></thead>
+              <tbody>{selectedEntries.map(({ item, index }) => <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{storeOrderCategory(item, bakeryItems)}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>)}</tbody>
+            </table></div>
+          </div>}
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
+          {sendNotice && <p className="rounded-xl bg-emerald-50 px-3 py-2 text-center text-xs font-bold text-emerald-700">{sendNotice}</p>}
+          {anyOut && selectedEntries.length > 0 && <p className="rounded-xl bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700">One or more selected recipes need more stock. Review the ingredient warnings before sending.</p>}
 
           {!accepted ? (
             <button onClick={handleAccept} disabled={accepting}
@@ -473,7 +561,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 : <><CheckCircle2 className="size-4" /> Accept Order</>}
             </button>
           ) : (
-            <button onClick={handleSendToBaker} disabled={sending || sent}
+            <button onClick={handleSendToBaker} disabled={sending || sent || selectedEntries.length === 0}
               className={cn(
                 'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
                 sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
@@ -482,7 +570,9 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 ? <Loader2 className="size-4 animate-spin" />
                 : sent
                 ? <><CheckCircle2 className="size-4" /> Sent to Baker</>
-                : <><ArrowRight className="size-4" /> Send to Baker</>}
+                : selectedEntries.length === 0
+                ? <>Select Items to Send</>
+                : <><ArrowRight className="size-4" /> Send {selectedEntries.length} Selected Item{selectedEntries.length === 1 ? '' : 's'} to Baker</>}
             </button>
           )}
         </div>
@@ -1008,14 +1098,17 @@ function StoreInventoryTab() {
 function OrdersTab() {
   const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
+  const { loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const [initialLoading, setInitialLoading] = useState(true);
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
+    void loadAllItems();
     const unsubOrders = subscribeOrders();
     const unsubStock  = subscribeStock();
-    return () => { unsubOrders(); unsubStock(); };
-  }, [fetchOrders, loadStock, subscribeOrders, subscribeStock]);
+    const unsubBakeryItems = subscribeBakeryItems();
+    return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
+  }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
   const pending = orders.filter(o => o.status === 'pending' || o.status === 'processing');
 

@@ -13,7 +13,7 @@ interface BakeryState {
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
-  sendToBaker: (orderId: string) => Promise<void>;
+  sendToBaker: (orderId: string, selectedIndexes: number[], requestId: string) => Promise<{ sentOrderNumber: number; remainingCount: number }>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
   addStagedItem: (orderId: string, item: PreparedItem) => Promise<void>;
   removeStagedItem: (orderId: string, itemId: string) => Promise<void>;
@@ -39,6 +39,8 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
     targetBranch: d.target_branch as Branch | undefined,
+    storeSourceOrderNumber: d.store_source_order_number as number | undefined,
+    storeSendRequestId: d.store_send_request_id as string | undefined,
     notes: d.notes as string | undefined, // U-14 FIX
   };
 }
@@ -122,14 +124,21 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }));
   },
 
-  sendToBaker: async (orderId) => {
+  sendToBaker: async (orderId, selectedIndexes, requestId) => {
     const order = get().orders.find(o => o.id === orderId);
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update({ status: 'baking' })
-      .eq('id', orderId);
+    if (!order) throw new Error('The Store order is no longer available.');
+    const user = (await import('@/stores/authStore')).useAuthStore.getState().currentUser;
+    const actor = user?.displayName || user?.username || 'Store';
+    const { data, error } = await supabase.rpc('send_selected_bakery_items_to_baker', {
+      p_order_id: orderId,
+      p_selected_indexes: selectedIndexes,
+      p_request_id: requestId,
+      p_actor: actor,
+    });
     if (error) throw error;
-    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'baking' } : o) }));
+    const result = data as { sentOrderNumber?: number; remainingCount?: number } | null;
+    if (!result?.sentOrderNumber) throw new Error('Baker batch was not returned.');
+    await get().fetchOrders(true);
     if (order?.notes) {
       const { useAuthStore } = await import('@/stores/authStore');
       const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
@@ -152,6 +161,18 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         raisedBy: acceptedBy,
       });
     }
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      void useActivityLogStore.getState().log({
+        staffId: user.id,
+        staffName: user.displayName,
+        role: user.role,
+        action: 'Sent Selected Items to Baker',
+        detail: `Order #${order.orderNumber}: ${selectedIndexes.length} item(s) sent as Baker order #${result.sentOrderNumber}; ${Number(result.remainingCount || 0)} item(s) remain at Store`,
+        branch: order.targetBranch,
+      });
+    }
+    return { sentOrderNumber: result.sentOrderNumber, remainingCount: Number(result.remainingCount || 0) };
   },
 
   submitPrepared: async (orderId, preparedItems) => {
