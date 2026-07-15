@@ -148,8 +148,10 @@ function useOperationalCatalog(branch: Branch) {
   return items[catalogBranch].filter((item) => item.active);
 }
 function stockQty(stock: StockItem[], item: string, barcode?: number) {
-  return Number((barcode != null ? stock.find((row) => row.itemBarcode === barcode) : undefined)?.quantity
-    ?? stock.find((row) => row.itemName.toLowerCase() === item.toLowerCase())?.quantity ?? 0);
+  const normalizedItem = item.trim().toLowerCase();
+  const exactItem = stock.find((row) => row.itemName.trim().toLowerCase() === normalizedItem);
+  const barcodeItem = barcode != null ? stock.find((row) => row.itemBarcode === barcode) : undefined;
+  return Math.max(Number(exactItem?.quantity || 0), Number(barcodeItem?.quantity || 0));
 }
 function today(d: string) { return new Date(d).toDateString() === new Date().toDateString(); }
 function month(d: string) { const x = new Date(d), n = new Date(); return x.getFullYear() === n.getFullYear() && x.getMonth() === n.getMonth(); }
@@ -443,7 +445,7 @@ export function CreditSalesTab({ branch }: ModuleProps) {
 }
 export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }: ModuleProps) {
   const { currentUser } = useAuthStore();
-  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, counterOpenings } = useBranchOpsStore();
+  const { advanceCakeOrders, salespeople, addAdvanceCakeOrder, updateAdvanceStatus, markAdvanceSentToStore, addCashMovement, addAdvanceFinalBill, recordAdvanceRefund, counterOpenings } = useBranchOpsStore();
   const submitBakeryOrder = useBakeryStore((s) => s.submitOrder);
   const { manualUpdateStock, fetchBranchData } = useBranchStore();
   const isVRSNB = branch === 'VRSNB';
@@ -767,7 +769,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
   const finalInvoice = async (
     o: CakeAdvanceOrder,
     payMode?: 'cash' | 'upi' | 'card',
-    closingOverrides?: { quantity: number; discount: number },
+    closingOverrides?: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card' },
   ): Promise<string | null> => {
     const fail = (message: string) => {
       setError(message);
@@ -782,6 +784,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     let orderTotal = o.orderValue;
     let balanceAmount = o.balanceAmount;
     const discountAmount = closingOverrides?.discount || 0;
+    const additionalCharges = closingOverrides?.additionalCharges || 0;
     // Only single-line orders (the common case for cake orders) support an
     // edited quantity, since the actual cake weight/count is often a bit off
     // from the original estimate. The bill value and balance recompute from
@@ -791,19 +794,14 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       const rate = closingQty.rate || (orderLines[0].price > 0 ? orderLines[0].price : orderLines[0].quantity > 0 ? orderLines[0].lineTotal / orderLines[0].quantity : orderLines[0].price);
       const newLineTotal = Math.round((closingOverrides.quantity * rate - discountAmount) * 100) / 100;
       orderLines = [{ ...orderLines[0], quantity: closingOverrides.quantity, discount: discountAmount, lineTotal: newLineTotal }];
-      orderTotal = newLineTotal;
-      balanceAmount = Math.round((newLineTotal - (o.advanceAmount || 0)) * 100) / 100;
-    } else if (closingOverrides && discountAmount > 0) {
-      orderTotal = Math.round((o.orderValue - discountAmount) * 100) / 100;
-      balanceAmount = Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100;
+      orderTotal = Math.round((newLineTotal + additionalCharges) * 100) / 100;
+    } else if (closingOverrides) {
+      orderTotal = Math.round((o.orderValue - discountAmount + additionalCharges) * 100) / 100;
     }
+    balanceAmount = Math.max(0, Math.round((orderTotal - (o.advanceAmount || 0)) * 100) / 100);
+    const refundAmount = Math.max(0, Math.round(((o.advanceAmount || 0) - orderTotal) * 100) / 100);
+    if (refundAmount > 0 && !closingOverrides?.refundMode) return fail('Select how the customer refund will be paid.');
     const orderKind = o.orderType || (o.designNotes?.includes('Existing branch stock advance order') ? 'store' : 'cake');
-    const legacyCakeBarcode = orderKind === 'cake' ? findCakeType(o.cakeTypeId || '')?.catalogBarcode : undefined;
-    if (legacyCakeBarcode != null) {
-      orderLines = orderLines.map((line, index) => index === 0 && line.barcode == null
-        ? { ...line, barcode: legacyCakeBarcode }
-        : line);
-    }
     const stockAlreadyReserved = o.designNotes?.includes('[Stock Reserved]') === true;
     if (orderKind === 'cake' && !stockAlreadyReserved) {
       const missingLine = orderLines.find((line) => stockQty(branchStock, line.itemName, line.barcode) < line.quantity);
@@ -812,8 +810,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
         return fail(`Advance cake order ${o.orderNo} cannot be closed. ${missingLine.itemName} requires ${missingLine.quantity} ${missingLine.unit}, but only ${available} is in stock. Confirm the dispatched cake in Stock / Incoming, then try again.`);
       }
     }
-    if (balanceAmount < 0) return fail('Final balance cannot be negative. Reduce the discount or increase the quantity.');
-    const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order', {
+    const { data: finalData, error: finalError } = await supabase.rpc('finalize_branch_advance_order_v2', {
       p_branch: branch,
       p_order_no: o.orderNo,
       p_items: orderLines,
@@ -823,34 +820,56 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       p_salesperson: o.salesperson,
       p_biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
       p_deduct_stock: orderKind !== 'custom' && !stockAlreadyReserved,
+      p_discount_amount: discountAmount,
+      p_additional_charges: additionalCharges,
+      p_refund_amount: refundAmount,
+      p_refund_mode: closingOverrides?.refundMode || null,
     });
     if (finalError) {
-      return fail(/finalize_branch_advance_order|could not find the function|schema cache/i.test(finalError.message)
-        ? 'Advance finalization RPC is not installed. Run 20260621_finalize_branch_advance_rpc.sql before completing advance orders.'
+      return fail(/finalize_branch_advance_order_v2|could not find the function|schema cache/i.test(finalError.message)
+        ? 'The advance refund and stock fix is not installed. Apply migration 20260715120000_fix_advance_final_stock_refunds.sql.'
         : `Advance order was not finalized: ${finalError.message}`);
     }
-    const finalResult = finalData as { billNo?: string; invoiceNo?: number } | null;
+    const finalResult = finalData as { billNo?: string; invoiceNo?: number; refundNo?: string } | null;
     if (!finalResult?.billNo || !finalResult.invoiceNo) return fail('Final invoice was not returned by Supabase.');
     const { billNo, invoiceNo } = finalResult;
     if (orderKind !== 'custom') await fetchBranchData(branch);
     if (balanceAmount > 0 && !isSnbOrder) addCashMovement({ branch, amount: balanceAmount, paymentMode: usedMode, direction: 'in', purpose: 'Advance balance collection', enteredBy: auditActor, referenceNumber: billNo, remarks: `${o.orderNo} ${o.customerName}` });
+    if (refundAmount > 0 && closingOverrides?.refundMode) {
+      const activeCounter = counterOpenings.find((counter) => counter.branch === branch && counter.date === todayIso() && counter.active !== false && (currentUser?.id ? counter.cashierUserId === currentUser.id : counter.cashier === user));
+      recordAdvanceRefund({
+        branch,
+        returnNo: finalResult.refundNo || `${branch}-ADV-REF-${invoiceNo}`,
+        originalBillNo: billNo,
+        originalPaymentMode: closingOverrides.refundMode,
+        items: orderLines,
+        total: refundAmount,
+        returnedBy: user,
+        reason: `Advance overpayment refund for ${o.orderNo}`,
+        returnPayMode: closingOverrides.refundMode,
+        refundAmount,
+        cashierUserId: currentUser?.id,
+        counterSessionId: activeCounter?.counterSessionId,
+      });
+    }
     // FIX (MD Bug #12): record the bill with a split breakdown reflecting how the
     // order was actually paid — advance portion tagged with its own payment method,
     // balance portion tagged with usedMode. Previously the entire order value was
     // tagged with usedMode only, overstating that method and understating the advance method
     // in cash/upi/card KPI breakdowns on Admin dashboards.
-    const advancePortion = o.advanceAmount || 0;
-    const balancePortion = orderTotal - advancePortion;
+    const advancePortion = Math.min(o.advanceAmount || 0, orderTotal);
+    const balancePortion = Math.max(0, orderTotal - advancePortion);
     const finalBillPaymentMode = balancePortion > 0 ? usedMode : (o.paymentMode as typeof usedMode);
     const finalBillSplit = advancePortion > 0 && balancePortion > 0 ? {
       [o.paymentMode]: advancePortion,
       [usedMode]: balancePortion,
     } : undefined;
+    const billItems = additionalCharges > 0 ? [...orderLines, { itemName: 'Additional Charges', quantity: 1, unit: 'pcs' as const, price: additionalCharges, tax: 0, discount: 0, lineTotal: additionalCharges }] : orderLines;
     const finalBill = addAdvanceFinalBill({
       branch,
       billNo,
       invoiceNo,
-      items: orderLines,
+      items: billItems,
       subtotal: orderTotal + discountAmount,
       discount: discountAmount,
       tax: 0,
@@ -861,6 +880,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       split: finalBillSplit,
       salesperson: o.salesperson,
       biller: isSnbOrder ? auditActor : (currentUser?.displayName || 'Staff'),
+      additionalCharges,
+      refundAmount: refundAmount || undefined,
+      refundMode: closingOverrides?.refundMode,
     });
     // FIX: previously only status/balance were saved back onto the order record,
     // so an edited closing quantity (and the resulting recalculated value) never
@@ -1077,20 +1099,25 @@ function ClosingConfirmModal({
   order: CakeAdvanceOrder;
   payMode: 'cash' | 'upi' | 'card';
   onCancel: () => void;
-  onConfirm: (overrides: { quantity: number; discount: number }) => Promise<string | null | void>;
+  onConfirm: (overrides: { quantity: number; discount: number; additionalCharges: number; refundMode?: 'cash' | 'upi' | 'card' }) => Promise<string | null | void>;
 }) {
   const isSingleLine = (order.items?.length ?? 1) <= 1;
   const closingQty = resolveAdvanceClosingQuantities(order);
   const { placedQty, receivedQty: receivedQtyDefault, rate } = closingQty;
   const [quantity, setQuantity] = useState(String(receivedQtyDefault));
   const [discount, setDiscount] = useState('0');
+  const [additionalCharges, setAdditionalCharges] = useState('0');
+  const [refundMode, setRefundMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [confirming, setConfirming] = useState(false);
   const [modalError, setModalError] = useState('');
 
   const qtyNum = isSingleLine ? Math.max(0, Number(quantity) || 0) : receivedQtyDefault;
   const discountNum = Math.max(0, Number(discount) || 0);
+  const additionalChargesNum = Math.max(0, Number(additionalCharges) || 0);
   const totalBillValue = isSingleLine ? Math.round(qtyNum * rate * 100) / 100 : order.orderValue;
-  const finalBalance = Math.round((totalBillValue - discountNum - (order.advanceAmount || 0)) * 100) / 100;
+  const finalTotal = Math.max(0, Math.round((totalBillValue + additionalChargesNum - discountNum) * 100) / 100);
+  const finalBalance = Math.max(0, Math.round((finalTotal - (order.advanceAmount || 0)) * 100) / 100);
+  const refundDue = Math.max(0, Math.round(((order.advanceAmount || 0) - finalTotal) * 100) / 100);
 
   useEffect(() => {
     setQuantity(String(receivedQtyDefault));
@@ -1100,7 +1127,7 @@ function ClosingConfirmModal({
     setModalError('');
     setConfirming(true);
     try {
-      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum });
+      const errorMessage = await onConfirm({ quantity: qtyNum, discount: discountNum, additionalCharges: additionalChargesNum, refundMode: refundDue > 0 ? refundMode : undefined });
       if (errorMessage) setModalError(errorMessage);
     } catch (confirmError) {
       setModalError(confirmError instanceof Error ? confirmError.message : 'Advance order could not be closed.');
@@ -1111,7 +1138,7 @@ function ClosingConfirmModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl">
         <h3 className="text-lg font-black text-slate-950">Confirm Order Closing</h3>
         <p className="mt-0.5 text-sm font-bold text-slate-500">{order.orderNo} · {order.customerName}</p>
 
@@ -1131,14 +1158,24 @@ function ClosingConfirmModal({
           <Field label="Discount Amount">
             <Input type="number" min="0" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} />
           </Field>
+          <Field label="Additional Charges">
+            <Input type="number" min="0" step="0.01" value={additionalCharges} onChange={(e) => setAdditionalCharges(e.target.value)} />
+          </Field>
+          {refundDue > 0 && <Field label="Refund Method">
+            <Select value={refundMode} onChange={(e) => setRefundMode(e.target.value as typeof refundMode)}>
+              <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
+            </Select>
+          </Field>}
 
           <div className="space-y-1.5 rounded-2xl bg-slate-50 p-3 text-sm font-bold">
-            <div className="flex justify-between"><span className="text-slate-500">Total Bill Value</span><span className="text-slate-900">{money(totalBillValue)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Cake Value</span><span className="text-slate-900">{money(totalBillValue)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Additional Charges</span><span className="text-slate-900">+ {money(additionalChargesNum)}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Discount</span><span className="text-red-600">- {money(discountNum)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Final Bill Value</span><span className="text-slate-900">{money(finalTotal)}</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Less: Advance Received</span><span className="text-red-600">- {money(order.advanceAmount || 0)}</span></div>
-            <div className="mt-1 flex justify-between border-t border-slate-200 pt-1.5 text-base"><span className="font-black text-slate-950">Final Balance Payable</span><span className={cn('font-black', finalBalance < 0 ? 'text-red-600' : 'text-emerald-700')}>{money(finalBalance)}</span></div>
+            <div className="mt-1 flex justify-between border-t border-slate-200 pt-1.5 text-base"><span className="font-black text-slate-950">{refundDue > 0 ? 'Refund Due' : 'Final Balance Payable'}</span><span className="font-black text-emerald-700">{money(refundDue > 0 ? refundDue : finalBalance)}</span></div>
           </div>
-          {finalBalance < 0 && <p className="text-xs font-bold text-red-600">Final balance can't be negative — reduce the discount or increase the quantity.</p>}
+          {refundDue > 0 && <p className="text-xs font-bold text-emerald-700">Refund {money(refundDue)} to the customer by {refundMode.toUpperCase()}.</p>}
           {modalError && <p className="rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{modalError}</p>}
         </div>
 
@@ -1146,7 +1183,7 @@ function ClosingConfirmModal({
           <SoftButton type="button" onClick={onCancel} disabled={confirming} className="flex-1">Cancel</SoftButton>
           <PrimaryButton
             type="button"
-            disabled={confirming || finalBalance < 0 || qtyNum <= 0}
+            disabled={confirming || finalTotal <= 0 || qtyNum <= 0}
             onClick={() => void handleConfirm()}
             className="flex-1"
           >
