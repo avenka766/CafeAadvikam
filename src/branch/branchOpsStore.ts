@@ -70,6 +70,9 @@ export interface BranchBillRecord {
   creditCustomerMobile?: string;
   creditDueDate?: string;
   creditRemarks?: string;
+  additionalCharges?: number;
+  refundAmount?: number;
+  refundMode?: "cash" | "upi" | "card";
 }
 
 export interface BranchCreditPayment {
@@ -631,6 +634,9 @@ interface BranchOpsState {
   addReturn: (
     ret: Omit<ReturnRecord, "id" | "returnNo" | "createdAt">,
   ) => Promise<ReturnRecord>;
+  recordAdvanceRefund: (
+    ret: Omit<ReturnRecord, "id" | "createdAt">,
+  ) => ReturnRecord;
   addPurchase: (
     purchase: Omit<
       PurchaseRecord,
@@ -2112,6 +2118,31 @@ export const useBranchOpsStore = create<BranchOpsState>()(
               : s.auditLogs,
           };
         }),
+      recordAdvanceRefund: (ret) => {
+        const createdAt = new Date().toISOString();
+        const newReturn: ReturnRecord = { ...ret, id: uid("return"), createdAt };
+        const refundMode = (ret.returnPayMode || ret.originalPaymentMode || "cash") as PayMode;
+        const refundAmount = Number(ret.refundAmount ?? ret.total);
+        set((s) => ({
+          returns: [newReturn, ...s.returns],
+          cashMovements: refundAmount > 0 ? [{
+            id: uid("cash"),
+            branch: ret.branch,
+            dateTime: createdAt,
+            amount: refundAmount,
+            paymentMode: refundMode,
+            direction: "out",
+            purpose: "Advance order refund",
+            enteredBy: ret.returnedBy,
+            referenceNumber: ret.returnNo,
+            remarks: `${ret.originalBillNo} ${ret.reason}`,
+            cashierUserId: ret.cashierUserId,
+            counterSessionId: ret.counterSessionId,
+          }, ...s.cashMovements] : s.cashMovements,
+          auditLogs: [audit(ret.branch, ret.returnedBy, "Advance Refund", ret.originalBillNo, `${ret.returnNo} ${refundAmount}`), ...s.auditLogs],
+        }));
+        return newReturn;
+      },
       addReturn: async (ret) => {
         const returnNo = `${ret.branch}-RET-${String(seq(`return-${ret.branch}`)).padStart(4, "0")}`;
         const requestedRefundMode = ret.originalPaymentMode === "credit" || ret.originalPaymentMode === "credit_adjustment"
