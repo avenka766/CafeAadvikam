@@ -3013,6 +3013,14 @@ export function nextBranchAdvanceOrderNumber(branch: Branch) {
   return `${branch}-ADV-${String(seq(`adv-${branch}`, 500)).padStart(3, "0")}`;
 }
 
+export async function nextBranchAdvanceOrderNumberAtomic(branch: Branch) {
+  const { data, error } = await supabase.rpc('get_next_advance_order_number', { p_branch: branch });
+  if (error || data == null) {
+    throw new Error(error?.message || 'Unable to allocate an advance order number.');
+  }
+  return String(data);
+}
+
 export async function nextBranchInvoiceAtomic(branch: Branch) {
   const { data, error } = await supabase.rpc("get_next_bill_number", { p_branch: branch });
   if (!error && data != null) {
