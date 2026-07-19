@@ -4,7 +4,6 @@ import { Cake, Loader2, Package, Send, AlertTriangle, RefreshCcw, Receipt, Print
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
-import { useBranchOpsStore } from '@/branch/branchOpsStore';
 import { ensureCakeDispatchIncoming } from '@/branch/cakeDispatchSync';
 import { printHtml } from '@/branch/printUtils';
 
@@ -113,12 +112,9 @@ export default function PackingCakeOrdersTab() {
       }
 
       // Keep cakes on the same confirm-into-stock path as regular dispatches.
-      const { dispatchedQty } = await ensureCakeDispatchIncoming(order, actor);
+      await ensureCakeDispatchIncoming(order, actor);
       const { error: dispatchError } = await supabase.rpc('update_cake_master_order_status', { p_id: order.id, p_new_status: 'Dispatched', p_actor: actor });
       if (dispatchError) throw new Error(dispatchError.message);
-
-      useBranchOpsStore.getState().syncAdvanceCakeDispatch(order.order_no, dispatchedQty, actor);
-      useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(order.order_no, 'dispatched', actor);
       setError('');
       await load();
     } catch (dispatchError) {
