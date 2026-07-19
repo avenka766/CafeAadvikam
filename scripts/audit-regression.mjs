@@ -89,6 +89,7 @@ const advanceNumberCollisionRepairMigration = read('supabase/migrations/20260719
 const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
 const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
+const branchLedger = read('src/hooks/useBranchLedger.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
 const branchStore = read('src/branch/branchStore.ts') ?? '';
@@ -493,6 +494,21 @@ check(
     && branchBusinessModules.includes('.range(from, from + 999)')
     && branchBusinessModules.includes(".from('branch_operation_records')"),
   'Sparse operational history, date-scoped Admin bills/returns, Bill History pages and old-bill return lookup must not regress to a newest-row-only cache.',
+);
+
+check(
+  'SNB reports never substitute stale browser data for live date-scoped results',
+  snbAdminReports.includes('requestIdRef')
+    && snbAdminReports.includes('if (requestId !== requestIdRef.current) return')
+    && snbAdminReports.includes('isValidReportDate')
+    && branchLedger.includes('isValidLedgerDate')
+    && branchLedger.includes('setClosureRows([])')
+    && adminSnb.includes('if (dbReports.loading || dbReports.refreshedAt) return []')
+    && !adminSnb.includes('if (props.dbReports.counterTotals.length)')
+    && !adminSnb.includes('return [...props.salespersonRows]')
+    && adminSnb.includes('const rows = props.dbReports.counterSessions as any[]')
+    && adminSnb.includes('No browser-stored historical data will be substituted'),
+  'Date changes must ignore late responses, reject incomplete ranges, and keep salesperson/cashier reports on database sources even when the correct result is empty.',
 );
 
 check(
