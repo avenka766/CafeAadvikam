@@ -17,7 +17,7 @@ import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
-  money, nextBranchAdvanceOrderNumber, useBranchOpsStore,
+  money, nextBranchAdvanceOrderNumberAtomic, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
@@ -668,7 +668,13 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     const first = sourceLines[0];
     const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
     const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
-    const orderNo = nextBranchAdvanceOrderNumber(branch);
+    let orderNo: string;
+    try {
+      orderNo = await nextBranchAdvanceOrderNumberAtomic(branch);
+    } catch (numberError) {
+      setError(numberError instanceof Error ? numberError.message : 'Unable to allocate an advance order number.');
+      return;
+    }
     let stockReserved = false;
     if (isSnbOrder) {
       const receiverItems = sourceLines.map((line) => ({
