@@ -80,8 +80,12 @@ const branchClosureRpcMigration = read('supabase/migrations/20260701043000_fix_b
 const snbPurchaseRevisionMigration = read('supabase/migrations/20260701073000_snb_synced_invoice_revision_workflow.sql') ?? '';
 const branchCheckoutCacheRefreshMigration = read('supabase/migrations/20260701080000_refresh_branch_checkout_v4_schema_cache.sql') ?? '';
 const advanceFinalRefundMigration = read('supabase/migrations/20260715120000_fix_advance_final_stock_refunds.sql') ?? '';
+const advanceFinalUuidRepairMigration = read('supabase/migrations/20260717220000_fix_advance_final_uuid_lookup.sql') ?? '';
+const paymentAllocationUuidRepairMigration = read('supabase/migrations/20260717223000_fix_payment_allocation_uuid_lookup.sql') ?? '';
 const storePartialBakerSendMigration = read('supabase/migrations/20260716110000_store_category_partial_baker_send.sql') ?? '';
 const packingCakeOrdersTab = read('src/bakery/PackingCakeOrdersTab.tsx') ?? '';
+const cakeDispatchStatusRepairMigration = read('supabase/migrations/20260719090000_fix_cake_dispatch_status_sync.sql') ?? '';
+const advanceNumberCollisionRepairMigration = read('supabase/migrations/20260719093000_fix_advance_order_number_collisions.sql') ?? '';
 const adminNotificationsTab = read('src/bakery/AdminNotificationsTab.tsx') ?? '';
 const notificationStore = read('src/bakery/notificationStore.ts') ?? '';
 const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
@@ -386,6 +390,15 @@ check(
 );
 
 check(
+  'Payment edits resolve UUID cashier context without unsupported aggregates',
+  paymentAllocationUuidRepairMigration.includes('select cashier_user_id, cashier_username, counter_session_id')
+    && paymentAllocationUuidRepairMigration.includes('order by created_at desc nulls last, id desc')
+    && !paymentAllocationUuidRepairMigration.includes('max(cashier_user_id)')
+    && !paymentAllocationUuidRepairMigration.includes('max(counter_session_id)'),
+  'Payment allocation edits must select one deterministic cashier context; max(uuid) does not exist.',
+);
+
+check(
   'Advance orders reserve stock and recognise revenue only on completion',
   branchStore.includes("rpc('create_branch_advance_order_reserved'")
     && branchStore.includes("rpc('complete_branch_advance_order_reserved'")
@@ -408,12 +421,41 @@ check(
 );
 
 check(
+  'Advance finalization resolves UUID links without unsupported aggregates',
+  advanceFinalUuidRepairMigration.includes('select advance_order_id')
+    && advanceFinalUuidRepairMigration.includes('order by created_at asc, id asc')
+    && !advanceFinalUuidRepairMigration.includes('max(advance_order_id)'),
+  'PostgreSQL UUID values must be selected deterministically; max(uuid) does not exist.',
+);
+
+check(
   'Packing cake orders provide a printable verification checklist',
   packingCakeOrdersTab.includes('printPackingChecklist')
     && packingCakeOrdersTab.includes('Print Checklist')
     && packingCakeOrdersTab.includes('message_on_cake')
     && packingCakeOrdersTab.includes('Actual Weight Rechecked'),
   'Packing must be able to print the full cake verification checklist before dispatch.',
+);
+
+check(
+  'Cake dispatch remains authoritative across Packing and Branch dashboards',
+  packingCakeOrdersTab.includes("p_new_status: 'Dispatched'")
+    && !packingCakeOrdersTab.includes('syncAdvanceCakeDispatch')
+    && !packingCakeOrdersTab.includes('updateAdvanceStoreStatusByOrderNo')
+    && cakeDispatchStatusRepairMigration.includes('protect_dispatched_advance_order_status_trigger')
+    && cakeDispatchStatusRepairMigration.includes('sync_cake_dispatch_to_advance_order_trigger')
+    && cakeDispatchStatusRepairMigration.includes("finalization.record_type = 'advance_finalization'"),
+  'Packing must rely on the server dispatch and the database must prevent stale clients from downgrading dispatched orders.',
+);
+
+check(
+  'Advance order numbers are allocated atomically and cannot replace another cake order',
+  branchBusinessModules.includes('await nextBranchAdvanceOrderNumberAtomic(branch)')
+    && branchOpsStore.includes("rpc('get_next_advance_order_number'")
+    && advanceNumberCollisionRepairMigration.includes('branch_advance_number_sequences')
+    && advanceNumberCollisionRepairMigration.includes('branch_advance_operation_order_no_unique')
+    && advanceNumberCollisionRepairMigration.includes('prevent_cake_master_order_reassignment_trigger'),
+  'Advance numbers must come from a database sequence, and Cake Master must reject cross-order number reuse.',
 );
 
 check(
