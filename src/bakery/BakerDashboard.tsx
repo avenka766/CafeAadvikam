@@ -1191,7 +1191,7 @@ const BAKER_TABS: BakerDashboardTab[] = ['orders', 'completed', 'closure'];
 
 export default function BakerDashboard() {
   const [searchParams] = useSearchParams();
-  const { orders: storedOrders, fetchOrders } = useBakeryStore();
+  const { orders: storedOrders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const advanceCakeOrders = useBranchOpsStore((state) => state.advanceCakeOrders);
   const orders = useMemo(() => storedOrders.map((order) => {
     if (order.items.some((item) => item.attachmentDataUrl || item.attachmentName)) return order;
@@ -1208,12 +1208,15 @@ export default function BakerDashboard() {
     };
   }), [storedOrders, advanceCakeOrders]);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
-    return () => clearInterval(id);
-  }, [fetchOrders]);
+    const unsubscribe = subscribeOrders();
+    // Realtime is the primary update path; polling only recovers a missed event.
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 60_000);
+    return () => { unsubscribe(); clearInterval(id); };
+  }, [fetchOrders, subscribeOrders]);
 
   const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
   const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
@@ -1221,6 +1224,12 @@ export default function BakerDashboard() {
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
   const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
+
+  const refreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await fetchOrders(true); } finally { setRefreshing(false); }
+  };
 
   return (
     <div className="dashboard-screen min-h-[100dvh] bg-transparent pb-24">
@@ -1233,6 +1242,21 @@ export default function BakerDashboard() {
                 <CompletedTab />
               ) : (
                 <div className="space-y-4 pb-8">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-xl font-bold text-foreground">Baking Orders</h2>
+                      <p className="text-xs font-body text-muted-foreground">Live orders sent by Store</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshNow()}
+                      disabled={refreshing}
+                      className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-border bg-card px-3.5 text-xs font-body font-bold text-foreground transition-colors hover:bg-muted/40 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+                      Refresh
+                    </button>
+                  </div>
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
                     {[
                       { label: 'To Bake', value: bakingOrders.length, color: bakingOrders.length > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: bakingOrders.length > 0 ? 'bg-orange-50 border-orange-200' : 'bg-card border-border' },

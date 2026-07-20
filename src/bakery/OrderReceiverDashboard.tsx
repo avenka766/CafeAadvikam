@@ -2343,7 +2343,7 @@ function tabFromParams(value: string | null): TabKey {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function OrderReceiverDashboard() {
-  const { fetchOrders, orders, loading } = useBakeryStore();
+  const { fetchOrders, orders, loading, subscribe: subscribeOrders } = useBakeryStore();
   const { currentUser } = useAuthStore();
   const {
     stock,
@@ -2381,11 +2381,12 @@ export default function OrderReceiverDashboard() {
   }, [fetchOrders]);
   useEffect(() => {
     stableFetch();
+    const unsubscribe = subscribeOrders();
     const id = setInterval(() => {
       if (!document.hidden) fetchOrders(true);
-    }, 15_000);
-    return () => clearInterval(id);
-  }, [stableFetch, fetchOrders]);
+    }, 60_000);
+    return () => { unsubscribe(); clearInterval(id); };
+  }, [stableFetch, fetchOrders, subscribeOrders]);
   useEffect(() => {
     if (refreshKey > 0) stableFetch();
   }, [refreshKey, stableFetch]);

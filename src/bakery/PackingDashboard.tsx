@@ -765,7 +765,7 @@ function printDailyClosure(payload: {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function PackingDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { orders, fetchOrders } = useBakeryStore();
+  const { orders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const [initialLoading, setInitialLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
   const [isExporting, setIsExporting] = useState(false);
@@ -774,9 +774,11 @@ export default function PackingDashboard() {
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
-    return () => clearInterval(id);
-  }, [fetchOrders]);
+    const unsubscribe = subscribeOrders();
+    // Realtime is the primary update path; polling only recovers a missed event.
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 60_000);
+    return () => { unsubscribe(); clearInterval(id); };
+  }, [fetchOrders, subscribeOrders]);
 
   const requestedTab = searchParams.get('tab') as ActiveTab | null;
   const activeTab: ActiveTab = requestedTab && PACKING_TABS.includes(requestedTab) ? requestedTab : 'orders';

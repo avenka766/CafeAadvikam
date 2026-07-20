@@ -841,7 +841,7 @@ function InlineDeductionsView() {
 
   useEffect(() => {
     void load();
-    const id = window.setInterval(() => { if (!document.hidden) void load(); }, 30_000);
+    const id = window.setInterval(() => { if (!document.hidden) void load(); }, 2 * 60_000);
     return () => window.clearInterval(id);
   }, [load]);
 
@@ -1100,6 +1100,7 @@ function OrdersTab() {
   const { load: loadStock, subscribe: subscribeStock } = useStoreStockStore();
   const { loadAllItems, subscribe: subscribeBakeryItems } = useBakeryItemsStore();
   const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
     loadStock();
@@ -1111,6 +1112,12 @@ function OrdersTab() {
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
   const pending = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+
+  const refreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await fetchOrders(true); } finally { setRefreshing(false); }
+  };
 
   const downloadExcel = () => {
     const rows: string[][] = [
@@ -1195,6 +1202,14 @@ function OrdersTab() {
         <p className="text-xs font-body font-bold text-muted-foreground uppercase flex-1">
           {pending.length} Pending Order{pending.length !== 1 ? 's' : ''}
         </p>
+        <button
+          type="button"
+          onClick={() => void refreshNow()}
+          disabled={refreshing}
+          className="h-8 px-3 rounded-xl border border-border bg-card text-xs font-body font-semibold flex items-center gap-1.5 disabled:cursor-wait disabled:opacity-60 hover:bg-muted transition-colors active:scale-95"
+        >
+          <RefreshCw className={cn('size-3.5 text-primary', refreshing && 'animate-spin')} /> Refresh
+        </button>
         <button
           onClick={downloadExcel}
           disabled={pending.length === 0}

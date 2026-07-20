@@ -322,7 +322,7 @@ export default function CakeMasterDashboard() {
           </h2>
           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{visibleOrders.length}</span>
         </div>
-        <button type="button" onClick={() => void load()} className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-black text-slate-600">
+        <button type="button" onClick={() => void load()} disabled={loading} className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-black text-slate-600 disabled:cursor-wait disabled:opacity-60">
           <RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh
         </button>
       </div>

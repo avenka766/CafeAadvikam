@@ -133,7 +133,7 @@ export default function PackingCakeOrdersTab() {
           <h3 className="text-sm font-black text-foreground">Cake Orders Ready for Dispatch</h3>
           <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-black text-muted-foreground">{orders.length}</span>
         </div>
-        <button type="button" onClick={() => void load()} className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground">
+        <button type="button" onClick={() => void load()} disabled={loading} className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-black text-muted-foreground disabled:cursor-wait disabled:opacity-60">
           <RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh
         </button>
       </div>
