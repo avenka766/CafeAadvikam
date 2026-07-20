@@ -6,6 +6,7 @@ export type CakeDispatchSource = {
   id: string;
   branch: Branch;
   order_no: string;
+  source_order_id?: string | null;
   cake_kg: string | null;
   prepared_quantity: number | null;
   flavor: string | null;
@@ -53,13 +54,17 @@ export async function ensureCakeDispatchIncoming(order: CakeDispatchSource, acto
     throw new Error('Cake dispatch requires an order number and a prepared quantity greater than zero.');
   }
 
+  if (!order.source_order_id?.trim()) {
+    throw new Error(`Cake order ${order.order_no} is missing its source order ID and cannot be dispatched safely.`);
+  }
+
   const { data: operationRow, error: operationError } = await supabase
     .from('branch_operation_records')
     .select('record_id,payload')
     .eq('branch', order.branch)
     .eq('record_type', 'advance_order')
+    .eq('record_id', order.source_order_id)
     .eq('record_no', order.order_no)
-    .limit(1)
     .maybeSingle();
 
   if (operationError) throw new Error(`Advance order lookup failed: ${operationError.message}`);

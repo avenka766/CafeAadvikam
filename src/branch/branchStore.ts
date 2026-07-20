@@ -772,7 +772,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: dispatchedCakeOrders, error: cakeDispatchError } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
+      .select('id,branch,order_no,source_order_id,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
       .eq('branch', branch)
       .eq('status', 'Dispatched')
       .gte('created_at', sixMonthsAgo.toISOString());
