@@ -233,7 +233,7 @@ export default function BranchDashboard({ branch }: Props) {
   const creditDue = visibleCreditSales.filter((c) => c.status !== 'settled').reduce((s, c) => s + c.creditAmount, 0);
   const todayIso = businessDate();
   const todayLegacyDeliveries = branchAdvance.filter((o) => o.status === 'pending' && o.deliveryDate === todayIso);
-  const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && o.status !== 'Paid In Full' && o.deliveryDate === todayIso);
+  const todayCakeDeliveries = advanceCakeOrders.filter((o) => o.branch === branch && !['Paid In Full', 'Cancelled'].includes(o.status) && o.deliveryDate === todayIso);
   const todayDeliveryCount = todayLegacyDeliveries.length + todayCakeDeliveries.length;
 
   useEffect(() => {
@@ -359,29 +359,29 @@ export default function BranchDashboard({ branch }: Props) {
         </main>
       </div>
       {showDeliveryAlert && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="w-full max-w-md rounded-[2rem] bg-white p-8 shadow-2xl">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/60 p-2 sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white p-4 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:p-5">
             <div className="text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-red-100">
-                <Bell className="size-8 animate-bounce text-red-600" />
+              <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-red-100">
+                <Bell className="size-5 animate-bounce text-red-600" />
               </div>
-              <h2 className="mt-4 text-2xl font-black text-slate-950">
+              <h2 className="mt-2 text-lg font-black text-slate-950">
                 {todayDeliveryCount} Delivery{todayDeliveryCount > 1 ? 's' : ''} Due Today
               </h2>
               <p className="mt-2 text-sm font-bold text-slate-500">
                 {BRANCH_LABELS[branch]} has advance orders scheduled for delivery today.
               </p>
-              <div className="mt-4 space-y-2">
+              <div className="mt-3 max-h-[45dvh] space-y-1.5 overflow-y-auto pr-1">
                 {[...todayLegacyDeliveries, ...todayCakeDeliveries].map((o: any) => (
-                  <div key={o.id} className="rounded-2xl bg-amber-50 px-4 py-3 text-left text-sm font-bold">
+                  <div key={o.id} className="rounded-xl bg-amber-50 px-3 py-2 text-left text-xs font-bold">
                     {o.customerName} - {o.orderNo || o.id}
                   </div>
                 ))}
               </div>
             </div>
-            <div className="mt-6 grid grid-cols-2 gap-3">
-              <button onClick={() => { setShowDeliveryAlert(false); openTab('alerts'); }} className="rounded-2xl bg-slate-950 py-3 font-black text-white">View Alerts</button>
-              <button onClick={() => setShowDeliveryAlert(false)} className="rounded-2xl bg-slate-100 py-3 font-black text-slate-700">Dismiss</button>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button onClick={() => { setShowDeliveryAlert(false); openTab('alerts'); }} className="rounded-xl bg-slate-950 py-2.5 text-sm font-black text-white">View Alerts</button>
+              <button onClick={() => setShowDeliveryAlert(false)} className="rounded-xl bg-slate-100 py-2.5 text-sm font-black text-slate-700">Dismiss</button>
             </div>
           </div>
         </div>

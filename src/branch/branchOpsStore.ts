@@ -178,7 +178,8 @@ export interface CakeAdvanceOrder {
     | "Store Confirmed"
     | "Store Rejected"
     | "Ready for Final Invoice"
-    | "Paid In Full";
+    | "Paid In Full"
+    | "Cancelled";
   storeConfirmedBy?: string;
   storeConfirmedAt?: string;
   storeStatus?: "store" | "baking" | "packing" | "dispatched";
@@ -186,6 +187,12 @@ export interface CakeAdvanceOrder {
   storeStatusHistory?: Array<{ status: string; by: string; at: string }>;
   sentToStoreAt?: string;
   finalInvoiceBillNo?: string;
+  cancellationReason?: string;
+  cancelledBy?: string;
+  cancelledAt?: string;
+  refundAmount?: number;
+  refundMode?: "cash" | "upi" | "card";
+  refundNo?: string;
   createdBy?: string;
   collectionSource?: string;
   skipLocalCashMovement?: boolean;
