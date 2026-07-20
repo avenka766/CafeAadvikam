@@ -418,9 +418,9 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const user = useAuthStore((state) => state.currentUser);
   const userName = user?.displayName || user?.username || "SNB Order";
   const first = catalogItems[0];
-  const unitFor = (name: string, catalogUom?: string) =>
+  const unitFor = useCallback((name: string, catalogUom?: string) =>
     stock.find((item) => normal(item.itemName) === normal(name))?.unit
-    || (catalogUom === "Kgs" ? "kg" : "pcs");
+    || (catalogUom === "Kgs" ? "kg" : "pcs"), [stock]);
   const [lineDraft, setLineDraft] = useState({ itemName: first?.name || "", barcode: first?.barcode, quantity: "", unit: unitFor(first?.name || "", first?.uom) });
   const [lines, setLines] = useState<WasteLine[]>([]);
   const [meta, setMeta] = useState({ reason: "", verifiedBy: userName, confirmed: false });
@@ -430,7 +430,7 @@ export function SnbStockMovementPanel({ mode }: { mode: StockMovementMode }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: unitFor(first.name, first.uom) })); }, [first, lineDraft.itemName]);
+  useEffect(() => { if (!lineDraft.itemName && first) setLineDraft((current) => ({ ...current, itemName: first.name, barcode: first.barcode, unit: unitFor(first.name, first.uom) })); }, [first, lineDraft.itemName, unitFor]);
   // Reset the item list whenever the subtab changes so a Dump list doesn't bleed into Damage, etc.
   useEffect(() => { setLines([]); setError(""); setSuccess(""); }, [mode]);
   const loadRows = useCallback(async () => { setLoading(true); const { data, error: loadError } = await supabase.from("branch_waste_logs").select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at").eq("branch", "SNB").eq("log_type", mode).order("created_at", { ascending: false }).limit(500); setLoading(false); if (loadError) setError(loadError.message); else setHistory((data || []) as WasteRow[]); }, [mode]);
