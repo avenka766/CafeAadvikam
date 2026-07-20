@@ -1094,23 +1094,23 @@ export default function HosurDashboard() {
         disputesRes,
         notificationsRes,
       ] = await Promise.all([
-        supabase.from('hosur_shops').select('*').eq('is_active', true).order('shop_name', { ascending: true }),
-        supabase.from('hosur_shop_price_lists').select('*').eq('is_active', true),
-        supabase.from('hosur_orders').select('*').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_order_items').select('*').order('created_at', { ascending: true }).limit(10000),
-        supabase.from('hosur_bills').select('*').order('created_at', { ascending: false }).limit(250),
-        supabase.from('hosur_bill_items').select('*').order('created_at', { ascending: true }).limit(10000),
+        supabase.from('hosur_shops').select('id, shop_name, whatsapp_number, address, is_active, created_at, updated_at, discount_percent').eq('is_active', true).order('shop_name', { ascending: true }),
+        supabase.from('hosur_shop_price_lists').select('id, shop_id, item_name, item_unit, unit_price, is_active, updated_at').eq('is_active', true),
+        supabase.from('hosur_orders').select('id, order_number, shop_id, shop_name, shop_whatsapp, shop_address, status, subtotal, created_by, created_at, received_at, bill_id, notes').order('created_at', { ascending: false }).limit(250),
+        supabase.from('hosur_order_items').select('id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity').order('created_at', { ascending: true }).limit(10000),
+        supabase.from('hosur_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').order('created_at', { ascending: false }).limit(250),
+        supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').order('created_at', { ascending: true }).limit(10000),
         // FIX (MD Bug #21): now that branch_credit_sales has a credit_type column
         // (added by migration 20260613_0004_hosur_credit_type.sql), fetch all rows.
         // The HosurCreditTab already shows wholesale (shop-supply) and retail separately
         // by filtering on credit_type. The Owner Dashboard SalesOverviewTab similarly
         // uses credit_type to prevent double-counting wholesale revenue already in hosur_bills.
-        supabase.from('branch_credit_sales').select('*').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
-        supabase.from('branch_credit_payments').select('*, branch_credit_sales!inner(source_id, customer_ref)').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_whatsapp_logs').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_payment_reminders').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('hosur_disputes').select('*').order('created_at', { ascending: false }).limit(500),
-        supabase.from('admin_notifications').select('*').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
+        supabase.from('branch_credit_sales').select('id, branch, source, source_id, customer_ref, customer_name, subtotal, amount_paid, credit_amount, due_date, status, created_at, settled_at, credit_type, bill_no').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
+        supabase.from('branch_credit_payments').select('id, credit_sale_id, amount, payment_mode, remarks, payment_purpose, collected_by, collected_role, created_at, branch_credit_sales!inner(source_id, customer_ref)').eq('branch', BRANCH).order('created_at', { ascending: false }).limit(500),
+        supabase.from('hosur_whatsapp_logs').select('id, shop_id, shop_name, phone, bill_id, bill_no, message_type, message_body, status, error_message, sent_at, created_at').order('created_at', { ascending: false }).limit(500),
+        supabase.from('hosur_payment_reminders').select('id, credit_sale_id, ledger_id, bill_id, shop_id, shop_name, pending_amount, due_date, reminder_no, status, whatsapp_log_id, sent_at, created_at').order('created_at', { ascending: false }).limit(500),
+        supabase.from('hosur_disputes').select('id, order_id, order_number, item_name, expected_quantity, received_quantity, unit, raised_by, status, admin_remarks, created_at, resolved_at').order('created_at', { ascending: false }).limit(500),
+        supabase.from('admin_notifications').select('id, type, title, body, ref_id, ref_label, is_read, created_at').eq('recipient_role', 'branch_hosur').or('type.ilike.%hosur%,title.ilike.%hosur%,body.ilike.%hosur%,ref_label.ilike.%hosur%').order('created_at', { ascending: false }).limit(100),
       ]);
 
       const firstError = [shopsRes, pricesRes, ordersRes, orderItemsRes, billsRes, billItemsRes, creditsRes, paymentsRes, logsRes, remindersRes, disputesRes]
@@ -1281,8 +1281,8 @@ export default function HosurDashboard() {
         resolvedItems = billItems[billId] ?? [];
         if (!resolvedBill) {
           const [{ data: billRow, error: billLookupError }, { data: itemRows, error: itemLookupError }] = await Promise.all([
-            supabase.from('hosur_bills').select('*').eq('id', billId).single(),
-            supabase.from('hosur_bill_items').select('*').eq('bill_id', billId).order('created_at', { ascending: true }),
+            supabase.from('hosur_bills').select('id, bill_no, order_id, shop_id, shop_name, shop_whatsapp, subtotal, paid_amount, credit_amount, payment_type, payment_mode, due_date, status, confirmed_by, confirmed_at, created_at, whatsapp_status').eq('id', billId).single(),
+            supabase.from('hosur_bill_items').select('id, bill_id, item_name, unit, quantity, unit_price, line_total').eq('bill_id', billId).order('created_at', { ascending: true }),
           ]);
           if (billLookupError) throw billLookupError;
           if (itemLookupError) throw itemLookupError;
@@ -1416,7 +1416,7 @@ export default function HosurDashboard() {
       credit_amount: 0,
       status: 'draft',
       whatsapp_status: 'pending',
-    }).select('*').single();
+    }).select('id').single();
     if (billError) {
       if (billError.code === '23505') {
         const { data: existingBill } = await supabase.from('hosur_bills').select('id').eq('order_id', order.id).neq('status', 'cancelled').maybeSingle();

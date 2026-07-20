@@ -1101,7 +1101,7 @@ function AdminDashboard() {
         ))}
       </div>
       <Panel title="Daily Closure Verification" subtitle="Cafe, SNB Branch, VRSNB Branch and Hosur Branch"
-        action={<div className="flex flex-wrap gap-2"><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
+        action={<div className="flex flex-wrap gap-2"><button onClick={() => adminLedger.refresh()} disabled={adminLedger.loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black disabled:opacity-60"><RefreshCw className={cn('size-3.5', adminLedger.loading && 'animate-spin')} />Refresh</button><button onClick={printDailyClosure} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black"><Printer className="size-3.5" />Print</button><button onClick={exportDailyClosure} className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-3 py-2 text-xs font-black text-white"><Download className="size-3.5" />Export</button></div>}>
         <div className="mb-4 grid gap-2 lg:grid-cols-[180px_220px_1fr]">
           <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
             Date<input type="date" value={closureDate} onChange={e => setClosureDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />

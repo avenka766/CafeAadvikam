@@ -59,7 +59,7 @@ export default function OrderTrackingPage() {
     const fetchOrder = async () => {
       const { data, error: fetchErr } = await supabase
         .from('orders')
-        .select('*')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
         .eq('id', orderId)
         .single();
 
@@ -79,9 +79,10 @@ export default function OrderTrackingPage() {
     // does not need sub-second updates; 30 s is acceptable and cuts this page's
     // per-visit egress by 83 %.
     const interval = setInterval(async () => {
+      if (document.hidden) return;
       const { data } = await supabase
         .from('orders')
-        .select('*')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source')
         .eq('id', orderId)
         .single();
 

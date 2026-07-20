@@ -543,15 +543,13 @@ export default function AdminSNBDashboard() {
     [branchBills],
   );
   const legacySalesRows = useMemo(
-    () => {
-      if (dbReports.loading || dbReports.refreshedAt) return [];
-      return branchSalesRows.filter(
+    () =>
+      branchSalesRows.filter(
         (s) =>
           inRange(s.soldAt, fromDate, toDate) &&
           (!s.billNo || !billedBillNos.has(s.billNo)),
-      );
-    },
-    [branchSalesRows, dbReports.loading, dbReports.refreshedAt, fromDate, toDate, billedBillNos],
+      ),
+    [branchSalesRows, fromDate, toDate, billedBillNos],
   );
 
   const grossFromBills = branchBills.reduce((sum, bill) => sum + bill.total, 0);
@@ -990,6 +988,7 @@ export default function AdminSNBDashboard() {
     notice,
     setNotice,
     dbReports,
+    adminLedger,
   };
 
   if (!canManage) {
@@ -1017,11 +1016,6 @@ export default function AdminSNBDashboard() {
           setFromDate={setFromDate}
           setToDate={setToDate}
         />
-      )}
-      {dbReports.error && !["stock", "update-stock", "suppliers", "quotations", "salespersons"].includes(tab) && (
-        <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 ring-1 ring-amber-100">
-          Some live report data could not load. No browser-stored historical data will be substituted. {dbReports.error}
-        </div>
       )}
       {notice && (
         <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
@@ -1231,7 +1225,15 @@ function printOverview(props: any, branchLabel: string) {
 function OverviewTab(props: any) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={() => { void props.dbReports.refresh(); props.adminLedger.refresh(); }}
+          disabled={props.dbReports.loading || props.adminLedger.loading}
+          className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")}
+        >
+          <RefreshCcw className={cn("size-4", (props.dbReports.loading || props.adminLedger.loading) && "animate-spin")} />
+          Refresh
+        </button>
         <button
           onClick={() => printOverview(props, "SNB")}
           className={cn(btnCls, "bg-slate-950 text-white")}
@@ -2218,7 +2220,7 @@ function ComplaintsTab({ userName }: { userName: string }) {
   const load = async () => {
     const { data, error: loadError } = await supabase
       .from("branch_complaint_tickets")
-      .select("*")
+      .select("ticket_no, created_at, complaint_area, subject, description, created_by_username, status")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false });
     if (loadError) {
@@ -2905,25 +2907,54 @@ function CurrentCashTab(props: any) {
 
 function CashierReportTab(props: any) {
   const rows = useMemo(() => {
+    if (props.dbReports.counterTotals.length) {
+      const map = new Map<string, any>();
+      props.dbReports.counterTotals.forEach((entry: any) => {
+        const name = entry.cashier_username || "Legacy / Unattributed";
+        const row = map.get(name) || { name, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
+        row.grossSales += asNumber(entry.gross_sales);
+        row.returns += asNumber(entry.returns);
+        row.netSales += asNumber(entry.net_sales);
+        row.bills += asNumber(entry.bill_count);
+        row.cash += asNumber(entry.cash_sales);
+        row.upi += asNumber(entry.upi_sales);
+        row.card += asNumber(entry.card_sales);
+        row.credit += asNumber(entry.credit_sales);
+        row.creditCollected += asNumber(entry.credit_collected);
+        row.advance += asNumber(entry.advance_collected);
+        row.sessions += 1;
+        map.set(name, row);
+      });
+      return Array.from(map.values()).sort((a: any, b: any) => b.netSales - a.netSales);
+    }
+
     const map = new Map<string, any>();
-    props.dbReports.counterTotals.forEach((entry: any) => {
-      const name = entry.cashier_username || "Legacy / Unattributed";
-      const row = map.get(name) || { name, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
-      row.grossSales += asNumber(entry.gross_sales);
-      row.returns += asNumber(entry.returns);
-      row.netSales += asNumber(entry.net_sales);
-      row.bills += asNumber(entry.bill_count);
-      row.cash += asNumber(entry.cash_sales);
-      row.upi += asNumber(entry.upi_sales);
-      row.card += asNumber(entry.card_sales);
-      row.credit += asNumber(entry.credit_sales);
-      row.creditCollected += asNumber(entry.credit_collected);
-      row.advance += asNumber(entry.advance_collected);
-      row.sessions += 1;
-      map.set(name, row);
+    const ensure = (name: string) => {
+      const key = name || "Legacy / Unattributed";
+      const row = map.get(key) ?? { name: key, grossSales: 0, returns: 0, netSales: 0, bills: 0, cash: 0, upi: 0, card: 0, credit: 0, creditCollected: 0, advance: 0, sessions: 0 };
+      map.set(key, row);
+      return row;
+    };
+    props.branchBills.forEach((bill: any) => {
+      const row = ensure(bill.biller || bill.salesperson);
+      row.grossSales += bill.total;
+      row.bills += 1;
+      if (bill.paymentMode === "cash") row.cash += bill.total;
+      if (bill.paymentMode === "upi") row.upi += bill.total;
+      if (bill.paymentMode === "card") row.card += bill.total;
+      if (bill.paymentMode === "credit") row.credit += bill.total;
+      if (bill.paymentMode === "split") {
+        row.cash += bill.split?.cash ?? 0;
+        row.upi += bill.split?.upi ?? 0;
+        row.card += bill.split?.card ?? 0;
+      }
     });
-    return Array.from(map.values()).sort((a: any, b: any) => b.netSales - a.netSales);
-  }, [props.dbReports.counterTotals]);
+    props.branchReturns.forEach((ret: any) => {
+      const original = props.branchBills.find((bill: any) => bill.billNo === ret.originalBillNo);
+      ensure(original?.biller || ret.returnedBy).returns += ret.total;
+    });
+    return Array.from(map.values()).map((row: any) => ({ ...row, netSales: Math.max(0, row.grossSales - row.returns) })).sort((a: any, b: any) => b.netSales - a.netSales);
+  }, [props.branchBills, props.branchReturns, props.dbReports.counterTotals]);
 
   const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
   const totalBills = rows.reduce((sum: number, row: any) => sum + row.bills, 0);
@@ -2945,7 +2976,38 @@ function CashierReportTab(props: any) {
 }
 
 function CashierClosureTab(props: any) {
-  const rows = props.dbReports.counterSessions as any[];
+  const { cashierClosures } = useBranchOpsStore();
+  const databaseRows = props.dbReports.counterSessions as any[];
+  const useDatabase = props.dbReports.refreshedAt !== null && !props.dbReports.error.includes("branch_counter_sessions");
+  const rows = useDatabase
+    ? databaseRows
+    : cashierClosures.filter((closure) => closure.branch === BRANCH).map((closure) => ({
+        id: closure.id,
+        business_date: localDateKey(closure.createdAt),
+        cashier_username: closure.cashier,
+        opened_at: closure.createdAt,
+        closed_at: closure.createdAt,
+        status: "closed",
+        opening_cash: closure.openingCash,
+        gross_sales: closure.totalSales,
+        discounts: 0,
+        returns: closure.returns,
+        net_sales: closure.totalSales - closure.returns,
+        cash_sales: closure.cash,
+        upi_sales: closure.upi,
+        card_sales: closure.card,
+        credit_sales: closure.creditSales || 0,
+        credit_collected: closure.creditCollections || 0,
+        advance_collected: closure.advanceCollections || 0,
+        expenses: closure.expenses,
+        supplier_payments: closure.purchasePayments,
+        bank_deposits: closure.bankDeposits,
+        expected_cash: closure.expectedCash,
+        counted_cash: closure.closingCash,
+        difference: closure.difference,
+        bill_count: closure.billsCount,
+        notes: closure.notes,
+      }));
   const closedRows = rows.filter((row: any) => row.status === "closed");
   const totalDifference = closedRows.reduce((sum: number, row: any) => sum + asNumber(row.difference), 0);
   const mismatches = closedRows.filter((row: any) => Math.abs(asNumber(row.difference)) > 0.009).length;
@@ -4633,8 +4695,7 @@ function PurchaseReturnsTab({
       setLoadingItems(true);
       setError("");
       const { data, error: queryError } = await supabase
-        .from("snb_purchase_invoice_items")
-        .select("*")
+        .select("id, purchase_invoice_id, item_name, quantity, unit, rate, tax, discount, total_amount, synced_quantity")
         .eq("purchase_invoice_id", invoiceId)
         .order("item_name", { ascending: true });
       if (cancelled) return;
@@ -5565,25 +5626,37 @@ function SalespersonReportTab(props: any) {
         row.card += asNumber(bill.split?.card);
       }
     });
+    (props.legacySalesRows || []).forEach((sale: any) => {
+      const row = ensure(sale.soldBy || "Unassigned");
+      const value = asNumber(sale.unitPrice) * asNumber(sale.quantitySold);
+      const mode = String(sale.paymentMethod || "").toLowerCase();
+      if (mode.includes("cash")) row.cash += value;
+      else if (mode.includes("upi")) row.upi += value;
+      else if (mode.includes("card")) row.card += value;
+      else if (mode.includes("credit")) row.credit += value;
+    });
     return map;
-  }, [props.branchBills]);
+  }, [props.branchBills, props.legacySalesRows]);
 
   const rows = useMemo(() => {
-    const map = new Map<string, any>();
-    props.dbReports.salespersonBills.forEach((bill: any) => {
-      const name = bill.salesperson || "Unassigned";
-      const allocations = paymentByPerson.get(name) ?? { cash: 0, upi: 0, card: 0, credit: 0 };
-      const row = map.get(name) || { name, grossSales: 0, discounts: 0, netSales: 0, bills: 0, outstanding: 0, cashierLogins: new Set<string>(), ...allocations };
-      row.grossSales += asNumber(bill.subtotal);
-      row.discounts += asNumber(bill.discount);
-      row.netSales += asNumber(bill.total);
-      row.outstanding += asNumber(bill.balance);
-      row.bills += 1;
-      if (bill.cashier_username) row.cashierLogins.add(bill.cashier_username);
-      map.set(name, row);
-    });
-    return Array.from(map.values()).map((row: any) => ({ ...row, avgBillValue: row.bills ? row.netSales / row.bills : 0, cashierCount: row.cashierLogins.size })).sort((a: any, b: any) => b.netSales - a.netSales);
-  }, [props.dbReports.salespersonBills, paymentByPerson]);
+    if (props.dbReports.salespersonBills.length) {
+      const map = new Map<string, any>();
+      props.dbReports.salespersonBills.forEach((bill: any) => {
+        const name = bill.salesperson || "Unassigned";
+        const allocations = paymentByPerson.get(name) ?? { cash: 0, upi: 0, card: 0, credit: 0 };
+        const row = map.get(name) || { name, grossSales: 0, discounts: 0, netSales: 0, bills: 0, outstanding: 0, cashierLogins: new Set<string>(), ...allocations };
+        row.grossSales += asNumber(bill.subtotal);
+        row.discounts += asNumber(bill.discount);
+        row.netSales += asNumber(bill.total);
+        row.outstanding += asNumber(bill.balance);
+        row.bills += 1;
+        if (bill.cashier_username) row.cashierLogins.add(bill.cashier_username);
+        map.set(name, row);
+      });
+      return Array.from(map.values()).map((row: any) => ({ ...row, avgBillValue: row.bills ? row.netSales / row.bills : 0, cashierCount: row.cashierLogins.size })).sort((a: any, b: any) => b.netSales - a.netSales);
+    }
+    return [...props.salespersonRows].map((row: any) => ({ ...row, discounts: Math.max(0, row.grossSales - row.netSales - row.returns), outstanding: 0, cashierCount: 0, credit: asNumber(row.credit) })).sort((a: any, b: any) => b.netSales - a.netSales);
+  }, [props.dbReports.salespersonBills, props.salespersonRows, paymentByPerson]);
   const filteredRows = selectedPerson === "All" ? rows : rows.filter((row: any) => row.name === selectedPerson);
   const topPerformer = rows[0];
   const totalNet = rows.reduce((sum: number, row: any) => sum + row.netSales, 0);
@@ -5597,7 +5670,6 @@ function SalespersonReportTab(props: any) {
         <Kpi label="Net Sales" value={money(totalNet)} icon={<IndianRupee className="size-5" />} tone="green" />
         <Kpi label="Discounts" value={money(totalDiscount)} icon={<RotateCcw className="size-5" />} tone="red" />
       </div>
-      {props.dbReports.error && <div className="rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Some database reports could not load: {props.dbReports.error}</div>}
       {rows.length > 0 && (
         <Panel title="Net Sales by Salesperson" icon={<Activity className="size-4" />}>
           <div className="h-[280px]">
@@ -6696,8 +6768,7 @@ function NotificationsTab({ userName }: { userName: string }) {
     let active = true;
     const load = async () => {
       const { data, error } = await supabase
-        .from("admin_notifications")
-        .select("*")
+        .select("id, created_at, type, title, body, ref_label, meta")
         .in("type", ["price_change", "snb_purchase_invoice_revision"])
         .order("created_at", { ascending: false })
         .limit(100);

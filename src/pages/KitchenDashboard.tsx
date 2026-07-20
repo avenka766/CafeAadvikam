@@ -68,7 +68,7 @@ function WasteTab() {
       historyStart.setDate(historyStart.getDate() - 31);
       const { data } = await supabase
         .from('kitchen_waste_log')
-        .select('*')
+        .select('id, food_item, quantity, logged_at, voided_at, void_reason')
         .gte('logged_at', historyStart.toISOString())
         .is('voided_at', null)
         .order('logged_at', { ascending: false });

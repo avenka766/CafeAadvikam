@@ -984,6 +984,7 @@ export default function AdminVRSNBDashboard() {
     movementInRange,
     notice,
     setNotice,
+    adminLedger,
   };
 
   if (!canManage) {
@@ -1401,7 +1402,15 @@ function RupeeBreakdown({ breakdown }: { breakdown: any }) {
 function OverviewTab(props: any) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <button
+          onClick={() => props.adminLedger.refresh()}
+          disabled={props.adminLedger.loading}
+          className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200 disabled:opacity-50")}
+        >
+          <RefreshCcw className={cn("size-4", props.adminLedger.loading && "animate-spin")} />
+          Refresh
+        </button>
         <button
           onClick={() => printOverview(props, props.reportLabel || "VRSNB Branch")}
           className={cn(btnCls, "bg-slate-950 text-white")}
@@ -1976,7 +1985,7 @@ function ComplaintsTab({ userName }: { userName: string }) {
   const load = async () => {
     const { data, error: loadError } = await supabase
       .from("branch_complaint_tickets")
-      .select("*")
+      .select("ticket_no, created_at, complaint_area, subject, description, created_by_username, status")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false });
     if (loadError) {
@@ -3849,7 +3858,7 @@ function DailyClosureTab({ userName, ...props }: any) {
     const loadClosures = async () => {
       const { data, error } = await supabase
         .from("branch_daily_closures")
-        .select("*")
+        .select("branch, closure_date, cashier, created_at, opening_cash, expected_cash, actual_cash, difference, bill_count, cash_total, upi_total, card_total, refunds, notes")
         .in("branch", CREDIT_BRANCHES)
         .order("closure_date", { ascending: false });
       if (!alive) return;

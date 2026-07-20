@@ -12,7 +12,7 @@
 //   • Waste tab: waste cost estimate (maps waste food_item → menu prices)
 //   • Attendance tab: advance-to-salary ratio per employee + attendance rate
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useBranchStore } from '@/branch/branchStore';
@@ -36,7 +36,7 @@ import {
   Store, Layers, Banknote, Smartphone, CreditCard, Clock,
   Utensils, Trash2, AlertTriangle, WalletCards, PackageSearch,
   Landmark, CheckCircle2, XCircle, Receipt, Bell, Package, Truck,
-  Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search,
+  Download, Printer, FileSpreadsheet, Filter, ShieldCheck, Factory, Search, RefreshCw,
 } from 'lucide-react';
 
 const COLORS = ['#2D7D6F', '#C5973E', '#5BA3C9', '#E07B5B', '#8B5CF6', '#EC4899'];
@@ -501,6 +501,10 @@ function SalesOverviewTab() {
           <option value="SNB">SNB Branch</option>
           <option value="Hosur">Hosur Branch</option>
         </select>
+        <button onClick={() => salesLedger.refresh()} disabled={salesLedger.loading}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border bg-card text-sm font-semibold hover:bg-muted transition disabled:opacity-60">
+          <RefreshCw className={cn('size-4', salesLedger.loading && 'animate-spin')} />Refresh
+        </button>
         <button onClick={exportSales}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border bg-card text-sm font-semibold hover:bg-muted transition">
           <Download className="size-4" />Export
@@ -774,9 +778,9 @@ function AttendanceSalaryTab() {
   const loadEmployees = useCallback(() => {
     setLoading(true); setFetchError(null);
     Promise.all([
-      supabase.from('employees').select('*'),
-      supabase.from('attendance').select('*').eq('year', payrollYear).eq('month', payrollMonth),
-      supabase.from('deduction_decisions').select('*').eq('year', payrollYear).eq('month', payrollMonth),
+      supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction'),
+      supabase.from('attendance').select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', payrollYear).eq('month', payrollMonth),
+      supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', payrollYear).eq('month', payrollMonth),
     ]).then(([employeesRes, attendanceRes, decisionsRes]) => {
       const data = employeesRes.data;
       const error = employeesRes.error || attendanceRes.error || decisionsRes.error;
@@ -886,6 +890,7 @@ function AttendanceSalaryTab() {
         <div className="flex gap-2">
           <select value={payrollMonth} onChange={(event) => setPayrollMonth(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:12},(_,index)=><option key={index+1} value={index+1}>{new Date(2026,index,1).toLocaleString('en-IN',{month:'long'})}</option>)}</select>
           <select value={payrollYear} onChange={(event) => setPayrollYear(Number(event.target.value))} className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-bold">{Array.from({length:5},(_,index)=>now.getFullYear()-index).map((year)=><option key={year} value={year}>{year}</option>)}</select>
+          <button type="button" onClick={() => void loadEmployees()} className="h-10 flex items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-sm font-bold hover:bg-muted"><RefreshCw className="size-4" />Refresh</button>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -1033,52 +1038,53 @@ function WasteLogsTab() {
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
 
-  useEffect(() => {
-    const fetchWaste = async () => {
-      setLoading(true); setError('');
-      const { data, error: err } = await supabase
-        .from('kitchen_waste_log').select('*')
-        .gte('logged_at', `${fromDate}T00:00:00`)
-        .lte('logged_at', `${toDate}T23:59:59`)
-        .order('logged_at', { ascending: false });
-      if (err) setError(err.message);
-      else setEntries(data ?? []);
-      setLoading(false);
-    };
-    fetchWaste();
+  const fetchWaste = useCallback(async () => {
+    setLoading(true); setError('');
+    const { data, error: err } = await supabase
+      .from('kitchen_waste_log').select('id, food_item, quantity, logged_at')
+      .gte('logged_at', `${fromDate}T00:00:00`)
+      .lte('logged_at', `${toDate}T23:59:59`)
+      .order('logged_at', { ascending: false });
+    if (err) setError(err.message);
+    else setEntries(data ?? []);
+    setLoading(false);
   }, [fromDate, toDate]);
 
-  // Filter branch waste logs by date range
-  useEffect(() => {
-    let cancelled = false;
-    const fetchBranchWaste = async () => {
-      setBranchWasteLoading(true);
-      const { data, error: err } = await supabase
-        .from('branch_waste_logs')
-        .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
-        .gte('created_at', `${fromDate}T00:00:00`)
-        .lte('created_at', `${toDate}T23:59:59`)
-        .order('created_at', { ascending: false })
-        .limit(2000);
-      if (cancelled) return;
-      if (!err && data) {
-        setWasteLogs(data.map((d: any) => ({
-          id: d.id,
-          branch: d.branch,
-          logType: d.log_type,
-          itemName: d.item_name,
-          quantity: Number(d.quantity || 0),
-          unit: d.unit,
-          reason: d.reason || '',
-          createdBy: d.created_by_username || '',
-          createdAt: d.created_at,
-        })));
-      }
-      setBranchWasteLoading(false);
-    };
-    void fetchBranchWaste();
-    return () => { cancelled = true; };
+  useEffect(() => { void fetchWaste(); }, [fetchWaste]);
+
+  const branchWasteRequestId = useRef(0);
+  const fetchBranchWaste = useCallback(async () => {
+    const requestId = ++branchWasteRequestId.current;
+    setBranchWasteLoading(true);
+    const { data, error: err } = await supabase
+      .from('branch_waste_logs')
+      .select('id,branch,log_type,item_name,quantity,unit,reason,created_by_username,created_at')
+      .gte('created_at', `${fromDate}T00:00:00`)
+      .lte('created_at', `${toDate}T23:59:59`)
+      .order('created_at', { ascending: false })
+      .limit(2000);
+    if (requestId !== branchWasteRequestId.current) return;
+    if (!err && data) {
+      setWasteLogs(data.map((d: any) => ({
+        id: d.id,
+        branch: d.branch,
+        logType: d.log_type,
+        itemName: d.item_name,
+        quantity: Number(d.quantity || 0),
+        unit: d.unit,
+        reason: d.reason || '',
+        createdBy: d.created_by_username || '',
+        createdAt: d.created_at,
+      })));
+    }
+    setBranchWasteLoading(false);
   }, [fromDate, toDate]);
+
+  useEffect(() => {
+    void fetchBranchWaste();
+  }, [fetchBranchWaste]);
+
+  const refreshWasteLogs = useCallback(() => { void fetchWaste(); void fetchBranchWaste(); }, [fetchWaste, fetchBranchWaste]);
 
   const filteredBranchWaste = useMemo(() => {
     return wasteLogs.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -1191,6 +1197,10 @@ function WasteLogsTab() {
         <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
           To<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-transparent font-bold text-slate-900 outline-none" />
         </label>
+        <button type="button" onClick={refreshWasteLogs} disabled={loading || branchWasteLoading}
+          className="flex items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-950 hover:text-white transition disabled:opacity-60">
+          <RefreshCw className={cn('size-3.5', (loading || branchWasteLoading) && 'animate-spin')} />Refresh
+        </button>
       </div>
 
       {activeSource === 'kitchen' && (
@@ -1727,6 +1737,7 @@ function BranchOverviewTab() {
             {option.label}
           </button>
         ))}
+        <button type="button" onClick={() => ownerLedger.refresh()} disabled={ownerLedger.loading} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', ownerLedger.loading && 'animate-spin')} />Refresh</button>
         <button type="button" onClick={() => ownerCsvDownload('owner-branch-overview.csv', branchRows.map(r => ({ Unit: r.unit, Sales: r.sales, NetSales: r.netSales, Purchases: r.purchases, PendingPayments: r.pendingPayments, Alerts: r.stockAlerts, Closure: r.closureStatus })))}><Download className="size-4" />Export</button>
       </OwnerToolbar>
 
@@ -1877,6 +1888,7 @@ function OwnerDailyClosureTab() {
         <input type="date" value={date} onChange={e => setDate(e.target.value)} />
         <select value={branch} onChange={e => setBranch(e.target.value as 'all' | Branch)}><option value="all">All business units</option>{OWNER_FULL_BRANCHES.map(b => <option key={b} value={b}>{ownerBranchDisplay(b)}</option>)}</select>
         <button type="button" onClick={print}><Printer className="size-4" />Print</button>
+        <button type="button" onClick={() => ownerLedger.refresh()} disabled={ownerLedger.loading} className="inline-flex items-center gap-1.5 disabled:opacity-60"><RefreshCw className={cn('size-4', ownerLedger.loading && 'animate-spin')} />Refresh</button>
         <button type="button" onClick={() => ownerCsvDownload('owner-daily-closure.csv', rows.map(r => ({ Branch: r.branch, Status: r.status, Opening: r.opening, TotalSales: r.grossSales, Cash: r.cash, UPI: r.upi, Card: r.card, Credit: r.credit, Returns: r.returns, NetSales: r.netSales, Expenses: r.expenses, PurchasePayments: r.purchases, BankDeposits: r.bankDeposits, Closing: r.expectedCash, Difference: r.difference, ClosedBy: r.closedBy, ClosedAt: ownerFmtDateTime(r.closedAt), Remarks: r.remarks })))}><FileSpreadsheet className="size-4" />Export</button>
       </OwnerToolbar>
 
@@ -2099,40 +2111,44 @@ function OwnerPurchasesTab() {
   const [dbLines, setDbLines] = useState<OwnerStorePurchaseLine[]>([]);
 
   useEffect(() => { load(); loadOrders(); }, [load, loadOrders]);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const { data } = await supabase.from('store_invoices').select('*').order('created_at', { ascending: false });
-      if (!alive || !data) return;
-      const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
-        const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
-        const paidAmount = Number(invoice.paid_amount || 0);
-        const grandTotal = Number(invoice.grand_total || 0);
-        return lineItems.map((line, index) => ({
-          id: `${invoice.id}-${index}`,
-          supplierName: String(invoice.supplier_name || 'Unknown supplier'),
-          invoiceNumber: String(invoice.invoice_number || '—'),
-          purchaseDate: String(invoice.delivery_date || invoice.created_at || ''),
-          itemName: String(line.itemName || line.item_name || line.materialName || 'Item'),
-          quantity: Number(line.quantity || 0),
-          unit: String(line.unit || 'unit'),
-          rate: Number(line.pricePerUnit || line.price_per_unit || 0),
-          total: Number(line.totalPrice || line.total_price || 0),
-          // FIX (MD Bug #6): when grandTotal === 0 (malformed invoice), don't prorate per-line —
-          // treat paidAmount as applying to the invoice as a whole to avoid wildly overstating
-          // paid amounts (paidAmount * lineTotal / 1 >> actual payment).
-          paidAmount: (lineItems.length && grandTotal > 0) ? paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal) : (lineItems.length ? 0 : paidAmount),
-          balanceAmount: (lineItems.length && grandTotal > 0) ? Math.max(0, (Number(line.totalPrice || line.total_price || 0)) - (paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal))) : (lineItems.length ? Number(line.totalPrice || line.total_price || 0) : Math.max(0, grandTotal - paidAmount)),
-          paymentMethod: String(invoice.payment_method || 'Not recorded'),
-          purchaseStatus: String(invoice.purchase_status || invoice.status || 'pending_review'),
-          stockSyncStatus: invoice.synced_to_stock ? 'Synced' : String(invoice.stock_sync_status || 'Not Synced'),
-          remarks: String(invoice.remarks || invoice.notes || '—'),
-        }));
-      });
-      setDbLines(rows);
-    })();
-    return () => { alive = false; };
-  }, [invoices.length]);
+  const storeInvoicesRequestId = useRef(0);
+  const fetchStoreInvoiceLines = useCallback(async () => {
+    const requestId = ++storeInvoicesRequestId.current;
+    const { data } = await supabase.from('store_invoices').select('id, line_items, paid_amount, grand_total, supplier_name, invoice_number, delivery_date, created_at, payment_method, purchase_status, status, synced_to_stock, stock_sync_status, remarks, notes').order('created_at', { ascending: false });
+    if (requestId !== storeInvoicesRequestId.current || !data) return;
+    const rows: OwnerStorePurchaseLine[] = (data as Array<Record<string, unknown>>).flatMap((invoice) => {
+      const lineItems = (invoice.line_items as Array<Record<string, unknown>> | null) || [];
+      const paidAmount = Number(invoice.paid_amount || 0);
+      const grandTotal = Number(invoice.grand_total || 0);
+      return lineItems.map((line, index) => ({
+        id: `${invoice.id}-${index}`,
+        supplierName: String(invoice.supplier_name || 'Unknown supplier'),
+        invoiceNumber: String(invoice.invoice_number || '—'),
+        purchaseDate: String(invoice.delivery_date || invoice.created_at || ''),
+        itemName: String(line.itemName || line.item_name || line.materialName || 'Item'),
+        quantity: Number(line.quantity || 0),
+        unit: String(line.unit || 'unit'),
+        rate: Number(line.pricePerUnit || line.price_per_unit || 0),
+        total: Number(line.totalPrice || line.total_price || 0),
+        // FIX (MD Bug #6): when grandTotal === 0 (malformed invoice), don't prorate per-line —
+        // treat paidAmount as applying to the invoice as a whole to avoid wildly overstating
+        // paid amounts (paidAmount * lineTotal / 1 >> actual payment).
+        paidAmount: (lineItems.length && grandTotal > 0) ? paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal) : (lineItems.length ? 0 : paidAmount),
+        balanceAmount: (lineItems.length && grandTotal > 0) ? Math.max(0, (Number(line.totalPrice || line.total_price || 0)) - (paidAmount * (Number(line.totalPrice || line.total_price || 0) / grandTotal))) : (lineItems.length ? Number(line.totalPrice || line.total_price || 0) : Math.max(0, grandTotal - paidAmount)),
+        paymentMethod: String(invoice.payment_method || 'Not recorded'),
+        purchaseStatus: String(invoice.purchase_status || invoice.status || 'pending_review'),
+        stockSyncStatus: invoice.synced_to_stock ? 'Synced' : String(invoice.stock_sync_status || 'Not Synced'),
+        remarks: String(invoice.remarks || invoice.notes || '—'),
+      }));
+    });
+    setDbLines(rows);
+  }, []);
+
+  useEffect(() => { void fetchStoreInvoiceLines(); }, [fetchStoreInvoiceLines, invoices.length]);
+
+  const refreshPurchases = useCallback(() => {
+    load(); loadOrders(); void fetchStoreInvoiceLines();
+  }, [load, loadOrders, fetchStoreInvoiceLines]);
 
   const fallbackLines: OwnerStorePurchaseLine[] = useMemo(() => invoices.flatMap((invoice, index) => invoice.lineItems.map((line, lineIndex) => ({
     id: `${invoice.id}-${lineIndex}`,
@@ -2185,6 +2201,7 @@ function OwnerPurchasesTab() {
         <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} />
         <div className="owner-search"><Search className="size-4" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Supplier, invoice or item" /></div>
         <select value={status} onChange={e => setStatus(e.target.value)}>{statusOptions.map(s => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>)}</select>
+        <button type="button" onClick={refreshPurchases}><RefreshCw className="size-4" />Refresh</button>
         <button type="button" onClick={() => ownerCsvDownload('owner-store-purchases.csv', filtered.map(line => ({ Supplier: line.supplierName, Invoice: line.invoiceNumber, Date: ownerFmtDate(line.purchaseDate), Item: line.itemName, Quantity: line.quantity, Unit: line.unit, Rate: line.rate, Total: line.total, Paid: line.paidAmount, Balance: line.balanceAmount, PaymentMethod: line.paymentMethod, PurchaseStatus: line.purchaseStatus, StockSyncStatus: line.stockSyncStatus, Remarks: line.remarks })))}><Download className="size-4" />Export</button>
       </OwnerToolbar>
 

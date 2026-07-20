@@ -134,13 +134,13 @@ function dbRowToEmployee(d: Record<string, unknown>): Employee {
 }
 
 async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase.from('employees').select('*').eq('is_active', true).order('id', { ascending: true });
+  const { data, error } = await supabase.from('employees').select('id, name, branch, department, gross_salary, salary_advance, uniform_deduction, other_deduction, account_number, bank_name, ifsc_code').eq('is_active', true).order('id', { ascending: true });
   if (error) throw error;
   return (data || []).map(dbRowToEmployee);
 }
 
 async function fetchAttendance(year: number, month: number): Promise<MonthAttendance> {
-  const { data, error } = await supabase.from('attendance').select('*').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('attendance').select('employee_id, day, present, half, woff, bf, lunch, dinner').eq('year', year).eq('month', month);
   if (error) throw error;
   const result: MonthAttendance = {};
   for (const row of (data || [])) {
@@ -156,7 +156,7 @@ async function upsertAttendance(employeeId: string, year: number, month: number,
 }
 
 async function fetchDeductionDecisions(year: number, month: number): Promise<DeductionDecisions> {
-  const { data, error } = await supabase.from('deduction_decisions').select('*').eq('year', year).eq('month', month);
+  const { data, error } = await supabase.from('deduction_decisions').select('employee_id, deduct_advance, deduct_other, deduct_uniform, deduct_esi, deduct_pf').eq('year', year).eq('month', month);
   if (error) { console.warn('deduction_decisions fetch:', error.message); return {}; }
   const result: DeductionDecisions = {};
   for (const row of (data || [])) {
@@ -194,7 +194,7 @@ async function clearAdvance(employeeId: string): Promise<void> {
 async function fetchAdvanceRecords(): Promise<{ records: SalaryAdvanceRecord[]; tableReady: boolean }> {
   const { data, error } = await supabase
     .from('salary_advances')
-    .select('*')
+    .select('id, employee_id, amount, given_date, note, cleared')
     .order('given_date', { ascending: false });
   if (error) {
     console.warn('salary_advances fetch:', error.message);
