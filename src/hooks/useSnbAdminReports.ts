@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { BranchBillRecord, ReturnRecord } from "@/branch/branchOpsStore";
 
@@ -344,13 +344,14 @@ async function fetchPaged(
     toDate?: string;
     orderColumn?: string;
     branchColumn?: string;
+    columns?: string;
   } = {},
 ) {
   const pageSize = 1000;
   const maxRows = 30000;
   const rows: Record<string, unknown>[] = [];
   for (let from = 0; from < maxRows; from += pageSize) {
-    let query = supabase.from(table).select("*");
+    let query = supabase.from(table).select(options.columns ?? "*");
     if (options.branchColumn) query = query.eq(options.branchColumn, "SNB");
     if (options.dateColumn && options.fromDate) query = query.gte(options.dateColumn, options.fromDate);
     if (options.dateColumn && options.toDate) query = query.lte(options.dateColumn, options.toDate);
@@ -403,15 +404,6 @@ function isMissingOptionalWorkflowRpc(message: string) {
   return /get_snb_purchase_workflow_data|could not find the function|schema cache|does not exist/i.test(message);
 }
 
-function isValidReportDate(value: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year
-    && date.getUTCMonth() === month - 1
-    && date.getUTCDate() === day;
-}
-
 export function asNumber(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -422,42 +414,28 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    if (!isValidReportDate(fromDate) || !isValidReportDate(toDate) || fromDate > toDate) {
-      setData(EMPTY);
-      setLoading(false);
-      setError("Select a valid From Date and To Date.");
-      setRefreshedAt(new Date().toISOString());
-      return;
-    }
-
     setLoading(true);
     setError("");
-    setData(EMPTY);
     const range = { fromDate, toDate };
     const results = await Promise.allSettled([
-      fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date" }),
-      fetchPaged("branch_counter_sessions", { ...range, dateColumn: "business_date", orderColumn: "opened_at", branchColumn: "branch" }),
-      fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date" }),
-      fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at" }),
-      fetchPaged("snb_salesperson_bill_report", { ...range, dateColumn: "business_date", orderColumn: "created_at" }),
-      fetchPaged("snb_item_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date" }),
-      fetchPaged("snb_category_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date" }),
-      fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime" }),
-      fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at" }),
-      fetchPaged("snb_purchase_invoices", { orderColumn: "created_at" }),
-      fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date" }),
-      fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at" }),
-      fetchPaged("snb_purchase_return_items", { orderColumn: "created_at" }),
+      fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
+      fetchPaged("branch_counter_sessions", { ...range, dateColumn: "business_date", orderColumn: "opened_at", branchColumn: "branch", columns: "id,branch,business_date,cashier_user_id,cashier_username,cashier_display_name,opening_cash,opened_at,status,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,refunds,expenses,supplier_payments,bank_deposits,expected_cash,counted_cash,difference,bill_count,notes,closed_at,closed_by_username,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_cash_collected,advance_upi_collected,advance_card_collected,cash_refunds" }),
+      fetchPaged("snb_daily_counter_summary", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,closed_counter_count,open_counter_count,gross_sales,discounts,returns,net_sales,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,advance_collected,expected_cash,counted_cash,difference" }),
+      fetchPaged("snb_cashier_bill_report", { ...range, dateColumn: "created_at", orderColumn: "created_at", columns: "id,bill_no,created_at,cashier_user_id,cashier_username,counter_session_id,total,discount,balance,status" }),
+      fetchPaged("snb_salesperson_bill_report", { ...range, dateColumn: "business_date", orderColumn: "created_at", columns: "bill_id,bill_no,created_at,business_date,salesperson,subtotal,discount,total,balance,status,cashier_username,counter_session_id" }),
+      fetchPaged("snb_item_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,item_name,unit,quantity_sold,gross_sales,item_discount,tax,net_item_sales,bill_count" }),
+      fetchPaged("snb_category_wise_sales_report", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "business_date,category,quantity_sold,gross_sales,item_discount,net_item_sales,bill_count" }),
+      fetchPaged("snb_bill_discount_report", { ...range, dateColumn: "business_date", orderColumn: "bill_datetime", columns: "bill_id,bill_no,business_date,bill_datetime,cashier,salesperson,customer_name,subtotal,discount,discount_percent,tax,round_off,total,effective_discount_percent" }),
+      fetchPaged("snb_supplier_outstanding_report", { orderColumn: "created_at", columns: "purchase_invoice_id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,payment_method,sync_status,created_at,updated_at" }),
+      fetchPaged("snb_purchase_invoices", { orderColumn: "created_at", columns: "id,supplier_name,invoice_number,invoice_date,total_amount,paid_amount,balance_amount,return_amount,payment_method,sync_status,synced_at,synced_by,remarks,created_by,created_at,updated_at,revision_number,revision_pending,last_edit_reason" }),
+      fetchPaged("snb_supplier_payments", { ...range, dateColumn: "payment_date", orderColumn: "payment_date", columns: "id,purchase_invoice_id,supplier_name,payment_date,amount,payment_method,reference_no,remarks,paid_by,paid_by_user_id,counter_session_id,payment_batch_id,batch_total,allocation_order,created_at" }),
+      fetchPaged("snb_purchase_returns", { ...range, dateColumn: "return_date", orderColumn: "created_at", columns: "id,return_no,purchase_invoice_id,supplier_name,invoice_number,return_date,reason_type,settlement_type,credit_note_no,reference_no,remarks,total_amount,entered_by,status,created_at" }),
+      fetchPaged("snb_purchase_return_items", { orderColumn: "created_at", columns: "id,purchase_return_id,purchase_invoice_item_id,item_name,quantity,unit,rate,tax,discount,line_total,item_reason,batch_no,expiry_date,stock_before,stock_after,created_at" }),
       fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
       fetchSnbOperationHistory(fromDate, toDate),
     ]);
-
-    // A slower request for an earlier date range must not replace the latest report.
-    if (requestId !== requestIdRef.current) return;
 
     const workflowResult = results[13];
     const operationHistoryResult = results[14];

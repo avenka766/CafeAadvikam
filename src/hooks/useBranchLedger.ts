@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { Branch } from '@/branch/types';
 
@@ -34,6 +34,7 @@ export type LedgerSavedClosure = {
   refunds: number | string;
   expenses: number | string;
   purchase_payments?: number | string;
+  bank_deposits?: number | string;
   discounts: number | string;
   bill_count: number | string;
   duplicate_prints: number | string;
@@ -83,15 +84,6 @@ function dateRange(fromDate: string, toDate: string) {
   };
 }
 
-function isValidLedgerDate(value: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year
-    && date.getUTCMonth() === month - 1
-    && date.getUTCDate() === day;
-}
-
 export function useBranchLedger(fromDate: string, toDate: string, branches?: Branch[]) {
   const [closureRows, setClosureRows] = useState<LedgerClosureRow[]>([]);
   const [savedClosures, setSavedClosures] = useState<LedgerSavedClosure[]>([]);
@@ -104,28 +96,22 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   // render when branches is passed as a new array literal, causing the effect to re-fire continuously.
   // Use a stable sorted-join string instead, which is identity-stable for the same set of branches.
   const branchesKey = branches && branches.length > 0 ? [...branches].sort().join(',') : '';
+  // Bumped by refresh() to force the effect below to re-run on demand,
+  // without needing fromDate/toDate/branches to change.
+  const [refreshToken, setRefreshToken] = useState(0);
+  const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
   useEffect(() => {
     let active = true;
     const load = async () => {
-      setClosureRows([]);
-      setSavedClosures([]);
-      setOperationRecords([]);
-      setBillHeaders([]);
-      if (!isValidLedgerDate(fromDate) || !isValidLedgerDate(toDate) || fromDate > toDate) {
-        setLoading(false);
-        setError('Select a valid From Date and To Date.');
-        return;
-      }
-
       setLoading(true);
       setError('');
       const { from, to } = dateRange(fromDate, toDate);
       const branchList = branches && branches.length > 0 ? branches : null;
 
-      let closureQuery = supabase.from('branch_daily_closure_ledger').select('*').gte('closure_date', fromDate).lte('closure_date', toDate);
-      let savedClosureQuery = supabase.from('branch_daily_closures').select('*').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
-      let operationsQuery = supabase.from('branch_operation_records').select('*').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
+      let closureQuery = supabase.from('branch_daily_closure_ledger').select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected').gte('closure_date', fromDate).lte('closure_date', toDate);
+      let savedClosureQuery = supabase.from('branch_daily_closures').select('id, branch, closure_date, cashier, opening_cash, cash_total, upi_total, card_total, credit_billed, credit_collected, advance_collected, advance_balance_collected, refunds, expenses, purchase_payments, discounts, bill_count, duplicate_prints, expected_cash, actual_cash, difference, notes, created_at').gte('closure_date', fromDate).lte('closure_date', toDate).order('closure_date', { ascending: false });
+      let operationsQuery = supabase.from('branch_operation_records').select('id, branch, record_type, record_id, record_no, amount, status, actor, payload, created_at, updated_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
       let billsQuery = supabase.from('branch_bill_headers').select('id, branch, bill_no, invoice_no, bill_type, salesperson, biller, total, tendered, balance, discount, tax, created_at').gte('created_at', from).lte('created_at', to).order('created_at', { ascending: false }).limit(5000);
 
       if (branchList) {
@@ -145,10 +131,6 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       if (!active) return;
       const firstError = [closureRes.error, savedRes.error, operationsRes.error, billsRes.error].find(Boolean);
       if (firstError) {
-        setClosureRows([]);
-        setSavedClosures([]);
-        setOperationRecords([]);
-        setBillHeaders([]);
         setError(firstError.message || 'Unable to load branch ledger data.');
         setLoading(false);
         return;
@@ -170,7 +152,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   // branch_operation_records, branch_bill_headers) in an infinite loop.
   // `branchesKey` is already a stable sorted-join string that captures the
   // same information, so `branches` must be removed from deps here.
-  }, [fromDate, toDate, branchesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate, branchesKey, refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const closureByBranchDate = useMemo(() => {
     const map = new Map<string, LedgerClosureRow>();
@@ -190,6 +172,7 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   return {
     loading,
     error,
+    refresh,
     closureRows,
     savedClosures,
     operationRecords,
