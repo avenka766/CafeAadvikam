@@ -64,6 +64,7 @@ export default function BottomNav() {
     // sub-minute freshness; a 90 s cadence is invisible to users while cutting
     // BottomNav egress by ~78 %.
     const id = setInterval(() => {
+      if (document.hidden) return;
       loadNotifs();
       if (isAdmin) loadInvoices();
     }, 90_000);
