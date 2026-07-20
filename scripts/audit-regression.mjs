@@ -12,6 +12,10 @@ function read(relativePath) {
   return readFileSync(absolutePath, 'utf8');
 }
 
+function arrayBody(source, constantName) {
+  return source?.match(new RegExp(`const ${constantName} = \\[([\\s\\S]*?)\\];`))?.[1] ?? '';
+}
+
 function check(name, assertion, details) {
   try {
     const result = typeof assertion === 'function' ? assertion() : assertion;
@@ -107,6 +111,10 @@ const ownerDashboard = read('src/pages/OwnerDashboard.tsx') ?? '';
 const snbHistory = read('src/pages/SNBHistoryPage.tsx') ?? '';
 const vrsnbHistory = read('src/pages/VRSNBHistoryPage.tsx') ?? '';
 const globalCss = read('src/index.css') ?? '';
+const errorBoundary = read('src/components/layout/ErrorBoundary.tsx') ?? '';
+const dataHealthBanner = read('src/components/layout/DataHealthBanner.tsx') ?? '';
+const errorDiagnostics = read('src/lib/errorDiagnostics.ts') ?? '';
+const clientErrorMigration = read('supabase/migrations/20260720195621_client_error_reporting.sql') ?? '';
 const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
@@ -706,6 +714,28 @@ check(
   branchStore.includes("catalogBranch\n          ? Promise.resolve")
     && branchStore.includes("supabase.from('bakery_items').select('name, price')"),
   'SNB/VRSNB/Hosur refreshes must not download the legacy bakery price table when the live catalogue is already loaded.',
+);
+
+check(
+  'Branch operation hydration reads the session branch and avoids duplicate history sources',
+  branchOpsStore.includes("sessionStorage.getItem('cafe-aadvikam-auth')")
+    && !arrayBody(branchOpsStore, 'SPARSE_OPERATION_HISTORY_TYPES').includes("'stock_variance'")
+    && !arrayBody(branchOpsStore, 'SPARSE_OPERATION_HISTORY_TYPES').includes("'stock_count_report'")
+    && !arrayBody(branchOpsStore, 'SPARSE_OPERATION_HISTORY_TYPES').includes("'complaint'"),
+  'Branch terminals must not hydrate all branches or download dedicated stock/complaint history twice.',
+);
+
+check(
+  'Logged-in users receive safe actionable error diagnostics',
+  dataHealthBanner.includes('Copy Details')
+    && dataHealthBanner.includes('diagnostic.user.displayName')
+    && errorBoundary.includes('reportClientDiagnostic')
+    && errorDiagnostics.includes("x-cafe-session")
+    && errorDiagnostics.includes('[redacted]')
+    && clientErrorMigration.includes('report_client_error_secure')
+    && clientErrorMigration.includes('current_app_session_context')
+    && clientErrorMigration.includes('revoke all on table public.client_error_events'),
+  'Errors must show the active staff context and reference while redacting secrets and storing reports through a session-validated RPC.',
 );
 
 
