@@ -52,7 +52,7 @@ export default function KitchenWasteLogTab() {
 
     const { data, error: err } = await supabase
       .from('kitchen_waste_log')
-      .select('*')
+      .select('id, food_item, quantity, logged_at')
       .gte('logged_at', sinceISO)
       .order('logged_at', { ascending: false });
 
