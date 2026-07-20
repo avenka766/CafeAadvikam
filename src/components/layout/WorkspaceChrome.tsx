@@ -179,6 +179,7 @@ function navForRole(role?: string): NavItem[] {
       return [
         { label: 'Packing Orders / Transfer Out', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
         { label: 'Cake Orders', path: '/bakery/packing?tab=cake-orders', icon: <Cake className="size-4" />, group: 'Main' },
+        { label: 'Corrections', path: '/bakery/packing?tab=corrections', icon: <RotateCcw className="size-4" />, group: 'Main' },
         { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Main' },
         { label: 'Billing', path: '/bakery/packing?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
         { label: 'Leftover Items', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
