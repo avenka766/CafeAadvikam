@@ -619,6 +619,23 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     // Store even after Cake Master existed. That call is removed here on
     // purpose; non-cake "store" advance orders still use the separate
     // sendToStoreDashboard() function untouched.
+    const { error: durableOrderError } = await supabase
+      .from('branch_operation_records')
+      .upsert({
+        branch,
+        record_type: 'advance_order',
+        record_id: order.id,
+        record_no: order.orderNo,
+        amount: order.orderValue,
+        status: order.status,
+        actor: order.createdBy || order.salesperson,
+        payload: order,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'branch,record_type,record_id' });
+    if (durableOrderError) {
+      throw new Error(`Advance order ${order.orderNo} was not sent because its unique source record could not be saved: ${durableOrderError.message}`);
+    }
+
     const { error: cakeMasterError } = await supabase.rpc('submit_cake_master_order', {
       p_branch: branch,
       p_order_no: order.orderNo,
