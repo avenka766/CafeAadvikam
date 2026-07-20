@@ -96,6 +96,8 @@ const branchStore = read('src/branch/branchStore.ts') ?? '';
 const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
 const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
+const bakerDashboard = read('src/bakery/BakerDashboard.tsx') ?? '';
+const packingDashboard = read('src/bakery/PackingDashboard.tsx') ?? '';
 const snbReceiverSharedTabs = read('src/bakery/SnbReceiverSharedTabs.tsx') ?? '';
 const snbOrderPurchaseSaveParityMigration = read('supabase/migrations/20260701103000_snb_order_purchase_invoice_save_parity.sql') ?? '';
 const snbOrderPurchaseRevisionParityMigration = read('supabase/migrations/20260701103100_snb_order_purchase_invoice_revision_parity.sql') ?? '';
@@ -673,6 +675,37 @@ check(
   ownerDashboard.includes('startPolling(60)')
     && !ownerDashboard.includes('startPolling(7)'),
   'Owner reporting must not issue heavy database polling every few seconds.',
+);
+
+check(
+  'Branch dashboard uses realtime with low-frequency recovery polling',
+  branchDashboard.includes("subscribeToStock(branch)")
+    && branchDashboard.includes("5 * 60_000")
+    && branchDashboard.includes("2 * 60_000")
+    && branchDashboard.includes("visibilitychange")
+    && !branchDashboard.includes("}, 10_000)"),
+  'Branch stock and closure summaries must use realtime/visibility refresh with bounded recovery polling.',
+);
+
+check(
+  'Bakery operational dashboards keep realtime updates with bounded polling',
+  bakerDashboard.includes('subscribe: subscribeOrders')
+    && bakerDashboard.includes('subscribeOrders()')
+    && packingDashboard.includes('subscribe: subscribeOrders')
+    && packingDashboard.includes('subscribeOrders()')
+    && orderReceiverDashboard.includes('subscribe: subscribeOrders')
+    && orderReceiverDashboard.includes('subscribeOrders()')
+    && !bakerDashboard.includes('fetchOrders(true); }, 15_000')
+    && !packingDashboard.includes('fetchOrders(true); }, 15_000')
+    && !orderReceiverDashboard.includes('if (!document.hidden) fetchOrders(true);\n    }, 15_000);'),
+  'Baker, Packing and Order Receiver must stay immediate via realtime without 15-second full-order downloads.',
+);
+
+check(
+  'Branch refresh reuses live catalogue prices',
+  branchStore.includes("catalogBranch\n          ? Promise.resolve")
+    && branchStore.includes("supabase.from('bakery_items').select('name, price')"),
+  'SNB/VRSNB/Hosur refreshes must not download the legacy bakery price table when the live catalogue is already loaded.',
 );
 
 
