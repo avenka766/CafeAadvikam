@@ -177,11 +177,16 @@ export default function BranchDashboard({ branch }: Props) {
 
     const unsubscribe = subscribeToStock(branch);
     const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
-    const id = setInterval(refresh, 45_000);
-    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 60 * 1000);
+    const refreshOnVisible = () => { if (!document.hidden) void fetchBranchData(branch); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    // Realtime handles normal stock/order changes. This slower poll is only a
+    // recovery path for a dropped websocket connection.
+    const id = setInterval(refresh, 5 * 60_000);
+    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 5 * 60_000);
 
     return () => {
       unsubscribe();
+      document.removeEventListener('visibilitychange', refreshOnVisible);
       clearInterval(id);
       clearInterval(syncId);
     };
@@ -200,9 +205,12 @@ export default function BranchDashboard({ branch }: Props) {
       setTodayLedger(error ? null : (data as TodayLedger | null));
     };
     void loadTodayLedger();
-    const id = setInterval(() => { if (!document.hidden) void loadTodayLedger(); }, 10_000);
+    const refreshOnVisible = () => { if (!document.hidden) void loadTodayLedger(); };
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    const id = setInterval(() => { if (!document.hidden) void loadTodayLedger(); }, 2 * 60_000);
     return () => {
       active = false;
+      document.removeEventListener('visibilitychange', refreshOnVisible);
       clearInterval(id);
     };
   }, [branch]);

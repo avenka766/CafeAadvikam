@@ -357,7 +357,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .eq('branch', branch)
           .order('received_at', { ascending: false }).limit(500),
         supabase.from('branch_thresholds').select('item_name,threshold').eq('branch', branch),
-        supabase.from('bakery_items').select('name, price'),
+        // SNB/VRSNB/Hosur prices already come from the cached live branch
+        // catalogue. Only Cafe still needs the legacy bakery price fallback.
+        catalogBranch
+          ? Promise.resolve({ data: [] as Array<{ name: string; price: number | null }> })
+          : supabase.from('bakery_items').select('name, price'),
         supabase.from('branch_advance_orders')
           .select('id,branch,customer_name,items,subtotal,advance_amount,advance_method,balance_due,sold_by,created_at,fully_paid_at,balance_method,status,delivery_date,notes,reservation_status')
           .eq('branch', branch)
