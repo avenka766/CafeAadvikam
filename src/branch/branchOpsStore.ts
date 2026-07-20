@@ -785,8 +785,7 @@ const SPARSE_OPERATION_HISTORY_TYPES = [
   'advance_final_bill', 'credit_sale', 'hold_bill', 'advance_order', 'quotation',
   'return', 'purchase_invoice', 'purchase_payment', 'supplier_payment', 'purchase_order', 'cash_movement',
   'counter_opening', 'bank_deposit', 'cashier_closure', 'notification', 'store_order',
-  'supplier', 'expense', 'complaint', 'waste_log', 'cashier_profile', 'salesperson',
-  'audit_log', 'stock_count_report', 'stock_variance',
+  'supplier', 'expense', 'waste_log', 'cashier_profile', 'salesperson', 'audit_log',
 ];
 
 async function loadSparseOperationHistory(branch: Branch | null) {
@@ -897,10 +896,13 @@ const mergeOperationRecordsIntoState = (
 // queries are scoped to just this device's branch. Without a branch filter,
 // every page load pulls up to 5 000 operation records from ALL branches,
 // which multiplies egress by the number of branches. We read the persisted
-// auth state directly from localStorage to avoid a circular store dependency.
+// auth state directly from browser storage to avoid a circular store dependency.
 function getSessionBranch(): Branch | null {
   try {
-    const raw = localStorage.getItem('cafe-aadvikam-auth');
+    // Auth is persisted in sessionStorage. localStorage is only a compatibility
+    // fallback for terminals upgraded from an older build.
+    const raw = sessionStorage.getItem('cafe-aadvikam-auth')
+      ?? localStorage.getItem('cafe-aadvikam-auth');
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { state?: { currentUser?: { role?: string } } };
     const role = parsed?.state?.currentUser?.role ?? '';
