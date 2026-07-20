@@ -772,7 +772,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: dispatchedCakeOrders, error: cakeDispatchError } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,source_order_id,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
+      .select('id,branch,order_no,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
       .eq('branch', branch)
       .eq('status', 'Dispatched')
       .gte('created_at', sixMonthsAgo.toISOString());
@@ -1106,7 +1106,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const { data } = await supabase
       .from('branch_stock_mismatches')
-      .select('*')
+      .select('id, item_barcode, item_name, branch, sold_qty, shortage, sold_at, sold_by')
       .gte('sold_at', thirtyDaysAgo.toISOString())
       .order('sold_at', { ascending: false });
     if (!data) return;
@@ -1154,7 +1154,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   fetchCreditSales: async (branch) => {
     const { data, error } = await supabase
       .from('branch_credit_sales')
-      .select('*')
+      .select('id, branch, source, source_id, customer_ref, customer_name, customer_phone, items, subtotal, amount_paid, credit_amount, sold_by, created_at, due_date, settled_at, status, notes, bill_no, discount_amount')
       .eq('branch', branch)
       .order('created_at', { ascending: false });
     if (error) { console.error('[fetchCreditSales]', error.message); return; }
@@ -1190,10 +1190,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   fetchCreditPayments: async (branch) => {
     const { data, error } = await supabase
       .from('branch_credit_payments')
-      .select('*')
-      .eq('branch', branch)
-      .order('created_at', { ascending: false });
-    if (error) { console.error('[fetchCreditPayments]', error.message); return; }
+      .select('id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at')
     set((s) => {
       const creditPayments = { ...s.creditPayments };
       creditPayments[branch] = (data || [])

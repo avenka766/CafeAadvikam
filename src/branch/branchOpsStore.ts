@@ -929,19 +929,19 @@ const branchOpsSupabaseStorage: PersistStorage<BranchOpsState> = {
 
     let stockCountQuery = supabase
       .from("branch_stock_count_reports")
-      .select("*")
+      .select("id, branch, report_no, lines, status, reported_by, confirmed_by, confirmed_at, created_at, updated_at")
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 200 : 1000); // EGRESS FIX: reduced from 1000
 
     let varianceQuery = supabase
       .from("branch_stock_variance_records")
-      .select("*")
+      .select("id, branch, report_id, report_no, item_name, unit, system_qty, physical_qty, difference, reported_by, confirmed_by, created_at")
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 500 : 2000); // EGRESS FIX: reduced from 2000
 
     let complaintQuery = supabase
       .from("branch_complaint_tickets")
-      .select("*")
+      .select("id, branch, complaint_area, subject, description, created_by_username, status, created_at, updated_at")
       .order("created_at", { ascending: false })
       .limit(sessionBranch ? 200 : 1000);
 
@@ -3011,14 +3011,6 @@ export function nextBranchInvoice(branch: Branch) {
 
 export function nextBranchAdvanceOrderNumber(branch: Branch) {
   return `${branch}-ADV-${String(seq(`adv-${branch}`, 500)).padStart(3, "0")}`;
-}
-
-export async function nextBranchAdvanceOrderNumberAtomic(branch: Branch) {
-  const { data, error } = await supabase.rpc('get_next_advance_order_number', { p_branch: branch });
-  if (error || data == null) {
-    throw new Error(error?.message || 'Unable to allocate an advance order number.');
-  }
-  return String(data);
 }
 
 export async function nextBranchInvoiceAtomic(branch: Branch) {

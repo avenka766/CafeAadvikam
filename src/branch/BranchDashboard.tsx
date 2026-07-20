@@ -178,7 +178,7 @@ export default function BranchDashboard({ branch }: Props) {
     const unsubscribe = subscribeToStock(branch);
     const refresh = () => { if (!document.hidden) void fetchBranchData(branch); };
     const id = setInterval(refresh, 45_000);
-    const syncId = setInterval(() => syncIncomingFromDispatches(branch), 60 * 1000);
+    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 60 * 1000);
 
     return () => {
       unsubscribe();
@@ -200,7 +200,7 @@ export default function BranchDashboard({ branch }: Props) {
       setTodayLedger(error ? null : (data as TodayLedger | null));
     };
     void loadTodayLedger();
-    const id = setInterval(loadTodayLedger, 10_000);
+    const id = setInterval(() => { if (!document.hidden) void loadTodayLedger(); }, 10_000);
     return () => {
       active = false;
       clearInterval(id);
