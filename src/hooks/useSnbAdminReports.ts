@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { BranchBillRecord, ReturnRecord } from "@/branch/branchOpsStore";
 
@@ -404,6 +404,15 @@ function isMissingOptionalWorkflowRpc(message: string) {
   return /get_snb_purchase_workflow_data|could not find the function|schema cache|does not exist/i.test(message);
 }
 
+function isValidReportDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
 export function asNumber(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -414,10 +423,21 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    if (!isValidReportDate(fromDate) || !isValidReportDate(toDate) || fromDate > toDate) {
+      setData(EMPTY);
+      setLoading(false);
+      setError("Select a valid From Date and To Date.");
+      setRefreshedAt(new Date().toISOString());
+      return;
+    }
+
     setLoading(true);
     setError("");
+    setData(EMPTY);
     const range = { fromDate, toDate };
     const results = await Promise.allSettled([
       fetchPaged("snb_counter_calculated_totals", { ...range, dateColumn: "business_date", orderColumn: "business_date", columns: "counter_session_id,business_date,cashier_user_id,cashier_username,opening_cash,bill_count,gross_sales,discounts,cash_sales,upi_sales,card_sales,credit_sales,credit_collected,credit_cash_collected,credit_upi_collected,credit_card_collected,credit_bank_collected,advance_collected,advance_cash_collected,returns,cash_refunds,net_sales,expected_cash_before_outflows" }),
@@ -436,6 +456,9 @@ export function useSnbAdminReports(fromDate: string, toDate: string) {
       fetchSnbPurchaseWorkflowSnapshot(fromDate, toDate),
       fetchSnbOperationHistory(fromDate, toDate),
     ]);
+
+    // A slower request for an earlier date range must not replace the latest report.
+    if (requestId !== requestIdRef.current) return;
 
     const workflowResult = results[13];
     const operationHistoryResult = results[14];

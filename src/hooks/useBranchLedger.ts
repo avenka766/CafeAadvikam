@@ -34,7 +34,6 @@ export type LedgerSavedClosure = {
   refunds: number | string;
   expenses: number | string;
   purchase_payments?: number | string;
-  bank_deposits?: number | string;
   discounts: number | string;
   bill_count: number | string;
   duplicate_prints: number | string;
@@ -84,6 +83,15 @@ function dateRange(fromDate: string, toDate: string) {
   };
 }
 
+function isValidLedgerDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
 export function useBranchLedger(fromDate: string, toDate: string, branches?: Branch[]) {
   const [closureRows, setClosureRows] = useState<LedgerClosureRow[]>([]);
   const [savedClosures, setSavedClosures] = useState<LedgerSavedClosure[]>([]);
@@ -104,6 +112,16 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
   useEffect(() => {
     let active = true;
     const load = async () => {
+      setClosureRows([]);
+      setSavedClosures([]);
+      setOperationRecords([]);
+      setBillHeaders([]);
+      if (!isValidLedgerDate(fromDate) || !isValidLedgerDate(toDate) || fromDate > toDate) {
+        setLoading(false);
+        setError('Select a valid From Date and To Date.');
+        return;
+      }
+
       setLoading(true);
       setError('');
       const { from, to } = dateRange(fromDate, toDate);
@@ -131,6 +149,10 @@ export function useBranchLedger(fromDate: string, toDate: string, branches?: Bra
       if (!active) return;
       const firstError = [closureRes.error, savedRes.error, operationsRes.error, billsRes.error].find(Boolean);
       if (firstError) {
+        setClosureRows([]);
+        setSavedClosures([]);
+        setOperationRecords([]);
+        setBillHeaders([]);
         setError(firstError.message || 'Unable to load branch ledger data.');
         setLoading(false);
         return;
