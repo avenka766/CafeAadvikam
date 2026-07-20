@@ -50,7 +50,7 @@ export const useActivityLogStore = create<ActivityLogState>((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('staff_activity_log')
-        .select('*')
+        .select('id, staff_id, staff_name, role, action, detail, branch, created_at')
         .order('created_at', { ascending: false })
         .limit(limit);
       if (error) throw error;

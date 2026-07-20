@@ -89,7 +89,7 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
     if (!force && (get().loaded || get().loading)) return;
     set({ loading: true, error: null });
     try {
-      const { data, error } = await supabase.from('bakery_recipes').select('*');
+      const { data, error } = await supabase.from('bakery_recipes').select('item_id, item_name, output_qty, output_unit, materials, updated_at, updated_by');
       if (error) throw error;
       const merged = seedRecipes();
       (data ?? []).forEach((row) => {
@@ -118,12 +118,12 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
       updated_by: updatedBy,
       updated_at: new Date().toISOString(),
     };
-    let result = await supabase.from('bakery_recipes').upsert(payload, { onConflict: 'item_id' }).select('*').single();
+    let result = await supabase.from('bakery_recipes').upsert(payload, { onConflict: 'item_id' }).select('item_id, item_name, output_qty, output_unit, materials, updated_at, updated_by').single();
     if (result.error && /updated_by|updated_at|column/i.test(result.error.message)) {
       const legacyPayload = { ...payload } as Record<string, unknown>;
       delete legacyPayload.updated_by;
       delete legacyPayload.updated_at;
-      result = await supabase.from('bakery_recipes').upsert(legacyPayload, { onConflict: 'item_id' }).select('*').single();
+      result = await supabase.from('bakery_recipes').upsert(legacyPayload, { onConflict: 'item_id' }).select('item_id, item_name, output_qty, output_unit, materials, updated_at, updated_by').single();
     }
     if (result.error || !result.data) return result.error?.message ?? 'Failed to save recipe.';
     const saved = mapRow(result.data as Record<string, unknown>);

@@ -55,7 +55,7 @@ export default function StaffActivityLog() {
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   useEffect(() => {
-    const id = setInterval(() => load(), 30_000);
+    const id = setInterval(() => { if (!document.hidden) load(); }, 30_000);
     return () => clearInterval(id);
   }, [load]);
 

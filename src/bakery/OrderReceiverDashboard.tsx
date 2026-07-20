@@ -33,7 +33,7 @@ import {
   ArrowRightLeft,
   Clock3,
 } from "lucide-react";
-import { useBakeryStore } from "./bakeryStore";
+import { useBakeryStore, fetchBakeryOrdersInRange } from "./bakeryStore";
 import { useAuthStore } from "@/stores/authStore";
 import { useNotificationStore } from "./notificationStore";
 import type { BakeryOrder, BakeryOrderItem, Branch } from "./types";
@@ -830,12 +830,8 @@ function SharedAdvanceOrdersPanel({ branch }: { branch: Branch }) {
 
 function PlacedOrdersPanel({
   branch,
-  orders,
-  loading,
 }: {
   branch: Branch;
-  orders: BakeryOrder[];
-  loading: boolean;
 }) {
   const [preset, setPreset] = useState<DatePreset>("today");
   const [customStart, setCustomStart] = useState(toDateInputValue(new Date()));
@@ -915,19 +911,39 @@ function PlacedOrdersPanel({
     [preset, customStart, customEnd],
   );
 
-  const branchOrders = useMemo(
-    () => orders.filter((o) => o.targetBranch === branch),
-    [orders, branch],
-  );
+  const [filteredOrders, setFilteredOrders] = useState<BakeryOrder[]>([]);
+  const [totalBranchOrderCount, setTotalBranchOrderCount] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
-  const filteredOrders = useMemo(
-    () =>
-      branchOrders.filter((order) => {
-        const created = new Date(order.createdAt);
-        return created >= range.start && created <= range.end;
-      }),
-    [branchOrders, range.start, range.end],
-  );
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const [rows, countResult] = await Promise.all([
+        fetchBakeryOrdersInRange({
+          fromIso: range.start.toISOString(),
+          toIso: range.end.toISOString(),
+          targetBranch: branch,
+        }),
+        // Lightweight count-only query (head:true returns zero rows, just a
+        // count) so the lifetime total stat stays accurate without pulling
+        // the branch's entire order history over the wire.
+        supabase
+          .from("bakery_orders")
+          .select("id", { count: "exact", head: true })
+          .eq("target_branch", branch),
+      ]);
+      setFilteredOrders(rows);
+      setTotalBranchOrderCount(countResult.count ?? null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load placed orders.");
+    } finally {
+      setLoading(false);
+    }
+  }, [range.start, range.end, branch]);
+
+  useEffect(() => { void load(); }, [load]);
 
   const itemCount = filteredOrders.reduce(
     (sum, order) => sum + order.items.length,
@@ -1026,15 +1042,31 @@ function PlacedOrdersPanel({
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={downloadExcelReport}
-            disabled={filteredOrders.length === 0}
-            className="h-11 rounded-2xl cafe-gradient px-4 text-sm font-body font-black text-primary-foreground flex items-center justify-center gap-2 disabled:opacity-45 active:scale-95 transition-all"
-          >
-            <Download className="size-4" /> Download Excel
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+              className="h-11 rounded-2xl border border-border bg-background px-4 text-sm font-body font-black text-foreground flex items-center justify-center gap-2 disabled:opacity-60 active:scale-95 transition-all"
+            >
+              <RefreshCw className={cn("size-4", loading && "animate-spin")} /> Refresh
+            </button>
+            <button
+              type="button"
+              onClick={downloadExcelReport}
+              disabled={filteredOrders.length === 0}
+              className="h-11 rounded-2xl cafe-gradient px-4 text-sm font-body font-black text-primary-foreground flex items-center justify-center gap-2 disabled:opacity-45 active:scale-95 transition-all"
+            >
+              <Download className="size-4" /> Download Excel
+            </button>
+          </div>
         </div>
+
+        {loadError && (
+          <div className="mt-3 flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs font-black text-red-700">
+            {loadError} — tap Refresh to try again.
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap gap-2">
           {presets.map((item) => (
@@ -1101,7 +1133,7 @@ function PlacedOrdersPanel({
           </div>
           <div className="rounded-2xl border border-border bg-background p-3 col-span-2 sm:col-span-1">
             <p className="font-display text-2xl font-black leading-none text-foreground">
-              {branchOrders.length}
+              {totalBranchOrderCount ?? "—"}
             </p>
             <p className="mt-1 text-[10px] font-body font-black uppercase tracking-wide text-muted-foreground">
               Total branch orders
@@ -2350,7 +2382,7 @@ export default function OrderReceiverDashboard() {
   useEffect(() => {
     stableFetch();
     const id = setInterval(() => {
-      fetchOrders(true);
+      if (!document.hidden) fetchOrders(true);
     }, 15_000);
     return () => clearInterval(id);
   }, [stableFetch, fetchOrders]);
@@ -2360,7 +2392,7 @@ export default function OrderReceiverDashboard() {
 
   useEffect(() => {
     if (!loaded) load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(() => { if (!document.hidden) load(); }, 30_000);
     return () => clearInterval(id);
   }, [load, loaded]);
 
@@ -2369,10 +2401,10 @@ export default function OrderReceiverDashboard() {
     setHosurLoading(true);
     try {
       const [shopsRes, pricesRes, ordersRes, itemsRes] = await Promise.all([
-        supabase.from("hosur_shops").select("*").eq("is_active", true).order("shop_name", { ascending: true }),
-        supabase.from("hosur_shop_price_lists").select("*").eq("is_active", true),
-        supabase.from("hosur_orders").select("*").order("created_at", { ascending: false }).limit(250),
-        supabase.from("hosur_order_items").select("*").order("created_at", { ascending: true }).limit(3000),
+        supabase.from("hosur_shops").select("id, shop_name, whatsapp_number, address, is_active").eq("is_active", true).order("shop_name", { ascending: true }),
+        supabase.from("hosur_shop_price_lists").select("id, shop_id, item_name, item_unit, unit_price, is_active").eq("is_active", true),
+        supabase.from("hosur_orders").select("id, order_number, shop_id, shop_name, status, subtotal, created_by, created_at, notes").order("created_at", { ascending: false }).limit(250),
+        supabase.from("hosur_order_items").select("id, order_id, item_name, unit, quantity, unit_price, line_total, dispatched_quantity, received_quantity").order("created_at", { ascending: true }).limit(3000),
       ]);
       if (shopsRes.error) throw shopsRes.error;
       if (pricesRes.error) throw pricesRes.error;
@@ -2403,7 +2435,7 @@ export default function OrderReceiverDashboard() {
     void refreshStock(true);
     const unsubscribe = subscribeToStock(branch);
     const refreshId = window.setInterval(() => {
-      void refreshStock(false);
+      if (!document.hidden) void refreshStock(false);
     }, 30_000);
 
     return () => {
@@ -2639,8 +2671,6 @@ export default function OrderReceiverDashboard() {
           ) : (
             <PlacedOrdersPanel
               branch={branch}
-              orders={orders}
-              loading={loading}
             />
           )
         )}

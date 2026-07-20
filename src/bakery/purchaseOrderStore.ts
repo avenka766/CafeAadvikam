@@ -68,7 +68,7 @@ export const usePurchaseOrderStore = create<POState>((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('purchase_orders')
-        .select('*')
+        .select('id, order_number, supplier_id, supplier_name, branch, items, status, notes, created_by, created_at, sent_at, received_at, cancelled_at')
         .order('created_at', { ascending: false });
       if (!error && data) {
         set({ orders: data.map(r => mapRow(r as Record<string, unknown>)), loaded: true });

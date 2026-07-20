@@ -60,7 +60,7 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     set({ loading: true });
     const { data, error } = await supabase
       .from('bakery_items')
-      .select('*')
+      .select('id, name, icon, category, enabled, sort_order, price')
       .eq('enabled', true)
       .order('sort_order', { ascending: true });
     if (!error && data) {
@@ -74,7 +74,7 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
     set({ loading: true, loaded: false });
     const { data, error } = await supabase
       .from('bakery_items')
-      .select('*')
+      .select('id, name, icon, category, enabled, sort_order, price')
       .order('sort_order', { ascending: true });
     if (!error && data) {
       set({ items: data.map(d => rowToItem(d as Record<string, unknown>)), loaded: true });
@@ -196,7 +196,7 @@ export const useBakeryItemsStore = create<BakeryItemsState>((set, get) => ({
 
     const { data: recipes } = await supabase
       .from('bakery_recipes')
-      .select('id')
+      .select('item_id')
       .eq('item_id', id)
       .limit(1);
 

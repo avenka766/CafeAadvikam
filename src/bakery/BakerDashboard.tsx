@@ -1,8 +1,8 @@
 // src/bakery/BakerDashboard.tsx  (Redesigned)
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Download, Calendar, AlertCircle, FileSpreadsheet, Printer, Search } from 'lucide-react';
-import { useBakeryStore } from './bakeryStore';
+import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Download, Calendar, AlertCircle, FileSpreadsheet, Printer, Search, RefreshCw } from 'lucide-react';
+import { useBakeryStore, fetchBakeryOrdersInRange } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import type { PreparedItem } from './types';
 import type { BakeryOrder, BakeryOrderItem } from './types';
@@ -184,7 +184,7 @@ interface BakerReportRow {
 async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]> {
   const { data, error } = await supabase
     .from('bakery_orders')
-    .select('*')
+    .select('order_number, target_branch, items, prepared_items, sent_to_packing_at, status, created_by, created_at')
     .in('status', ['packed', 'dispatched'])
     .order('sent_to_packing_at', { ascending: false, nullsFirst: false });
 
@@ -1016,19 +1016,35 @@ function CompletedCard({ order }: { order: BakeryOrder }) {
   );
 }
 
-function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boolean }) {
+function CompletedTab() {
   const [search, setSearch] = useState('');
   const [fromDate, setFromDate] = useState(inputDate(new Date()));
   const [toDate, setToDate] = useState(inputDate(new Date()));
+  const [dateFilteredOrders, setDateFilteredOrders] = useState<BakeryOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
-  const dateFilteredOrders = useMemo(() => {
-    const from = startOfDay(new Date(`${fromDate}T00:00:00`)).getTime();
-    const to = endOfDay(new Date(`${toDate}T00:00:00`)).getTime();
-    return orders.filter(order => {
-      const completed = safeDate(orderCompletedAt(order));
-      return completed >= from && completed <= to;
-    });
-  }, [fromDate, orders, toDate]);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      const fromIso = startOfDay(new Date(`${fromDate}T00:00:00`)).toISOString();
+      const toIso = endOfDay(new Date(`${toDate}T00:00:00`)).toISOString();
+      const rows = await fetchBakeryOrdersInRange({
+        fromIso,
+        toIso,
+        statuses: ['packed', 'dispatched'],
+        useCompletionDate: true,
+      });
+      setDateFilteredOrders(rows);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'Failed to load completed orders.');
+    } finally {
+      setLoading(false);
+    }
+  }, [fromDate, toDate]);
+
+  useEffect(() => { void load(); }, [load]);
 
   const sortedOrders = useMemo(() => [...dateFilteredOrders].sort((a, b) => safeDate(orderCompletedAt(b)) - safeDate(orderCompletedAt(a))), [dateFilteredOrders]);
   const filteredOrders = useMemo(() => {
@@ -1088,17 +1104,32 @@ function CompletedTab({ orders, loading }: { orders: BakeryOrder[]; loading: boo
             <input type="date" value={toDate} min={fromDate} max={inputDate(new Date())} onChange={e => setToDate(e.target.value)} className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-xs font-body text-foreground" />
           </label>
         </div>
-          <button
-            onClick={downloadCompleted}
-            disabled={filteredOrders.length === 0}
-            className={cn(
-              'h-11 rounded-2xl px-4 text-xs font-body font-bold flex items-center justify-center gap-2 active:scale-95',
-              filteredOrders.length > 0 ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-muted text-muted-foreground cursor-not-allowed'
-            )}
-          >
-            <Download className="size-4" /> Export Completed
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void load()}
+              disabled={loading}
+              className="h-11 rounded-2xl px-4 text-xs font-body font-bold flex items-center justify-center gap-2 active:scale-95 border border-border bg-card text-foreground hover:bg-muted disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-4', loading && 'animate-spin')} /> Refresh
+            </button>
+            <button
+              onClick={downloadCompleted}
+              disabled={filteredOrders.length === 0}
+              className={cn(
+                'h-11 rounded-2xl px-4 text-xs font-body font-bold flex items-center justify-center gap-2 active:scale-95',
+                filteredOrders.length > 0 ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-muted text-muted-foreground cursor-not-allowed'
+              )}
+            >
+              <Download className="size-4" /> Export Completed
+            </button>
+          </div>
       </div>
+
+      {loadError && (
+        <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-700">
+          <AlertCircle className="size-4 shrink-0" /> {loadError} — tap Refresh to try again.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {[
@@ -1180,7 +1211,7 @@ export default function BakerDashboard() {
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
-    const id = setInterval(() => fetchOrders(true), 15_000);
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
     return () => clearInterval(id);
   }, [fetchOrders]);
 
@@ -1199,7 +1230,7 @@ export default function BakerDashboard() {
               {tab === 'closure' ? (
                 <DailyClosureTab />
               ) : tab === 'completed' ? (
-                <CompletedTab orders={completedOrders} loading={initialLoading} />
+                <CompletedTab />
               ) : (
                 <div className="space-y-4 pb-8">
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">

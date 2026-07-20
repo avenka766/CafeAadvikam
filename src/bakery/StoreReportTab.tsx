@@ -101,13 +101,13 @@ export default function StoreReportTab() {
       const [materialRes, customRes] = await Promise.all([
         supabase
           .from('store_material_deductions')
-          .select('*')
+          .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
           .gte('deducted_at', range.from)
           .lte('deducted_at', range.to)
           .order('deducted_at', { ascending: false }),
         supabase
           .from('store_custom_deductions')
-          .select('*')
+          .select('id, item_name, quantity, unit, reason, deducted_by, created_at')
           .gte('created_at', range.from)
           .lte('created_at', range.to)
           .order('created_at', { ascending: false }),

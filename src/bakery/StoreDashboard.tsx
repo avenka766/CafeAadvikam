@@ -819,7 +819,7 @@ function InlineDeductionsView() {
     const to   = new Date(today); to.setHours(23,59,59,999);
     const { data, error } = await supabase
       .from('store_material_deductions')
-      .select('*')
+      .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by, deducted_at')
       .gte('deducted_at', from.toISOString())
       .lte('deducted_at', to.toISOString())
       .order('deducted_at', { ascending: false });
@@ -841,7 +841,7 @@ function InlineDeductionsView() {
 
   useEffect(() => {
     void load();
-    const id = window.setInterval(() => { void load(); }, 30_000);
+    const id = window.setInterval(() => { if (!document.hidden) void load(); }, 30_000);
     return () => window.clearInterval(id);
   }, [load]);
 
@@ -1564,13 +1564,13 @@ function StoreDailyClosureTab() {
       const [autoRes, customRes] = await Promise.all([
         supabase
           .from('store_material_deductions')
-          .select('*')
+          .select('id, order_number, material_name, quantity_deducted, unit, stock_before, stock_after, deducted_by')
           .gte('deducted_at', from)
           .lte('deducted_at', to)
           .order('deducted_at', { ascending: false }),
         supabase
           .from('store_custom_deductions')
-          .select('*')
+          .select('id, item_name, quantity, unit, reason, deducted_by')
           .gte('created_at', from)
           .lte('created_at', to)
           .order('created_at', { ascending: false }),

@@ -95,7 +95,7 @@ export const useStoreStockStore = create<StoreStockState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('store_raw_stock')
-        .select('*')
+        .select('id, name, unit, quantity, min_threshold, archived_at, suppliers')
         .order('name', { ascending: true });
       if (!error && data) {
         set({

@@ -774,7 +774,7 @@ export default function PackingDashboard() {
 
   useEffect(() => {
     fetchOrders().finally(() => setInitialLoading(false));
-    const id = setInterval(() => fetchOrders(true), 15_000);
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15_000);
     return () => clearInterval(id);
   }, [fetchOrders]);
 

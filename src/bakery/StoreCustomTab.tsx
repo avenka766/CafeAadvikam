@@ -61,7 +61,7 @@ const REASON_PRESETS = [
 async function fetchDeductions(): Promise<{ records: CustomDeduction[]; tableReady: boolean }> {
   const { data, error } = await supabase
     .from('store_custom_deductions')
-    .select('*')
+    .select('id, item_name, item_id, quantity, unit, reason, deducted_by, created_at')
     .order('created_at', { ascending: false })
     .limit(100);
 

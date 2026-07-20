@@ -125,7 +125,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         if (isMissingRpcError(error)) {
           const fallback = await supabase
             .from('store_invoices')
-            .select('*')
+            .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
             .order('created_at', { ascending: false });
           data = fallback.data as Record<string, unknown>[] | null;
           error = fallback.error;
@@ -133,7 +133,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
       } else {
         const result = await supabase
           .from('store_invoices')
-          .select('*')
+          .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
           .order('created_at', { ascending: false });
         data = result.data as Record<string, unknown>[] | null;
         error = result.error;
@@ -254,7 +254,7 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
         })
         .eq('id', id)
         .eq('status', 'pending_review')
-        .select('*')
+        .select('id, invoice_number, supplier_id, supplier_name, delivery_date, line_items, grand_total, status, purchase_status, notes, synced_to_stock, created_at, reviewed_at, review_note, edited_at, edit_count')
         .maybeSingle();
     }
 

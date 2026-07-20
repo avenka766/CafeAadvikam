@@ -87,7 +87,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const role = useAuthStore.getState().currentUser?.role ?? 'admin';
       const { data, error } = await supabase
         .from('admin_notifications')
-        .select('*')
+        .select('id, type, title, body, ref_id, ref_label, meta, is_read, created_at, recipient_role')
         .eq('recipient_role', role)
         .order('created_at', { ascending: false })
         .limit(100);

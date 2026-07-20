@@ -37,7 +37,7 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('store_suppliers')
-        .select('*')
+        .select('id, business_name, contact_name, phone, email, address, items_supplied, created_at, archived_at')
         .order('business_name', { ascending: true });
       if (error) throw error;
       const suppliers: Supplier[] = (data ?? []).filter((r: Record<string, unknown>) => !r.archived_at).map((r: Record<string, unknown>) => ({

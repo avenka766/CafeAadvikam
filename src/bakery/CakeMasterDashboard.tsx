@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Cake, CheckCircle2, Send, Loader2, AlertTriangle,
-  Phone, Receipt, Calendar, ChevronDown, ChevronUp, RefreshCcw, ImageOff,
+  Phone, Receipt, Calendar, ChevronDown, ChevronUp, RefreshCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -29,7 +29,6 @@ interface CakeMasterOrder {
   creamType: string | null;
   messageOnCake: string | null;
   designNotes: string | null;
-  attachmentDataUrl: string | null;
   orderValue: number;
   advanceAmount: number;
   balanceAmount: number;
@@ -55,7 +54,6 @@ function mapRow(d: any): CakeMasterOrder {
     creamType: d.cream_type,
     messageOnCake: d.message_on_cake,
     designNotes: d.design_notes,
-    attachmentDataUrl: d.attachment_data_url,
     orderValue: Number(d.order_value || 0),
     advanceAmount: Number(d.advance_amount || 0),
     balanceAmount: Number(d.balance_amount || 0),
@@ -123,7 +121,6 @@ function OrderCard({
 }) {
   const [open, setOpen] = useState(false);
   const [packingQty, setPackingQty] = useState(String(order.preparedQuantity ?? order.cakeKg ?? order.quantity ?? ''));
-  const [imgFailed, setImgFailed] = useState(false);
   const showPackingInput = order.status === 'Baking';
 
   return (
@@ -171,26 +168,6 @@ function OrderCard({
             <div className="rounded-xl bg-amber-50 p-2.5 text-xs">
               {order.messageOnCake && <p><span className="font-bold text-amber-700">Message on cake: </span>{order.messageOnCake}</p>}
               {order.designNotes && <p className="mt-1"><span className="font-bold text-amber-700">Design notes: </span>{order.designNotes}</p>}
-            </div>
-          )}
-          {order.attachmentDataUrl ? (
-            !imgFailed ? (
-              <a href={order.attachmentDataUrl} target="_blank" rel="noreferrer">
-                <img
-                  src={order.attachmentDataUrl}
-                  alt="Cake reference"
-                  onError={() => setImgFailed(true)}
-                  className="max-h-56 w-full rounded-xl border border-slate-200 object-contain"
-                />
-              </a>
-            ) : (
-              <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 text-xs font-bold text-slate-400">
-                <ImageOff className="size-4" /> Reference photo failed to load.
-              </div>
-            )
-          ) : (
-            <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-3 text-xs font-bold text-slate-400">
-              <ImageOff className="size-4" /> No reference photo attached to this order.
             </div>
           )}
           <div className="flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs">
@@ -262,7 +239,7 @@ export default function CakeMasterDashboard() {
     setLoading(true);
     const { data, error: err } = await supabase
       .from('cake_master_orders')
-      .select('*')
+      .select('id, branch, order_no, slip_number, customer_name, mobile, delivery_date, delivery_time, cake_kg, quantity, prepared_quantity, flavor, shape, cream_type, message_on_cake, design_notes, order_value, advance_amount, balance_amount, status, created_at')
       .order('delivery_date', { ascending: true })
       .order('delivery_time', { ascending: true })
       .limit(500);

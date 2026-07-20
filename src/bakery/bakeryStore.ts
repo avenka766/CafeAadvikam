@@ -23,7 +23,7 @@ interface BakeryState {
   subscribe: () => () => void; // returns unsubscribe fn
 }
 
-function rowToOrder(d: Record<string, unknown>): BakeryOrder {
+export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
   return {
     id: d.id as string,
     orderNumber: d.order_number as number,
@@ -45,18 +45,58 @@ function rowToOrder(d: Record<string, unknown>): BakeryOrder {
   };
 }
 
+const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes';
+
+// Standalone, on-demand query — deliberately NOT part of the polled Zustand
+// store above. Used by features that need an arbitrary/historical date range
+// (e.g. BakerDashboard's Completed-orders report, OrderReceiverDashboard's
+// Placed-orders panel) so they always see the full history the user asks for,
+// regardless of the 60-day window the live 15s poll is bounded to.
+export async function fetchBakeryOrdersInRange(options: {
+  fromIso: string;
+  toIso: string;
+  statuses?: WorkflowStatus[];
+  targetBranch?: Branch;
+  // When true, filters on completion date (sent_to_packing_at, falling back to
+  // created_at for orders never sent to packing) instead of created_at — matches
+  // the semantics of orderCompletedAt() used by BakerDashboard's Completed tab.
+  useCompletionDate?: boolean;
+}): Promise<BakeryOrder[]> {
+  const { fromIso, toIso, statuses, targetBranch, useCompletionDate } = options;
+  let query = supabase.from('bakery_orders').select(BAKERY_ORDER_COLUMNS);
+  if (statuses && statuses.length > 0) query = query.in('status', statuses);
+  if (targetBranch) query = query.eq('target_branch', targetBranch);
+  query = useCompletionDate
+    ? query.or(`and(sent_to_packing_at.gte.${fromIso},sent_to_packing_at.lte.${toIso}),and(sent_to_packing_at.is.null,created_at.gte.${fromIso},created_at.lte.${toIso})`)
+    : query.gte('created_at', fromIso).lte('created_at', toIso);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(5000);
+  if (error) throw error;
+  return (data ?? []).map((d) => rowToOrder(d as Record<string, unknown>));
+}
+
 export const useBakeryStore = create<BakeryState>((set, get) => ({
   orders: [],
   loading: false,
 
   // FIX: `silent=true` skips setting loading:true so background 15s polls
   // don't cause the StoreDashboard list to flash/unmount and lose local state.
+  //
+  // EGRESS FIX: bounded to a 60-day rolling window, matching the same pattern
+  // already used for the café orders table (orderStore.ts). Every downstream
+  // consumer (StoreDashboard, PackingDashboard, BakerDashboard, OrderReceiverDashboard,
+  // BakeryItemManagement) filters this list by STATUS only (pending/baking/packed/
+  // dispatched etc.), never by date, and a bakery order moves from placed to
+  // dispatched within days — so 60 days comfortably covers real operational use
+  // while stopping this 15 s poll from re-fetching the entire order history forever.
   fetchOrders: async (silent = false) => {
     if (!silent) set({ loading: true });
     try {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 60);
       const { data, error } = await supabase
         .from('bakery_orders')
-        .select('*')
+        .select(BAKERY_ORDER_COLUMNS)
+        .gte('created_at', cutoff.toISOString())
         .order('created_at', { ascending: false });
       if (!error && data) {
         set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
