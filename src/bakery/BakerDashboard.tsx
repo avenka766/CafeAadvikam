@@ -679,11 +679,15 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
             {order.storeSourceOrderNumber && order.storeSourceOrderNumber !== order.orderNumber && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-blue-700">From Store order #{order.storeSourceOrderNumber}</span>}
             <span className={cn(
               'text-[9px] font-body font-bold px-2 py-0.5 rounded-full border',
-              order.status === 'partially_packed'
+              order.status === 'correction_required'
+                ? 'bg-red-100 text-red-700 border-red-200'
+                : order.status === 'partially_packed'
                 ? 'bg-purple-100 text-purple-700 border-purple-200'
                 : 'bg-orange-100 text-orange-700 border-orange-200'
             )}>
-              {order.status === 'partially_packed'
+              {order.status === 'correction_required'
+                ? 'WEIGHT CORRECTION'
+                : order.status === 'partially_packed'
                 ? `↗ PARTIALLY SENT (${preparedItems.length}/${order.items.length})`
                 : '🔥 BAKING'}
             </span>
@@ -699,6 +703,8 @@ function ActiveBakeCard({ order }: { order: ReturnType<typeof useBakeryStore.get
 
       {expanded && (
         <div className="border-t border-orange-100 px-4 pb-4 pt-3 space-y-4">
+
+          {order.status === 'correction_required' && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-800"><p className="font-black">Returned by Packing</p><p className="mt-1">{order.correctionRequest?.reason || 'Correct the prepared weight and send the affected item back to Packing.'}</p><p className="mt-1 text-[10px] text-red-600">Requested by {order.correctionRequest?.requestedBy || 'Packing'}</p></div>}
 
           {/* Already sent to packing */}
           {preparedItems.length > 0 && (
@@ -1220,7 +1226,7 @@ export default function BakerDashboard() {
 
   const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
   const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const bakingOrders = orders.filter(o => o.status === 'baking' || o.status === 'partially_packed');
+  const bakingOrders = orders.filter(o => o.status === 'baking' || o.status === 'partially_packed' || o.status === 'correction_required');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
   const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;

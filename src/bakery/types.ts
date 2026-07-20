@@ -2,7 +2,7 @@
 
 export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'baker' | 'packing';
 
-export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'partially_packed' | 'packed' | 'dispatched';
+export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'correction_required' | 'partially_packed' | 'packed' | 'dispatched';
 
 export interface BakeryOrderItem {
   itemId: string;
@@ -50,6 +50,12 @@ export interface BakeryOrder {
   storeSendRequestId?: string;
   /** U-14 FIX: special instructions or notes attached to the bakery order */
   notes?: string;
+  correctionRequest?: {
+    items: PreparedItem[];
+    reason: string;
+    requestedBy: string;
+    requestedAt: string;
+  };
 }
 
 export interface PreparedItem {

@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 
-type CakeOrderStatus = 'New' | 'Accepted' | 'Baking' | 'Ready for Packing' | 'Packed' | 'Dispatched';
+type CakeOrderStatus = 'New' | 'Accepted' | 'Baking' | 'Correction Required' | 'Ready for Packing' | 'Packed' | 'Dispatched' | 'Cancelled';
 
 interface CakeMasterOrder {
   id: string;
@@ -34,6 +34,10 @@ interface CakeMasterOrder {
   balanceAmount: number;
   status: CakeOrderStatus;
   createdAt: string;
+  correctionReason: string | null;
+  correctionRequestedBy: string | null;
+  cancellationReason: string | null;
+  cancelledBy: string | null;
 }
 
 function mapRow(d: any): CakeMasterOrder {
@@ -59,6 +63,10 @@ function mapRow(d: any): CakeMasterOrder {
     balanceAmount: Number(d.balance_amount || 0),
     status: d.status,
     createdAt: d.created_at,
+    correctionReason: d.correction_reason,
+    correctionRequestedBy: d.correction_requested_by,
+    cancellationReason: d.cancellation_reason,
+    cancelledBy: d.cancelled_by,
   };
 }
 
@@ -75,9 +83,11 @@ const STATUS_STYLES: Record<CakeOrderStatus, string> = {
   New: 'bg-blue-100 text-blue-800',
   Accepted: 'bg-amber-100 text-amber-800',
   Baking: 'bg-orange-100 text-orange-800',
+  'Correction Required': 'bg-red-100 text-red-800',
   'Ready for Packing': 'bg-indigo-100 text-indigo-800',
   Packed: 'bg-cyan-100 text-cyan-800',
   Dispatched: 'bg-emerald-100 text-emerald-800',
+  Cancelled: 'bg-slate-200 text-slate-700',
 };
 
 function playNewOrderAlert() {
@@ -121,7 +131,7 @@ function OrderCard({
 }) {
   const [open, setOpen] = useState(false);
   const [packingQty, setPackingQty] = useState(String(order.preparedQuantity ?? order.cakeKg ?? order.quantity ?? ''));
-  const showPackingInput = order.status === 'Baking';
+  const showPackingInput = order.status === 'Baking' || order.status === 'Correction Required';
 
   return (
     <div className={cn(
@@ -170,6 +180,8 @@ function OrderCard({
               {order.designNotes && <p className="mt-1"><span className="font-bold text-amber-700">Design notes: </span>{order.designNotes}</p>}
             </div>
           )}
+          {order.status === 'Correction Required' && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-800"><p className="font-black">Returned by Packing for weight correction</p><p className="mt-1">{order.correctionReason || 'Please verify and correct the prepared weight.'}</p><p className="mt-1 text-[10px] text-red-600">Requested by {order.correctionRequestedBy || 'Packing'}</p></div>}
+          {order.status === 'Cancelled' && <div className="rounded-xl border border-slate-300 bg-slate-100 p-3 text-xs font-bold text-slate-700"><p className="font-black">Order cancelled by branch</p><p className="mt-1">{order.cancellationReason || 'No reason provided'}</p><p className="mt-1 text-[10px]">Cancelled by {order.cancelledBy || 'Branch'}</p></div>}
           <div className="flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs">
             <span className="font-bold text-slate-500">Order Value ₹{order.orderValue.toFixed(2)} · Advance ₹{order.advanceAmount.toFixed(2)}</span>
             <span className="font-black text-slate-800">Balance ₹{order.balanceAmount.toFixed(2)}</span>
@@ -189,7 +201,7 @@ function OrderCard({
 
           {showPackingInput && (
             <div className="space-y-2 rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">
-              <p className="text-[11px] font-black uppercase tracking-wide text-indigo-700">Quantity Prepared</p>
+              <p className="text-[11px] font-black uppercase tracking-wide text-indigo-700">{order.status === 'Correction Required' ? 'Corrected Quantity Prepared' : 'Quantity Prepared'}</p>
               <p className="text-[11px] font-bold text-indigo-600">Enter the actual weight/count prepared — the bill and balance will recalculate automatically.</p>
               <div className="flex gap-2">
                 <input
@@ -233,13 +245,14 @@ export default function CakeMasterDashboard() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [workflowView, setWorkflowView] = useState<'active' | 'corrections' | 'cancelled'>('active');
   const knownIds = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const { data, error: err } = await supabase
       .from('cake_master_orders')
-      .select('id, branch, order_no, slip_number, customer_name, mobile, delivery_date, delivery_time, cake_kg, quantity, prepared_quantity, flavor, shape, cream_type, message_on_cake, design_notes, order_value, advance_amount, balance_amount, status, created_at')
+      .select('id, branch, order_no, slip_number, customer_name, mobile, delivery_date, delivery_time, cake_kg, quantity, prepared_quantity, flavor, shape, cream_type, message_on_cake, design_notes, order_value, advance_amount, balance_amount, status, created_at, correction_reason, correction_requested_by, cancellation_reason, cancelled_by')
       .order('delivery_date', { ascending: true })
       .order('delivery_time', { ascending: true })
       .limit(500);
@@ -273,7 +286,8 @@ export default function CakeMasterDashboard() {
     () => orders.filter((o) => o.deliveryDate === today && o.status !== 'Dispatched'),
     [orders, today],
   );
-  const visibleOrders = view === 'today' ? todaysOrders : orders;
+  const dateOrders = view === 'today' ? todaysOrders : orders;
+  const visibleOrders = dateOrders.filter(order => workflowView === 'corrections' ? order.status === 'Correction Required' : workflowView === 'cancelled' ? order.status === 'Cancelled' : !['Correction Required', 'Cancelled'].includes(order.status));
 
   const unnoticedIds = useMemo(
     () => new Set(orders.filter((o) => o.status === 'New').map((o) => o.id)),
@@ -325,6 +339,10 @@ export default function CakeMasterDashboard() {
         <button type="button" onClick={() => void load()} disabled={loading} className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-black text-slate-600 disabled:cursor-wait disabled:opacity-60">
           <RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh
         </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+        {([['active', 'Active'], ['corrections', `Corrections (${orders.filter(order => order.status === 'Correction Required').length})`], ['cancelled', `Cancelled (${orders.filter(order => order.status === 'Cancelled').length})`]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setWorkflowView(id)} className={cn('rounded-xl px-4 py-2 text-xs font-black', workflowView === id ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-600')}>{label}</button>)}
       </div>
 
       {error && (

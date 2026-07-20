@@ -6,7 +6,7 @@ import {
   Package, Loader2, ChevronDown, ChevronUp, Truck,
   AlertTriangle, CheckCircle2, ClipboardCheck, Lock,
   BoxSelect, MapPin, FileSpreadsheet, Calendar, Send,
-  Printer, RefreshCw, ShoppingCart, ArrowDownToLine,
+  Printer, RefreshCw, ShoppingCart, ArrowDownToLine, RotateCcw,
 } from 'lucide-react';
 import { useBakeryStore } from './bakeryStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -34,9 +34,9 @@ interface PackedEntry {
 }
 
 type TimeFilter = 'today' | '7d' | '15d' | '30d';
-type ActiveTab  = 'orders' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure' | 'cake-orders';
+type ActiveTab  = 'orders' | 'corrections' | 'transfer-in' | 'billing' | 'leftover' | 'dispatched' | 'closure' | 'cake-orders';
 type BranchFilter = 'all' | Branch;
-const PACKING_TABS: ActiveTab[] = ['orders', 'cake-orders', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
+const PACKING_TABS: ActiveTab[] = ['orders', 'cake-orders', 'corrections', 'transfer-in', 'billing', 'leftover', 'dispatched', 'closure'];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BRANCH_META: Record<Branch, { color: string; bg: string; icon: string }> = {
@@ -188,7 +188,7 @@ function DispatchRow({ itemName, available, onDispatch, submitting, defaultBranc
 
 // ─── Packing Order Card (New Orders tab) ──────────────────────────────────────
 function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.getState>['orders'][0] }) {
-  const { submitDispatch } = useBakeryStore();
+  const { submitDispatch, returnForCorrection } = useBakeryStore();
   const { currentUser }   = useAuthStore();
 
   const [expanded,         setExpanded]         = useState(order.status === 'packed' || order.status === 'partially_packed');
@@ -197,6 +197,9 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const transferBranch: Branch = order.targetBranch ?? 'SNB';
   const [transferQty, setTransferQty] = useState<Record<string, string>>({});
   const [transferring, setTransferring] = useState(false);
+  const [returnItems, setReturnItems] = useState<Set<string>>(new Set());
+  const [returnReason, setReturnReason] = useState('');
+  const [returning, setReturning] = useState(false);
 
   const [packedEntries, setPackedEntries] = useState<PackedEntry[]>([]);
   useEffect(() => {
@@ -256,6 +259,22 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
   const confirmedCount = packedEntries.filter(e => e.confirmed || isFullySentItem(e.itemName)).length;
 
   const allDispatched = preparedItems.length > 0 && preparedItems.every(p => (stockByItem[p.itemName]?.available ?? 1) <= 0);
+
+  const returnSelected = async () => {
+    setDispatchError(null);
+    if (returnItems.size === 0) { setDispatchError('Select the item whose packed weight does not match.'); return; }
+    if (!returnReason.trim()) { setDispatchError('Enter the reason and expected correction.'); return; }
+    setReturning(true);
+    try {
+      await returnForCorrection(order.id, Array.from(returnItems), returnReason);
+      setReturnItems(new Set());
+      setReturnReason('');
+    } catch (error) {
+      setDispatchError(error instanceof Error ? error.message : 'Unable to return the items to Baker.');
+    } finally {
+      setReturning(false);
+    }
+  };
 
   const handleDispatch = async (itemName: string, qty: number, branch: Branch, unit?: 'pcs' | 'kg') => {
     if (!currentUser || dispatchingItems.has(itemName)) return;
@@ -368,6 +387,30 @@ function PackingOrderCard({ order }: { order: ReturnType<typeof useBakeryStore.g
               </div>
             </div>
           )}
+
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3.5">
+            <div className="flex items-start gap-2.5">
+              <RotateCcw className="mt-0.5 size-4 shrink-0 text-amber-700" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-amber-950">Weight does not match?</p>
+                <p className="mt-0.5 text-[10px] font-semibold text-amber-800">Select only the affected items. They move to Baker Corrections and return here after the corrected weight is submitted.</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {packedEntries.filter(entry => !isFullySentItem(entry.itemName)).map(entry => (
+                    <label key={entry.itemId} className={cn('flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold', returnItems.has(entry.itemId) ? 'border-amber-500 bg-white text-amber-900' : 'border-amber-200 bg-amber-50 text-amber-800')}>
+                      <input type="checkbox" checked={returnItems.has(entry.itemId)} onChange={(event) => setReturnItems(current => { const next = new Set(current); if (event.target.checked) next.add(entry.itemId); else next.delete(entry.itemId); return next; })} />
+                      {entry.itemName}
+                    </label>
+                  ))}
+                </div>
+                {returnItems.size > 0 && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                    <input value={returnReason} onChange={event => setReturnReason(event.target.value)} placeholder="Example: received 1.4 kg; expected 1.5 kg" className="h-10 rounded-xl border border-amber-300 bg-white px-3 text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-300" />
+                    <button type="button" disabled={returning} onClick={() => void returnSelected()} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-amber-700 px-4 text-xs font-bold text-white disabled:opacity-50"><RotateCcw className="size-3.5" />{returning ? 'Returning...' : 'Return to Baker'}</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
 
           {/* Step 1: Confirm packing */}
           <div>
@@ -848,6 +891,10 @@ export default function PackingDashboard() {
     () => packingOrders.filter(o => o.status === 'dispatched'),
     [packingOrders],
   );
+  const correctionOrders = useMemo(
+    () => orders.filter(order => order.status === 'correction_required'),
+    [orders],
+  );
 
   const filteredPackingOrders = useMemo(() => {
     return readyToPackOrders
@@ -1011,10 +1058,10 @@ export default function PackingDashboard() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[10px] font-body font-bold text-muted-foreground uppercase tracking-widest mb-1">
-                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'cake-orders' ? 'Cake dispatch' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
+                {activeTab === 'orders' ? 'Packing workflow' : activeTab === 'cake-orders' ? 'Cake dispatch' : activeTab === 'corrections' ? 'Returned weights' : activeTab === 'transfer-in' ? 'Incoming stock' : activeTab === 'billing' ? 'Packing sales' : activeTab === 'leftover' ? 'Undispatched balance' : activeTab === 'dispatched' ? 'Dispatched history' : 'Packing closure'}
               </p>
               <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground">
-                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'cake-orders' ? 'Cake Orders' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
+                {activeTab === 'orders' ? 'Packing Orders' : activeTab === 'cake-orders' ? 'Cake Orders' : activeTab === 'corrections' ? 'Corrections' : activeTab === 'transfer-in' ? 'Transfer In' : activeTab === 'billing' ? 'Billing' : activeTab === 'leftover' ? 'Leftover Items' : activeTab === 'dispatched' ? 'Dispatched' : 'Daily Closure'}
               </h2>
               <p className="text-xs md:text-sm font-body text-muted-foreground mt-1">
                 {activeTab === 'orders'
@@ -1058,6 +1105,20 @@ export default function PackingDashboard() {
             <PackingTransferInTab />
           ) : activeTab === 'cake-orders' ? (
             <PackingCakeOrdersTab />
+          ) : activeTab === 'corrections' ? (
+            <section className="space-y-3">
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">These items are waiting for Baker to enter the corrected weight. They automatically return to Packing Orders after Baker sends them again.</div>
+              {correctionOrders.length ? correctionOrders.map(order => (
+                <div key={order.id} className="rounded-2xl border border-border bg-card p-4 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div><p className="font-display text-sm font-bold">Order #{order.orderNumber}</p><p className="text-[10px] font-bold uppercase text-muted-foreground">{order.targetBranch ?? 'Branch'} · Returned by {order.correctionRequest?.requestedBy ?? 'Packing'}</p></div>
+                    <span className="rounded-full bg-amber-100 px-3 py-1 text-[10px] font-bold text-amber-800">WAITING FOR BAKER</span>
+                  </div>
+                  <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">{order.correctionRequest?.reason || 'Weight correction requested'}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">{(order.correctionRequest?.items ?? []).map(item => <span key={item.itemId} className="rounded-xl border border-border bg-background px-3 py-2 text-xs font-bold">{item.itemName}: {item.quantityPrepared} kg</span>)}</div>
+                </div>
+              )) : <div className="rounded-2xl border border-dashed border-border bg-card py-20 text-center"><CheckCircle2 className="mx-auto size-9 text-emerald-500" /><p className="mt-3 text-sm font-bold">No weight corrections pending</p></div>}
+            </section>
           ) : activeTab === 'billing' ? (
             <div className="min-h-[70vh] space-y-3">
               {packingCounterError && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><AlertTriangle className="mr-2 inline size-4" />{packingCounterError}</div>}

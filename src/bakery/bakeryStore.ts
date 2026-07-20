@@ -18,6 +18,7 @@ interface BakeryState {
   addStagedItem: (orderId: string, item: PreparedItem) => Promise<void>;
   removeStagedItem: (orderId: string, itemId: string) => Promise<void>;
   sendStagedToPacking: (orderId: string) => Promise<void>;
+  returnForCorrection: (orderId: string, itemIds: string[], reason: string) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
   subscribe: () => () => void; // returns unsubscribe fn
@@ -42,10 +43,11 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     storeSourceOrderNumber: d.store_source_order_number as number | undefined,
     storeSendRequestId: d.store_send_request_id as string | undefined,
     notes: d.notes as string | undefined, // U-14 FIX
+    correctionRequest: d.correction_request as BakeryOrder['correctionRequest'],
   };
 }
 
-const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes';
+const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
 
 // Standalone, on-demand query — deliberately NOT part of the polled Zustand
 // store above. Used by features that need an arbitrary/historical date range
@@ -345,6 +347,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       prepared_items: mergedPrepared,
       staged_items: [],
       status: newStatus,
+      correction_request: null,
     };
     const sentToPackingAt = isFullyPrepared ? new Date().toISOString() : order.sentToPackingAt;
     if (isFullyPrepared) updatePayload.sent_to_packing_at = sentToPackingAt;
@@ -358,7 +361,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     set(s => ({
       orders: s.orders.map(o =>
         o.id === orderId
-          ? { ...o, preparedItems: mergedPrepared, stagedItems: [], status: newStatus, sentToPackingAt }
+          ? { ...o, preparedItems: mergedPrepared, stagedItems: [], status: newStatus, sentToPackingAt, correctionRequest: undefined }
           : o
       ),
     }));
@@ -408,6 +411,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         branch:    order.targetBranch,
       });
     }
+  },
+
+  returnForCorrection: async (orderId, itemIds, reason) => {
+    if (itemIds.length === 0) throw new Error('Select at least one item to return.');
+    if (!reason.trim()) throw new Error('Enter the weight correction reason.');
+    const { data, error } = await supabase.rpc('return_bakery_order_for_correction_secure', {
+      p_order_id: orderId,
+      p_item_ids: itemIds,
+      p_reason: reason.trim(),
+    });
+    if (error) throw error;
+    const returned = rowToOrder(data as Record<string, unknown>);
+    set(state => ({ orders: state.orders.map(order => order.id === orderId ? returned : order) }));
   },
 
   submitDispatch: async (orderId, entry) => {
