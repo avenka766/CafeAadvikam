@@ -11,7 +11,29 @@ window.addEventListener('unhandledrejection', (e) => {
   const msg = e?.reason?.message ?? '';
   if (msg.includes('Failed to fetch dynamically imported module') || msg.includes('Importing a module script failed')) {
     window.location.reload();
+    return;
   }
+  window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: {
+    message: msg || 'An unexpected background operation failed',
+    code: e?.reason?.code,
+    details: e?.reason?.details,
+    hint: e?.reason?.hint,
+    module: 'Background operation',
+    severity: 'error',
+    at: Date.now(),
+  } }));
+});
+window.addEventListener('error', (event) => {
+  // Resource load errors have no useful Error object and are commonly caused
+  // by browser extensions; React render errors are handled by ErrorBoundary.
+  if (!event.error) return;
+  window.dispatchEvent(new CustomEvent('cafe:data-error', { detail: {
+    message: event.error instanceof Error ? event.error.message : event.message,
+    details: event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : undefined,
+    module: 'Browser runtime',
+    severity: 'error',
+    at: Date.now(),
+  } }));
 });
 
 try {
