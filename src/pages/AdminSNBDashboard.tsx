@@ -19,11 +19,12 @@ import { useBranchStore } from "@/branch/branchStore";
 import {
   money,
   useBranchOpsStore,
+  type BranchBillRecord,
   type PurchaseRecord,
   type SalespersonProfile,
 } from "@/branch/branchOpsStore";
 import { useBranchCatalogStore } from "@/stores/branchCatalogStore";
-import { printAccountingVoucher, printHtml } from "@/branch/printUtils";
+import { printAccountingVoucher, printCounterBill, printHtml } from "@/branch/printUtils";
 import { downloadExcel, downloadExcelWorkbook } from "@/lib/excelDownload";
 import type { Branch } from "@/branch/types";
 import {
@@ -1056,7 +1057,7 @@ export default function AdminSNBDashboard() {
       {tab === "suppliers" && <SuppliersTab userName={userName} />}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
-      {tab === "waste" && <WasteLogsTab userName={userName} />}
+      {tab === "waste" && <WasteLogsTab userName={userName} role={role} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
       {tab === "credit" && <CreditTab userName={userName} role={role} fromDate={fromDate} toDate={toDate} />}
       {tab === "invoices" && (
@@ -2349,7 +2350,25 @@ function printWasteLogBatch(entries: Array<{ itemName: string; quantity: number;
   printHtml(`${branchLabel} Waste Log - ${entries.length} items`, body);
 }
 
-function WasteLogsTab({ userName }: { userName: string }) {
+type SnbWasteHistoryRow = {
+  id: string;
+  logType: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  reason: string;
+  verifiedBy: string;
+  createdBy: string;
+  createdAt: string;
+  checklist: string[];
+  status: "Active" | "Cancelled";
+  editReason: string;
+  editedBy: string;
+  cancellationReason: string;
+  cancelledBy: string;
+};
+
+function WasteLogsTab({ userName, role }: { userName: string; role: string }) {
   const catalogItems = useSNBCatalog();
   const { addWasteLog } = useBranchOpsStore();
   const { stock } = useBranchStore();
@@ -2361,13 +2380,19 @@ function WasteLogsTab({ userName }: { userName: string }) {
   // `branch_waste_logs` Supabase table (written by record_branch_waste_batch_secure).
   // The previous version read only from the local branchOpsStore, so entries
   // made from SNB Order never showed here and vice-versa across devices.
-  const [rows, setRows] = useState<Array<{ id: string; logType: string; itemName: string; quantity: number; unit: string; reason: string; verifiedBy: string; createdBy: string; createdAt: string; checklist: string[] }>>([]);
+  const [rows, setRows] = useState<SnbWasteHistoryRow[]>([]);
   const [rowsLoading, setRowsLoading] = useState(true);
+  const [manageRow, setManageRow] = useState<SnbWasteHistoryRow | null>(null);
+  const [manageMode, setManageMode] = useState<"edit" | "cancel">("edit");
+  const [manageForm, setManageForm] = useState({ quantity: "", reason: "", verifiedBy: "", actionReason: "", password: "" });
+  const [manageError, setManageError] = useState("");
+  const [managing, setManaging] = useState(false);
+  const canManageWaste = ["admin_snb", "admin", "owner"].includes(role);
   const loadRows = async () => {
     setRowsLoading(true);
     const { data, error: loadError } = await supabase
       .from("branch_waste_logs")
-      .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist")
+      .select("id,log_type,item_name,quantity,unit,reason,verified_by,created_by_username,created_at,checklist,status,edit_reason,edited_by_username,cancellation_reason,cancelled_by_username")
       .eq("branch", BRANCH)
       .order("created_at", { ascending: false })
       .limit(1000);
@@ -2385,6 +2410,11 @@ function WasteLogsTab({ userName }: { userName: string }) {
           createdBy: d.created_by_username || "",
           createdAt: d.created_at,
           checklist: Array.isArray(d.checklist) ? d.checklist : [],
+          status: d.status === "Cancelled" ? "Cancelled" : "Active",
+          editReason: d.edit_reason || "",
+          editedBy: d.edited_by_username || "",
+          cancellationReason: d.cancellation_reason || "",
+          cancelledBy: d.cancelled_by_username || "",
         })),
       );
     }
@@ -2443,6 +2473,51 @@ function WasteLogsTab({ userName }: { userName: string }) {
     setLineDraft((current) => ({ ...current, quantity: "" }));
   };
   const removeLine = (lineId: string) => setLines((current) => current.filter((line) => line.lineId !== lineId));
+
+  const openManage = (row: SnbWasteHistoryRow, mode: "edit" | "cancel") => {
+    setManageRow(row);
+    setManageMode(mode);
+    setManageError("");
+    setManageForm({ quantity: String(row.quantity), reason: row.reason, verifiedBy: row.verifiedBy, actionReason: "", password: "" });
+  };
+
+  const submitManage = async () => {
+    if (!manageRow) return;
+    setManageError("");
+    if (!manageForm.actionReason.trim() || !manageForm.password) {
+      setManageError(`${manageMode === "edit" ? "Edit" : "Cancellation"} reason and password are required.`);
+      return;
+    }
+    const quantity = Number(manageForm.quantity);
+    if (manageMode === "edit" && (!Number.isFinite(quantity) || quantity <= 0 || !manageForm.reason.trim() || !manageForm.verifiedBy.trim())) {
+      setManageError("Quantity, reason, and verified by must be valid.");
+      return;
+    }
+    setManaging(true);
+    try {
+      const { error } = manageMode === "edit"
+        ? await supabase.rpc("edit_snb_waste_log_secure", {
+            p_log_id: manageRow.id,
+            p_quantity: quantity,
+            p_reason: manageForm.reason.trim(),
+            p_verified_by: manageForm.verifiedBy.trim(),
+            p_edit_reason: manageForm.actionReason.trim(),
+            p_password: manageForm.password,
+          })
+        : await supabase.rpc("cancel_snb_waste_log_secure", {
+            p_log_id: manageRow.id,
+            p_reason: manageForm.actionReason.trim(),
+            p_password: manageForm.password,
+          });
+      if (error) throw error;
+      setManageRow(null);
+      await Promise.all([loadRows(), useBranchStore.getState().fetchBranchData(BRANCH)]);
+    } catch (error) {
+      setManageError(error instanceof Error ? error.message : "Unable to update this stock movement.");
+    } finally {
+      setManaging(false);
+    }
+  };
 
   const save = async () => {
     setValidationError("");
@@ -2549,9 +2624,45 @@ function WasteLogsTab({ userName }: { userName: string }) {
           </div>
         </Panel>
         <Panel title="Waste Log History" icon={<History className="size-4" />} action={<div className="flex items-center gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => void loadRows()}><RefreshCcw className={cn("size-4", rowsLoading && "animate-spin")} /> Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Waste_Logs.xls", rows.map((w) => ({ Date: w.createdAt, Type: w.logType, Item: w.itemName, Quantity: w.quantity, Unit: w.unit, Reason: w.reason, VerifiedBy: w.verifiedBy })))}><Download className="size-4" /> Excel</button></div>}>
-          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Checklist"]} rows={rows.map((w) => [fmtDateTime(w.createdAt), w.logType, w.itemName, `${w.quantity} ${w.unit}`, w.reason, w.verifiedBy, w.checklist.join(", ") || "-"])} empty="No waste logs saved." />
+          <DataTable headers={["Date", "Type", "Item", "Qty", "Reason", "Verified By", "Status", "Actions"]} rows={rows.map((w) => [
+            fmtDateTime(w.createdAt),
+            w.logType,
+            w.itemName,
+            `${w.quantity} ${w.unit}`,
+            w.reason,
+            w.verifiedBy,
+            <StatusBadge tone={w.status === "Cancelled" ? "red" : "green"}>{w.status}</StatusBadge>,
+            canManageWaste && w.status !== "Cancelled" ? (
+              <div className="flex gap-1.5">
+                <button type="button" title="Edit stock movement" onClick={() => openManage(w, "edit")} className="grid size-8 place-items-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-200"><Pencil className="size-3.5" /></button>
+                <button type="button" title="Cancel and restore stock" onClick={() => openManage(w, "cancel")} className="grid size-8 place-items-center rounded-xl bg-red-50 text-red-700 ring-1 ring-red-200"><X className="size-3.5" /></button>
+              </div>
+            ) : "-",
+          ])} empty="No waste logs saved." />
         </Panel>
       </div>
+      {manageRow && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/55 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !managing) setManageRow(null); }}>
+          <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl ring-1 ring-slate-200">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div><p className="text-lg font-black text-slate-950">{manageMode === "edit" ? "Edit stock movement" : "Cancel and restore stock"}</p><p className="text-sm font-semibold text-slate-500">{manageRow.itemName} · {manageRow.logType}</p></div>
+              <button type="button" disabled={managing} onClick={() => setManageRow(null)} className="grid size-9 place-items-center rounded-xl bg-slate-100 text-slate-600"><X className="size-4" /></button>
+            </div>
+            <div className="space-y-3">
+              {manageMode === "edit" && <>
+                <Field label={`Quantity (${manageRow.unit})`}><input type="number" min="0.001" step="0.001" className={inputCls} value={manageForm.quantity} onChange={(event) => setManageForm({ ...manageForm, quantity: event.target.value })} /></Field>
+                <Field label="Stock movement reason"><textarea className={inputCls} value={manageForm.reason} onChange={(event) => setManageForm({ ...manageForm, reason: event.target.value })} /></Field>
+                <Field label="Verified by"><input className={inputCls} value={manageForm.verifiedBy} onChange={(event) => setManageForm({ ...manageForm, verifiedBy: event.target.value })} /></Field>
+              </>}
+              {manageMode === "cancel" && <p className="rounded-2xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800 ring-1 ring-emerald-200">Cancelling restores {manageRow.quantity} {manageRow.unit} to SNB stock and keeps this row in history.</p>}
+              <Field label={manageMode === "edit" ? "Reason for editing" : "Reason for cancellation"}><textarea className={inputCls} value={manageForm.actionReason} onChange={(event) => setManageForm({ ...manageForm, actionReason: event.target.value })} /></Field>
+              <Field label="Your password"><input type="password" autoComplete="current-password" className={inputCls} value={manageForm.password} onChange={(event) => setManageForm({ ...manageForm, password: event.target.value })} /></Field>
+              {manageError && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{manageError}</p>}
+              <div className="grid grid-cols-2 gap-2 pt-1"><button type="button" disabled={managing} onClick={() => setManageRow(null)} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Keep record</button><button type="button" disabled={managing} onClick={() => void submitManage()} className={cn(btnCls, manageMode === "cancel" ? "bg-red-600 text-white" : "bg-slate-950 text-white")}>{managing ? "Saving..." : manageMode === "cancel" ? "Cancel & restore" : "Save changes"}</button></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2619,6 +2730,7 @@ function QuotationsTab({ userName }: { userName: string }) {
 
 function CreditTab({ userName, role, fromDate, toDate }: { userName: string; role: string; fromDate: string; toDate: string }) {
   const { creditSales, creditPayments, settleCreditSale, applyCreditDiscount, fetchBranchData, fetchCreditPayments } = useBranchStore();
+  const bills = useBranchOpsStore((state) => state.bills);
   const credits = creditSales[BRANCH] || [];
   const payments = creditPayments[BRANCH] || [];
   const paymentsInRange = payments.filter((payment) => inRange(payment.createdAt, fromDate, toDate));
@@ -2636,6 +2748,27 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [discountReason, setDiscountReason] = useState("");
   const [applyingDiscount, setApplyingDiscount] = useState(false);
   const [discountMessage, setDiscountMessage] = useState("");
+  const [detailId, setDetailId] = useState("");
+  const [printError, setPrintError] = useState("");
+  const detailCredit = credits.find((credit) => credit.id === detailId) || null;
+
+  const duplicateCreditBill = async (credit: (typeof credits)[number]) => {
+    setPrintError("");
+    const existing = bills.find((bill) => bill.branch === BRANCH && bill.billNo === credit.billNo);
+    const fallback: BranchBillRecord = {
+      id: credit.id, branch: BRANCH, billNo: credit.billNo,
+      invoiceNo: Number(credit.billNo.split("-").pop()) || 0,
+      items: credit.items.map((item) => ({ barcode: item.barcode, itemName: item.itemName, quantity: item.quantity, unit: item.sellUnit, price: item.price, tax: 0, discount: 0, lineTotal: item.lineTotal })),
+      subtotal: credit.subtotal, discount: Number(credit.discountAmount || 0), tax: 0, total: credit.subtotal,
+      tendered: credit.amountPaid, balance: credit.creditAmount, paymentMode: "credit",
+      salesperson: credit.soldBy, biller: credit.soldBy, createdAt: credit.createdAt,
+      printCount: 1, status: "Duplicate Bill", creditCustomerName: credit.customerName,
+      creditCustomerMobile: credit.customerPhone || "", creditDueDate: credit.dueDate || undefined,
+      creditRemarks: credit.notes || undefined,
+    };
+    try { await printCounterBill(existing || fallback, true); }
+    catch (error) { setPrintError(error instanceof Error ? error.message : "Duplicate bill could not be printed."); }
+  };
 
   useEffect(() => {
     if (selectedId && !pending.some((credit) => credit.id === selectedId)) {
@@ -2790,12 +2923,16 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
             <p className="text-[11px] text-slate-500">This writes off the balance directly — it is not counted as cash/UPI/card collected.</p>
           </div>
         </Panel>
-        <Panel title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", credits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
-          <DataTable
-            headers={["Bill", "Customer", "Mobile", "Total", "Paid", "Balance", "Due", "Status"]}
-            rows={credits.map((credit) => [credit.billNo, credit.customerName, credit.customerPhone || "-", money(credit.subtotal), money(credit.amountPaid), money(credit.creditAmount), credit.dueDate || "-", <StatusBadge key="status" tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge>])}
-            empty="No SNB credit sales found."
-          />
+        <Panel className="xl:col-span-2" title="SNB Branch Credit Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Register.xls", credits.map((credit) => ({ Bill: credit.billNo, Customer: credit.customerName, Mobile: credit.customerPhone || "-", Total: credit.subtotal, Paid: credit.amountPaid, Balance: credit.creditAmount, Due: credit.dueDate || "-", Status: credit.status })))}><Download className="size-4" /> Excel</button>}>
+          <div className="grid min-h-[420px] gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]">
+            <div className="overflow-auto rounded-2xl border border-slate-200">
+              <table className="w-full min-w-[720px] text-left text-xs"><thead className="sticky top-0 bg-slate-950 text-white"><tr>{["Bill","Customer","Mobile","Total","Paid","Balance","Due","Status"].map((label) => <th key={label} className="px-3 py-2.5 font-black uppercase tracking-wide">{label}</th>)}</tr></thead><tbody>{credits.map((credit) => <tr key={credit.id} onClick={() => setDetailId(credit.id)} className={cn("cursor-pointer border-t border-slate-100 hover:bg-amber-50", detailId === credit.id && "bg-amber-100")}><td className="px-3 py-2.5 font-black text-blue-700 underline">{credit.billNo}</td><td className="px-3 py-2.5 font-bold">{credit.customerName}</td><td className="px-3 py-2.5">{credit.customerPhone || "-"}</td><td className="px-3 py-2.5 font-bold">{money(credit.subtotal)}</td><td className="px-3 py-2.5">{money(credit.amountPaid)}</td><td className="px-3 py-2.5 font-black text-red-600">{money(credit.creditAmount)}</td><td className="px-3 py-2.5">{credit.dueDate || "-"}</td><td className="px-3 py-2.5"><StatusBadge tone={credit.status === "settled" ? "green" : credit.status === "partial" ? "amber" : "red"}>{credit.status}</StatusBadge></td></tr>)}</tbody></table>
+              {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
+            </div>
+            <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Total</span><b>{money(detailCredit.subtotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div><div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
+            </aside>
+          </div>
         </Panel>
       </div>
       <Panel title="Credit Collection History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("SNB_Credit_Collections.xls", paymentsInRange.map((payment) => ({ Date: payment.createdAt, Bill: payment.billNo, Amount: payment.amount, Mode: payment.paymentMode, Reference: payment.reference || "-", CollectedBy: payment.collectedBy, Remarks: payment.remarks || "-" })))}><Download className="size-4" /> Excel</button>}>
