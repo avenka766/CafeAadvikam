@@ -35,7 +35,7 @@ export const useMenuStore = create<MenuState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('menu_items')
-        .select('*')
+        .select('id, name, price, category, timing, enabled')
         .order('id', { ascending: true });
 
       if (!error && data) {

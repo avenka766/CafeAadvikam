@@ -122,7 +122,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('branch_items')
-        .select('*')
+        .select('branch, barcode, name, price, uom, category, active, created_at, updated_at, updated_by')
         .eq('branch', branch)
         .order('barcode', { ascending: true });
 
@@ -130,7 +130,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
         if (!isMissingTable(error.message)) throw error;
         const legacy = await supabase
           .from('branch_item_prices')
-          .select('*')
+          .select('barcode, name, price, updated_at, updated_by')
           .eq('branch', branch);
         const fallback = mergeLegacyOverrides(branch, legacy.error ? [] : legacy.data as Array<Record<string, unknown>>);
         set((state) => ({
@@ -200,7 +200,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
           active: true,
           updated_by: updatedBy,
         })
-        .select('*')
+        .select('branch, barcode, name, price, uom, category, active, created_at, updated_at, updated_by')
         .single();
       if (direct.error || !direct.data) {
         errorMessage = direct.error?.message ?? 'Failed to add item. Install the branch catalogue migration first.';
@@ -256,7 +256,7 @@ export const useBranchCatalogStore = create<BranchCatalogState>((set, get) => ({
         })
         .eq('branch', branch)
         .eq('barcode', barcode)
-        .select('*')
+        .select('branch, barcode, name, price, uom, category, active, created_at, updated_at, updated_by')
         .single();
       if (direct.error || !direct.data) return direct.error?.message ?? 'Failed to update item.';
       saved = mapDbRow(direct.data as Record<string, unknown>);

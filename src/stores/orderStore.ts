@@ -143,7 +143,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('orders')
-        .select('*')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date')
         .gte('created_at', cutoff.toISOString())
         .order('created_at', { ascending: false });
 
@@ -165,7 +165,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         set({ pollTimer: null });
         const retryTimer = setTimeout(() => {
           set({ _pollBackoffTimer: null });
-          const newTimer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
+          const newTimer = setInterval(() => { if (!document.hidden) get().loadOrders(days); }, POLL_INTERVAL_MS);
           set({ pollTimer: newTimer });
           get().loadOrders(days);
         }, backoffMs);
@@ -621,7 +621,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
-    const timer = setInterval(() => { get().loadOrders(days); }, POLL_INTERVAL_MS);
+    const timer = setInterval(() => { if (!document.hidden) get().loadOrders(days); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
     get().loadOrders(days);
   },
