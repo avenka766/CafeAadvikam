@@ -17,7 +17,7 @@ import { useBranchStore, type CreditSale, type SaleRecord, type StockItem } from
 import type { Branch } from '../types';
 import { BRANCH_LABELS } from '../types';
 import {
-  money, nextBranchAdvanceOrderNumberAtomic, useBranchOpsStore,
+  money, nextBranchAdvanceOrderNumber, useBranchOpsStore,
   type BranchBillItem, type BranchBillRecord,
   type CakeAdvanceOrder, type PurchaseOrderRecord,
 } from '../branchOpsStore';
@@ -498,7 +498,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       setReceiverCounterLoading(false);
     };
     void loadCounter();
-    const refreshId = window.setInterval(() => { void loadCounter(); }, 15_000);
+    const refreshId = window.setInterval(() => { if (!document.hidden) void loadCounter(); }, 15_000);
     return () => { active = false; window.clearInterval(refreshId); };
   }, [isSnbOrder]);
   const activeOrders = orders.filter((o) => o.status !== 'Paid In Full');
@@ -619,23 +619,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     // Store even after Cake Master existed. That call is removed here on
     // purpose; non-cake "store" advance orders still use the separate
     // sendToStoreDashboard() function untouched.
-    const { error: durableOrderError } = await supabase
-      .from('branch_operation_records')
-      .upsert({
-        branch,
-        record_type: 'advance_order',
-        record_id: order.id,
-        record_no: order.orderNo,
-        amount: order.orderValue,
-        status: order.status,
-        actor: order.createdBy || order.salesperson,
-        payload: order,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'branch,record_type,record_id' });
-    if (durableOrderError) {
-      throw new Error(`Advance order ${order.orderNo} was not sent because its unique source record could not be saved: ${durableOrderError.message}`);
-    }
-
     const { error: cakeMasterError } = await supabase.rpc('submit_cake_master_order', {
       p_branch: branch,
       p_order_no: order.orderNo,
@@ -651,7 +634,7 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
       p_cream_type: order.creamType || null,
       p_message_on_cake: order.messageOnCake || null,
       p_design_notes: order.designNotes || null,
-      p_attachment_data_url: order.attachmentDataUrl || null,
+      p_attachment_data_url: null,
       p_order_value: order.orderValue,
       p_advance_amount: order.advanceAmount,
       p_balance_amount: order.balanceAmount,
@@ -683,15 +666,9 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
     const adv = fullyPaid ? orderValue : Number(common.advanceAmount || 0);
     const balanceAmount = fullyPaid ? 0 : orderValue - adv;
     const first = sourceLines[0];
-    const attachmentName = orderType === 'cake' ? cake.attachmentName : custom.attachmentName;
-    const attachmentDataUrl = orderType === 'cake' ? cake.attachmentDataUrl : custom.attachmentDataUrl;
-    let orderNo: string;
-    try {
-      orderNo = await nextBranchAdvanceOrderNumberAtomic(branch);
-    } catch (numberError) {
-      setError(numberError instanceof Error ? numberError.message : 'Unable to allocate an advance order number.');
-      return;
-    }
+    const attachmentName = orderType === 'cake' ? '' : custom.attachmentName;
+    const attachmentDataUrl = orderType === 'cake' ? '' : custom.attachmentDataUrl;
+    const orderNo = nextBranchAdvanceOrderNumber(branch);
     let stockReserved = false;
     if (isSnbOrder) {
       const receiverItems = sourceLines.map((line) => ({
@@ -1027,8 +1004,6 @@ export function AdvanceCakeOrdersTab({ branch, branchStock, source = 'branch' }:
           </div>
           <Field label="Message on cake"><Input value={cake.messageOnCake} onChange={(e)=>setCake({...cake,messageOnCake:e.target.value})}/></Field>
           <Field label="Design notes"><Textarea value={cake.designNotes} onChange={(e)=>setCake({...cake,designNotes:e.target.value})}/></Field>
-          <Field label="Attachment/Image"><Input type="file" accept="image/*" onChange={(e)=>handleAttachment(e.target.files?.[0], 'cake')}/></Field>
-          {cake.attachmentName && <p className="text-sm font-bold text-emerald-700">Attached: {cake.attachmentName}</p>}
         </>}
         <div className="grid gap-3 sm:grid-cols-2">
           {requiresSalesperson && <Field label="Salesperson *"><Select value={common.salesperson} onChange={(e)=>updateCommon('salesperson',e.target.value)}><option value="">Select</option>{people.map(p=><option key={p}>{p}</option>)}</Select></Field>}
@@ -1502,7 +1477,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
       await loadCounterSnapshot();
     };
     void load();
-    const refreshId = window.setInterval(() => { void load(); }, 15_000);
+    const refreshId = window.setInterval(() => { if (!document.hidden) void load(); }, 15_000);
     return () => { active = false; window.clearInterval(refreshId); };
   }, [loadCounterSnapshot, loadOpenSession]);
 
@@ -1528,7 +1503,7 @@ export function CashierClosureTab({ branch, source = 'branch' }: ModuleProps) {
     const date = todayIso();
     const { data: ledgerData, error: ledgerError } = await supabase
       .from('branch_daily_closure_ledger')
-      .select('*')
+      .select('branch, closure_date, bill_count, sales_total, credit_billed, discounts, tax_total, cash_total, upi_total, card_total, credit_collected, advance_collected, advance_balance_collected')
       .eq('branch', branch)
       .eq('closure_date', date)
       .maybeSingle();
