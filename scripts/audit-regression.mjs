@@ -102,6 +102,8 @@ const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
 const bakerDashboard = read('src/bakery/BakerDashboard.tsx') ?? '';
 const packingDashboard = read('src/bakery/PackingDashboard.tsx') ?? '';
+const cakeMasterDashboard = read('src/bakery/CakeMasterDashboard.tsx') ?? '';
+const snbAdminAdvancePackingControlsMigration = read('supabase/migrations/20260721143000_snb_admin_advance_packing_controls.sql') ?? '';
 const snbReceiverSharedTabs = read('src/bakery/SnbReceiverSharedTabs.tsx') ?? '';
 const snbOrderPurchaseSaveParityMigration = read('supabase/migrations/20260701103000_snb_order_purchase_invoice_save_parity.sql') ?? '';
 const snbOrderPurchaseRevisionParityMigration = read('supabase/migrations/20260701103100_snb_order_purchase_invoice_revision_parity.sql') ?? '';
@@ -758,6 +760,58 @@ check(
     && notificationStore.includes("'snb_purchase_invoice_revision'")
     && adminNotificationsTab.includes('SNB Invoice Revision'),
   'Re-sync must add or deduct only the edited difference, block unsafe reductions, and surface the audit notification.',
+);
+
+check(
+  'SNB stock movement edit and cancellation are password protected and auditable',
+  adminSnb.includes('edit_snb_waste_log_secure')
+    && adminSnb.includes('cancel_snb_waste_log_secure')
+    && snbAdminAdvancePackingControlsMigration.includes("c.role not in ('admin_snb','admin','owner')")
+    && snbAdminAdvancePackingControlsMigration.includes('INVALID_PASSWORD')
+    && snbAdminAdvancePackingControlsMigration.includes("status='Cancelled'")
+    && snbAdminAdvancePackingControlsMigration.includes("'Waste cancellation - '||w.log_type"),
+  'Only SNB Admin roles may edit/cancel waste movements, with password validation, retained history, and exact stock restoration.',
+);
+
+check(
+  'Advance cake edits, cancellation refunds, and final split payment remain atomic',
+  branchBusinessModules.includes('manage_branch_advance_cake_order_secure')
+    && branchBusinessModules.includes('p_payment_splits')
+    && branchBusinessModules.includes('Final Split')
+    && branchBusinessModules.includes('Cancelled')
+    && snbAdminAdvancePackingControlsMigration.includes("cake.status<>'New'")
+    && snbAdminAdvancePackingControlsMigration.includes("payment_stage,collected_by,remarks")
+    && snbAdminAdvancePackingControlsMigration.includes("values(p_branch,order_no,refund_mode_value,paid,'refund'")
+    && snbAdminAdvancePackingControlsMigration.includes("insert into public.branch_return_records"),
+  'Advance orders must lock after Cake Master acceptance, refund through the open counter, reduce sales, and keep split final payments.',
+);
+
+check(
+  'Packing and Cake Master correction loops are visible and preserve original orders',
+  workspaceChrome.includes("/bakery/packing?tab=corrections")
+    && packingDashboard.includes('returnForCorrection')
+    && packingDashboard.includes("status === 'correction_required'")
+    && packingCakeOrdersTab.includes('return_cake_order_for_correction_secure')
+    && cakeMasterDashboard.includes("'Correction Required'")
+    && bakeryStore.includes('correction_request: null')
+    && snbAdminAdvancePackingControlsMigration.includes("Already dispatched items cannot be returned to Baker"),
+  'Weight mismatches must return only affected undispatched items to the correct production role and reappear after correction.',
+);
+
+check(
+  'Credit duplicate printing and right-side bill detail remain available',
+  adminSnb.includes('SNB Branch Credit Register')
+    && adminSnb.includes('Print Duplicate Bill')
+    && adminSnb.includes('duplicateCreditBill')
+    && adminSnb.includes('lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,.65fr)]'),
+  'Pending and cleared credit bills must open in the detail pane and support duplicate printing.',
+);
+
+check(
+  'New privileged functions explicitly revoke PUBLIC execution',
+  ['edit_snb_waste_log_secure', 'cancel_snb_waste_log_secure', 'manage_branch_advance_cake_order_secure', 'return_bakery_order_for_correction_secure', 'return_cake_order_for_correction_secure', 'update_cake_master_order_status']
+    .every((name) => snbAdminAdvancePackingControlsMigration.includes(`revoke all on function public.${name}`)),
+  'Every SECURITY DEFINER workflow added or replaced here must revoke the default PUBLIC execute grant.',
 );
 
 const exposedSecretPatterns = [
