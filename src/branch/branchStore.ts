@@ -772,7 +772,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
     const { data: dispatchedCakeOrders, error: cakeDispatchError } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
+      .select('id,branch,order_no,source_order_id,cake_kg,prepared_quantity,flavor,cream_type,updated_at,created_at')
       .eq('branch', branch)
       .eq('status', 'Dispatched')
       .gte('created_at', sixMonthsAgo.toISOString());
@@ -1191,6 +1191,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
     const { data, error } = await supabase
       .from('branch_credit_payments')
       .select('id, credit_sale_id, branch, bill_no, amount, payment_mode, reference, remarks, collected_by, collected_role, created_at')
+      .eq('branch', branch)
+      .order('created_at', { ascending: false });
+    if (error) { console.error('[fetchCreditPayments]', error.message); return; }
     set((s) => {
       const creditPayments = { ...s.creditPayments };
       creditPayments[branch] = (data || [])
