@@ -1693,7 +1693,7 @@ function BranchOverviewTab() {
         ? `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance`
         : `${(advanceOrders[branch] || []).filter(a => a.status === 'pending').length} advance · ${stockAlertCount} stock alerts`,
     };
-  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, purchases, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary]);
+  }), [ownerLedger, orders, sales, advanceOrders, creditSales, bills, returns, cashMovements, cashierClosures, storeOrders, storeInvoiceRows, from, to, branchStockAlertCount, pendingIncomingCount, branchPurchaseSummary]);
 
   const visibleRows = branchRows.filter(r => SALES_UNITS.includes(r.unit));
 
