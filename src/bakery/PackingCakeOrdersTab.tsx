@@ -11,6 +11,7 @@ interface CakeOrderRow {
   id: string;
   branch: 'SNB' | 'VRSNB';
   order_no: string;
+  source_order_id: string | null;
   slip_number: string | null;
   customer_name: string;
   delivery_date: string | null;
@@ -83,7 +84,7 @@ export default function PackingCakeOrdersTab() {
     setLoading(true);
     const { data, error: err } = await supabase
       .from('cake_master_orders')
-      .select('id,branch,order_no,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status')
+      .select('id,branch,order_no,source_order_id,slip_number,customer_name,delivery_date,delivery_time,cake_kg,prepared_quantity,flavor,shape,cream_type,message_on_cake,design_notes,updated_at,created_at,status')
       .in('status', ['Ready for Packing', 'Packed'])
       .order('delivery_date', { ascending: true });
     setLoading(false);
