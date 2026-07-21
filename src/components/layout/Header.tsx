@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LogOut, Wifi, ShieldCheck, LayoutPanelTop } from 'lucide-react';
+import { LogOut, Wifi, ShieldCheck, LayoutPanelTop, RefreshCw } from 'lucide-react';
 import { CAFE_CONFIG } from '@/constants/config';
 import { useVenueStore } from '@/stores/venueStore';
 import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
@@ -34,6 +35,21 @@ export default function Header() {
   const { activeVenue } = useVenueStore();
   const snbTabStripExpanded = useSnbTabStripStore((s) => s.expanded);
   const toggleSnbTabStrip = useSnbTabStripStore((s) => s.toggle);
+  const [branchRefreshing, setBranchRefreshing] = useState(false);
+
+  const refreshBranchDashboard = () => {
+    if (branchRefreshing) return;
+    setBranchRefreshing(true);
+    const fallback = window.setTimeout(() => setBranchRefreshing(false), 30_000);
+    window.dispatchEvent(new CustomEvent('cafe:refresh-branch-dashboard', {
+      detail: {
+        complete: () => {
+          window.clearTimeout(fallback);
+          setBranchRefreshing(false);
+        },
+      },
+    }));
+  };
 
   const handleLogout = () => {
     logout();
@@ -103,6 +119,18 @@ export default function Header() {
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
+          {isBranchCounterRoute && (
+            <button
+              type="button"
+              onClick={refreshBranchDashboard}
+              disabled={branchRefreshing}
+              aria-label="Refresh branch data"
+              title="Refresh branch data"
+              className="flex size-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.08] text-white/75 transition-colors hover:bg-white/[0.14] disabled:opacity-60"
+            >
+              <RefreshCw className={cn('size-3.5', branchRefreshing && 'animate-spin')} />
+            </button>
+          )}
           {isBranchCounterRoute && (
             <button
               type="button"
