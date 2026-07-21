@@ -95,6 +95,24 @@ function fmtMatQty(quantity: number): string {
   return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(2);
 }
 
+function fmtPreciseQty(quantity: number): string {
+  const abs = Math.abs(quantity);
+  const maximumFractionDigits = abs > 0 && abs < 0.01 ? 4 : abs < 1 ? 2 : 1;
+  return quantity.toLocaleString('en-IN', { maximumFractionDigits });
+}
+
+function formatMaterialQuantity(quantity: number, unit: string): string {
+  const normalizedUnit = unit.trim().toLowerCase();
+  if (['kg', 'kgs', 'kilogram', 'kilograms'].includes(normalizedUnit)) {
+    if (quantity !== 0 && Math.abs(quantity) < 1) return `${fmtPreciseQty(quantity * 1000)} g`;
+    return `${fmtMatQty(quantity)} kg`;
+  }
+  if (['g', 'gm', 'gms', 'gram', 'grams'].includes(normalizedUnit)) {
+    return `${fmtPreciseQty(quantity)} g`;
+  }
+  return `${fmtPreciseQty(quantity)} ${unit}`;
+}
+
 function inputDate(d: Date) {
   return d.toISOString().slice(0, 10);
 }
@@ -147,7 +165,7 @@ function printItemRecipe(
     <tr>
       <td style="padding:4px 6px;border-bottom:1px solid #eee;">${m.material}</td>
       <td style="padding:4px 6px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">
-        ${fmtMatQty(m.quantity)} ${m.unit}
+        ${formatMaterialQuantity(m.quantity, m.unit)}
       </td>
     </tr>
   `).join('');
@@ -339,7 +357,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                         {/* Stock status badge */}
                         {s.status === 'out' && s.stock && (
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0">
-                            Only {s.stock.quantity % 1 === 0 ? s.stock.quantity : s.stock.quantity.toFixed(2)} {s.stock.unit} left
+                            Only {formatMaterialQuantity(s.stock.quantity, s.stock.unit)} left
                           </span>
                         )}
                         {s.status === 'unknown' && (
@@ -349,7 +367,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                         )}
                         {s.status === 'low' && s.stock && (
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0">
-                            Low: {s.stock.quantity % 1 === 0 ? s.stock.quantity : s.stock.quantity.toFixed(2)} {s.stock.unit}
+                            Low: {formatMaterialQuantity(s.stock.quantity, s.stock.unit)}
                           </span>
                         )}
                       </div>
@@ -357,7 +375,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                         "text-sm font-body font-bold tabular-nums ml-2 shrink-0",
                         s.status === 'out' ? "text-red-700" : "text-foreground"
                       )}>
-                        {fmtMatQty(m.quantity)} {m.unit}
+                        {formatMaterialQuantity(m.quantity, m.unit)}
                       </span>
                     </div>
                   );
