@@ -81,17 +81,6 @@ const BASE_TABS = [
   { id: 'settings' as const, label: 'Thresholds', icon: Settings, adminOnly: true },
 ];
 
-const VRSNB_HIDDEN_TABS: TabId[] = [
-  'store-orders',
-  'reports',
-  'purchase',
-  'purchase-pay',
-  'po',
-  'current-cash',
-  'bank',
-  'notifications',
-];
-
 interface Props { branch: Branch }
 
 type TodayLedger = {
@@ -141,11 +130,10 @@ export default function BranchDashboard({ branch }: Props) {
       : isAdminUser;
   const canViewSalespersonReport = branch === 'SNB' ? isSnbAdmin : branch === 'VRSNB' ? isVrsnbAdmin : isAdminUser;
   const tabs = useMemo(() => BASE_TABS.filter((t) => {
-    if (branch === 'VRSNB' && VRSNB_HIDDEN_TABS.includes(t.id)) return false;
     if (t.id === 'reports') return canViewReports;
     if (t.id === 'salesperson') return canViewSalespersonReport;
     return !t.adminOnly || isAdminUser;
-  }), [branch, canViewReports, canViewSalespersonReport, isAdminUser]);
+  }), [canViewReports, canViewSalespersonReport, isAdminUser]);
   const requestedTab = searchParams.get('tab') as TabId | null;  const tab: TabId = requestedTab && tabs.some((t) => t.id === requestedTab) ? requestedTab : 'bill';
   const openTab = useCallback((id: TabId | string) => {
     const next = id as TabId;
@@ -305,10 +293,10 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
       <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
-        {branch === 'SNB' && tabStripExpanded && (
+        {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
             {tabs
-              .filter((t) => (['bill', 'advance', 'returns', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
+              .filter((t) => (['bill', 'advance', 'quotation', 'returns', 'store-orders', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
               .map((t) => {
                 const Icon = t.icon;
                 const isActive = t.id === tab;
@@ -349,7 +337,7 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
             {tab === 'salesperson' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
-            {tab === 'store-orders' && branch !== 'VRSNB' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
+            {tab === 'store-orders' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
             {tab === 'current-cash' && isAdminUser && <CurrentCashTab branch={branch} branchStock={branchStock} />}
             {tab === 'bank' && isAdminUser && <BankTab branch={branch} branchStock={branchStock} />}
             {tab === 'reports' && canViewReports && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}
