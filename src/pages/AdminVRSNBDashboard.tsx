@@ -114,19 +114,11 @@ type TabId =
   | "stock"
   | "stock-synced"
   | "update-stock"
-  | "suppliers"
   | "expenses"
   | "complaints"
   | "waste"
   | "quotations"
   | "credit"
-  | "invoices"
-  | "purchase-returns"
-  | "payments"
-  | "bank"
-  | "current-cash"
-  | "salespersons"
-  | "salesperson-report"
   | "cashier-report"
   | "cashier-closure"
   | "closure"
@@ -146,7 +138,6 @@ const TABS: Array<{
   { id: "stock", label: "Low Stock / Stock", icon: Package },
   { id: "stock-synced", label: "Stock Synced", icon: PackageCheck, adminOnly: true },
   { id: "update-stock", label: "Update Stock", icon: Pencil, adminOnly: true },
-  { id: "suppliers", label: "Suppliers", icon: Truck, adminOnly: true },
   { id: "expenses", label: "Expenses", icon: WalletCards, adminOnly: true },
   { id: "complaints", label: "Complaints", icon: Bell, adminOnly: true },
   { id: "waste", label: "Waste Logs", icon: Trash2, adminOnly: true },
@@ -157,13 +148,6 @@ const TABS: Array<{
     icon: CreditCard,
     adminOnly: true,
   },
-  { id: "invoices", label: "Purchase Invoices", icon: ShoppingCart, adminOnly: true },
-  { id: "purchase-returns", label: "Purchase Returns", icon: RotateCcw, adminOnly: true },
-  { id: "payments", label: "Supplier Payments", icon: WalletCards, adminOnly: true },
-  { id: "bank", label: "Bank Deposits", icon: Landmark, adminOnly: true },
-  { id: "current-cash", label: "Current Cash", icon: Banknote, adminOnly: true },
-  { id: "salespersons", label: "Salesperson Management", icon: UserRound, adminOnly: true },
-  { id: "salesperson-report", label: "Salesperson Report", icon: BarChart3, adminOnly: true },
   { id: "cashier-report", label: "Cashier Report", icon: BarChart3, adminOnly: true },
   { id: "cashier-closure", label: "Cashier Closure", icon: WalletCards, adminOnly: true },
   {
@@ -1048,7 +1032,7 @@ export default function AdminVRSNBDashboard() {
           ))}
         </div>
       </div>
-      {!["stock", "update-stock", "quotations", "suppliers", "salespersons"].includes(tab) && (
+      {!["stock", "update-stock", "quotations"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1086,19 +1070,11 @@ export default function AdminVRSNBDashboard() {
           setNotice={setNotice}
         />
       )}
-      {tab === "suppliers" && <SuppliersTab userName={userName} />}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
       {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} />}
-      {tab === "invoices" && <PurchaseInvoicesTab userName={userName} branchStock={vrsnbStockRows} manualUpdateStock={manualUpdateStock} fetchBranchData={fetchBranchData} setNotice={setNotice} />}
-      {tab === "purchase-returns" && <PurchaseReturnsTab userName={userName} branchStock={vrsnbStockRows} manualUpdateStock={manualUpdateStock} fetchBranchData={fetchBranchData} setNotice={setNotice} />}
-      {tab === "payments" && <SupplierPaymentsTab userName={userName} />}
-      {tab === "bank" && <BankDepositsTab userName={userName} cashBalance={cashBalance} upiBalance={upiBalance} cardBalance={cardBalance} bankBalance={bankBalance} />}
-      {tab === "current-cash" && <CurrentCashTab {...commonProps} />}
-      {tab === "salespersons" && <SalespersonManagementTab userName={userName} />}
-      {tab === "salesperson-report" && <SalespersonReportTab {...commonProps} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
       {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
       {tab === "closure" && (
