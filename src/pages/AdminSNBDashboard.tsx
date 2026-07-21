@@ -2751,22 +2751,81 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
   const [detailId, setDetailId] = useState("");
   const [printError, setPrintError] = useState("");
   const detailCredit = credits.find((credit) => credit.id === detailId) || null;
+  const [detailLedger, setDetailLedger] = useState<{
+    subtotal: number;
+    discount: number;
+    tax: number;
+    roundOff: number;
+    total: number;
+  } | null>(null);
+  const creditItemsTotal = detailCredit
+    ? detailCredit.items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0)
+    : 0;
+  const detailItemSubtotal = detailLedger?.subtotal ?? creditItemsTotal;
+  const detailBillDiscount = detailCredit
+    ? detailLedger?.discount ?? Math.max(0, Number((creditItemsTotal - detailCredit.subtotal).toFixed(2)))
+    : 0;
+  const detailTax = detailLedger?.tax ?? 0;
+  const detailRoundOff = detailLedger?.roundOff ?? 0;
+  const detailBillTotal = detailLedger?.total ?? detailCredit?.subtotal ?? 0;
+  const detailBillNo = detailCredit?.billNo;
+  const detailCreditSubtotal = detailCredit?.subtotal ?? 0;
+
+  useEffect(() => {
+    let active = true;
+    setDetailLedger(null);
+    if (!detailBillNo) return () => { active = false; };
+
+    void supabase
+      .from("branch_bill_headers")
+      .select("subtotal,discount,tax,round_off,total")
+      .eq("branch", BRANCH)
+      .eq("bill_no", detailBillNo)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!active || !data) return;
+        setDetailLedger({
+          subtotal: Number(data.subtotal ?? 0),
+          discount: Number(data.discount ?? 0),
+          tax: Number(data.tax ?? 0),
+          roundOff: Number(data.round_off ?? 0),
+          total: Number(data.total ?? detailCreditSubtotal),
+        });
+      });
+
+    return () => { active = false; };
+  }, [detailBillNo, detailCreditSubtotal]);
 
   const duplicateCreditBill = async (credit: (typeof credits)[number]) => {
     setPrintError("");
     const existing = bills.find((bill) => bill.branch === BRANCH && bill.billNo === credit.billNo);
+    const itemSubtotal = credit.items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+    const inferredBillDiscount = Math.max(0, Number((itemSubtotal - credit.subtotal).toFixed(2)));
     const fallback: BranchBillRecord = {
       id: credit.id, branch: BRANCH, billNo: credit.billNo,
       invoiceNo: Number(credit.billNo.split("-").pop()) || 0,
       items: credit.items.map((item) => ({ barcode: item.barcode, itemName: item.itemName, quantity: item.quantity, unit: item.sellUnit, price: item.price, tax: 0, discount: 0, lineTotal: item.lineTotal })),
-      subtotal: credit.subtotal, discount: Number(credit.discountAmount || 0), tax: 0, total: credit.subtotal,
+      subtotal: itemSubtotal, discount: inferredBillDiscount, tax: 0, total: credit.subtotal,
       tendered: credit.amountPaid, balance: credit.creditAmount, paymentMode: "credit",
       salesperson: credit.soldBy, biller: credit.soldBy, createdAt: credit.createdAt,
       printCount: 1, status: "Duplicate Bill", creditCustomerName: credit.customerName,
       creditCustomerMobile: credit.customerPhone || "", creditDueDate: credit.dueDate || undefined,
       creditRemarks: credit.notes || undefined,
     };
-    try { await printCounterBill(existing || fallback, true); }
+    const printable = existing
+      ? {
+          ...existing,
+          tendered: credit.amountPaid,
+          balance: credit.creditAmount,
+          creditCustomerName: credit.customerName,
+          creditCustomerMobile: credit.customerPhone || "",
+          creditDueDate: credit.dueDate || undefined,
+          creditRemarks: credit.notes || undefined,
+        }
+      : fallback;
+    try { await printCounterBill(printable, true); }
     catch (error) { setPrintError(error instanceof Error ? error.message : "Duplicate bill could not be printed."); }
   };
 
@@ -2930,7 +2989,7 @@ function CreditTab({ userName, role, fromDate, toDate }: { userName: string; rol
               {credits.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-500">No SNB credit sales found.</p>}
             </div>
             <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Total</span><b>{money(detailCredit.subtotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div><div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
+              {!detailCredit ? <div className="grid h-full min-h-64 place-items-center text-center"><div><Receipt className="mx-auto size-8 text-slate-300"/><p className="mt-2 text-sm font-bold text-slate-500">Select a bill to see its details.</p></div></div> : <div className="space-y-3"><div><p className="text-xs font-black uppercase tracking-wide text-slate-400">Credit Bill</p><h4 className="text-lg font-black text-slate-950">{detailCredit.billNo}</h4><p className="text-sm font-bold text-slate-600">{detailCredit.customerName} · {detailCredit.customerPhone || "No mobile"}</p></div><div className="space-y-2">{detailCredit.items.map((item, index) => <div key={`${item.itemName}-${index}`} className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><div className="flex justify-between gap-2"><span className="font-black">{item.itemName}</span><span className="font-black">{money(item.lineTotal)}</span></div><p className="text-xs font-bold text-slate-500">{item.quantity} {item.sellUnit} × {money(item.price)}</p></div>)}</div><div className="rounded-xl bg-white p-3 text-sm font-bold ring-1 ring-slate-200"><div className="flex justify-between"><span>Item Subtotal</span><b>{money(detailItemSubtotal)}</b></div>{detailBillDiscount > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Bill Discount</span><b>- {money(detailBillDiscount)}</b></div>}{detailTax > 0 && <div className="mt-1 flex justify-between"><span>Tax</span><b>+ {money(detailTax)}</b></div>}{Math.abs(detailRoundOff) > 0.001 && <div className="mt-1 flex justify-between"><span>Round-Off</span><b>{detailRoundOff > 0 ? "+ " : "- "}{money(Math.abs(detailRoundOff))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Bill Total</span><b>{money(detailBillTotal)}</b></div><div className="mt-1 flex justify-between"><span>Paid</span><b className="text-emerald-700">{money(detailCredit.amountPaid)}</b></div>{Number(detailCredit.discountAmount || 0) > 0 && <div className="mt-1 flex justify-between text-amber-700"><span>Credit Discount</span><b>- {money(Number(detailCredit.discountAmount || 0))}</b></div>}<div className="mt-1 flex justify-between border-t pt-1"><span>Pending</span><b className="text-red-700">{money(detailCredit.creditAmount)}</b></div></div><button type="button" onClick={() => void duplicateCreditBill(detailCredit)} className={cn(btnCls,"w-full bg-slate-950 text-white")}><Printer className="size-4"/>Print Duplicate Bill</button>{printError && <p className="rounded-xl bg-red-50 p-2 text-xs font-bold text-red-700">{printError}</p>}</div>}
             </aside>
           </div>
         </Panel>
