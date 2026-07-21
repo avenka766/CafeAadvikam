@@ -599,10 +599,12 @@ check(
 );
 
 check(
-  'VRSNB Admin includes all requested parity tabs',
-  ['Sales & Returns','Low Stock / Stock','Expenses','Complaints','Waste Logs','Credit','Cashier Report','Cashier Closure','Daily Closure Report','Branch Report','Stock Audit']
-    .every((label) => adminVrsnb.includes(label)),
-  'VRSNB Admin must expose the requested SNB Admin-equivalent operational and reporting tabs.',
+  'VRSNB Admin exposes only its approved operational tabs',
+  ['Stock Synced','History','Sales & Returns','Low Stock / Stock','Expenses','Complaints','Waste Logs','Credit','Cashier Report','Cashier Closure','Daily Closure Report','Branch Report','Stock Audit']
+    .every((label) => adminVrsnb.includes(label))
+    && !['Suppliers','Purchase Invoices','Purchase Returns','Supplier Payments','Bank Deposits','Current Cash','Salesperson Management','Salesperson Report']
+      .some((label) => adminVrsnb.match(new RegExp(`label: \\\"${label}\\\"`))),
+  'VRSNB Admin must retain Stock Synced and History while hiding the excluded supplier, cash and salesperson tabs.',
 );
 
 check(
