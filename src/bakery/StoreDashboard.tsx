@@ -101,14 +101,22 @@ function fmtPreciseQty(quantity: number): string {
   return quantity.toLocaleString('en-IN', { maximumFractionDigits });
 }
 
+function fmtGrams(quantity: number): string {
+  let rounded = Math.abs(quantity) < 10
+    ? Math.round(quantity * 2) / 2
+    : Math.round(quantity);
+  if (quantity !== 0 && rounded === 0) rounded = quantity > 0 ? 0.5 : -0.5;
+  return rounded.toLocaleString('en-IN', { maximumFractionDigits: 1 });
+}
+
 function formatMaterialQuantity(quantity: number, unit: string): string {
   const normalizedUnit = unit.trim().toLowerCase();
   if (['kg', 'kgs', 'kilogram', 'kilograms'].includes(normalizedUnit)) {
-    if (quantity !== 0 && Math.abs(quantity) < 1) return `${fmtPreciseQty(quantity * 1000)} g`;
+    if (quantity !== 0 && Math.abs(quantity) < 1) return `${fmtGrams(quantity * 1000)} g`;
     return `${fmtMatQty(quantity)} kg`;
   }
   if (['g', 'gm', 'gms', 'gram', 'grams'].includes(normalizedUnit)) {
-    return `${fmtPreciseQty(quantity)} g`;
+    return `${fmtGrams(quantity)} g`;
   }
   return `${fmtPreciseQty(quantity)} ${unit}`;
 }
