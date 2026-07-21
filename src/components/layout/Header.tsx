@@ -103,7 +103,7 @@ export default function Header() {
 
         {/* Right — status + user + logout */}
         <div className="flex items-center gap-2">
-          {isBranchCounterRoute && !isVrsnbRoute && (
+          {isBranchCounterRoute && (
             <button
               type="button"
               onClick={toggleSnbTabStrip}

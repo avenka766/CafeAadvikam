@@ -258,7 +258,9 @@ export default function BottomNav() {
     navItems.push(
       { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/vrsnb" },
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=advance" },
+      { label: "Quotation", icon: <FileText className="size-5" />, path: "/branch/vrsnb?tab=quotation" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=returns" },
+      { label: "Store Orders", icon: <Store className="size-5" />, path: "/branch/vrsnb?tab=store-orders" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/vrsnb?tab=history" },
       { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/vrsnb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/vrsnb?tab=closure" },
@@ -268,7 +270,9 @@ export default function BottomNav() {
     navItems.push(
       { label: "Bill", icon: <ShoppingCart className="size-5" />, path: "/branch/snb" },
       { label: "Advance", icon: <FileText className="size-5" />, path: "/branch/snb?tab=advance" },
+      { label: "Quotation", icon: <FileText className="size-5" />, path: "/branch/snb?tab=quotation" },
       { label: "Returns", icon: <History className="size-5" />, path: "/branch/snb?tab=returns" },
+      { label: "Store Orders", icon: <Store className="size-5" />, path: "/branch/snb?tab=store-orders" },
       { label: "History", icon: <History className="size-5" />, path: "/branch/snb?tab=history" },
       { label: "Payment Edit", icon: <CreditCard className="size-5" />, path: "/branch/snb?tab=payment-edit" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/branch/snb?tab=closure" },
@@ -300,9 +304,39 @@ export default function BottomNav() {
         path: "/admin-vrsnb?tab=stock",
       },
       {
+        label: "Stock Synced",
+        icon: <PackageCheck className="size-5" />,
+        path: "/admin-vrsnb?tab=stock-synced",
+      },
+      {
         label: "Update Stock",
         icon: <Settings2 className="size-5" />,
         path: "/admin-vrsnb?tab=update-stock",
+      },
+      {
+        label: "Suppliers",
+        icon: <Truck className="size-5" />,
+        path: "/admin-vrsnb?tab=suppliers",
+      },
+      {
+        label: "Expenses",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-vrsnb?tab=expenses",
+      },
+      {
+        label: "Invoices",
+        icon: <FileText className="size-5" />,
+        path: "/admin-vrsnb?tab=invoices",
+      },
+      {
+        label: "Returns",
+        icon: <RotateCcw className="size-5" />,
+        path: "/admin-vrsnb?tab=purchase-returns",
+      },
+      {
+        label: "Payments",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-vrsnb?tab=payments",
       },
       {
         label: "Credit",
@@ -312,7 +346,7 @@ export default function BottomNav() {
       {
         label: "Closure",
         icon: <CalendarCheck className="size-5" />,
-        path: "/admin-vrsnb?tab=closure",
+        path: "/admin-vrsnb?tab=cashier-closure",
       },
       {
         label: "Reports",
