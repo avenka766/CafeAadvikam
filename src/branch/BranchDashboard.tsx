@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
-  Smartphone, Truck, UserRound, WalletCards, RefreshCw,
+  Smartphone, Truck, UserRound, WalletCards,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -214,6 +214,15 @@ export default function BranchDashboard({ branch }: Props) {
   }, [branch, fetchBranchData, fetchCreditPayments, fetchStockMismatches, loadTodayLedger, refreshing, syncIncomingFromDispatches]);
 
   useEffect(() => {
+    const handleHeaderRefresh = (event: Event) => {
+      const complete = (event as CustomEvent<{ complete?: () => void }>).detail?.complete;
+      void refreshAll().finally(() => complete?.());
+    };
+    window.addEventListener('cafe:refresh-branch-dashboard', handleHeaderRefresh);
+    return () => window.removeEventListener('cafe:refresh-branch-dashboard', handleHeaderRefresh);
+  }, [refreshAll]);
+
+  useEffect(() => {
     if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
   }, [requestedTab, tabs, openTab]);
 
@@ -302,18 +311,6 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
       <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
-        <div className="mb-1 flex h-8 shrink-0 items-center justify-end px-1">
-          <button
-            type="button"
-            onClick={() => void refreshAll()}
-            disabled={refreshing}
-            title="Refresh branch data"
-            aria-label="Refresh branch data"
-            className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-60"
-          >
-            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
-          </button>
-        </div>
         {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
             {tabs
