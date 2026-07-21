@@ -263,7 +263,14 @@ interface BranchState {
   syncIncomingFromDispatches: (branch: Branch, force?: boolean) => Promise<void>;
   confirmIncoming: (branch: Branch, incomingId: string) => Promise<string | null>;
   confirmAllIncoming: (branch: Branch) => Promise<string | null>;
-  manualUpdateStock: (branch: Branch, itemName: string, quantity: number, updatedBy: string, itemBarcode?: number) => Promise<string | null>;
+  manualUpdateStock: (
+    branch: Branch,
+    itemName: string,
+    quantity: number,
+    updatedBy: string,
+    itemBarcode?: number,
+    audit?: { reason?: string; referenceId?: string; notes?: string },
+  ) => Promise<string | null>;
   fetchStockMismatches: () => Promise<void>;
   cleanOldData: () => Promise<void>;
   seedBranchItems: (branch: Branch) => Promise<void>;
@@ -1055,7 +1062,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   },
 
   // ── Manual stock update — branch staff sets qty for any item ─────────────
-  manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode) => {
+  manualUpdateStock: async (branch, itemName, quantity, updatedBy, itemBarcode, audit) => {
     const rounded = Math.round(quantity * 1000) / 1000;
     const now = new Date().toISOString();
 
@@ -1084,7 +1091,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         old_quantity: oldQty,
         new_quantity: rounded,
         delta: rounded - oldQty,
-        reason: 'Manual stock update',
+        reason: audit?.reason || 'Manual stock update',
+        reference_id: audit?.referenceId || null,
+        notes: audit?.notes || null,
         adjusted_by: updatedBy,
         adjusted_at: now,
       }).then(() => {/* best-effort — don't block on audit log failure */});
@@ -1096,7 +1105,9 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       // Audit log for new stock entry creation
       await supabase.from('branch_stock_adjustments').insert({
         branch, item_name: itemName, old_quantity: 0, new_quantity: rounded,
-        delta: rounded, reason: 'Initial stock entry', adjusted_by: updatedBy, adjusted_at: now,
+        delta: rounded, reason: audit?.reason || 'Initial stock entry',
+        reference_id: audit?.referenceId || null, notes: audit?.notes || null,
+        adjusted_by: updatedBy, adjusted_at: now,
       }).then(() => {});
     }
 
