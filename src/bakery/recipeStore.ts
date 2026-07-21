@@ -142,11 +142,12 @@ export const useRecipeStore = create<RecipeState>((set, get) => ({
   },
 
   calculateMaterials: (itemId, itemName, quantity, unit) => {
-    const recipe = get().getRecipe(itemId, itemName);
+    const recipeKey = resolveRecipeKey(get().recipes, itemId, itemName);
+    const recipe = recipeKey ? get().recipes[recipeKey] ?? null : null;
     if (!recipe || !recipe.outputQty || quantity <= 0) return [];
-    // The recipe output unit is authoritative. Orders already pass quantities in the
-    // dispatch unit; mismatched units are intentionally rejected rather than silently scaled.
-    if (recipe.outputUnit && recipe.outputUnit !== unit) return [];
+    const seedOutputUnit = recipeKey ? RECIPE_DEFINITIONS[recipeKey]?.outputUnit : undefined;
+    const pieceCompatible = unit === 'pcs' && (recipe.outputUnit === 'loaf' || seedOutputUnit === null);
+    if (recipe.outputUnit && recipe.outputUnit !== unit && !pieceCompatible) return [];
     const scaleFactor = quantity / recipe.outputQty;
     return recipe.materials.map((material) => ({
       material: material.material,

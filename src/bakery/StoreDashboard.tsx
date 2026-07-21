@@ -31,6 +31,7 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
+import { pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report', 'recipes'];
@@ -50,8 +51,37 @@ function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: Retur
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 function matForItem(item: BakeryOrder['items'][number]) {
-  const unit = item.dispatchUnit === 'pcs' && item.weightGrams == null ? 'pcs' : 'kg';
-  return useRecipeStore.getState().calculateMaterials(item.itemId, item.itemName, item.quantity, unit);
+  const recipeStore = useRecipeStore.getState();
+  const recipe = recipeStore.getRecipe(item.itemId, item.itemName);
+  const weightGrams = item.weightGrams ?? resolveItemWeightGrams(item.itemId, item.itemName);
+  const recipeUsesWeight = recipe?.outputUnit === 'kg' && weightGrams != null;
+  const quantity = item.dispatchUnit === 'pcs'
+    ? recipeUsesWeight
+      ? item.weightGrams != null
+        ? item.quantity
+        : (pcsToKg(item.itemName, item.quantity, weightGrams) ?? item.quantity)
+      : (item.originalPcs ?? item.quantity)
+    : item.quantity;
+  const unit = item.dispatchUnit === 'pcs' && !recipeUsesWeight ? 'pcs' : 'kg';
+  return recipeStore.calculateMaterials(item.itemId, item.itemName, quantity, unit);
+}
+
+function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
+  const recipe = useRecipeStore.getState().getRecipe(item.itemId, item.itemName);
+  if (!recipe) return 'No recipe is linked to this item name or item code.';
+  if (!recipe.outputQty || recipe.outputQty <= 0) return 'Recipe found, but its output quantity is missing.';
+  if (recipe.materials.length === 0) return 'Recipe found, but no raw materials have been added.';
+  if (item.quantity <= 0) return 'Recipe found, but the ordered quantity is invalid.';
+
+  const orderUnit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
+  const weightGrams = item.weightGrams ?? resolveItemWeightGrams(item.itemId, item.itemName);
+  if (recipe.outputUnit === 'kg' && orderUnit === 'pcs' && weightGrams == null) {
+    return 'Recipe found in kg, but this order is in pcs and the packet weight is missing.';
+  }
+  if (recipe.outputUnit && recipe.outputUnit !== orderUnit && !(recipe.outputUnit === 'loaf' && orderUnit === 'pcs')) {
+    return `Recipe output unit (${recipe.outputUnit}) does not match the order unit (${orderUnit}).`;
+  }
+  return 'Recipe found, but its raw materials could not be calculated.';
 }
 
 // ─── Rounding helper — rounds raw material quantities to nearest 0.05 ─────────
@@ -196,8 +226,9 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
   onToggle?: () => void;
 }) {
   const [showMats, setShowMats] = useState(false);
-  const mats = useMemo(() => matForItem(item), [item]);
+  const mats = matForItem(item);
   const hasMats = mats.length > 0;
+  const recipeIssue = hasMats ? null : recipeIssueForItem(item);
   const { items: stockItems } = useStoreStockStore();
 
   // Check each recipe material against current inventory
@@ -260,6 +291,16 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
         </div>
       </div>
 
+      {!hasMats && recipeIssue && (
+        <div className="flex items-start gap-2 border-t border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-body text-amber-800">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div>
+            <p className="font-bold">Recipe not shown</p>
+            <p>{recipeIssue} Stock will not be deducted for this item.</p>
+          </div>
+        </div>
+      )}
+
       {/* Raw materials toggle */}
       {hasMats && (
         <div className="border-t border-border/40">
@@ -272,7 +313,6 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
           >
             <div className="flex items-center gap-1.5">
               <Calculator className="size-3.5" />
-              {mats.length === 0 && <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold bg-amber-100 text-amber-700 mb-1">⚠ No recipe — stock will not be deducted for this item</span>}
               Raw materials ({mats.length} ingredients)
               {anyOut && <span className="text-[9px] font-bold">— check stock!</span>}
             </div>

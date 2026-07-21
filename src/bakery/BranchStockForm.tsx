@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useBakeryStore } from "./bakeryStore";
 import { useAuthStore } from "@/stores/authStore";
-import { parseWeightGrams, pcsToKg } from "./itemMatcher";
+import { pcsToKg, resolveItemWeightGrams } from "./itemMatcher";
 import { useOperationalBranchCatalog } from "@/hooks/useOperationalBranchCatalog";
 import { useRecipeStore } from "./recipeStore";
 import { useBranchStore } from "@/branch/branchStore";
@@ -58,7 +58,7 @@ function makeLine(
     itemId: toItemId(branch, item.barcode),
     itemName: item.name,
     uom: item.uom,
-    weightGrams: item.uom === "Nos" ? parseWeightGrams(item.name) : null,
+    weightGrams: item.uom === "Nos" ? resolveItemWeightGrams(toItemId(branch, item.barcode), item.name) : null,
     qty: "",
   };
 }
@@ -210,7 +210,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
         .map((l): BakeryOrderItem => {
           const rawQty = Number(l.qty);
           if (l.uom === "Nos" && l.weightGrams !== null) {
-            const kgQty = pcsToKg(l.itemName, rawQty) ?? rawQty;
+            const kgQty = pcsToKg(l.itemName, rawQty, l.weightGrams) ?? rawQty;
             return {
               itemId: l.itemId,
               itemName: l.itemName,
@@ -324,7 +324,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
             <ArrowRight className="size-3.5 text-blue-600 mt-0.5 shrink-0" />
             <p className="text-[11px] font-body text-blue-800 leading-relaxed">
               <span className="font-bold">VRSNB items sold in pcs</span> — enter
-              the number of packets. Weight is extracted from the item name and
+              the number of packets. The configured packet weight is
               automatically converted to kg for the store.
             </p>
           </div>
@@ -378,7 +378,7 @@ export default function BranchStockForm({ branch, onSubmitted }: Props) {
                 line.uom === "Nos" &&
                 line.weightGrams !== null &&
                 line.qty !== ""
-                  ? pcsToKg(line.itemName, Number(line.qty))
+                  ? pcsToKg(line.itemName, Number(line.qty), line.weightGrams)
                   : null;
               const noWeight = line.uom === "Nos" && line.weightGrams === null;
               const recipeFound =

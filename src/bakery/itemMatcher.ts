@@ -39,10 +39,26 @@ export function parseWeightGrams(name: string): number | null {
  * @param pcs       number of pieces the receiver entered
  * @returns         kg value rounded to 3 decimal places, or null if weight unparseable
  */
-export function pcsToKg(itemName: string, pcs: number): number | null {
-  const grams = parseWeightGrams(itemName);
+export function pcsToKg(itemName: string, pcs: number, knownWeightGrams?: number | null): number | null {
+  const grams = knownWeightGrams ?? parseWeightGrams(itemName);
   if (grams === null || pcs <= 0) return null;
   return Math.round((pcs * grams / 1000) * 1000) / 1000;
+}
+
+/**
+ * Resolve package weight when it is not printed in the catalogue item name.
+ * VRSNB cookies are ordered as 250 g packets, while their production recipes
+ * are defined in kilograms.
+ */
+export function resolveItemWeightGrams(itemId: string, itemName: string): number | null {
+  const parsed = parseWeightGrams(itemName);
+  if (parsed !== null) return parsed;
+
+  const vrsnbBarcode = itemId.toLowerCase().match(/^vrsnb-(\d+)$/)?.[1];
+  const barcode = vrsnbBarcode ? Number(vrsnbBarcode) : 0;
+  if (barcode >= 2090 && barcode <= 2108) return 250;
+
+  return null;
 }
 
 /**
