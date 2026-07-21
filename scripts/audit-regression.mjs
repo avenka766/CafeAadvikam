@@ -96,7 +96,10 @@ const snbAdminReports = read('src/hooks/useSnbAdminReports.ts') ?? '';
 const branchLedger = read('src/hooks/useBranchLedger.ts') ?? '';
 const paymentModeEdit = read('src/branch/tabs/PaymentModeEditTab.tsx') ?? '';
 const branchDashboard = read('src/branch/BranchDashboard.tsx') ?? '';
+const billingDashboard = read('src/pages/BillingDashboard.tsx') ?? '';
+const kitchenDashboard = read('src/pages/KitchenDashboard.tsx') ?? '';
 const branchStore = read('src/branch/branchStore.ts') ?? '';
+const orderStore = read('src/stores/orderStore.ts') ?? '';
 const branchOpsStore = read('src/branch/branchOpsStore.ts') ?? '';
 const branchStockForm = read('src/bakery/BranchStockForm.tsx') ?? '';
 const orderReceiverDashboard = read('src/bakery/OrderReceiverDashboard.tsx') ?? '';
@@ -117,6 +120,7 @@ const errorBoundary = read('src/components/layout/ErrorBoundary.tsx') ?? '';
 const dataHealthBanner = read('src/components/layout/DataHealthBanner.tsx') ?? '';
 const errorDiagnostics = read('src/lib/errorDiagnostics.ts') ?? '';
 const clientErrorMigration = read('supabase/migrations/20260720195621_client_error_reporting.sql') ?? '';
+const secureSnbReportingViewsMigration = read('supabase/migrations/20260721173000_secure_snb_reporting_views.sql') ?? '';
 const itemPriceStore = read('src/stores/itemPriceStore.ts') ?? '';
 const qualityGate = read('.github/workflows/quality-gate.yml') ?? '';
 const sourceFiles = [...walk('src'), ...walk('supabase/functions')];
@@ -315,6 +319,13 @@ check(
   existsSync(join(projectRoot, 'supabase/migrations/20260626173000_hosur_counter_reopen_same_day.sql'))
     && existsSync(join(projectRoot, 'supabase/migrations/20260626213000_vrsnb_customer_booking_tracking.sql')),
   'Critical counter and customer-order migrations must remain committed.',
+);
+
+check(
+  'All SNB reporting views enforce caller security',
+  ['snb_bill_item_detail','snb_bill_item_category_detail','snb_supplier_outstanding_report','snb_cashier_session_report','snb_daily_branch_report','snb_session_bill_totals','snb_session_advance_total','snb_cash_operation_rows','snb_counter_calculated_totals','snb_item_wise_sales_report','snb_category_wise_sales_report','snb_session_pos_payments','snb_session_advance_cash','snb_counter_sales_totals','snb_cashier_bill_report','snb_item_category_map','snb_bill_discount_report','snb_session_credit_collections','snb_counter_collection_totals','snb_salesperson_bill_report','snb_daily_counter_summary','snb_session_return_totals']
+    .every((view) => secureSnbReportingViewsMigration.includes('alter view public.' + view + ' set (security_invoker = true)')),
+  'Every SNB report view must remain security-invoker so it cannot bypass the caller RLS context.',
 );
 
 check(
@@ -694,10 +705,12 @@ check(
 check(
   'Branch dashboard uses realtime with low-frequency recovery polling',
   branchDashboard.includes("subscribeToStock(branch)")
-    && branchDashboard.includes("5 * 60_000")
-    && branchDashboard.includes("2 * 60_000")
+    && branchDashboard.includes("15 * 60_000")
+    && branchDashboard.includes("10 * 60_000")
     && branchDashboard.includes("visibilitychange")
-    && !branchDashboard.includes("}, 10_000)"),
+    && branchStore.includes('applyBranchRealtimeChange')
+    && !branchStore.includes("() => { scheduleBranchRefetch(branch); }")
+    && !branchDashboard.includes("setInterval(refresh, 5 * 60_000)"),
   'Branch stock and closure summaries must use realtime/visibility refresh with bounded recovery polling.',
 );
 
@@ -709,10 +722,40 @@ check(
     && packingDashboard.includes('subscribeOrders()')
     && orderReceiverDashboard.includes('subscribe: subscribeOrders')
     && orderReceiverDashboard.includes('subscribeOrders()')
+    && bakeryStore.includes('const BAKERY_FETCH_FRESH_MS = 60_000')
+    && bakeryStore.includes("event.eventType === 'DELETE'")
+    && !bakeryStore.includes('() => { get().fetchOrders(true); }')
+    && bakerDashboard.includes('15 * 60_000')
+    && packingDashboard.includes('15 * 60_000')
     && !bakerDashboard.includes('fetchOrders(true); }, 15_000')
     && !packingDashboard.includes('fetchOrders(true); }, 15_000')
     && !orderReceiverDashboard.includes('if (!document.hidden) fetchOrders(true);\n    }, 15_000);'),
   'Baker, Packing and Order Receiver must stay immediate via realtime without 15-second full-order downloads.',
+);
+
+check(
+  'Cafe orders use realtime with infrequent full-history recovery',
+  orderStore.includes("channel('cafe-orders-live')")
+    && orderStore.includes("const POLL_INTERVAL_MS = 15 * 60_000")
+    && orderStore.includes('orderFetchInFlight')
+    && orderStore.includes("event.eventType === 'DELETE'")
+    && !orderStore.includes('const POLL_INTERVAL_MS = 30_000'),
+  'Billing, kitchen and reporting must merge changed order rows locally and never poll retained bill history every 30 seconds.',
+);
+
+check(
+  'Throttled live dashboards retain explicit manual refresh controls',
+  branchDashboard.includes('aria-label="Refresh branch data"')
+    && branchDashboard.includes('fetchBranchData(branch, true)')
+    && billingDashboard.includes('aria-label="Refresh orders"')
+    && billingDashboard.includes('await loadOrders(3650)')
+    && kitchenDashboard.includes('aria-label="Refresh orders"')
+    && kitchenDashboard.includes('await loadOrders(1)')
+    && storeDashboard.includes('fetchOrders(true, true)')
+    && bakerDashboard.includes('fetchOrders(true, true)')
+    && packingDashboard.includes('fetchOrders(true, true)')
+    && orderReceiverDashboard.includes('fetchOrders(true, true)'),
+  'Every operational screen affected by reduced polling must provide a real manual refresh that bypasses freshness throttling.',
 );
 
 check(
