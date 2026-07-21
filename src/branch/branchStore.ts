@@ -368,7 +368,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .order('created_at', { ascending: false })
           .limit(1000),
         supabase.from('branch_credit_sales')
-          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
           .order('created_at', { ascending: false })
           .limit(1000),
@@ -385,7 +385,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           .order('created_at', { ascending: false })
           .limit(2000),
         supabase.from('branch_credit_sales')
-          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no')
+          .select('id,branch,source,source_id,customer_ref,customer_name,customer_phone,items,subtotal,amount_paid,credit_amount,sold_by,created_at,due_date,settled_at,status,notes,bill_no,discount_amount')
           .eq('branch', branch)
           .neq('status', 'settled')
           .order('created_at', { ascending: false })
@@ -508,6 +508,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
             status:        (d.status ?? 'pending') as 'pending' | 'partial' | 'settled',
             notes:         d.notes ?? null,
             billNo:        d.bill_no ?? '',
+            discountAmount: Number(d.discount_amount ?? 0),
           }));
         return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
