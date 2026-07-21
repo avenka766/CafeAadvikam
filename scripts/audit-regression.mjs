@@ -164,7 +164,9 @@ check(
 
 check(
   'Only SNB Mix & Combo may bill through insufficient stock',
-  branchBilling.includes("branch !== 'SNB'")
+  branchBilling.includes("function isSnbFlexibleStockItem(branch: Branch")
+    && branchBilling.includes("if (branch !== 'SNB' || !item) return false;")
+    && !branchBilling.includes('function isFlexibleStockItem(')
     && branchBilling.includes("normalizedCategory === 'mix & combo'")
     && branchBilling.includes("normalizedCategory === 'mix and combo'")
     && branchBilling.includes('const disabled = stock <= 0 && !allowInsufficientStock;')
