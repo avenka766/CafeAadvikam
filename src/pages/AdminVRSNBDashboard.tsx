@@ -112,17 +112,27 @@ type TabId =
   | "overview"
   | "sales"
   | "stock"
+  | "stock-synced"
   | "update-stock"
+  | "suppliers"
   | "expenses"
   | "complaints"
   | "waste"
   | "quotations"
   | "credit"
+  | "invoices"
+  | "purchase-returns"
+  | "payments"
+  | "bank"
+  | "current-cash"
+  | "salespersons"
+  | "salesperson-report"
   | "cashier-report"
   | "cashier-closure"
   | "closure"
   | "reports"
   | "audit-stock"
+  | "history"
   | "notifications";
 
 const TABS: Array<{
@@ -134,7 +144,9 @@ const TABS: Array<{
   { id: "overview", label: "Dashboard Overview", icon: LayoutDashboard },
   { id: "sales", label: "Sales & Returns", icon: Receipt },
   { id: "stock", label: "Low Stock / Stock", icon: Package },
+  { id: "stock-synced", label: "Stock Synced", icon: PackageCheck, adminOnly: true },
   { id: "update-stock", label: "Update Stock", icon: Pencil, adminOnly: true },
+  { id: "suppliers", label: "Suppliers", icon: Truck, adminOnly: true },
   { id: "expenses", label: "Expenses", icon: WalletCards, adminOnly: true },
   { id: "complaints", label: "Complaints", icon: Bell, adminOnly: true },
   { id: "waste", label: "Waste Logs", icon: Trash2, adminOnly: true },
@@ -145,6 +157,13 @@ const TABS: Array<{
     icon: CreditCard,
     adminOnly: true,
   },
+  { id: "invoices", label: "Purchase Invoices", icon: ShoppingCart, adminOnly: true },
+  { id: "purchase-returns", label: "Purchase Returns", icon: RotateCcw, adminOnly: true },
+  { id: "payments", label: "Supplier Payments", icon: WalletCards, adminOnly: true },
+  { id: "bank", label: "Bank Deposits", icon: Landmark, adminOnly: true },
+  { id: "current-cash", label: "Current Cash", icon: Banknote, adminOnly: true },
+  { id: "salespersons", label: "Salesperson Management", icon: UserRound, adminOnly: true },
+  { id: "salesperson-report", label: "Salesperson Report", icon: BarChart3, adminOnly: true },
   { id: "cashier-report", label: "Cashier Report", icon: BarChart3, adminOnly: true },
   { id: "cashier-closure", label: "Cashier Closure", icon: WalletCards, adminOnly: true },
   {
@@ -165,6 +184,7 @@ const TABS: Array<{
     icon: ClipboardCheck,
     adminOnly: true,
   },
+  { id: "history", label: "History", icon: History, adminOnly: true },
   {
     id: "notifications",
     label: "Notifications & Alerts",
@@ -1028,7 +1048,7 @@ export default function AdminVRSNBDashboard() {
           ))}
         </div>
       </div>
-      {!["stock", "update-stock", "quotations"].includes(tab) && (
+      {!["stock", "update-stock", "quotations", "suppliers", "salespersons"].includes(tab) && (
         <DateFilters
           fromDate={fromDate}
           toDate={toDate}
@@ -1056,6 +1076,7 @@ export default function AdminVRSNBDashboard() {
           {...commonProps}
         />
       )}
+      {tab === "stock-synced" && <StockSyncedTab fromDate={fromDate} toDate={toDate} />}
       {tab === "update-stock" && (
         <UpdateStockTab
           userName={userName}
@@ -1065,11 +1086,19 @@ export default function AdminVRSNBDashboard() {
           setNotice={setNotice}
         />
       )}
+      {tab === "suppliers" && <SuppliersTab userName={userName} />}
       {tab === "expenses" && <ExpensesTab userName={userName} {...commonProps} />}
       {tab === "complaints" && <ComplaintsTab userName={userName} />}
       {tab === "waste" && <WasteLogsTab userName={userName} />}
       {tab === "quotations" && <QuotationsTab userName={userName} />}
       {tab === "credit" && <CreditTab fromDate={fromDate} toDate={toDate} />}
+      {tab === "invoices" && <PurchaseInvoicesTab userName={userName} branchStock={vrsnbStockRows} manualUpdateStock={manualUpdateStock} fetchBranchData={fetchBranchData} setNotice={setNotice} />}
+      {tab === "purchase-returns" && <PurchaseReturnsTab userName={userName} branchStock={vrsnbStockRows} manualUpdateStock={manualUpdateStock} fetchBranchData={fetchBranchData} setNotice={setNotice} />}
+      {tab === "payments" && <SupplierPaymentsTab userName={userName} />}
+      {tab === "bank" && <BankDepositsTab userName={userName} cashBalance={cashBalance} upiBalance={upiBalance} cardBalance={cardBalance} bankBalance={bankBalance} />}
+      {tab === "current-cash" && <CurrentCashTab {...commonProps} />}
+      {tab === "salespersons" && <SalespersonManagementTab userName={userName} />}
+      {tab === "salesperson-report" && <SalespersonReportTab {...commonProps} />}
       {tab === "cashier-report" && <CashierReportTab {...commonProps} />}
       {tab === "cashier-closure" && <CashierClosureTab userName={userName} {...commonProps} />}
       {tab === "closure" && (
@@ -1085,6 +1114,7 @@ export default function AdminVRSNBDashboard() {
           setNotice={setNotice}
         />
       )}
+      {tab === "history" && <HistoryTab {...commonProps} />}
       {tab === "notifications" && <NotificationsTab userName={userName} />}
     </main>
   );
@@ -1929,6 +1959,111 @@ function StockTab(props: any) {
   );
 }
 
+function SuppliersTab({ userName }: { userName: string }) {
+  const { suppliers, addSupplier, updateSupplier, removeSupplier } = useBranchOpsStore();
+  const emptyForm = { name: "", address: "", mobile: "", gstNumber: "", itemsProvided: "", notes: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState("");
+  const rows = suppliers.filter((supplier) => supplier.branch === BRANCH);
+  const reset = () => { setEditingId(""); setForm(emptyForm); };
+  const save = () => {
+    if (!form.name.trim() || !form.mobile.trim()) return;
+    if (editingId) updateSupplier(editingId, { ...form, createdBy: userName }, userName);
+    else addSupplier({ branch: BRANCH, ...form, createdBy: userName });
+    reset();
+  };
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title={editingId ? "Edit Supplier" : "Add Supplier"} icon={<Truck className="size-4" />}>
+        <div className="space-y-3">
+          <Field label="Supplier Name *"><input className={inputCls} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Mobile *"><input className={inputCls} value={form.mobile} onChange={(event) => setForm({ ...form, mobile: event.target.value })} /></Field>
+            <Field label="GST"><input className={inputCls} value={form.gstNumber} onChange={(event) => setForm({ ...form, gstNumber: event.target.value })} /></Field>
+          </div>
+          <Field label="Address"><textarea className={inputCls} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></Field>
+          <Field label="Items They Provide"><input className={inputCls} value={form.itemsProvided} onChange={(event) => setForm({ ...form, itemsProvided: event.target.value })} /></Field>
+          <Field label="Notes"><textarea className={inputCls} value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></Field>
+          <div className="flex gap-2">
+            <button onClick={save} className={cn(btnCls, "flex-1 bg-slate-950 text-white")}><Plus className="size-4" />{editingId ? "Update Supplier" : "Save Supplier"}</button>
+            {editingId && <button onClick={reset} className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")}>Cancel</button>}
+          </div>
+        </div>
+      </Panel>
+      <Panel title="Supplier List" icon={<BookOpenCheck className="size-4" />}>
+        <DataTable
+          headers={["Name", "Mobile", "GST", "Items", "Address", "Notes", "Added", "Actions"]}
+          rows={rows.map((supplier) => [supplier.name, supplier.mobile, supplier.gstNumber || "-", supplier.itemsProvided || "-", supplier.address || "-", supplier.notes || "-", fmtDateTime(supplier.createdAt), <div key={supplier.id} className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => { setEditingId(supplier.id); setForm({ name: supplier.name, address: supplier.address, mobile: supplier.mobile, gstNumber: supplier.gstNumber, itemsProvided: supplier.itemsProvided, notes: supplier.notes }); }}>Edit</button><button className={cn(btnCls, "bg-red-50 text-red-700 ring-1 ring-red-200")} onClick={() => { if (window.confirm(`Delete ${supplier.name}?`)) removeSupplier(supplier.id, userName); }}>Delete</button></div>])}
+          empty="No VRSNB suppliers added."
+        />
+      </Panel>
+    </div>
+  );
+}
+
+type StockSyncedRow = {
+  id: string;
+  source: "Purchase" | "VRSNB Incoming";
+  syncedAt: string;
+  reference: string;
+  itemName: string;
+  quantity: number;
+  unit: string;
+  before: number | null;
+  after: number | null;
+  syncedBy: string;
+  status: string;
+  details: string;
+};
+
+function StockSyncedTab({ fromDate, toDate }: { fromDate: string; toDate: string }) {
+  const catalogItems = useVRSNBCatalog();
+  const [rows, setRows] = useState<StockSyncedRow[]>([]);
+  const [source, setSource] = useState<"all" | "purchase" | "incoming">("all");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      const fromIso = startOfDay(fromDate).toISOString();
+      const toIso = endOfDay(toDate).toISOString();
+      const [adjustmentResult, incomingResult] = await Promise.all([
+        supabase.from("branch_stock_adjustments").select("id,item_name,old_quantity,new_quantity,delta,reason,adjusted_by,reference_id,notes,adjusted_at").eq("branch", BRANCH).in("reason", ["Purchase Invoice Stock Sync", "Purchase Invoice Re-sync"]).gte("adjusted_at", fromIso).lte("adjusted_at", toIso).order("adjusted_at", { ascending: false }).limit(5000),
+        supabase.from("branch_incoming").select("id,dispatch_id,item_barcode,item_name,quantity,unit,received_at,dispatched_by,confirmed,disputed").eq("branch", BRANCH).eq("confirmed", true).gte("received_at", fromIso).lte("received_at", toIso).order("received_at", { ascending: false }).limit(5000),
+      ]);
+      if (cancelled) return;
+      if (adjustmentResult.error || incomingResult.error) {
+        setError(adjustmentResult.error?.message || incomingResult.error?.message || "Unable to load stock sync history.");
+        setLoading(false);
+        return;
+      }
+      const unitByName = new Map(catalogItems.map((item) => [normal(item.name), item.uom === "Kgs" ? "kg" : "pcs"]));
+      const purchaseRows: StockSyncedRow[] = (adjustmentResult.data || []).map((row: any) => ({ id: `purchase:${row.id}`, source: "Purchase", syncedAt: row.adjusted_at, reference: row.reference_id || "-", itemName: row.item_name, quantity: Number(row.delta || 0), unit: unitByName.get(normal(row.item_name)) || "", before: row.old_quantity == null ? null : Number(row.old_quantity), after: row.new_quantity == null ? null : Number(row.new_quantity), syncedBy: row.adjusted_by || "-", status: String(row.reason).includes("Re-sync") ? "Re-synced" : "Synced", details: row.notes || row.reason }));
+      const incomingRows: StockSyncedRow[] = (incomingResult.data || []).map((row: any) => ({ id: `incoming:${row.id}`, source: "VRSNB Incoming", syncedAt: row.received_at, reference: row.dispatch_id || row.id, itemName: row.item_name, quantity: Number(row.quantity || 0), unit: row.unit || unitByName.get(normal(row.item_name)) || "", before: null, after: null, syncedBy: row.dispatched_by || "Packing", status: row.disputed ? "Confirmed after dispute" : "Confirmed", details: `Confirmed incoming stock${row.item_barcode ? ` - Barcode ${row.item_barcode}` : ""}` }));
+      setRows([...purchaseRows, ...incomingRows].sort((a, b) => new Date(b.syncedAt).getTime() - new Date(a.syncedAt).getTime()));
+      setLoading(false);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [catalogItems, fromDate, refreshKey, toDate]);
+
+  const filteredRows = rows.filter((row) => source === "all" || (source === "purchase" ? row.source === "Purchase" : row.source === "VRSNB Incoming"));
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3"><Kpi label="Sync Records" value={rows.length} icon={<Database className="size-5" />} tone="blue" /><Kpi label="Purchase Sync" value={rows.filter((row) => row.source === "Purchase").length} icon={<ShoppingCart className="size-5" />} tone="green" /><Kpi label="VRSNB Incoming" value={rows.filter((row) => row.source === "VRSNB Incoming").length} icon={<PackageCheck className="size-5" />} tone="amber" /></div>
+      <Panel title="Stock Synced Register" icon={<PackageCheck className="size-4" />} action={<div className="flex gap-2"><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => setRefreshKey((value) => value + 1)} disabled={loading}><RefreshCcw className={cn("size-4", loading && "animate-spin")} />Refresh</button><button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Stock_Synced.xls", filteredRows)}><Download className="size-4" />Excel</button></div>}>
+        <div className="mb-4 inline-flex rounded-2xl bg-slate-100 p-1">{([['all', 'All'], ['purchase', 'Purchase'], ['incoming', 'VRSNB Incoming']] as const).map(([value, label]) => <button key={value} onClick={() => setSource(value)} className={cn("rounded-xl px-4 py-2 text-xs font-black", source === value ? "bg-slate-950 text-white shadow" : "text-slate-600")}>{label}</button>)}</div>
+        {error && <div className="mb-4 rounded-2xl bg-red-50 p-3 text-sm font-black text-red-700 ring-1 ring-red-100">{error}</div>}
+        <DataTable headers={["Date & Time", "Source", "Reference", "Item", "Synced Qty", "Before", "After", "Synced / Sent By", "Status", "Details"]} rows={filteredRows.map((row) => [fmtDateTime(row.syncedAt), row.source, row.reference, row.itemName, `${row.quantity > 0 ? "+" : ""}${row.quantity} ${row.unit}`, row.before ?? "-", row.after ?? "-", row.syncedBy, row.status, row.details])} empty={loading ? "Loading stock sync history..." : "No VRSNB stock sync records found for this date range."} />
+      </Panel>
+    </div>
+  );
+}
+
 function ExpensesTab({ userName, expenseAmount, cashBalance }: any) {
   const { expenses, addExpense } = useBranchOpsStore();
   const [form, setForm] = useState({
@@ -2602,6 +2737,123 @@ function PurchaseOrdersTab({ userName }: { userName: string }) {
   );
 }
 
+type PurchaseReturnHistoryRow = {
+  id: string;
+  item_name: string;
+  old_quantity: number;
+  new_quantity: number;
+  delta: number;
+  reference_id: string | null;
+  notes: string | null;
+  adjusted_by: string;
+  adjusted_at: string;
+};
+
+function PurchaseReturnsTab({ userName, branchStock, manualUpdateStock, fetchBranchData, setNotice }: {
+  userName: string;
+  branchStock: any[];
+  manualUpdateStock: any;
+  fetchBranchData: (branch: Branch) => Promise<void>;
+  setNotice: (message: string) => void;
+}) {
+  const { purchases } = useBranchOpsStore();
+  const catalogItems = useVRSNBCatalog();
+  const [purchaseId, setPurchaseId] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [reason, setReason] = useState("Damaged");
+  const [settlement, setSettlement] = useState("Credit Note");
+  const [reference, setReference] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [history, setHistory] = useState<PurchaseReturnHistoryRow[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const eligible = purchases.filter((purchase) => purchase.branch === BRANCH && (purchase.syncedToStock || purchase.syncStatus === "Synced"));
+  const selected = eligible.find((purchase) => purchase.id === purchaseId);
+
+  const loadHistory = useCallback(async () => {
+    const { data, error: loadError } = await supabase.from("branch_stock_adjustments").select("id,item_name,old_quantity,new_quantity,delta,reference_id,notes,adjusted_by,adjusted_at").eq("branch", BRANCH).eq("reason", "Purchase Return").order("adjusted_at", { ascending: false }).limit(1000);
+    if (loadError) setError(loadError.message);
+    else setHistory((data || []) as PurchaseReturnHistoryRow[]);
+  }, []);
+  useEffect(() => { void loadHistory(); }, [loadHistory]);
+
+  const save = async () => {
+    const qty = Number(quantity);
+    if (!selected || !Number.isFinite(qty) || qty <= 0) { setError("Select a synced invoice and enter a valid return quantity."); return; }
+    const alreadyReturned = history.filter((row) => row.notes?.includes(`invoice:${selected.id}`)).reduce((sum, row) => sum + Math.abs(Number(row.delta || 0)), 0);
+    if (qty > Number(selected.quantity) - alreadyReturned + 0.0001) { setError(`Only ${Math.max(0, Number(selected.quantity) - alreadyReturned)} ${selected.unit || ""} remains returnable on this invoice.`); return; }
+    const stockRow = branchStock.find((row) => normal(row.itemName) === normal(selected.itemName));
+    const currentQty = Number(stockRow?.quantity || 0);
+    if (qty > currentQty + 0.0001) { setError(`${selected.itemName} has only ${currentQty} ${selected.unit || ""} in VRSNB stock.`); return; }
+    setSaving(true);
+    setError("");
+    const returnNo = `VRSNB-PR-${Date.now()}`;
+    const catalogItem = catalogItems.find((item) => normal(item.name) === normal(selected.itemName));
+    const notes = `invoice:${selected.id} | ${selected.invoiceNo} | ${selected.supplier} | ${reason} | ${settlement}${reference.trim() ? ` | Ref ${reference.trim()}` : ""}${remarks.trim() ? ` | ${remarks.trim()}` : ""}`;
+    const updateError = await manualUpdateStock(BRANCH, stockRow?.itemName || selected.itemName, currentQty - qty, userName, catalogItem?.barcode, { reason: "Purchase Return", referenceId: returnNo, notes });
+    setSaving(false);
+    if (updateError) { setError(updateError); return; }
+    await fetchBranchData(BRANCH);
+    await loadHistory();
+    setPurchaseId(""); setQuantity(""); setReference(""); setRemarks("");
+    setNotice(`${returnNo} posted. ${qty} ${selected.unit || ""} removed from VRSNB stock.`);
+  };
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[430px_minmax(0,1fr)]">
+      <Panel title="Create Purchase Return" icon={<RotateCcw className="size-4" />}>
+        <div className="space-y-3">
+          <Field label="Stock-synced Invoice"><select className={inputCls} value={purchaseId} onChange={(event) => setPurchaseId(event.target.value)}><option value="">Select invoice</option>{eligible.map((purchase) => <option key={purchase.id} value={purchase.id}>{purchase.invoiceNo} - {purchase.supplier} - {purchase.itemName}</option>)}</select></Field>
+          {selected && <div className="rounded-2xl bg-slate-50 p-3 text-xs font-bold text-slate-600 ring-1 ring-slate-100">Purchased: {selected.quantity} {selected.unit || ""} | Invoice value: {money(selected.total)}</div>}
+          <Field label="Return Quantity"><input type="number" min="0" step="0.001" className={inputCls} value={quantity} onChange={(event) => setQuantity(event.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3"><Field label="Reason"><select className={inputCls} value={reason} onChange={(event) => setReason(event.target.value)}><option>Damaged</option><option>Expired</option><option>Wrong Item</option><option>Quality Issue</option><option>Excess Supply</option><option>Other</option></select></Field><Field label="Settlement"><select className={inputCls} value={settlement} onChange={(event) => setSettlement(event.target.value)}><option>Credit Note</option><option>Replacement</option><option>Refund</option></select></Field></div>
+          <Field label="Reference"><input className={inputCls} value={reference} onChange={(event) => setReference(event.target.value)} /></Field>
+          <Field label="Remarks"><textarea className={inputCls} value={remarks} onChange={(event) => setRemarks(event.target.value)} /></Field>
+          {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700 ring-1 ring-red-200">{error}</p>}
+          <button disabled={saving || !selected} onClick={save} className={cn(btnCls, "w-full bg-slate-950 text-white disabled:opacity-50")}><RotateCcw className="size-4" />{saving ? "Posting Return..." : "Post Return"}</button>
+        </div>
+      </Panel>
+      <Panel title="Purchase Return History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Purchase_Returns.xls", history)}><Download className="size-4" />Excel</button>}>
+        <DataTable headers={["Date", "Return No", "Item", "Returned Qty", "Stock Before", "Stock After", "Entered By", "Details"]} rows={history.map((row) => [fmtDateTime(row.adjusted_at), row.reference_id || "-", row.item_name, Math.abs(Number(row.delta || 0)), row.old_quantity, row.new_quantity, row.adjusted_by, row.notes || "-"])} empty="No VRSNB purchase returns posted." />
+      </Panel>
+    </div>
+  );
+}
+
+function CurrentCashTab(props: any) {
+  const cashIn = props.movementInRange.filter((row: any) => row.paymentMode === "cash" && row.direction === "in").reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+  const cashOut = props.movementInRange.filter((row: any) => row.paymentMode === "cash" && row.direction === "out").reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Kpi label="Current Cash" value={money(props.cashBalance)} icon={<Banknote className="size-5" />} tone="green" /><Kpi label="Cash In" value={money(cashIn)} icon={<ArrowUpDown className="size-5" />} tone="blue" /><Kpi label="Cash Out" value={money(cashOut)} icon={<ArrowUpDown className="size-5" />} tone="red" /><Kpi label="Bank Deposited" value={money(props.depositAmount)} icon={<Landmark className="size-5" />} tone="slate" /></div>
+      <Panel title="Cash Movement Register" icon={<WalletCards className="size-4" />} action={<button className={cn(btnCls, "bg-white text-slate-700 ring-1 ring-slate-200")} onClick={() => csvDownload("VRSNB_Current_Cash.xls", props.movementInRange)}><Download className="size-4" />Excel</button>}>
+        <DataTable headers={["Date & Time", "Direction", "Purpose", "Mode", "Amount", "Reference", "Entered By"]} rows={props.movementInRange.filter((row: any) => row.paymentMode === "cash").map((row: any) => [fmtDateTime(row.dateTime), row.direction === "in" ? "Cash In" : "Cash Out", row.purpose, String(row.paymentMode).toUpperCase(), money(row.amount), row.reference || "-", row.enteredBy || "-"])} empty="No cash movements for the selected range." />
+      </Panel>
+    </div>
+  );
+}
+
+function HistoryTab(props: any) {
+  const { purchases, purchasePayments, bankDeposits, expenses, auditLogs, cashierClosures } = useBranchOpsStore();
+  const branches: Branch[] = props.reportBranches || [BRANCH];
+  const withinRange = (value: string) => inRange(value, props.fromDate, props.toDate);
+  const rows = [
+    ...props.branchBills.map((bill: any) => ({ date: bill.createdAt, type: "Sale", reference: bill.billNo, details: `${bill.customerName || "Walk-in"} - ${bill.items.length} item(s)`, amount: bill.total, user: bill.cashier || bill.createdBy || "-", status: bill.status || "Completed" })),
+    ...props.branchReturns.map((row: any) => ({ date: row.createdAt, type: "Sales Return", reference: row.returnNo, details: row.reason, amount: -Number(row.total || 0), user: row.returnedBy, status: "Completed" })),
+    ...purchases.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Purchase Invoice", reference: row.invoiceNo, details: `${row.supplier} - ${row.itemName}`, amount: row.total, user: row.enteredBy, status: row.syncStatus || "Not Synced" })),
+    ...purchasePayments.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Supplier Payment", reference: row.reference || row.id, details: row.supplier, amount: -row.amount, user: row.paidBy, status: row.mode.toUpperCase() })),
+    ...expenses.filter((row) => branches.includes(row.branch) && withinRange(`${row.expenseDate}T12:00:00`)).map((row) => ({ date: row.createdAt, type: "Expense", reference: row.id, details: `${row.category} - ${row.description}`, amount: -row.amount, user: row.enteredBy, status: row.mode.toUpperCase() })),
+    ...bankDeposits.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Bank Deposit", reference: row.transactionRef || row.slipNo || row.id, details: row.bankAccount, amount: -row.amount, user: row.enteredBy, status: row.paymentMode })),
+    ...cashierClosures.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Cashier Closure", reference: row.id, details: row.cashierName || row.cashierId || "Cashier", amount: row.actualCash, user: row.closedBy, status: "Closed" })),
+    ...auditLogs.filter((row) => branches.includes(row.branch) && withinRange(row.createdAt)).map((row) => ({ date: row.createdAt, type: "Audit", reference: row.id, details: row.action, amount: 0, user: row.user, status: "Recorded" })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return (
+    <Panel title="Complete VRSNB History" icon={<History className="size-4" />} action={<button className={cn(btnCls, "bg-slate-950 text-white")} onClick={() => csvDownload("VRSNB_Complete_History.xls", rows)}><Download className="size-4" />Excel</button>}>
+      <DataTable headers={["Date & Time", "Type", "Reference", "Details", "Amount", "User", "Status"]} rows={rows.map((row) => [fmtDateTime(row.date), row.type, row.reference, row.details, row.amount === 0 ? "-" : money(row.amount), row.user || "-", row.status])} empty="No VRSNB history found for this date range." />
+    </Panel>
+  );
+}
+
 function PurchaseInvoicesTab({
   userName,
   branchStock,
@@ -2706,6 +2958,11 @@ function PurchaseInvoicesTab({
       currentQty + Number(p.quantity),
       userName,
       catalogItem?.barcode,
+      {
+        reason: "Purchase Invoice Stock Sync",
+        referenceId: p.invoiceNo,
+        notes: `${p.supplier} - ${p.itemName} - ${p.quantity} ${p.unit || ""}`,
+      },
     );
     if (err) {
       setNotice(err);
@@ -5176,4 +5433,3 @@ function DataTable({
     </div>
   );
 }
-
