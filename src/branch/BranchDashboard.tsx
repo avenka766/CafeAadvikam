@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
-  Smartphone, Store, Truck, UserRound, WalletCards,
+  Smartphone, Truck, UserRound, WalletCards,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -28,10 +28,8 @@ import {
   PurchaseOrderTab,
   PurchasePayTab,
   PurchaseTab,
-  QuotationTab,
   ReturnsTab,
   SalespersonReportTab,
-  StoreOrdersTab,
 } from './tabs/BranchBusinessModules';
 import type { Branch } from './types';
 import { BRANCH_COLORS, BRANCH_LABELS } from './types';
@@ -41,7 +39,6 @@ import { useSnbTabStripStore } from '@/stores/snbTabStripStore';
 type TabId =
   | 'bill'
   | 'advance'
-  | 'quotation'
   | 'returns'
   | 'purchase'
   | 'purchase-pay'
@@ -52,7 +49,6 @@ type TabId =
   | 'alerts'
   | 'salesperson'
   | 'notifications'
-  | 'store-orders'
   | 'current-cash'
   | 'bank'
   | 'reports'
@@ -62,13 +58,11 @@ type TabId =
 const BASE_TABS = [
   { id: 'bill' as const, label: 'New Bill', icon: Receipt, adminOnly: false },
   { id: 'advance' as const, label: 'Advance Orders', icon: FileClock, adminOnly: false },
-  { id: 'quotation' as const, label: 'Quotation', icon: FileText, adminOnly: false },
   { id: 'returns' as const, label: 'Returns', icon: RotateCcw, adminOnly: false },
   { id: 'history' as const, label: 'Bill History', icon: History, adminOnly: false },
   { id: 'payment-edit' as const, label: 'Payment Mode Edit', icon: CreditCard, adminOnly: false },
   { id: 'closure' as const, label: 'Cashier Closure', icon: WalletCards, adminOnly: false },
   { id: 'alerts' as const, label: 'Alerts', icon: Bell, adminOnly: false },
-  { id: 'store-orders' as const, label: 'Store Orders', icon: Store, adminOnly: false },
   { id: 'salesperson' as const, label: 'Salesperson Report', icon: UserRound, adminOnly: true },
   { id: 'reports' as const, label: 'Reports', icon: FileText, adminOnly: true },
   { id: 'purchase' as const, label: 'Purchase', icon: Truck, adminOnly: true },
@@ -106,7 +100,7 @@ export default function BranchDashboard({ branch }: Props) {
     stockMismatches, fetchBranchData, syncIncomingFromDispatches, cleanOldData, seedBranchItems,
     subscribeToStock, fetchStockMismatches, fetchCreditPayments,
   } = useBranchStore();
-  const { bills, cashMovements, notifications, storeOrders, purchases, advanceCakeOrders } = useBranchOpsStore();
+  const { bills, cashMovements, notifications, purchases, advanceCakeOrders } = useBranchOpsStore();
   const tabStripExpanded = useSnbTabStripStore((s) => s.expanded);
 
   const initializedRef = useRef<Branch | null>(null);
@@ -183,14 +177,13 @@ export default function BranchDashboard({ branch }: Props) {
   useEffect(() => {
     let active = true;
     const loadTodayLedger = async () => {
-      const { data, error } = await supabase
-        .from('branch_daily_closure_ledger')
-        .select('sales_total, advance_collected, advance_balance_collected, cash_total, upi_total, card_total')
-        .eq('branch', branch)
-        .eq('closure_date', businessDate())
-        .maybeSingle();
+      const { data, error } = await supabase.rpc('get_branch_daily_closure_summary', {
+        p_branch: branch,
+        p_date: businessDate(),
+      });
       if (!active) return;
-      setTodayLedger(error ? null : (data as TodayLedger | null));
+      const row = Array.isArray(data) ? data[0] : data;
+      setTodayLedger(error ? null : (row as TodayLedger | null));
     };
     void loadTodayLedger();
     const refreshOnVisible = () => { if (!document.hidden) void loadTodayLedger(); };
@@ -214,7 +207,6 @@ export default function BranchDashboard({ branch }: Props) {
   const pendingIncoming = branchIncoming.filter((i) => !i.confirmed).length;
   const pendingAdvance = branchAdvance.filter((o) => o.status === 'pending').length;
   const unreadNotifications = notifications.filter((n) => n.branch === branch && n.status === 'Unread').length;
-  const pendingStoreOrders = storeOrders.filter((o) => o.branch === branch && o.status === 'Pending Store Confirmation').length;
   const pendingPurchases = purchases.filter((p) => p.branch === branch && p.total > p.paidAmount).length;
   const visibleCreditSales = branchCreditSales[branch] || [];
   const pendingCreditSales = visibleCreditSales.filter((c) => c.status !== 'settled').length;
@@ -296,7 +288,7 @@ export default function BranchDashboard({ branch }: Props) {
         {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
             {tabs
-              .filter((t) => (['bill', 'advance', 'quotation', 'returns', 'store-orders', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
+              .filter((t) => (['bill', 'advance', 'returns', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
               .map((t) => {
                 const Icon = t.icon;
                 const isActive = t.id === tab;
@@ -326,7 +318,6 @@ export default function BranchDashboard({ branch }: Props) {
           <div className={cn('h-full min-h-0', tab === 'bill' ? 'p-1 sm:p-1.5' : 'branch-compact-tab overflow-hidden p-1.5 sm:p-2')}>
             {tab === 'bill' && <BranchBillingProTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'advance' && <AdvanceCakeOrdersTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
-            {tab === 'quotation' && <QuotationTab branch={branch} branchStock={branchStock} onOpenTab={openTab} />}
             {tab === 'returns' && <ReturnsTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase' && isAdminUser && <PurchaseTab branch={branch} branchStock={branchStock} />}
             {tab === 'purchase-pay' && isAdminUser && <PurchasePayTab branch={branch} branchStock={branchStock} />}
@@ -337,7 +328,6 @@ export default function BranchDashboard({ branch }: Props) {
             {tab === 'alerts' && <BranchAlertsTab branch={branch} legacyDeliveries={todayLegacyDeliveries} cakeDeliveries={todayCakeDeliveries} />}
             {tab === 'salesperson' && canViewSalespersonReport && <SalespersonReportTab branch={branch} branchStock={branchStock} />}
             {tab === 'notifications' && isAdminUser && <AdminNotificationsBranchTab branch={branch} branchStock={branchStock} />}
-            {tab === 'store-orders' && <StoreOrdersTab branch={branch} branchStock={branchStock} />}
             {tab === 'current-cash' && isAdminUser && <CurrentCashTab branch={branch} branchStock={branchStock} />}
             {tab === 'bank' && isAdminUser && <BankTab branch={branch} branchStock={branchStock} />}
             {tab === 'reports' && canViewReports && <ReportsTab branch={branch} branchSales={branchSales} advanceOrders={branchAdvance} />}

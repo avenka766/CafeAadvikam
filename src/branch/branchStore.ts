@@ -1154,15 +1154,33 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       unit:          item.uom === 'Kgs' || item.uom === 'kg' ? 'kg' : 'pcs',
       min_threshold: defaultMinThreshold(item.uom),
     }));
-    for (let i = 0; i < rows.length; i += 50) {
-      await supabase
+    const { data: existingRows, error: existingError } = await supabase
+      .from('branch_stock')
+      .select('item_name,item_barcode')
+      .eq('branch', branch);
+    if (existingError) return;
+
+    const existingNames = new Set((existingRows || []).map((row) => normalizeStockName(row.item_name)));
+    const existingBarcodes = new Set(
+      (existingRows || [])
+        .map((row) => row.item_barcode == null ? null : Number(row.item_barcode))
+        .filter((barcode): barcode is number => barcode != null),
+    );
+    const missingRows = rows.filter((row) =>
+      !existingNames.has(normalizeStockName(row.item_name))
+      && (row.item_barcode == null || !existingBarcodes.has(Number(row.item_barcode))),
+    );
+
+    for (let i = 0; i < missingRows.length; i += 50) {
+      const { error } = await supabase
         .from('branch_stock')
-        .upsert(rows.slice(i, i + 50), {
+        .upsert(missingRows.slice(i, i + 50), {
           onConflict:       'branch,item_name',
           ignoreDuplicates: true,
         });
+      if (error) break;
     }
-    await get().fetchBranchData(branch);
+    if (missingRows.length > 0) await get().fetchBranchData(branch);
   },
 
   // ── Credit sales ────────────────────────────────────────────────────────────
