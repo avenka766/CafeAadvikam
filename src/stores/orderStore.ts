@@ -9,7 +9,9 @@ import { useMenuStore } from '@/stores/menuStore';
 // 4 fetches per minute — an 83 % reduction in order-query egress. The long-term
 // solution is Supabase Realtime postgres_changes, but this constant makes it easy
 // to tune further.
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 15 * 60_000;
+let orderRealtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let orderFetchInFlight = false;
 
 const moneyValue = (value: number) => Math.round(Number(value) * 100) / 100;
 
@@ -136,6 +138,8 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
   getCartCount: () => get().cart.reduce((sum, c) => sum + c.quantity, 0),
 
   loadOrders: async (days = 60) => {
+    if (orderFetchInFlight) return;
+    orderFetchInFlight = true;
     set({ loading: true });
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
@@ -172,6 +176,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
         set({ _pollBackoffTimer: retryTimer });
       }
     } finally {
+      orderFetchInFlight = false;
       set({ loading: false });
     }
   },
@@ -621,6 +626,25 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     const newCount = (state._pollRefCount || 0) + 1;
     set({ _pollRefCount: newCount });
     if (state.pollTimer) return;
+    if (!orderRealtimeChannel) {
+      orderRealtimeChannel = supabase
+        .channel('cafe-orders-live')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+          const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+          const id = String(event.new?.id ?? event.old?.id ?? '');
+          if (!id) return;
+          if (event.eventType === 'DELETE') {
+            set((current) => ({ orders: current.orders.filter((order) => order.id !== id) }));
+            return;
+          }
+          const changed = dbRowToOrder(event.new ?? {});
+          set((current) => ({
+            orders: [changed, ...current.orders.filter((order) => order.id !== id)]
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+          }));
+        })
+        .subscribe();
+    }
     const timer = setInterval(() => { if (!document.hidden) get().loadOrders(days); }, POLL_INTERVAL_MS);
     set({ polling: true, pollTimer: timer });
     get().loadOrders(days);
@@ -638,6 +662,10 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       if (state.pollTimer) {
         clearInterval(state.pollTimer);
         set({ polling: false, pollTimer: null });
+      }
+      if (orderRealtimeChannel) {
+        void supabase.removeChannel(orderRealtimeChannel);
+        orderRealtimeChannel = null;
       }
     }
   },
