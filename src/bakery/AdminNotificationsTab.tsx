@@ -632,10 +632,10 @@ export default function AdminNotificationsTab() {
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
-  // Poll every 20 seconds
+  // Refresh on return to the tab; the interval is only a recovery path.
   useEffect(() => {
     const refresh = () => { if (!document.hidden) void load(); };
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(refresh, 10 * 60_000);
     document.addEventListener('visibilitychange', refresh);
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
   }, [load]);

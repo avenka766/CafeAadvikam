@@ -819,7 +819,7 @@ export default function PackingDashboard() {
     fetchOrders().finally(() => setInitialLoading(false));
     const unsubscribe = subscribeOrders();
     // Realtime is the primary update path; polling only recovers a missed event.
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 60_000);
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15 * 60_000);
     return () => { unsubscribe(); clearInterval(id); };
   }, [fetchOrders, subscribeOrders]);
 
@@ -1047,7 +1047,7 @@ export default function PackingDashboard() {
 
   const refreshNow = () => {
     setInitialLoading(true);
-    fetchOrders(true).finally(() => setInitialLoading(false));
+    fetchOrders(true, true).finally(() => setInitialLoading(false));
   };
 
   return (

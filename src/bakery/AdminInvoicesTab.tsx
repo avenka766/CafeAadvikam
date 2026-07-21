@@ -304,10 +304,10 @@ export default function AdminInvoicesTab() {
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
-  // Poll every 30s so admin sees new invoices without refresh
+  // Visibility refresh plus a slow recovery poll avoids background egress.
   useEffect(() => {
     const refresh = () => { if (!document.hidden) void load(); };
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(refresh, 10 * 60_000);
     document.addEventListener('visibilitychange', refresh);
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', refresh); };
   }, [load]);

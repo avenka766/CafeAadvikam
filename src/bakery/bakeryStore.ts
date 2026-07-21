@@ -9,7 +9,7 @@ interface BakeryState {
   loading: boolean;
   // FIX: added `silent` param — background polls pass true so loading stays false,
   // preventing the StoreDashboard list from unmounting and resetting card state.
-  fetchOrders: (silent?: boolean) => Promise<void>;
+  fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
@@ -48,6 +48,9 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
 }
 
 const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
+let bakeryFetchInFlight: Promise<void> | null = null;
+let bakeryLastFetchedAt = 0;
+const BAKERY_FETCH_FRESH_MS = 60_000;
 
 // Standalone, on-demand query — deliberately NOT part of the polled Zustand
 // store above. Used by features that need an arbitrary/historical date range
@@ -90,23 +93,35 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // dispatched etc.), never by date, and a bakery order moves from placed to
   // dispatched within days — so 60 days comfortably covers real operational use
   // while stopping this 15 s poll from re-fetching the entire order history forever.
-  fetchOrders: async (silent = false) => {
-    if (!silent) set({ loading: true });
-    try {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 60);
-      const { data, error } = await supabase
-        .from('bakery_orders')
-        .select(BAKERY_ORDER_COLUMNS)
-        .gte('created_at', cutoff.toISOString())
-        .order('created_at', { ascending: false });
-      if (!error && data) {
-        set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
+  fetchOrders: async (silent = false, force = false) => {
+    if (bakeryFetchInFlight) return bakeryFetchInFlight;
+    if (!force && silent && Date.now() - bakeryLastFetchedAt < BAKERY_FETCH_FRESH_MS) return;
+
+    const request = (async () => {
+      if (!silent) set({ loading: true });
+      try {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 60);
+        const { data, error } = await supabase
+          .from('bakery_orders')
+          .select(BAKERY_ORDER_COLUMNS)
+          .gte('created_at', cutoff.toISOString())
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
+          bakeryLastFetchedAt = Date.now();
+        }
+      } catch (e) {
+        console.error('fetchOrders error:', e);
+      } finally {
+        if (!silent) set({ loading: false });
       }
-    } catch (e) {
-      console.error('fetchOrders error:', e);
+    })();
+    bakeryFetchInFlight = request;
+    try {
+      await request;
     } finally {
-      if (!silent) set({ loading: false });
+      if (bakeryFetchInFlight === request) bakeryFetchInFlight = null;
     }
   },
 
@@ -719,6 +734,19 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
   subscribe: makeSingletonSubscriber('bakery-orders-live', (ch) =>
     ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_orders' },
-      () => { get().fetchOrders(true); }),
+      (payload) => {
+        const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
+        const id = String(event.new?.id ?? event.old?.id ?? '');
+        if (!id) return;
+        if (event.eventType === 'DELETE') {
+          set((state) => ({ orders: state.orders.filter((order) => order.id !== id) }));
+          return;
+        }
+        const changed = rowToOrder(event.new ?? {});
+        set((state) => ({
+          orders: [changed, ...state.orders.filter((order) => order.id !== id)]
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        }));
+      }),
   ),
 }));

@@ -2384,7 +2384,7 @@ export default function OrderReceiverDashboard() {
     const unsubscribe = subscribeOrders();
     const id = setInterval(() => {
       if (!document.hidden) fetchOrders(true);
-    }, 60_000);
+    }, 15 * 60_000);
     return () => { unsubscribe(); clearInterval(id); };
   }, [stableFetch, fetchOrders, subscribeOrders]);
   useEffect(() => {
@@ -2393,7 +2393,7 @@ export default function OrderReceiverDashboard() {
 
   useEffect(() => {
     if (!loaded) load();
-    const id = setInterval(() => { if (!document.hidden) load(); }, 30_000);
+    const id = setInterval(() => { if (!document.hidden) load(); }, 10 * 60_000);
     return () => clearInterval(id);
   }, [load, loaded]);
 
@@ -2662,7 +2662,7 @@ export default function OrderReceiverDashboard() {
           <LiveOrderStatusPanel
             orders={branchOrders}
             loading={loading}
-            onRefresh={() => fetchOrders(true)}
+            onRefresh={() => fetchOrders(true, true)}
           />
         )}
 

@@ -1116,7 +1116,7 @@ function OrdersTab() {
   const refreshNow = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    try { await fetchOrders(true); } finally { setRefreshing(false); }
+    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
   };
 
   const downloadExcel = () => {

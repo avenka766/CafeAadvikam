@@ -1220,7 +1220,7 @@ export default function BakerDashboard() {
     fetchOrders().finally(() => setInitialLoading(false));
     const unsubscribe = subscribeOrders();
     // Realtime is the primary update path; polling only recovers a missed event.
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 60_000);
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15 * 60_000);
     return () => { unsubscribe(); clearInterval(id); };
   }, [fetchOrders, subscribeOrders]);
 
@@ -1234,7 +1234,7 @@ export default function BakerDashboard() {
   const refreshNow = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    try { await fetchOrders(true); } finally { setRefreshing(false); }
+    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
   };
 
   return (
