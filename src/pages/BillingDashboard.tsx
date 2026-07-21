@@ -14,7 +14,7 @@ import {
   ChevronDown, ChevronRight, AlertCircle, Trash2, Receipt,
   QrCode, UserCheck, IndianRupee, Clock, CheckCircle2,
   CreditCard, Banknote, Smartphone, Wallet, Loader2,
-  Edit3, UtensilsCrossed, Printer, Calendar, Building2, Bell,
+  Edit3, UtensilsCrossed, Printer, Calendar, Building2, Bell, RefreshCw,
 } from 'lucide-react';
 import OrderCard from '@/components/features/OrderCard';
 import CategoryFilter from '@/components/features/CategoryFilter';
@@ -2395,12 +2395,13 @@ function CafePaymentModeEditTab({ orders }: { orders: Order[] }) {
 // -- Main BillingDashboard -----------------------------------------------------
 export default function BillingDashboard() {
   // STORE-01 FIX: granular selector with shallow equality - avoids full re-render on cart/loading changes
-  const { orders, startPolling, stopPolling, polling, clearCart, cart } = useOrderStore(
+  const { orders, startPolling, stopPolling, polling, loadOrders, clearCart, cart } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       startPolling: s.startPolling,
       stopPolling: s.stopPolling,
       polling: s.polling,
+      loadOrders: s.loadOrders,
       clearCart: s.clearCart,
       cart: s.cart,
     }))
@@ -2456,6 +2457,17 @@ export default function BillingDashboard() {
   };
 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshOrders = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadOrders(3650);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadOrders, refreshing]);
 
   useEffect(() => {
     startPolling(3650); // Cafe history and payment-mode corrections need the complete retained bill history.
@@ -2593,6 +2605,16 @@ export default function BillingDashboard() {
             <span className={cn('size-2 rounded-full', polling ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400')} />
             <span className="text-[11px] font-bold text-muted-foreground">{polling ? 'Live' : 'Offline'}</span>
           </div>
+          <button
+            type="button"
+            onClick={() => void refreshOrders()}
+            disabled={refreshing}
+            title="Refresh orders"
+            aria-label="Refresh orders"
+            className="mr-1 inline-flex size-7 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          </button>
 
           {([
             { key: 'all' as SourceFilter, label: `Total: ${regularOrders.length}`, icon: null },

@@ -25,6 +25,7 @@ import {
   X,
   Flame,
   ShieldAlert,
+  RefreshCw,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
@@ -268,17 +269,19 @@ ${order.notes?`<div class="d"></div><div style="background:#f5f5f5;padding:4px 6
 export default function KitchenDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const wasteLogRequested = searchParams.get('tab') === 'waste';
-  const { orders, updateOrderStatus, startPolling, stopPolling, polling } = useOrderStore(
+  const { orders, updateOrderStatus, startPolling, stopPolling, polling, loadOrders } = useOrderStore(
     useShallow(s => ({
       orders: s.orders,
       updateOrderStatus: s.updateOrderStatus,
       startPolling: s.startPolling,
       stopPolling: s.stopPolling,
       polling: s.polling,
+      loadOrders: s.loadOrders,
     }))
   );
   const [activeTab, setActiveTab] = useState<KitchenTab>(() => wasteLogRequested ? 'waste' : 'active');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<Record<string, string>>({});
   const lastIdsRef = useRef<Set<string>>(new Set());
@@ -414,6 +417,16 @@ export default function KitchenDashboard() {
     }
   };
 
+  const refreshOrders = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadOrders(1);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="kitchen-screen dashboard-screen">
       <section className="kitchen-command-center">
@@ -426,10 +439,14 @@ export default function KitchenDashboard() {
           <div className="kitchen-live-pill">
             <span className={cn(polling && 'is-live')} />
             <div>
-              <strong>{polling ? 'Live polling' : 'Offline'}</strong>
-              <small>{polling ? 'Refreshing every few seconds' : 'Reconnect to receive orders'}</small>
+              <strong>{polling ? 'Live updates' : 'Offline'}</strong>
+              <small>{polling ? 'Orders update automatically' : 'Reconnect to receive orders'}</small>
             </div>
           </div>
+          <button type="button" onClick={() => void refreshOrders()} disabled={refreshing} className="kitchen-sound-toggle" title="Refresh orders" aria-label="Refresh orders">
+            <RefreshCw className={cn('size-5', refreshing && 'animate-spin')} />
+            <span>Refresh</span>
+          </button>
           {pending.length > 0 && (
             <div className="kitchen-new-alert">
               <Bell className="size-5" />
