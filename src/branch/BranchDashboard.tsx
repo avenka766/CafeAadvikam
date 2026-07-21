@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
-  Smartphone, Truck, UserRound, WalletCards,
+  Smartphone, Truck, UserRound, WalletCards, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -92,6 +92,7 @@ export default function BranchDashboard({ branch }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [opsHydrated, setOpsHydrated] = useState(() => useBranchOpsStore.persist.hasHydrated());
   const [todayLedger, setTodayLedger] = useState<TodayLedger | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const { currentUser } = useAuthStore();
   const {
     stock, sales, incoming, advanceOrders, thresholds, loading,
@@ -163,8 +164,8 @@ export default function BranchDashboard({ branch }: Props) {
     document.addEventListener('visibilitychange', refreshOnVisible);
     // Realtime handles normal stock/order changes. This slower poll is only a
     // recovery path for a dropped websocket connection.
-    const id = setInterval(refresh, 5 * 60_000);
-    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 5 * 60_000);
+    const id = setInterval(refresh, 15 * 60_000);
+    const syncId = setInterval(() => { if (!document.hidden) syncIncomingFromDispatches(branch); }, 10 * 60_000);
 
     return () => {
       unsubscribe();
@@ -174,27 +175,43 @@ export default function BranchDashboard({ branch }: Props) {
     };
   }, [branch, cleanOldData, fetchBranchData, fetchCreditPayments, fetchStockMismatches, seedBranchItems, subscribeToStock, syncIncomingFromDispatches]);
 
+  const loadTodayLedger = useCallback(async () => {
+    const { data, error } = await supabase.rpc('get_branch_daily_closure_summary', {
+      p_branch: branch,
+      p_date: businessDate(),
+    });
+    const row = Array.isArray(data) ? data[0] : data;
+    setTodayLedger(error ? null : (row as TodayLedger | null));
+  }, [branch]);
+
   useEffect(() => {
-    let active = true;
-    const loadTodayLedger = async () => {
-      const { data, error } = await supabase.rpc('get_branch_daily_closure_summary', {
-        p_branch: branch,
-        p_date: businessDate(),
-      });
-      if (!active) return;
-      const row = Array.isArray(data) ? data[0] : data;
-      setTodayLedger(error ? null : (row as TodayLedger | null));
-    };
     void loadTodayLedger();
     const refreshOnVisible = () => { if (!document.hidden) void loadTodayLedger(); };
     document.addEventListener('visibilitychange', refreshOnVisible);
+    // This RPC returns one compact summary row, so keep totals reasonably fresh
+    // without restoring the large branch-table downloads.
     const id = setInterval(() => { if (!document.hidden) void loadTodayLedger(); }, 2 * 60_000);
     return () => {
-      active = false;
       document.removeEventListener('visibilitychange', refreshOnVisible);
       clearInterval(id);
     };
-  }, [branch]);
+  }, [loadTodayLedger]);
+
+  const refreshAll = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        fetchBranchData(branch, true),
+        fetchStockMismatches(),
+        fetchCreditPayments(branch),
+        syncIncomingFromDispatches(branch, true),
+        loadTodayLedger(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [branch, fetchBranchData, fetchCreditPayments, fetchStockMismatches, loadTodayLedger, refreshing, syncIncomingFromDispatches]);
 
   useEffect(() => {
     if (requestedTab && !tabs.some((t) => t.id === requestedTab)) openTab('bill');
@@ -285,6 +302,18 @@ export default function BranchDashboard({ branch }: Props) {
   return (
     <div className="branch-command-screen h-full min-h-0 overflow-hidden bg-transparent pt-0">
       <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
+        <div className="mb-1 flex h-8 shrink-0 items-center justify-end px-1">
+          <button
+            type="button"
+            onClick={() => void refreshAll()}
+            disabled={refreshing}
+            title="Refresh branch data"
+            aria-label="Refresh branch data"
+            className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          </button>
+        </div>
         {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
             {tabs

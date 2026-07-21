@@ -15,25 +15,9 @@ type BranchRealtimeSubscription = {
 };
 
 const branchRealtimeSubscriptions = new Map<string, BranchRealtimeSubscription>();
-const branchRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-// Coalesces bursts of realtime events (e.g. a single checkout fires a
-// branch_stock UPDATE *and* a branch_sales INSERT within milliseconds) into
-// one fetchBranchData() call instead of several stacked ones. This was
-// causing visible billing-screen lag at busy branches since every other
-// open terminal at that branch was re-running the full 7-query fetch for
-// every single event.
-function scheduleBranchRefetch(branch: Branch) {
-  const existing = branchRefetchTimers.get(branch);
-  if (existing) clearTimeout(existing);
-  branchRefetchTimers.set(
-    branch,
-    setTimeout(() => {
-      branchRefetchTimers.delete(branch);
-      void useBranchStore.getState().fetchBranchData(branch);
-    }, 600),
-  );
-}
+const branchFetchesInFlight = new Set<Branch>();
+const branchLastFetchedAt = new Map<Branch, number>();
+const BRANCH_FETCH_FRESH_MS = 60_000;
 
 const isMissingRpcError = (message: string) =>
   /could not find the function|function .* does not exist|schema cache/i.test(message);
@@ -244,7 +228,7 @@ interface BranchState {
   lastCleanedAt:   number | null;
   // B5-FIX: per-branch sync timestamps so one branch's sync doesn't block another.
   lastSyncedAt:    Record<Branch, number | null>;
-  fetchBranchData: (branch: Branch) => Promise<void>;
+  fetchBranchData: (branch: Branch, force?: boolean) => Promise<void>;
   fetchAllBranches: () => Promise<void>;
   recordSale: (branch: Branch, itemName: string, qty: number, soldBy: string, paymentMethod: string, billNo?: string, unitPrice?: number, itemBarcode?: number) => Promise<string | null>;
   recordSnbSale: (
@@ -312,6 +296,166 @@ interface BranchState {
   subscribeToStock:   (branch: Branch) => () => void; // returns unsubscribe fn
 }
 
+type RealtimeRowEvent = {
+  eventType?: string;
+  new?: Record<string, unknown>;
+  old?: Record<string, unknown>;
+};
+
+function changedRow(event: RealtimeRowEvent) {
+  return event.new && Object.keys(event.new).length > 0 ? event.new : event.old ?? {};
+}
+
+function applyBranchRealtimeChange(branch: Branch, table: string, payload: unknown) {
+  const event = payload as RealtimeRowEvent;
+  const row = changedRow(event);
+  const id = String(row.id ?? '');
+
+  useBranchStore.setState((state) => {
+    if (table === 'branch_stock') {
+      const barcode = row.item_barcode == null ? undefined : Number(row.item_barcode);
+      const name = String(row.item_name ?? '');
+      const matches = (item: StockItem) => barcode != null
+        ? item.itemBarcode === barcode
+        : normalizeStockName(item.itemName) === normalizeStockName(name);
+      const current = state.stock[branch] ?? [];
+      if (event.eventType === 'DELETE') {
+        return { stock: { ...state.stock, [branch]: current.filter((item) => !matches(item)) } };
+      }
+      if (!name) return state;
+      const previous = current.find(matches);
+      const quantity = Number(row.quantity ?? 0);
+      const reservedQuantity = Number(row.reserved_quantity ?? 0);
+      const next: StockItem = {
+        itemBarcode: barcode,
+        itemName: name,
+        quantity,
+        reservedQuantity,
+        availableQuantity: Math.max(0, quantity - reservedQuantity),
+        updatedAt: String(row.updated_at ?? ''),
+        lastUpdatedAt: String(row.last_updated_at ?? ''),
+        unit: row.unit === 'pcs' ? 'pcs' : 'kg',
+        minThreshold: Number(row.min_threshold ?? previous?.minThreshold ?? 10),
+        price: previous?.price ?? null,
+      };
+      return { stock: { ...state.stock, [branch]: [...current.filter((item) => !matches(item)), next].sort((a, b) => a.itemName.localeCompare(b.itemName)) } };
+    }
+
+    if (table === 'branch_incoming' && id) {
+      const current = state.incoming[branch] ?? [];
+      if (event.eventType === 'DELETE') return { incoming: { ...state.incoming, [branch]: current.filter((item) => item.id !== id) } };
+      const quantity = Number(row.quantity ?? 0);
+      const next: IncomingStock = {
+        id,
+        itemBarcode: row.item_barcode == null ? undefined : Number(row.item_barcode),
+        itemName: String(row.item_name ?? ''),
+        quantity,
+        reservedQuantity: 0,
+        availableQuantity: quantity,
+        unit: row.unit === 'pcs' ? 'pcs' : 'kg',
+        receivedAt: String(row.received_at ?? ''),
+        dispatchedBy: String(row.dispatched_by ?? ''),
+        confirmed: Boolean(row.confirmed),
+        disputed: Boolean(row.disputed),
+        disputeReason: row.dispute_reason == null ? null : String(row.dispute_reason),
+        disputedBy: row.disputed_by == null ? null : String(row.disputed_by),
+        disputedAt: row.disputed_at == null ? null : String(row.disputed_at),
+      };
+      return { incoming: { ...state.incoming, [branch]: [next, ...current.filter((item) => item.id !== id)].slice(0, 500) } };
+    }
+
+    if (table === 'branch_sales' && id) {
+      const current = state.sales[branch] ?? [];
+      if (event.eventType === 'DELETE') return { sales: { ...state.sales, [branch]: current.filter((sale) => sale.id !== id) } };
+      const next: SaleRecord = {
+        id,
+        itemBarcode: row.item_barcode == null ? undefined : Number(row.item_barcode),
+        itemName: String(row.item_name ?? ''),
+        quantitySold: Number(row.quantity_sold ?? 0),
+        soldAt: String(row.sold_at ?? ''),
+        soldBy: String(row.sold_by ?? ''),
+        branch,
+        paymentMethod: row.payment_method == null ? null : String(row.payment_method),
+        unitPrice: Number(row.unit_price ?? 0),
+        billNo: row.bill_no == null ? null : String(row.bill_no),
+      };
+      return { sales: { ...state.sales, [branch]: [next, ...current.filter((sale) => sale.id !== id)] } };
+    }
+
+    if (table === 'branch_advance_orders' && id) {
+      const current = state.advanceOrders[branch] ?? [];
+      if (event.eventType === 'DELETE') return { advanceOrders: { ...state.advanceOrders, [branch]: current.filter((order) => order.id !== id) } };
+      const next: BranchAdvanceOrder = {
+        id,
+        branch,
+        customerName: row.customer_name == null ? null : String(row.customer_name),
+        items: (row.items as BranchAdvanceItem[] | undefined) ?? [],
+        subtotal: Number(row.subtotal ?? 0),
+        advanceAmount: Number(row.advance_amount ?? 0),
+        advanceMethod: String(row.advance_method ?? ''),
+        balanceDue: Number(row.balance_due ?? 0),
+        soldBy: String(row.sold_by ?? ''),
+        createdAt: String(row.created_at ?? ''),
+        fullyPaidAt: row.fully_paid_at == null ? null : String(row.fully_paid_at),
+        balanceMethod: row.balance_method == null ? null : String(row.balance_method),
+        status: (row.status ?? 'pending') as BranchAdvanceOrder['status'],
+        deliveryDate: row.delivery_date == null ? null : String(row.delivery_date),
+        notes: row.notes == null ? null : String(row.notes),
+        reservationStatus: (row.reservation_status ?? 'none') as BranchAdvanceOrder['reservationStatus'],
+      };
+      return { advanceOrders: { ...state.advanceOrders, [branch]: [next, ...current.filter((order) => order.id !== id)].slice(0, 3000) } };
+    }
+
+    if (table === 'branch_credit_sales' && id) {
+      const current = state.creditSales[branch] ?? [];
+      if (event.eventType === 'DELETE') return { creditSales: { ...state.creditSales, [branch]: current.filter((sale) => sale.id !== id) } };
+      const next: CreditSale = {
+        id,
+        branch,
+        source: row.source == null ? null : String(row.source),
+        sourceId: row.source_id == null ? null : String(row.source_id),
+        customerRef: row.customer_ref == null ? null : String(row.customer_ref),
+        customerName: String(row.customer_name ?? 'Unknown'),
+        customerPhone: row.customer_phone == null ? null : String(row.customer_phone),
+        items: ((row.items as CreditSaleItem[] | undefined) ?? []).filter(Boolean),
+        subtotal: Number(row.subtotal ?? 0),
+        amountPaid: Number(row.amount_paid ?? 0),
+        creditAmount: Number(row.credit_amount ?? 0),
+        soldBy: String(row.sold_by ?? 'Staff'),
+        createdAt: String(row.created_at ?? ''),
+        dueDate: row.due_date == null ? null : String(row.due_date),
+        settledAt: row.settled_at == null ? null : String(row.settled_at),
+        status: (row.status ?? 'pending') as CreditSale['status'],
+        notes: row.notes == null ? null : String(row.notes),
+        billNo: String(row.bill_no ?? ''),
+        discountAmount: Number(row.discount_amount ?? 0),
+      };
+      return { creditSales: { ...state.creditSales, [branch]: [next, ...current.filter((sale) => sale.id !== id)].slice(0, 3000) } };
+    }
+
+    if (table === 'branch_credit_payments' && id) {
+      const current = state.creditPayments[branch] ?? [];
+      if (event.eventType === 'DELETE') return { creditPayments: { ...state.creditPayments, [branch]: current.filter((payment) => payment.id !== id) } };
+      const next: CreditPayment = {
+        id,
+        creditSaleId: String(row.credit_sale_id ?? ''),
+        branch,
+        billNo: String(row.bill_no ?? ''),
+        amount: Number(row.amount ?? 0),
+        paymentMode: (row.payment_mode ?? 'cash') as CreditPayment['paymentMode'],
+        reference: row.reference == null ? null : String(row.reference),
+        remarks: row.remarks == null ? null : String(row.remarks),
+        collectedBy: String(row.collected_by ?? ''),
+        collectedRole: row.collected_role == null ? null : String(row.collected_role),
+        createdAt: String(row.created_at ?? ''),
+      };
+      return { creditPayments: { ...state.creditPayments, [branch]: [next, ...current.filter((payment) => payment.id !== id)].slice(0, 3000) } };
+    }
+
+    return state;
+  });
+}
+
 export const useBranchStore = create<BranchState>((set, get) => ({
   stock:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
   sales:           { Cafe: [], VRSNB: [], SNB: [], Hosur: [] },
@@ -325,7 +469,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
   lastCleanedAt:   null,
   lastSyncedAt:    { Cafe: null, VRSNB: null, SNB: null, Hosur: null } as Record<Branch, number | null>,
 
-  fetchBranchData: async (branch) => {
+  fetchBranchData: async (branch, force = false) => {
+    if (branchFetchesInFlight.has(branch)) return;
+    const lastFetchedAt = branchLastFetchedAt.get(branch) ?? 0;
+    if (!force && Date.now() - lastFetchedAt < BRANCH_FETCH_FRESH_MS) return;
+
+    branchFetchesInFlight.add(branch);
     set({ loading: true });
     try {
       const twoMonthsAgo = new Date();
@@ -519,9 +668,11 @@ export const useBranchStore = create<BranchState>((set, get) => ({
           }));
         return { stock, sales, incoming, thresholds, advanceOrders, creditSales };
       });
+      branchLastFetchedAt.set(branch, Date.now());
     } catch (e) {
       console.error('fetchBranchData error:', e);
     } finally {
+      branchFetchesInFlight.delete(branch);
       set({ loading: false });
     }
   },
@@ -1499,19 +1650,34 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'branch_stock', filter: `branch=eq.${branch}` },
-        () => { scheduleBranchRefetch(branch); },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_stock', payload); },
       )
       // branch_incoming changes (new dispatches from packing, confirmations)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'branch_incoming', filter: `branch=eq.${branch}` },
-        () => { scheduleBranchRefetch(branch); },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_incoming', payload); },
       )
       // branch_sales changes (new sales so today's log is always current)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'branch_sales', filter: `branch=eq.${branch}` },
-        () => { scheduleBranchRefetch(branch); },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_sales', payload); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_advance_orders', filter: `branch=eq.${branch}` },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_advance_orders', payload); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'branch_credit_sales', filter: `branch=eq.${branch}` },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_credit_sales', payload); },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'branch_credit_payments', filter: `branch=eq.${branch}` },
+        (payload) => { applyBranchRealtimeChange(branch, 'branch_credit_payments', payload); },
       )
       .subscribe();
 
