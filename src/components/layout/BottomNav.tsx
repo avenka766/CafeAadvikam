@@ -26,7 +26,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useNotificationStore } from "@/bakery/notificationStore";
-import { useInvoiceStore } from "@/bakery/invoiceStore";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 interface NavItem {
@@ -50,7 +49,6 @@ export default function BottomNav() {
     loaded: notifLoaded,
     load: loadNotifs,
   } = useNotificationStore();
-  const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
 
   const isAdmin = currentUser?.role === "admin";
   const isAdminVrsnb = currentUser?.role === "admin_vrsnb";
@@ -59,17 +57,15 @@ export default function BottomNav() {
   useEffect(() => {
     if (!isAnyAdmin) return;
     if (!notifLoaded) loadNotifs();
-    if (isAdmin && !invLoaded) loadInvoices();
     // EGRESS FIX: Raised from 20 s → 90 s. Notification badges don't need
     // sub-minute freshness; a 90 s cadence is invisible to users while cutting
     // BottomNav egress by ~78 %.
     const id = setInterval(() => {
       if (document.hidden) return;
       loadNotifs();
-      if (isAdmin) loadInvoices();
     }, 90_000);
     return () => clearInterval(id);
-  }, [isAnyAdmin, isAdmin, notifLoaded, invLoaded, loadNotifs, loadInvoices]);
+  }, [isAnyAdmin, notifLoaded, loadNotifs]);
 
   const clearBranchNavHideTimer = useCallback(() => {
     if (branchNavHideTimerRef.current !== null) {
@@ -144,9 +140,6 @@ export default function BottomNav() {
   }, [branchNavVisible, isBranchBillingRole]);
 
   const unread = isAnyAdmin ? unreadCount() : 0;
-  const pendingInvoices = isAdmin
-    ? invoices.filter((i) => i.status === "pending_review").length
-    : 0;
 
   if (!currentUser) return null;
   // Cafe Biller navigation is rendered in the compact top command bar.
@@ -213,12 +206,6 @@ export default function BottomNav() {
         path: "/order-history",
       },
       {
-        label: "Invoices",
-        icon: <FileText className="size-5" />,
-        path: "/admin/invoices",
-        badge: pendingInvoices || undefined,
-      },
-      {
         label: "Disputes",
         icon: <ClipboardList className="size-5" />,
         path: "/admin-dashboard?tab=stock-disputes",
@@ -235,19 +222,20 @@ export default function BottomNav() {
       { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/store" },
       { label: "History", icon: <History className="size-5" />, path: "/bakery/store?tab=history" },
       { label: "Stock", icon: <Store className="size-5" />, path: "/bakery/store?tab=inventory" },
-      { label: "Invoices", icon: <FileText className="size-5" />, path: "/bakery/store?tab=invoices" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/store?tab=closure" },
       { label: "Reports", icon: <BarChart3 className="size-5" />, path: "/bakery/store?tab=report" },
     );
   } else if (currentUser.role === "baker") {
     navItems.push(
       { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/baker" },
+      { label: "Corrections", icon: <RotateCcw className="size-5" />, path: "/bakery/baker?tab=corrections" },
       { label: "Done", icon: <History className="size-5" />, path: "/bakery/baker?tab=completed" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/baker?tab=closure" },
     );
   } else if (["sweet_master", "savouries_master", "cookies_master", "puffs_master", "bakery_master"].includes(currentUser.role)) {
     navItems.push(
       { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/production" },
+      { label: "Corrections", icon: <RotateCcw className="size-5" />, path: "/bakery/production?tab=corrections" },
       { label: "Done", icon: <History className="size-5" />, path: "/bakery/production?tab=completed" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/production?tab=closure" },
     );
