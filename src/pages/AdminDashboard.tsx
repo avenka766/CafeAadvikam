@@ -14,9 +14,8 @@ import VrsnbItemsTab from '@/components/admin/VrsnbItemsTab';
 import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
+import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
-import { useInvoiceStore } from '@/bakery/invoiceStore';
-import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
 import {
@@ -27,7 +26,7 @@ import {
   Activity, AlertTriangle, Banknote, BarChart3, Bell, CalendarClock,
   CheckCircle2, ChevronDown, ClipboardList, CreditCard, Download,
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
-  Lock, Package, PackageSearch, Printer, Receipt, RefreshCw, Search,
+  Lock, Package, PackageSearch, Printer, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
   Trash2, WalletCards, X,
 } from 'lucide-react';
@@ -36,7 +35,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'planning' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -66,6 +65,7 @@ const PUBLIC_ORDER_STATUS_OPTIONS = [
 
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
   { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
+  { id: 'planning', label: 'Planning', description: 'Plan SNB and custom production items for Store', icon: ClipboardList, adminOnly: true },
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
   { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
@@ -76,7 +76,6 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'stock-disputes', label: 'Stock Disputes', description: 'Incoming stock mismatch approvals', icon: AlertTriangle, adminOnly: true },
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
   { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
-  { id: 'invoices', label: 'Invoices', description: 'Supplier invoices and purchase records', icon: Receipt, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
   { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
   { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
@@ -217,8 +216,7 @@ function AdminDashboard() {
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
   const requestedTab = searchParams.get('tab') as AdminTab | null;
   const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
-  const initialTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
-  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
+  const activeTab: AdminTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
   const [publicOrdersLoading, setPublicOrdersLoading] = useState(false);
   const [publicOrderUpdating, setPublicOrderUpdating] = useState<string | null>(null);
@@ -236,11 +234,9 @@ function AdminDashboard() {
   );
   const { stock, sales, incoming, creditSales, stockMismatches, fetchBranchData, fetchStockMismatches, confirmIncoming } = useBranchStore();
   const { bills, returns, purchases, purchasePayments, cashMovements, bankDeposits, cashierClosures, stockVarianceRecords, auditLogs, notifications, updateNotificationStatus, complaints, updateComplaintStatus } = useBranchOpsStore();
-  const { invoices, load: loadInvoices } = useInvoiceStore();
   const { notifications: adminNotifications, load: loadAdminNotifications, markRead } = useNotificationStore();
   const adminLedger = useBranchLedger(fromDate, toDate, ['VRSNB', 'SNB', 'Hosur']);
   const selectTab = (next: AdminTab) => {
-    setActiveTab(next);
     setSearchParams(next === 'overview' ? {} : { tab: next });
   };
 
@@ -278,7 +274,7 @@ function AdminDashboard() {
     })();
     return () => { cancelled = true; };
   }, [fromDate, toDate]);
-  useEffect(() => { void loadInvoices(); void loadAdminNotifications(); }, [loadInvoices, loadAdminNotifications]);
+  useEffect(() => { void loadAdminNotifications(); }, [loadAdminNotifications]);
   const loadPublicOrders = useCallback(async () => {
     setPublicOrdersLoading(true);
     const { data, error } = await supabase.rpc('list_public_orders_secure', {
@@ -318,11 +314,8 @@ function AdminDashboard() {
     if (!requestedTab) return;
     const allowed = allowedNavItems.some((item) => item.id === requestedTab);
     if (!allowed) {
-      setActiveTab('overview');
       setSearchParams({}, { replace: true });
-      return;
     }
-    setActiveTab(requestedTab);
   }, [allowedNavItems, requestedTab, setSearchParams]);
 
   const rangeLabel = fromDate === toDate
@@ -1361,20 +1354,6 @@ function AdminDashboard() {
   );
 
   // Invoices Tab — uses the full AdminInvoicesTab so admin can view, approve and reject
-  const InvoicesTab = (
-    <div className="space-y-5">
-      {/* Summary KPIs retained for the overview strip */}
-      <div className="grid gap-3 sm:grid-cols-4">
-        <KpiCard label="Total Invoices" value={invoices.length} icon={<Receipt className="size-5" />} tone="slate" />
-        <KpiCard label="Pending Review" value={invoices.filter(inv => inv.status === 'pending_review').length} icon={<AlertTriangle className="size-5" />} tone={invoices.filter(inv => inv.status === 'pending_review').length > 0 ? 'amber' : 'slate'} />
-        <KpiCard label="Approved" value={invoices.filter(inv => inv.status === 'approved').length} icon={<CheckCircle2 className="size-5" />} tone="green" />
-        <KpiCard label="Total Value" value={formatCurrency(invoices.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0))} icon={<IndianRupee className="size-5" />} tone="blue" />
-      </div>
-      {/* Full review UI — approve/reject/view/print all live here */}
-      <AdminInvoicesTab />
-    </div>
-  );
-
   // Alerts Tab — no low stock
   const nonLowStockNotifications = useMemo(() =>
     adminNotifications.filter(n => n.type !== 'low_stock'),
@@ -1541,6 +1520,7 @@ function AdminDashboard() {
 
   const activeContent: Record<AdminTab, ReactNode> = {
     'public-orders': PublicOrdersTab,
+    planning: <AdminPlanningTab />,
     overview: OverviewTab,
     cafe: CafeTab,
     branches: BranchesTab,
@@ -1552,7 +1532,6 @@ function AdminDashboard() {
     'stock-variance': StockVarianceTab,
     waste: WasteTab,
     audit: AuditTab,
-    invoices: InvoicesTab,
     alerts: AlertsTab,
     complaints: ComplaintsTab,
     attendance: AttendanceTab,

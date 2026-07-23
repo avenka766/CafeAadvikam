@@ -1567,6 +1567,24 @@ export default function HosurDashboard() {
     printBill(finalBill, items, false);
   };
 
+  const resendBillWhatsapp = async (bill: HosurBill) => {
+    const items = billItems[bill.id] ?? [];
+    const result = await sendWhatsapp({
+      shopId: bill.shopId,
+      shopName: bill.shopName,
+      phone: bill.shopWhatsapp,
+      billId: bill.id,
+      billNo: bill.billNo,
+      messageType: 'bill',
+      body: buildBillMessage(bill, items),
+      billForMedia: bill,
+      itemsForMedia: items,
+    });
+    if (result.status === 'failed') {
+      throw new Error(result.errorMessage || `WhatsApp bill ${bill.billNo} could not be sent.`);
+    }
+  };
+
   const collectCredit = async (ledger: HosurCreditLedger, draft: PaymentDraft) => {
     const amount = Math.max(0, Number(draft.paidAmount || 0));
     if (amount <= 0) throw new Error('Enter amount collected.');
@@ -1666,7 +1684,7 @@ export default function HosurDashboard() {
               {tab === 'shops' && <ShopMasterTab shops={shops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} />}
               {tab === 'newOrder' && <NewOrderTab shops={activeShops} prices={prices} busy={busy} withBusy={withBusy} priceFor={priceFor} userName={userName} />}
               {tab === 'receiving' && <ReceivingTab orders={orders} orderItems={orderItems} busy={busy} withBusy={withBusy} createDraftBill={createDraftBill} userName={userName} />}
-              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
+              {tab === 'billing' && <BillingTab bills={bills} billItems={billItems} busy={busy} withBusy={withBusy} confirmBill={confirmBill} resendBillWhatsapp={resendBillWhatsapp} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'credit' && <CreditLedgerTab credits={credits} payments={payments} shops={shops} />}
               {tab === 'collection' && <PaymentCollectionTab credits={openCredits} busy={busy} withBusy={withBusy} collectCredit={collectCredit} counterOpen={hosurCounterOpen} counterLoading={hosurCounterLoading} counterError={hosurCounterError} openCounter={() => setTab('closure')} />}
               {tab === 'whatsapp' && <WhatsappLogsTab logs={whatsappLogs} busy={busy} withBusy={withBusy} sendWhatsapp={sendWhatsapp} />}
@@ -2309,12 +2327,13 @@ function ReceivingTab({ orders, orderItems, busy, withBusy, createDraftBill, use
   );
 }
 
-function BillingTab({ bills, billItems, busy, withBusy, confirmBill, counterOpen, counterLoading, counterError, openCounter }: {
+function BillingTab({ bills, billItems, busy, withBusy, confirmBill, resendBillWhatsapp, counterOpen, counterLoading, counterError, openCounter }: {
   bills: HosurBill[];
   billItems: Record<string, HosurBillItem[]>;
   busy: boolean;
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   confirmBill: (bill: HosurBill, paymentType: PaymentType, draft: PaymentDraft) => Promise<void>;
+  resendBillWhatsapp: (bill: HosurBill) => Promise<void>;
   counterOpen: boolean;
   counterLoading: boolean;
   counterError: string;
@@ -2348,10 +2367,10 @@ function BillingTab({ bills, billItems, busy, withBusy, confirmBill, counterOpen
             {(pType === 'credit' || pType === 'partial') && <Field label="Due date mandatory"><input className={inputClass} type="date" min={TODAY_ISO()} value={d.dueDate} disabled={!counterOpen || counterLoading} onChange={(e) => setDraft((prev) => ({ ...prev, [bill.id]: { ...getDraft(bill.id), dueDate: e.target.value } }))} /></Field>}
             <div className="rounded-2xl bg-slate-900 p-3 text-white"><p className="text-xs font-black uppercase text-white/60">Bill Total</p><p className="font-display text-3xl font-black">{money(bill.subtotal)}</p><p className="mt-1 text-xs">Paid {money(paid)} · Credit {money(credit)}</p></div>
           </div>
-          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, printed, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm Bill & Send WhatsApp</button></div>
+          <div className="flex flex-wrap gap-2"><button className={primaryButton} disabled={busy || !counterOpen || counterLoading} onClick={() => withBusy(() => confirmBill(bill, pType, d), 'Bill confirmed, thermal print opened, and WhatsApp send attempted.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Confirm, Print & WhatsApp</button></div>
         </Card>;
       })}
-      <Card className="space-y-3"><h3 className="font-black">Recent Bills</h3>{recentBills.length === 0 ? <p className="text-sm text-muted-foreground">No confirmed bills yet.</p> : recentBills.map((bill) => <div key={bill.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3"><div><p className="font-black">{bill.billNo} · {bill.shopName}</p><p className="text-xs text-muted-foreground">Paid {money(bill.paidAmount)} · Credit {money(bill.creditAmount)} · {toDateTimeLabel(bill.confirmedAt)}</p></div><div className="flex items-center gap-2"><Badge tone={statusTone(bill.status)}>{bill.status.replace(/_/g, ' ')}</Badge><button className={softButton} onClick={() => printBill(bill, billItems[bill.id] ?? [], true)}><Printer className="size-4" /> Duplicate Bill</button></div></div>)}</Card>
+      <Card className="space-y-3"><h3 className="font-black">Recent Bills</h3>{recentBills.length === 0 ? <p className="text-sm text-muted-foreground">No confirmed bills yet.</p> : recentBills.map((bill) => <div key={bill.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3"><div><p className="font-black">{bill.billNo} · {bill.shopName}</p><p className="text-xs text-muted-foreground">Paid {money(bill.paidAmount)} · Credit {money(bill.creditAmount)} · {toDateTimeLabel(bill.confirmedAt)}</p></div><div className="flex flex-wrap items-center gap-2"><Badge tone={statusTone(bill.status)}>{bill.status.replace(/_/g, ' ')}</Badge><button className={softButton} disabled={busy} onClick={() => withBusy(() => resendBillWhatsapp(bill), `WhatsApp bill ${bill.billNo} sent.`)}><MessageCircle className="size-4" /> WhatsApp</button><button className={softButton} onClick={() => printBill(bill, billItems[bill.id] ?? [], true)}><Printer className="size-4" /> Thermal Bill</button></div></div>)}</Card>
     </div>
   );
 }
