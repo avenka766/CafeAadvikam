@@ -31,12 +31,13 @@ const UNIT_ICONS: Record<string, ReactNode> = {
   pcs:  <Hash    className="size-3.5" />,
   loaf: <Package className="size-3.5" />,
 };
-const CATEGORIES = ['Sweets', 'Savouries', 'Bakery', 'Cookies'] as const;
+const CATEGORIES = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery'] as const;
 const DEFAULT_ICONS: Record<string, string> = {
   Sweets: '🍬',
   Savouries: '🥜',
-  Bakery: '🍞',
   Cookies: '🍪',
+  Puffs: '🥐',
+  Bakery: '🍞',
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -508,7 +509,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
     return bakeryItems.filter(item => {
       const matchesCat  = catFilter === 'All' || item.category === catFilter;
       const matchesSearch = search.trim() === '' || item.name.toLowerCase().includes(search.toLowerCase());
-      return matchesCat && matchesSearch;
+      return item.enabled && matchesCat && matchesSearch;
     });
   }, [bakeryItems, search, catFilter]);
 
@@ -615,7 +616,7 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
                 >
                   <option value="">— Choose an item —</option>
-                  {bakeryItems.map(item => (
+                  {bakeryItems.filter(item => item.enabled).map(item => (
                     <option key={item.id} value={item.id}>
                       {item.name}{getRecipe(item.id) ? ' ✓' : ''}
                     </option>

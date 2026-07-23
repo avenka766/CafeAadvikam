@@ -11,6 +11,13 @@ import LoadingSkeleton from '@/components/ui/LoadingSkeleton';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from '@/lib/safeSpreadsheet';
 import { useBranchOpsStore } from '@/branch/branchOpsStore';
+import { PRODUCTION_LABELS, type ProductionDestination } from './productionRouting';
+
+function belongsToProductionDesk(order: BakeryOrder, destination: ProductionDestination) {
+  return destination === 'baker'
+    ? !order.productionDestination || order.productionDestination === 'baker'
+    : order.productionDestination === destination;
+}
 
 // ─── Report helpers ───────────────────────────────────────────────────────────
 
@@ -181,12 +188,16 @@ interface BakerReportRow {
   createdBy: string;
 }
 
-async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]> {
-  const { data, error } = await supabase
+async function fetchBakerReport(from: Date, to: Date, destination: ProductionDestination): Promise<BakerReportRow[]> {
+  let query = supabase
     .from('bakery_orders')
-    .select('order_number, target_branch, items, prepared_items, sent_to_packing_at, status, created_by, created_at')
+    .select('order_number, target_branch, items, prepared_items, sent_to_packing_at, status, created_by, created_at, production_destination')
     .in('status', ['packed', 'dispatched'])
     .order('sent_to_packing_at', { ascending: false, nullsFirst: false });
+  query = destination === 'baker'
+    ? query.or('production_destination.is.null,production_destination.eq.baker')
+    : query.eq('production_destination', destination);
+  const { data, error } = await query;
 
   if (error) { console.warn('BakerReport fetch error:', error.message); return []; }
 
@@ -217,7 +228,7 @@ async function fetchBakerReport(from: Date, to: Date): Promise<BakerReportRow[]>
 }
 
 // ─── Daily Closure Tab ───────────────────────────────────────────────────────
-function DailyClosureTab() {
+function DailyClosureTab({ destination, title }: { destination: ProductionDestination; title: string }) {
   const [period, setPeriod]         = useState<PeriodKey>('today');
   const [customFrom, setCustomFrom] = useState(inputDate(new Date()));
   const [customTo, setCustomTo]     = useState(inputDate(new Date()));
@@ -241,14 +252,14 @@ function DailyClosureTab() {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const data = await fetchBakerReport(from, to);
+      const data = await fetchBakerReport(from, to, destination);
       setRows(data); setLastLoaded(new Date());
     } catch {
       setError('Failed to load daily closure. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [from, to]);
+  }, [destination, from, to]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -325,7 +336,7 @@ function DailyClosureTab() {
     detailSheet['!cols'] = [10, 12, 30, 14, 9, 14, 9, 10, 14, 10, 14].map(w => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, detailSheet, 'Item Detail');
 
-    XLSX.writeFile(wb, `baker-daily-closure-${periodLabel}-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `${destination}-daily-closure-${periodLabel}-${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const printClosure = () => {
@@ -366,7 +377,7 @@ function DailyClosureTab() {
       </head>
       <body>
         <div class="header">
-          <h1>Baker Daily Closure</h1>
+          <h1>${escapeHtml(title)} Daily Closure</h1>
           <div class="muted">${periodLabel} · ${from.toLocaleDateString('en-IN')} to ${to.toLocaleDateString('en-IN')} · Printed ${new Date().toLocaleString('en-IN')}</div>
         </div>
         <div class="summary">
@@ -1022,7 +1033,7 @@ function CompletedCard({ order }: { order: BakeryOrder }) {
   );
 }
 
-function CompletedTab() {
+function CompletedTab({ destination }: { destination: ProductionDestination }) {
   const [search, setSearch] = useState('');
   const [fromDate, setFromDate] = useState(inputDate(new Date()));
   const [toDate, setToDate] = useState(inputDate(new Date()));
@@ -1042,13 +1053,13 @@ function CompletedTab() {
         statuses: ['packed', 'dispatched'],
         useCompletionDate: true,
       });
-      setDateFilteredOrders(rows);
+      setDateFilteredOrders(rows.filter(order => belongsToProductionDesk(order, destination)));
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Failed to load completed orders.');
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate]);
+  }, [destination, fromDate, toDate]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -1195,11 +1206,17 @@ function CompletedTab() {
 type BakerDashboardTab = 'orders' | 'completed' | 'closure';
 const BAKER_TABS: BakerDashboardTab[] = ['orders', 'completed', 'closure'];
 
-export default function BakerDashboard() {
+export default function BakerDashboard({
+  destination = 'baker',
+  title,
+}: {
+  destination?: ProductionDestination;
+  title?: string;
+}) {
   const [searchParams] = useSearchParams();
   const { orders: storedOrders, fetchOrders, subscribe: subscribeOrders } = useBakeryStore();
   const advanceCakeOrders = useBranchOpsStore((state) => state.advanceCakeOrders);
-  const orders = useMemo(() => storedOrders.map((order) => {
+  const orders = useMemo(() => storedOrders.filter(order => belongsToProductionDesk(order, destination)).map((order) => {
     if (order.items.some((item) => item.attachmentDataUrl || item.attachmentName)) return order;
     const orderNo = order.notes?.split('|')[0]?.trim();
     const source = orderNo ? advanceCakeOrders.find((advance) => advance.orderNo === orderNo) : undefined;
@@ -1212,17 +1229,17 @@ export default function BakerDashboard() {
         attachmentDataUrl: source.attachmentDataUrl,
       } : item),
     };
-  }), [storedOrders, advanceCakeOrders]);
+  }), [storedOrders, advanceCakeOrders, destination]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    fetchOrders().finally(() => setInitialLoading(false));
-    const unsubscribe = subscribeOrders();
+    fetchOrders(false, false, destination).finally(() => setInitialLoading(false));
+    const unsubscribe = subscribeOrders(destination);
     // Realtime is the primary update path; polling only recovers a missed event.
-    const id = setInterval(() => { if (!document.hidden) fetchOrders(true); }, 15 * 60_000);
+    const id = setInterval(() => { if (!document.hidden) fetchOrders(true, false, destination); }, 15 * 60_000);
     return () => { unsubscribe(); clearInterval(id); };
-  }, [fetchOrders, subscribeOrders]);
+  }, [destination, fetchOrders, subscribeOrders]);
 
   const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
   const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
@@ -1230,11 +1247,12 @@ export default function BakerDashboard() {
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
   const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
+  const deskTitle = title || PRODUCTION_LABELS[destination];
 
   const refreshNow = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    try { await fetchOrders(true, true); } finally { setRefreshing(false); }
+    try { await fetchOrders(true, true, destination); } finally { setRefreshing(false); }
   };
 
   return (
@@ -1243,14 +1261,14 @@ export default function BakerDashboard() {
         <main className="min-w-0 space-y-4">
             <div className="min-w-0 overflow-hidden">
               {tab === 'closure' ? (
-                <DailyClosureTab />
+                <DailyClosureTab destination={destination} title={deskTitle} />
               ) : tab === 'completed' ? (
-                <CompletedTab />
+                <CompletedTab destination={destination} />
               ) : (
                 <div className="space-y-4 pb-8">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h2 className="font-display text-xl font-bold text-foreground">Baking Orders</h2>
+                      <h2 className="font-display text-xl font-bold text-foreground">{deskTitle} Orders</h2>
                       <p className="text-xs font-body text-muted-foreground">Live orders sent by Store</p>
                     </div>
                     <button
@@ -1293,8 +1311,8 @@ export default function BakerDashboard() {
                         <ChefHat className="size-10 text-muted-foreground opacity-30" />
                       </div>
                       <div>
-                        <p className="text-sm font-body font-semibold text-foreground">No active baking orders</p>
-                        <p className="text-xs font-body text-muted-foreground mt-1">Orders will appear here once the store sends them to the baker.</p>
+                        <p className="text-sm font-body font-semibold text-foreground">No active production orders</p>
+                        <p className="text-xs font-body text-muted-foreground mt-1">Orders will appear here when Store sends items to {deskTitle}.</p>
                       </div>
                     </div>
                   )}

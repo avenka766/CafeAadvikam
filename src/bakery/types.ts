@@ -1,6 +1,8 @@
 // src/bakery/types.ts  ← REPLACE EXISTING FILE
 
-export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'baker' | 'packing';
+import type { ProductionDestination } from './productionRouting';
+
+export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'baker' | 'sweet_master' | 'savouries_master' | 'cookies_master' | 'puffs_master' | 'bakery_master' | 'packing';
 
 export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'correction_required' | 'partially_packed' | 'packed' | 'dispatched';
 
@@ -48,6 +50,8 @@ export interface BakeryOrder {
   /** Original Store order number when this is a partial batch sent to Baker. */
   storeSourceOrderNumber?: number;
   storeSendRequestId?: string;
+  /** Production desk responsible for this batch. Legacy null values belong to Baker. */
+  productionDestination?: ProductionDestination;
   /** U-14 FIX: special instructions or notes attached to the bakery order */
   notes?: string;
   correctionRequest?: {

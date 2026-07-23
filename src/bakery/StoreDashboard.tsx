@@ -32,20 +32,23 @@ import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
 import { pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import {
+  PRODUCTION_LABELS,
+  destinationForCategory,
+  normalizeProductionCategory,
+  type ProductionCategory,
+} from './productionRouting';
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report', 'recipes'];
-const STORE_ORDER_CATEGORIES = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'] as const;
-type StoreOrderCategory = typeof STORE_ORDER_CATEGORIES[number];
+const STORE_ORDER_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery', 'Others'];
+type StoreOrderCategory = ProductionCategory;
 
 function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
   const normalizedName = normaliseName(item.itemName);
   const liveCategory = liveItems.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
   const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
-  const category = liveCategory || fallbackCategory;
-  return STORE_ORDER_CATEGORIES.includes(category as StoreOrderCategory) && category !== 'Others'
-    ? category as StoreOrderCategory
-    : 'Others';
+  return normalizeProductionCategory(liveCategory || fallbackCategory, item.itemName);
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -438,7 +441,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { sendToBaker, acceptOrder } = useBakeryStore();
+  const { sendToProduction, acceptOrder } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
@@ -526,7 +529,11 @@ function OrderCard({ order }: { order: BakeryOrder }) {
       if (!sendRequest.current || sendRequest.current.signature !== signature) {
         sendRequest.current = { signature, id: crypto.randomUUID() };
       }
-      const result = await sendToBaker(order.id, selectedIndexes, sendRequest.current.id);
+      const selections = selectedEntries.map(({ item, index }) => {
+        const category = storeOrderCategory(item, bakeryItems);
+        return { index, destination: destinationForCategory(category) };
+      });
+      const result = await sendToProduction(order.id, selections, sendRequest.current.id);
       setSent(result.remainingCount === 0);
 
       // Deduct only the selected lines after the atomic Baker send succeeds.
@@ -544,9 +551,10 @@ function OrderCard({ order }: { order: BakeryOrder }) {
       }
       setSelectedIndexes([]);
       sendRequest.current = null;
+      const destinations = result.batches.map(batch => PRODUCTION_LABELS[batch.destination]).join(', ');
       setSendNotice(result.remainingCount > 0
-        ? `${selectedEntries.length} selected item${selectedEntries.length === 1 ? '' : 's'} sent to Baker. ${result.remainingCount} item${result.remainingCount === 1 ? '' : 's'} remain in this Store order.`
-        : 'All selected items were sent to Baker.');
+        ? `${selectedEntries.length} selected item${selectedEntries.length === 1 ? '' : 's'} sent to ${destinations}. ${result.remainingCount} item${result.remainingCount === 1 ? '' : 's'} remain in this Store order.`
+        : `All selected items were sent to ${destinations}.`);
     } catch (sendFailure) {
       setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to send selected items. Please try again.');
     } finally {
@@ -599,7 +607,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
             )}
             {sent && (
               <span className="text-[9px] font-body font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
-                Sent to Baker ✓
+                Sent to Production
               </span>
             )}
             {accepted && !sent && (
@@ -640,10 +648,13 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           })}
 
           {accepted && !sent && selectedEntries.length > 0 && <div className="overflow-hidden rounded-xl border border-primary/20 bg-card">
-            <div className="flex items-center justify-between bg-primary/5 px-3 py-2"><p className="text-xs font-black text-primary">Selected for Baker</p><span className="text-[10px] font-bold text-primary">{selectedEntries.length} item{selectedEntries.length === 1 ? '' : 's'}</span></div>
+            <div className="flex items-center justify-between bg-primary/5 px-3 py-2"><p className="text-xs font-black text-primary">Selected for Production</p><span className="text-[10px] font-bold text-primary">{selectedEntries.length} item{selectedEntries.length === 1 ? '' : 's'}</span></div>
             <div className="overflow-x-auto"><table className="w-full min-w-[420px] text-xs">
               <thead className="bg-muted/40 text-left text-[9px] uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Category</th><th className="px-3 py-2 text-right">Quantity</th><th className="w-10"></th></tr></thead>
-              <tbody>{selectedEntries.map(({ item, index }) => <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{storeOrderCategory(item, bakeryItems)}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>)}</tbody>
+              <tbody>{selectedEntries.map(({ item, index }) => {
+                const category = storeOrderCategory(item, bakeryItems);
+                return <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{PRODUCTION_LABELS[destinationForCategory(category)]}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>;
+              })}</tbody>
             </table></div>
           </div>}
 
@@ -667,10 +678,10 @@ function OrderCard({ order }: { order: BakeryOrder }) {
               {sending
                 ? <Loader2 className="size-4 animate-spin" />
                 : sent
-                ? <><CheckCircle2 className="size-4" /> Sent to Baker</>
+                ? <><CheckCircle2 className="size-4" /> Sent to Production</>
                 : selectedEntries.length === 0
                 ? <>Select Items to Send</>
-                : <><ArrowRight className="size-4" /> Send {selectedEntries.length} Selected Item{selectedEntries.length === 1 ? '' : 's'} to Baker</>}
+                : <><ArrowRight className="size-4" /> Send {selectedEntries.length} Selected Item{selectedEntries.length === 1 ? '' : 's'} to Production</>}
             </button>
           )}
         </div>
@@ -1852,7 +1863,7 @@ export default function StoreDashboard() {
 
   const tabs = [
     { id: 'orders',    label: 'Orders',             description: 'Baker queue',        icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
-    { id: 'history',   label: 'History',            description: 'Sent to baker',      icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
+    { id: 'history',   label: 'History',            description: 'Sent to production', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
     { id: 'invoices',  label: 'Invoices',           description: 'Bills & reviews',    icon: FileText,    badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },

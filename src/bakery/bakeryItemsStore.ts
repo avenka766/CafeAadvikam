@@ -13,7 +13,7 @@ export interface BakeryItem {
   price: number | null;  // Admin-configurable selling price (null = not set yet)
 }
 
-const CATEGORIES = ['Sweets', 'Savouries', 'Bakery', 'Cookies'] as const;
+const CATEGORIES = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery'] as const;
 export type BakeryCategory = typeof CATEGORIES[number];
 export { CATEGORIES as BAKERY_CATEGORIES };
 

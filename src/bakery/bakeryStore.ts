@@ -3,17 +3,18 @@ import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
+import type { ProductionDestination } from './productionRouting';
 
 interface BakeryState {
   orders: BakeryOrder[];
   loading: boolean;
   // FIX: added `silent` param — background polls pass true so loading stays false,
   // preventing the StoreDashboard list from unmounting and resetting card state.
-  fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
+  fetchOrders: (silent?: boolean, force?: boolean, destination?: ProductionDestination) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
-  sendToBaker: (orderId: string, selectedIndexes: number[], requestId: string) => Promise<{ sentOrderNumber: number; remainingCount: number }>;
+  sendToProduction: (orderId: string, selections: Array<{ index: number; destination: ProductionDestination }>, requestId: string) => Promise<{ batches: Array<{ orderNumber: number; destination: ProductionDestination; itemCount: number }>; remainingCount: number }>;
   submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
   addStagedItem: (orderId: string, item: PreparedItem) => Promise<void>;
   removeStagedItem: (orderId: string, itemId: string) => Promise<void>;
@@ -21,7 +22,7 @@ interface BakeryState {
   returnForCorrection: (orderId: string, itemIds: string[], reason: string) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
-  subscribe: () => () => void; // returns unsubscribe fn
+  subscribe: (destination?: ProductionDestination) => () => void; // returns unsubscribe fn
 }
 
 export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
@@ -42,12 +43,13 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     targetBranch: d.target_branch as Branch | undefined,
     storeSourceOrderNumber: d.store_source_order_number as number | undefined,
     storeSendRequestId: d.store_send_request_id as string | undefined,
+    productionDestination: (d.production_destination as ProductionDestination | null) ?? undefined,
     notes: d.notes as string | undefined, // U-14 FIX
     correctionRequest: d.correction_request as BakeryOrder['correctionRequest'],
   };
 }
 
-const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
+const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, production_destination, notes, correction_request';
 let bakeryFetchInFlight: Promise<void> | null = null;
 let bakeryLastFetchedAt = 0;
 const BAKERY_FETCH_FRESH_MS = 60_000;
@@ -93,7 +95,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // dispatched etc.), never by date, and a bakery order moves from placed to
   // dispatched within days — so 60 days comfortably covers real operational use
   // while stopping this 15 s poll from re-fetching the entire order history forever.
-  fetchOrders: async (silent = false, force = false) => {
+  fetchOrders: async (silent = false, force = false, destination) => {
     if (bakeryFetchInFlight) return bakeryFetchInFlight;
     if (!force && silent && Date.now() - bakeryLastFetchedAt < BAKERY_FETCH_FRESH_MS) return;
 
@@ -102,11 +104,17 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       try {
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - 60);
-        const { data, error } = await supabase
+        let query = supabase
           .from('bakery_orders')
           .select(BAKERY_ORDER_COLUMNS)
           .gte('created_at', cutoff.toISOString())
           .order('created_at', { ascending: false });
+        if (destination) {
+          query = destination === 'baker'
+            ? query.or('production_destination.is.null,production_destination.eq.baker')
+            : query.eq('production_destination', destination);
+        }
+        const { data, error } = await query;
         if (!error && data) {
           set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
           bakeryLastFetchedAt = Date.now();
@@ -181,20 +189,28 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }));
   },
 
-  sendToBaker: async (orderId, selectedIndexes, requestId) => {
+  sendToProduction: async (orderId, selections, requestId) => {
     const order = get().orders.find(o => o.id === orderId);
     if (!order) throw new Error('The Store order is no longer available.');
     const user = (await import('@/stores/authStore')).useAuthStore.getState().currentUser;
     const actor = user?.displayName || user?.username || 'Store';
-    const { data, error } = await supabase.rpc('send_selected_bakery_items_to_baker', {
+    const { data, error } = await supabase.rpc('send_selected_bakery_items_to_production', {
       p_order_id: orderId,
-      p_selected_indexes: selectedIndexes,
+      p_selections: selections,
       p_request_id: requestId,
       p_actor: actor,
     });
     if (error) throw error;
-    const result = data as { sentOrderNumber?: number; remainingCount?: number } | null;
-    if (!result?.sentOrderNumber) throw new Error('Baker batch was not returned.');
+    const result = data as {
+      batches?: Array<{ orderNumber?: number; destination?: ProductionDestination; itemCount?: number }>;
+      remainingCount?: number;
+    } | null;
+    const batches = (result?.batches ?? []).flatMap(batch =>
+      batch.orderNumber && batch.destination
+        ? [{ orderNumber: batch.orderNumber, destination: batch.destination, itemCount: Number(batch.itemCount || 0) }]
+        : []
+    );
+    if (batches.length === 0) throw new Error('Production batches were not returned.');
     await get().fetchOrders(true);
     if (order?.notes) {
       const { useAuthStore } = await import('@/stores/authStore');
@@ -224,12 +240,12 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
         staffId: user.id,
         staffName: user.displayName,
         role: user.role,
-        action: 'Sent Selected Items to Baker',
-        detail: `Order #${order.orderNumber}: ${selectedIndexes.length} item(s) sent as Baker order #${result.sentOrderNumber}; ${Number(result.remainingCount || 0)} item(s) remain at Store`,
+        action: 'Sent Selected Items to Production',
+        detail: `Order #${order.orderNumber}: ${selections.length} item(s) sent in ${batches.length} production batch(es); ${Number(result.remainingCount || 0)} item(s) remain at Store`,
         branch: order.targetBranch,
       });
     }
-    return { sentOrderNumber: result.sentOrderNumber, remainingCount: Number(result.remainingCount || 0) };
+    return { batches, remainingCount: Number(result.remainingCount || 0) };
   },
 
   submitPrepared: async (orderId, preparedItems) => {
@@ -732,8 +748,13 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
   // Realtime subscription — any INSERT/UPDATE to bakery_orders triggers immediate re-fetch.
   // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
-  subscribe: makeSingletonSubscriber('bakery-orders-live', (ch) =>
-    ch.on('postgres_changes', { event: '*', schema: 'public', table: 'bakery_orders' },
+  subscribe: (destination) => makeSingletonSubscriber(`bakery-orders-live-${destination || 'all'}`, (ch) =>
+    ch.on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'bakery_orders',
+      ...(destination && destination !== 'baker' ? { filter: `production_destination=eq.${destination}` } : {}),
+    },
       (payload) => {
         const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };
         const id = String(event.new?.id ?? event.old?.id ?? '');
@@ -748,5 +769,5 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
         }));
       }),
-  ),
+  )(),
 }));
