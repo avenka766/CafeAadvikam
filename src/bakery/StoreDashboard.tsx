@@ -6,7 +6,7 @@ import {
   Loader2, CheckCircle2, Package,
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
-  Printer, Truck, Mail, MapPin, ShoppingBag, FileText, BarChart2, MinusCircle, ChefHat,
+  Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
   History, WalletCards, Download,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -21,17 +21,14 @@ import {
   type StockUnit, type StockItem,
 } from './storeStockStore';
 import { useSupplierStore, type Supplier } from './supplierStore';
-import InvoiceTab from './InvoiceTab';
-import { useInvoiceStore } from './invoiceStore';
 import StoreAnalyticsTab from './StoreAnalyticsTab';
 import StoreCustomTab from './StoreCustomTab';
 import StoreReportTab from './StoreReportTab';
-import RecipeManagement from './RecipeManagement';
 import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSupplier } from './storeItemMaster';
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
-import { pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { nameToSlug, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import {
   PRODUCTION_LABELS,
   destinationForCategory,
@@ -39,15 +36,15 @@ import {
   type ProductionCategory,
 } from './productionRouting';
 
-type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report' | 'recipes';
-const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report', 'recipes'];
+type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'analytics' | 'custom' | 'closure' | 'report';
+const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'analytics', 'custom', 'closure', 'report'];
 const STORE_ORDER_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery', 'Others'];
 type StoreOrderCategory = ProductionCategory;
 
 function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
-  const normalizedName = normaliseName(item.itemName);
-  const liveCategory = liveItems.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
-  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || normaliseName(entry.name) === normalizedName)?.category;
+  const itemSlug = nameToSlug(item.itemName);
+  const liveCategory = liveItems.find(entry => entry.id === item.itemId || nameToSlug(entry.name) === itemSlug)?.category;
+  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || nameToSlug(entry.name) === itemSlug)?.category;
   return normalizeProductionCategory(liveCategory || fallbackCategory, item.itemName);
 }
 
@@ -93,7 +90,8 @@ function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
   if (recipe.outputUnit === 'kg' && orderUnit === 'pcs' && weightGrams == null) {
     return 'Recipe found in kg, but this order is in pcs and the packet weight is missing.';
   }
-  if (recipe.outputUnit && recipe.outputUnit !== orderUnit && !(recipe.outputUnit === 'loaf' && orderUnit === 'pcs')) {
+  const weightedPieceOrder = recipe.outputUnit === 'kg' && orderUnit === 'pcs' && weightGrams != null;
+  if (recipe.outputUnit && recipe.outputUnit !== orderUnit && !weightedPieceOrder && !(recipe.outputUnit === 'loaf' && orderUnit === 'pcs')) {
     return `Recipe output unit (${recipe.outputUnit}) does not match the order unit (${orderUnit}).`;
   }
   return null;
@@ -144,10 +142,6 @@ function dayWindow(date: string) {
   const from = new Date(`${date}T00:00:00`);
   const to = new Date(`${date}T23:59:59.999`);
   return { from: from.toISOString(), to: to.toISOString() };
-}
-
-function fmtMoney(value: number) {
-  return `Rs ${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function fmtAuditQty(value: number) {
@@ -395,20 +389,21 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                           "text-sm font-body",
                           s.status === 'out' || s.status === 'unknown' ? "text-red-700 font-semibold" : "text-foreground"
                         )}>{m.material}</span>
-                        {/* Stock status badge */}
-                        {s.status === 'out' && s.stock && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0">
-                            Only {formatMaterialQuantity(s.stock.quantity, s.stock.unit)} left
+                        {s.stock && (
+                          <span className={cn(
+                            "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-bold",
+                            s.status === 'out'
+                              ? "border-red-200 bg-red-100 text-red-700"
+                              : s.status === 'low'
+                              ? "border-amber-200 bg-amber-100 text-amber-700"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          )}>
+                            Available: {formatMaterialQuantity(s.stock.quantity, s.stock.unit)}
                           </span>
                         )}
                         {s.status === 'unknown' && (
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0">
                             Missing from Store inventory
-                          </span>
-                        )}
-                        {s.status === 'low' && s.stock && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0">
-                            Low: {formatMaterialQuantity(s.stock.quantity, s.stock.unit)}
                           </span>
                         )}
                       </div>
@@ -660,7 +655,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
           {sendNotice && <p className="rounded-xl bg-emerald-50 px-3 py-2 text-center text-xs font-bold text-emerald-700">{sendNotice}</p>}
-          {anyOut && selectedEntries.length > 0 && <p className="rounded-xl bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700">One or more selected items has a missing recipe, missing raw material, or insufficient stock. Review the red warnings before sending.</p>}
+          {anyOut && selectedEntries.length > 0 && <p className="rounded-xl bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700">Review the red warnings. Available raw materials will still be deducted, and insufficient quantities are allowed to go negative for tracking.</p>}
 
           {!accepted ? (
             <button onClick={handleAccept} disabled={accepting}
@@ -1675,7 +1670,6 @@ interface StoreCustomDeductionRow {
 }
 
 function StoreDailyClosureTab() {
-  const { invoices, loaded: invoicesLoaded, load: loadInvoices } = useInvoiceStore();
   const [date, setDate] = useState(inputDate(new Date()));
   const [autoRows, setAutoRows] = useState<StoreAutoDeductionRow[]>([]);
   const [customRows, setCustomRows] = useState<StoreCustomDeductionRow[]>([]);
@@ -1724,12 +1718,7 @@ function StoreDailyClosureTab() {
     }
   }, [date]);
 
-  useEffect(() => { if (!invoicesLoaded) loadInvoices(); }, [invoicesLoaded, loadInvoices]);
   useEffect(() => { loadClosure(); }, [loadClosure]);
-
-  const invoicesToday = invoices.filter(inv => inputDate(new Date(inv.createdAt)) === date);
-  const invoiceTotal = invoicesToday.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
-  const pendingInvoices = invoicesToday.filter(inv => inv.status === 'pending_review').length;
 
   return (
     <div className="space-y-4 pb-8">
@@ -1740,7 +1729,7 @@ function StoreDailyClosureTab() {
               <WalletCards className="size-4 text-primary" />
               <h3 className="font-display text-lg font-bold text-foreground">Store Daily Closure</h3>
             </div>
-            <p className="text-xs font-body text-muted-foreground mt-1">Daily summary of store deductions and invoices added.</p>
+            <p className="text-xs font-body text-muted-foreground mt-1">Daily summary of recipe and custom stock deductions.</p>
           </div>
           <div className="flex gap-2">
             <input
@@ -1757,12 +1746,10 @@ function StoreDailyClosureTab() {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2">
         {[
           { label: 'Recipe Deductions', value: autoRows.length, sub: 'Sent to baker stock cuts' },
           { label: 'Custom Deductions', value: customRows.length, sub: 'Manual store removals' },
-          { label: 'Invoices Added', value: invoicesToday.length, sub: `${pendingInvoices} pending review` },
-          { label: 'Invoice Value', value: fmtMoney(invoiceTotal), sub: 'Bills entered today' },
         ].map(card => (
           <div key={card.label} className="rounded-2xl border border-border bg-card p-4">
             <p className="text-[10px] font-body font-bold uppercase tracking-widest text-muted-foreground">{card.label}</p>
@@ -1810,23 +1797,6 @@ function StoreDailyClosureTab() {
         </section>
       </div>
 
-      <section className="rounded-3xl border border-border bg-card p-4 shadow-soft">
-        <h4 className="text-sm font-body font-bold text-foreground">Invoices Added</h4>
-        <div className="mt-3 grid gap-2 md:grid-cols-2">
-          {invoicesToday.length === 0 ? <p className="text-xs font-body text-muted-foreground py-6 text-center md:col-span-2">No invoices added for this date.</p> : invoicesToday.map(inv => (
-            <div key={inv.id} className="rounded-2xl border border-border bg-background p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-body font-bold text-foreground">{inv.invoiceNumber}</p>
-                  <p className="text-[11px] font-body text-muted-foreground">{inv.supplierName} - {inv.lineItems.length} items</p>
-                </div>
-                <p className="text-sm font-body font-bold text-foreground">{fmtMoney(inv.grandTotal)}</p>
-              </div>
-              <p className="text-[10px] font-body font-bold uppercase text-muted-foreground mt-2">{inv.status.replace('_', ' ')}</p>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
@@ -1839,9 +1809,7 @@ export default function StoreDashboard() {
   const { orders } = useBakeryStore();
   const { items: stockItems } = useStoreStockStore();
   const { suppliers } = useSupplierStore();
-  const { invoices, loaded: invLoaded, load: loadInvoices } = useInvoiceStore();
 
-  useEffect(() => { if (!invLoaded) loadInvoices(); }, [invLoaded, loadInvoices]);
   useEffect(() => { void loadRecipes(); return subscribeRecipes(); }, [loadRecipes, subscribeRecipes]);
   void recipes;
 
@@ -1859,19 +1827,15 @@ export default function StoreDashboard() {
     return Array.from(byName.values());
   }, [stockItems]);
   const lowStock   = uniqueStockItems.filter(i => i.quantity <= i.minThreshold);
-  const pendingInv = invoices.filter(i => i.status === 'pending_review').length;
-
   const tabs = [
     { id: 'orders',    label: 'Orders',             description: 'Baker queue',        icon: Package,     badge: pending.length > 0 ? String(pending.length) : null, badgeColor: 'bg-amber-500' },
     { id: 'history',   label: 'History',            description: 'Sent to production', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
-    { id: 'invoices',  label: 'Invoices',           description: 'Bills & reviews',    icon: FileText,    badge: pendingInv > 0 ? String(pendingInv) : null, badgeColor: 'bg-orange-500' },
     { id: 'analytics', label: 'Analytics',          description: 'Stock insights',     icon: Calculator,  badge: null, badgeColor: '' },
     { id: 'custom',    label: 'Custom',             description: 'Manual planning',    icon: ShoppingBag, badge: null, badgeColor: '' },
-    { id: 'closure',   label: 'Daily Closure',       description: 'Deductions & bills', icon: WalletCards, badge: null, badgeColor: '' },
+    { id: 'closure',   label: 'Daily Closure',      description: 'Stock deductions',  icon: WalletCards, badge: null, badgeColor: '' },
     { id: 'report',    label: 'Reports',            description: 'History & exports',  icon: BarChart2,   badge: null, badgeColor: '' },
-    { id: 'recipes',   label: 'Recipe Management', description: 'Items & formulas',   icon: ChefHat,     badge: null, badgeColor: '' },
   ] as const;
 
   const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
@@ -1903,8 +1867,8 @@ export default function StoreDashboard() {
                     <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Low Stock</p>
                   </div>
                   <div className="rounded-2xl border border-border bg-background px-3 py-2 text-center">
-                    <p className={cn('font-display text-lg font-bold', pendingInv > 0 ? 'text-orange-600' : 'text-foreground')}>{pendingInv}</p>
-                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Invoices</p>
+                    <p className="font-display text-lg font-bold text-foreground">{sentOrders.length}</p>
+                    <p className="text-[9px] font-body font-bold uppercase text-muted-foreground">Sent</p>
                   </div>
                 </div>
               </div>
@@ -1915,12 +1879,10 @@ export default function StoreDashboard() {
               {tab === 'history'   && <StoreHistoryTab />}
               {tab === 'inventory' && <StoreInventoryTab />}
               {tab === 'suppliers' && <SuppliersTab />}
-              {tab === 'invoices'  && <InvoiceTab />}
               {tab === 'analytics' && <StoreAnalyticsTab />}
               {tab === 'custom'    && <StoreCustomTab />}
               {tab === 'closure'   && <StoreDailyClosureTab />}
               {tab === 'report'    && <StoreReportTab />}
-              {tab === 'recipes'   && <RecipeManagement embedded storeMode />}
             </div>
           </main>
         </div>

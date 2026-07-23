@@ -1,7 +1,7 @@
 // src/bakery/BakerDashboard.tsx  (Redesigned)
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Download, Calendar, AlertCircle, FileSpreadsheet, Printer, Search, RefreshCw } from 'lucide-react';
+import { ChefHat, Send, Loader2, ChevronDown, ChevronUp, CheckCircle2, Flame, Download, Calendar, AlertCircle, FileSpreadsheet, Printer, Search, RefreshCw, RotateCcw } from 'lucide-react';
 import { useBakeryStore, fetchBakeryOrdersInRange } from './bakeryStore';
 import { BAKERY_ITEMS } from './types';
 import type { PreparedItem } from './types';
@@ -1203,8 +1203,8 @@ function CompletedTab({ destination }: { destination: ProductionDestination }) {
 
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
-type BakerDashboardTab = 'orders' | 'completed' | 'closure';
-const BAKER_TABS: BakerDashboardTab[] = ['orders', 'completed', 'closure'];
+type BakerDashboardTab = 'orders' | 'corrections' | 'completed' | 'closure';
+const BAKER_TABS: BakerDashboardTab[] = ['orders', 'corrections', 'completed', 'closure'];
 
 export default function BakerDashboard({
   destination = 'baker',
@@ -1243,10 +1243,10 @@ export default function BakerDashboard({
 
   const requestedTab = searchParams.get('tab') as BakerDashboardTab | null;
   const tab: BakerDashboardTab = requestedTab && BAKER_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const bakingOrders = orders.filter(o => o.status === 'baking' || o.status === 'partially_packed' || o.status === 'correction_required');
+  const bakingOrders = orders.filter(o => o.status === 'baking' || o.status === 'partially_packed');
+  const correctionOrders = orders.filter(o => o.status === 'correction_required');
   const completedOrders = orders.filter(o => ['packed', 'dispatched'].includes(o.status));
   const atPacking = completedOrders.filter(o => o.status === 'packed').length;
-  const dispatched = completedOrders.filter(o => o.status === 'dispatched').length;
   const deskTitle = title || PRODUCTION_LABELS[destination];
 
   const refreshNow = async () => {
@@ -1264,6 +1264,41 @@ export default function BakerDashboard({
                 <DailyClosureTab destination={destination} title={deskTitle} />
               ) : tab === 'completed' ? (
                 <CompletedTab destination={destination} />
+              ) : tab === 'corrections' ? (
+                <div className="space-y-4 pb-8">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-xl font-bold text-foreground">Weight Corrections</h2>
+                      <p className="text-xs font-body text-muted-foreground">Items returned by Packing for corrected weight</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshNow()}
+                      disabled={refreshing}
+                      className="flex h-10 shrink-0 items-center gap-2 rounded-xl border border-border bg-card px-3.5 text-xs font-body font-bold text-foreground transition-colors hover:bg-muted/40 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+                      Refresh
+                    </button>
+                  </div>
+                  {initialLoading ? (
+                    <LoadingSkeleton variant="card" count={3} />
+                  ) : correctionOrders.length > 0 ? (
+                    <div className="space-y-3">
+                      {correctionOrders.map(order => <ActiveBakeCard key={order.id} order={order} />)}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-4 rounded-3xl border border-border bg-card py-24 text-center">
+                      <div className="flex size-20 items-center justify-center rounded-3xl bg-muted">
+                        <RotateCcw className="size-10 text-muted-foreground opacity-30" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-body font-semibold text-foreground">No weight corrections</p>
+                        <p className="mt-1 text-xs font-body text-muted-foreground">Orders returned by Packing will appear here.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-4 pb-8">
                   <div className="flex items-center justify-between gap-3">
@@ -1284,9 +1319,9 @@ export default function BakerDashboard({
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
                     {[
                       { label: 'To Bake', value: bakingOrders.length, color: bakingOrders.length > 0 ? 'text-orange-600' : 'text-muted-foreground', bg: bakingOrders.length > 0 ? 'bg-orange-50 border-orange-200' : 'bg-card border-border' },
+                      { label: 'Corrections', value: correctionOrders.length, color: correctionOrders.length > 0 ? 'text-red-600' : 'text-muted-foreground', bg: correctionOrders.length > 0 ? 'bg-red-50 border-red-200' : 'bg-card border-border' },
                       { label: 'Completed', value: completedOrders.length, color: 'text-emerald-600', bg: 'bg-card border-border' },
                       { label: 'At Packing', value: atPacking, color: 'text-purple-600', bg: 'bg-card border-border' },
-                      { label: 'Dispatched', value: dispatched, color: 'text-emerald-700', bg: 'bg-card border-border' },
                     ].map(s => (
                       <div key={s.label} className={cn('border rounded-2xl p-3 text-center', s.bg)}>
                         <p className={cn('font-display text-2xl font-bold tabular-nums', s.color)}>{s.value}</p>

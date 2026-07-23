@@ -47,7 +47,7 @@ export function pcsToKg(itemName: string, pcs: number, knownWeightGrams?: number
 
 /**
  * Resolve package weight when it is not printed in the catalogue item name.
- * VRSNB cookies are ordered as 250 g packets, while their production recipes
+ * VRSNB cookies are ordered as 200 g packets, while their production recipes
  * are defined in kilograms.
  */
 export function resolveItemWeightGrams(itemId: string, itemName: string): number | null {
@@ -56,7 +56,7 @@ export function resolveItemWeightGrams(itemId: string, itemName: string): number
 
   const vrsnbBarcode = itemId.toLowerCase().match(/^vrsnb-(\d+)$/)?.[1];
   const barcode = vrsnbBarcode ? Number(vrsnbBarcode) : 0;
-  if (barcode >= 2090 && barcode <= 2108) return 250;
+  if (barcode >= 2090 && barcode <= 2108) return 200;
 
   return null;
 }
