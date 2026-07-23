@@ -102,6 +102,7 @@ function navForRole(role?: string): NavItem[] {
     case 'admin':
       return [
         { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
+        { label: 'Planning', path: '/admin-dashboard?tab=planning', icon: <ClipboardList className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
@@ -169,6 +170,16 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Orders', path: '/bakery/baker', icon: <Flame className="size-4" />, group: 'Main' },
         { label: 'Completed', path: '/bakery/baker?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
         { label: 'Daily Closure', path: '/bakery/baker?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+      ];
+    case 'sweet_master':
+    case 'savouries_master':
+    case 'cookies_master':
+    case 'puffs_master':
+    case 'bakery_master':
+      return [
+        { label: 'Orders', path: '/bakery/production', icon: <Flame className="size-4" />, group: 'Main' },
+        { label: 'Completed', path: '/bakery/production?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
+        { label: 'Daily Closure', path: '/bakery/production?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
       ];
     case 'cake_master':
       return [

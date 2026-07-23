@@ -245,6 +245,12 @@ export default function BottomNav() {
       { label: "Done", icon: <History className="size-5" />, path: "/bakery/baker?tab=completed" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/baker?tab=closure" },
     );
+  } else if (["sweet_master", "savouries_master", "cookies_master", "puffs_master", "bakery_master"].includes(currentUser.role)) {
+    navItems.push(
+      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/production" },
+      { label: "Done", icon: <History className="size-5" />, path: "/bakery/production?tab=completed" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/production?tab=closure" },
+    );
   } else if (currentUser.role === "packing") {
     navItems.push(
       { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/packing" },
