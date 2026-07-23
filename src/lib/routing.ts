@@ -14,6 +14,11 @@ export function getRoleDefaultPath(role: UserRole): string {
     case 'receiver_snb':    return '/bakery/receive/snb';
     case 'store':          return '/bakery/store';
     case 'baker':          return '/bakery/baker';
+    case 'sweet_master':
+    case 'savouries_master':
+    case 'cookies_master':
+    case 'puffs_master':
+    case 'bakery_master':  return '/bakery/production';
     case 'cake_master':    return '/bakery/cake-master';
     case 'packing':        return '/bakery/packing';
     case 'branch_vrsnb':   return '/branch/vrsnb';
