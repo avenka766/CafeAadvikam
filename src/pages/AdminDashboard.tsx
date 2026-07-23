@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useBranchStore } from '@/branch/branchStore';
@@ -15,6 +15,7 @@ import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
+import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { supabase } from '@/lib/supabase';
@@ -35,7 +36,7 @@ const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'planning' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'planning' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -77,6 +78,7 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon:
   { id: 'stock-variance', label: 'Stock Variance', description: 'Physical stock count differences from branches', icon: AlertTriangle, adminOnly: true },
   { id: 'waste', label: 'Waste & Loss', description: 'Waste deductions reported by every branch', icon: Trash2, adminOnly: true },
   { id: 'audit', label: 'Audit Logs', description: 'Sensitive action history', icon: ShieldCheck, adminOnly: true },
+  { id: 'invoices', label: 'Invoices', description: 'Store invoice review and approval', icon: FileSpreadsheet, adminOnly: true },
   { id: 'alerts', label: 'Alerts', description: 'Business alerts (no low-stock)', icon: Bell, adminOnly: true },
   { id: 'complaints', label: 'Complaints', description: 'Branch admin complaints and issues', icon: ClipboardList, adminOnly: true },
   { id: 'attendance', label: 'Attendance & Payroll', description: 'Staff attendance and salary management', icon: CalendarClock, adminOnly: true },
@@ -210,11 +212,13 @@ const ADMIN_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
 
 function AdminDashboard() {
   const { currentUser } = useAuthStore();
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const isAdmin = ['admin', 'owner'].includes(currentUser?.role || '');
   const adminName = currentUser?.displayName || currentUser?.username || 'Admin';
-  const requestedTab = searchParams.get('tab') as AdminTab | null;
+  const routeTab: AdminTab | null = location.pathname.endsWith('/planning') ? 'planning' : null;
+  const requestedTab = routeTab ?? searchParams.get('tab') as AdminTab | null;
   const allowedNavItems = useMemo(() => NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin), [isAdmin]);
   const activeTab: AdminTab = requestedTab && allowedNavItems.some((item) => item.id === requestedTab) ? requestedTab : 'overview';
   const [publicOrders, setPublicOrders] = useState<PublicOrder[]>([]);
@@ -1532,6 +1536,7 @@ function AdminDashboard() {
     'stock-variance': StockVarianceTab,
     waste: WasteTab,
     audit: AuditTab,
+    invoices: <AdminInvoicesTab />,
     alerts: AlertsTab,
     complaints: ComplaintsTab,
     attendance: AttendanceTab,
