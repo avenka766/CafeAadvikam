@@ -28,8 +28,10 @@ import { searchItems, getSuppliersForItem, getAllSupplierNames, getItemsForSuppl
 import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
-import { nameToSlug, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import { itemNamesMatch, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
 import InvoiceTab from './InvoiceTab';
+import { SNB_ITEMS } from '@/branch/snbItems';
+import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 import {
   PRODUCTION_LABELS,
   destinationForCategory,
@@ -43,10 +45,16 @@ const STORE_ORDER_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Co
 type StoreOrderCategory = ProductionCategory;
 
 function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
-  const itemSlug = nameToSlug(item.itemName);
-  const liveCategory = liveItems.find(entry => entry.id === item.itemId || nameToSlug(entry.name) === itemSlug)?.category;
-  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || nameToSlug(entry.name) === itemSlug)?.category;
-  return normalizeProductionCategory(liveCategory || fallbackCategory, item.itemName);
+  const liveCategory = liveItems.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
+  const fallbackCategory = BAKERY_ITEMS.find(entry => entry.id === item.itemId || itemNamesMatch(entry.name, item.itemName))?.category;
+  const idMatch = item.itemId.toLowerCase().match(/^(snb|vrsnb)-(\d+)$/);
+  const barcode = idMatch ? Number(idMatch[2]) : 0;
+  const branchCategory = idMatch?.[1] === 'snb'
+    ? SNB_ITEMS.find(entry => entry.barcode === barcode)?.category
+    : idMatch?.[1] === 'vrsnb'
+      ? VRSNB_ITEMS.find(entry => entry.barcode === barcode)?.category
+      : undefined;
+  return normalizeProductionCategory(liveCategory || fallbackCategory || branchCategory, item.itemName);
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────

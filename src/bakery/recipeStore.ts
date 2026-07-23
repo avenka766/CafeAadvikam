@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import { RECIPE_DEFINITIONS, type RecipeDefinition } from './recipeDefinitions';
-import { nameToSlug } from './itemMatcher';
+import { canonicalItemSlug, nameToSlug } from './itemMatcher';
 
 export interface LiveRecipe extends RecipeDefinition {
   itemId: string;
@@ -50,9 +50,15 @@ function resolveRecipeKey(recipes: Record<string, LiveRecipe>, itemId: string, i
   const slug = nameToSlug(itemName);
   if (recipes[slug]) return slug;
   const entries = Object.entries(recipes);
-  const byStoredName = entries.find(([, recipe]) => recipe.itemName && nameToSlug(recipe.itemName) === slug);
+  const canonicalSlug = canonicalItemSlug(itemName);
+  const byStoredName = entries.find(([key, recipe]) =>
+    canonicalItemSlug(recipe.itemName || key) === canonicalSlug
+  );
   if (byStoredName) return byStoredName[0];
-  const prefix = entries.find(([key]) => slug.startsWith(key) || key.startsWith(slug));
+  const prefix = entries.find(([key]) => {
+    const canonicalKey = canonicalItemSlug(key);
+    return canonicalSlug.startsWith(canonicalKey) || canonicalKey.startsWith(canonicalSlug);
+  });
   return prefix?.[0] ?? null;
 }
 

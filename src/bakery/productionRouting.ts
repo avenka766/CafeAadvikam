@@ -24,11 +24,20 @@ export const PRODUCTION_LABELS: Record<ProductionDestination, string> = {
 export function normalizeProductionCategory(category: string | undefined, itemName: string): ProductionCategory {
   const normalizedCategory = (category || '').trim().toLowerCase();
   const normalizedName = itemName.trim().toLowerCase();
-  if (normalizedCategory === 'sweets') return 'Sweets';
-  if (normalizedCategory === 'savouries') return 'Savouries';
-  if (normalizedCategory === 'cookies') return 'Cookies';
+  if (normalizedCategory === 'sweets'
+    || /(halwa|jamun|mysore pak|baklava|burfi|peda|laddu)/.test(normalizedCategory)
+    || normalizedCategory.includes('sweet')) return 'Sweets';
+  if (normalizedCategory === 'savouries'
+    || /(chips|muruk|mixture|pakoda|nippat|namkeen|packaged snack)/.test(normalizedCategory)
+    || normalizedCategory === 'dal') return 'Savouries';
+  if (normalizedCategory === 'cookies'
+    || normalizedCategory.includes('cookie')
+    || normalizedCategory.includes('biscuit')) return 'Cookies';
   if (normalizedCategory === 'puffs' || /\bpuff(s)?\b/.test(normalizedName)) return 'Puffs';
-  if (normalizedCategory === 'bakery') return 'Bakery';
+  if (normalizedCategory === 'bakery'
+    || normalizedCategory.includes('bread')
+    || normalizedCategory.includes('bun')
+    || normalizedCategory.includes('pastr')) return 'Bakery';
   return 'Others';
 }
 

@@ -6,6 +6,8 @@
 //      e.g. "Banana chips (200g)" → slug "banana-chips" → found in RECIPE_DEFINITIONS
 
 import { RECIPE_DEFINITIONS } from './recipeDefinitions';
+import { BAKERY_ITEMS } from './types';
+import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 
 // ── Weight parsing ─────────────────────────────────────────────────────────────
 
@@ -57,6 +59,12 @@ export function resolveItemWeightGrams(itemId: string, itemName: string): number
   const vrsnbBarcode = itemId.toLowerCase().match(/^vrsnb-(\d+)$/)?.[1];
   const barcode = vrsnbBarcode ? Number(vrsnbBarcode) : 0;
   if (barcode >= 2090 && barcode <= 2108) return 200;
+  if (vrsnbBarcode && VRSNB_ITEMS.some(item =>
+    item.barcode === barcode && item.category === 'COOKIES'
+  )) return 200;
+  if (vrsnbBarcode && BAKERY_ITEMS.some(item =>
+    item.category === 'Cookies' && itemNamesMatch(item.name, itemName)
+  )) return 200;
 
   return null;
 }
@@ -93,6 +101,32 @@ export function nameToSlug(name: string): string {
     .replace(/^-+|-+$/g, '');    // trim leading / trailing dashes
 }
 
+function canonicalToken(token: string): string {
+  if (token.length <= 3) return token;
+  if (token.endsWith('ies') && token.length > 4) return `${token.slice(0, -3)}y`;
+  if (/(ches|shes|xes|zes)$/.test(token)) return token.slice(0, -2);
+  if (token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
+  return token;
+}
+
+/**
+ * Shared comparison form for order, catalogue and recipe names.
+ * Packet sizes, punctuation and harmless singular/plural differences do not
+ * change the identity of an item.
+ */
+export function canonicalItemSlug(name: string): string {
+  return nameToSlug(name)
+    .split('-')
+    .filter(Boolean)
+    .map(canonicalToken)
+    .join('-');
+}
+
+export function itemNamesMatch(left: string, right: string): boolean {
+  const leftSlug = canonicalItemSlug(left);
+  return Boolean(leftSlug) && leftSlug === canonicalItemSlug(right);
+}
+
 /**
  * Find the RECIPE_DEFINITIONS key that best matches an item name.
  *
@@ -111,6 +145,10 @@ export function findRecipeId(itemName: string): string | null {
   if (RECIPE_DEFINITIONS[slug]) return slug;
 
   const keys = Object.keys(RECIPE_DEFINITIONS);
+  const canonicalSlug = canonicalItemSlug(itemName);
+
+  const canonicalMatch = keys.find(key => canonicalItemSlug(key) === canonicalSlug);
+  if (canonicalMatch) return canonicalMatch;
 
   // 2. Recipe key is a prefix of slug  (e.g. "banana-chips" is a prefix of "banana-chips-200g")
   const prefixMatch = keys.find(k => slug.startsWith(k) || k.startsWith(slug));
