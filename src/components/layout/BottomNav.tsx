@@ -206,6 +206,11 @@ export default function BottomNav() {
         path: "/order-history",
       },
       {
+        label: "Invoices",
+        icon: <FileText className="size-5" />,
+        path: "/admin-dashboard?tab=invoices",
+      },
+      {
         label: "Disputes",
         icon: <ClipboardList className="size-5" />,
         path: "/admin-dashboard?tab=stock-disputes",
@@ -222,6 +227,7 @@ export default function BottomNav() {
       { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/store" },
       { label: "History", icon: <History className="size-5" />, path: "/bakery/store?tab=history" },
       { label: "Stock", icon: <Store className="size-5" />, path: "/bakery/store?tab=inventory" },
+      { label: "Invoices", icon: <FileText className="size-5" />, path: "/bakery/store?tab=invoices" },
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/store?tab=closure" },
       { label: "Reports", icon: <BarChart3 className="size-5" />, path: "/bakery/store?tab=report" },
     );

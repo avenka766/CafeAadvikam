@@ -102,7 +102,7 @@ function navForRole(role?: string): NavItem[] {
     case 'admin':
       return [
         { label: 'Online Orders', path: '/admin-dashboard?tab=public-orders', icon: <Smartphone className="size-4" />, group: 'Main' },
-        { label: 'Planning', path: '/admin-dashboard?tab=planning', icon: <ClipboardList className="size-4" />, group: 'Main' },
+        { label: 'Planning', path: '/admin-dashboard/planning', icon: <ClipboardList className="size-4" />, group: 'Main' },
         { label: 'Dashboard Overview', path: '/admin-dashboard?tab=overview', icon: <LayoutDashboard className="size-4" />, group: 'Main' },
         { label: 'Cafe Control', path: '/admin-dashboard?tab=cafe', icon: <Store className="size-4" />, group: 'Main' },
         { label: 'Branch Sales', path: '/admin-dashboard?tab=branches', icon: <BarChart3 className="size-4" />, group: 'Main' },
@@ -113,6 +113,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Stock Disputes', path: '/admin-dashboard?tab=stock-disputes', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
         { label: 'Stock Variance', path: '/admin-dashboard?tab=stock-variance', icon: <ClipboardCheck className="size-4" />, group: 'Stock' },
         { label: 'Waste & Loss', path: '/admin-dashboard?tab=waste', icon: <Trash2 className="size-4" />, group: 'Stock' },
+        { label: 'Invoices', path: '/admin-dashboard?tab=invoices', icon: <Receipt className="size-4" />, group: 'Reports' },
         { label: 'Audit Logs', path: '/admin-dashboard?tab=audit', icon: <ShieldCheck className="size-4" />, group: 'Reports' },
         { label: 'Alerts', path: '/admin-dashboard?tab=alerts', icon: <Bell className="size-4" />, group: 'Reports' },
         { label: 'Complaints', path: '/admin-dashboard?tab=complaints', icon: <FileText className="size-4" />, group: 'Reports' },
@@ -157,6 +158,7 @@ function navForRole(role?: string): NavItem[] {
         { label: 'History', path: '/bakery/store?tab=history', icon: <History className="size-4" />, group: 'Main' },
         { label: 'Inventory', path: '/bakery/store?tab=inventory', icon: <Store className="size-4" />, group: 'Operations' },
         { label: 'Suppliers', path: '/bakery/store?tab=suppliers', icon: <Users className="size-4" />, group: 'Operations' },
+        { label: 'Invoices', path: '/bakery/store?tab=invoices', icon: <FileText className="size-4" />, group: 'Operations' },
         { label: 'Analytics', path: '/bakery/store?tab=analytics', icon: <BarChart3 className="size-4" />, group: 'Reports' },
         { label: 'Custom Deduction', path: '/bakery/store?tab=custom', icon: <Sparkles className="size-4" />, group: 'Reports' },
         { label: 'Daily Closure', path: '/bakery/store?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
