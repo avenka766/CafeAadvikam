@@ -7,7 +7,7 @@ import {
   Warehouse, Plus, Pencil, Trash2, AlertTriangle,
   Search, X, Check, RefreshCw, Flame,
   Printer, Truck, Mail, MapPin, ShoppingBag, BarChart2, MinusCircle,
-  History, WalletCards, Download,
+  History, WalletCards, Download, FileText,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useBakeryStore } from './bakeryStore';
