@@ -29,6 +29,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useNotificationStore } from './notificationStore';
 import type { DeductionContext } from './storeStockStore';
 import { nameToSlug, pcsToKg, resolveItemWeightGrams } from './itemMatcher';
+import InvoiceTab from './InvoiceTab';
 import {
   PRODUCTION_LABELS,
   destinationForCategory,
@@ -36,8 +37,8 @@ import {
   type ProductionCategory,
 } from './productionRouting';
 
-type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'analytics' | 'custom' | 'closure' | 'report';
-const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'analytics', 'custom', 'closure', 'report'];
+type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
+const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report'];
 const STORE_ORDER_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery', 'Others'];
 type StoreOrderCategory = ProductionCategory;
 
@@ -1832,6 +1833,7 @@ export default function StoreDashboard() {
     { id: 'history',   label: 'History',            description: 'Sent to production', icon: History,     badge: sentOrders.length > 0 ? String(sentOrders.length) : null, badgeColor: 'bg-emerald-500' },
     { id: 'inventory', label: 'Inventory',          description: 'Raw stock control',  icon: Warehouse,   badge: lowStock.length > 0 ? String(lowStock.length) : null, badgeColor: 'bg-red-500' },
     { id: 'suppliers', label: 'Suppliers',          description: 'Vendor directory',   icon: Truck,       badge: suppliers.length > 0 ? String(suppliers.length) : null, badgeColor: 'bg-primary' },
+    { id: 'invoices',  label: 'Invoices',           description: 'Purchase records',   icon: FileText,    badge: null, badgeColor: '' },
     { id: 'analytics', label: 'Analytics',          description: 'Stock insights',     icon: Calculator,  badge: null, badgeColor: '' },
     { id: 'custom',    label: 'Custom',             description: 'Manual planning',    icon: ShoppingBag, badge: null, badgeColor: '' },
     { id: 'closure',   label: 'Daily Closure',      description: 'Stock deductions',  icon: WalletCards, badge: null, badgeColor: '' },
@@ -1879,6 +1881,7 @@ export default function StoreDashboard() {
               {tab === 'history'   && <StoreHistoryTab />}
               {tab === 'inventory' && <StoreInventoryTab />}
               {tab === 'suppliers' && <SuppliersTab />}
+              {tab === 'invoices'  && <InvoiceTab />}
               {tab === 'analytics' && <StoreAnalyticsTab />}
               {tab === 'custom'    && <StoreCustomTab />}
               {tab === 'closure'   && <StoreDailyClosureTab />}
