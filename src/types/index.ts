@@ -7,6 +7,11 @@ export type UserRole =
   | 'kitchen'
   | 'store'
   | 'baker'
+  | 'sweet_master'
+  | 'savouries_master'
+  | 'cookies_master'
+  | 'puffs_master'
+  | 'bakery_master'
   | 'cake_master'
   | 'packing'
   | 'receiver_vrsnb'   // VRSNB Order Receiver (orders VRSNB items only)
