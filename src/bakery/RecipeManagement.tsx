@@ -237,6 +237,18 @@ function ItemRecipeRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasRecipe = recipe && recipe.materials.length > 0;
+  const invalidMaterialCount = recipe?.materials.filter(material =>
+    !material.material.trim() || !Number.isFinite(material.qty) || material.qty <= 0 || !material.unit.trim()
+  ).length ?? 0;
+  const recipeIssue = !hasRecipe
+    ? 'No recipe data'
+    : !recipe.outputQty || recipe.outputQty <= 0
+      ? 'Batch output quantity is missing'
+      : !recipe.outputUnit
+        ? 'Batch output unit is missing'
+        : invalidMaterialCount > 0
+          ? `${invalidMaterialCount} ingredient ${invalidMaterialCount === 1 ? 'line needs' : 'lines need'} quantity or unit`
+          : null;
 
   return (
     <div className="rounded-xl border border-border overflow-hidden">
@@ -250,13 +262,13 @@ function ItemRecipeRow({
         <span className="text-base w-6 text-center shrink-0">{item.icon}</span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-body font-semibold text-foreground truncate">{item.name}</p>
-          {hasRecipe ? (
+          {hasRecipe && !recipeIssue ? (
             <p className="text-[10px] font-body text-emerald-600">
               ✓ {recipe.materials.length} ingredients · {recipe.outputQty} {recipe.outputUnit}
               <span className="ml-1 text-muted-foreground">({recipe.source === 'db' ? 'custom' : 'from Excel'})</span>
             </p>
           ) : (
-            <p className="text-[10px] font-body text-amber-600">⚠ No recipe data</p>
+            <p className="text-[10px] font-body font-semibold text-red-600">⚠ {recipeIssue}</p>
           )}
         </div>
         <button onClick={e => { e.stopPropagation(); onEdit(item.id); }}
@@ -643,8 +655,8 @@ export default function RecipeManagement({ embedded = false, storeMode = false }
       <div className="flex items-start gap-2 px-3 py-2 mb-3 bg-blue-50 border border-blue-200 rounded-xl">
         <Info className="size-4 text-blue-500 shrink-0 mt-0.5" />
         <p className="text-[11px] font-body text-blue-700">
-          Recipes pre-loaded from BakeryRecipes.xlsx (191 items). Add or edit any recipe here to override.
-          The Store dashboard uses these recipes to auto-calculate material quantities.
+          Recipes load from the approved workbook and live Recipe Management.
+          Incomplete recipes are marked for correction before Store stock deduction.
         </p>
       </div>
 

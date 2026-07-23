@@ -70,7 +70,19 @@ function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
   const recipe = useRecipeStore.getState().getRecipe(item.itemId, item.itemName);
   if (!recipe) return 'No recipe is linked to this item name or item code.';
   if (!recipe.outputQty || recipe.outputQty <= 0) return 'Recipe found, but its output quantity is missing.';
+  if (!recipe.outputUnit) return 'Recipe found, but its output unit is missing.';
   if (recipe.materials.length === 0) return 'Recipe found, but no raw materials have been added.';
+  const invalidMaterials = recipe.materials.filter(material =>
+    !material.material.trim() || !Number.isFinite(material.qty) || material.qty <= 0 || !material.unit.trim()
+  );
+  if (invalidMaterials.length > 0) {
+    const names = invalidMaterials
+      .map(material => material.material.trim() || 'Unnamed material')
+      .slice(0, 3)
+      .join(', ');
+    const more = invalidMaterials.length > 3 ? ` and ${invalidMaterials.length - 3} more` : '';
+    return `Recipe found, but ${names}${more} ${invalidMaterials.length === 1 ? 'has' : 'have'} a missing quantity or unit.`;
+  }
   if (item.quantity <= 0) return 'Recipe found, but the ordered quantity is invalid.';
 
   const orderUnit = item.dispatchUnit === 'pcs' ? 'pcs' : 'kg';
@@ -81,7 +93,7 @@ function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
   if (recipe.outputUnit && recipe.outputUnit !== orderUnit && !(recipe.outputUnit === 'loaf' && orderUnit === 'pcs')) {
     return `Recipe output unit (${recipe.outputUnit}) does not match the order unit (${orderUnit}).`;
   }
-  return 'Recipe found, but its raw materials could not be calculated.';
+  return null;
 }
 
 // ─── Rounding helper — rounds raw material quantities to nearest 0.05 ─────────
@@ -254,7 +266,8 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
   const [showMats, setShowMats] = useState(false);
   const mats = matForItem(item);
   const hasMats = mats.length > 0;
-  const recipeIssue = hasMats ? null : recipeIssueForItem(item);
+  const recipeIssue = recipeIssueForItem(item)
+    ?? (!hasMats ? 'Recipe found, but its raw materials could not be calculated.' : null);
   const { items: stockItems } = useStoreStockStore();
 
   // Check each recipe material against current inventory
@@ -275,12 +288,18 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
   }, [mats, stockItems]);
 
   const anyOut = matStatus.some(s => s.status === 'out');
+  const anyMissing = matStatus.some(s => s.status === 'unknown');
   const anyLow = !anyOut && matStatus.some(s => s.status === 'low');
+  const hasConfigurationIssue = Boolean(recipeIssue);
+
+  useEffect(() => {
+    if (anyMissing || hasConfigurationIssue) setShowMats(true);
+  }, [anyMissing, hasConfigurationIssue]);
 
   return (
     <div className={cn(
       "rounded-xl border bg-muted/30 overflow-hidden",
-      selected ? "border-primary bg-primary/5" : anyOut ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
+      selected ? "border-primary bg-primary/5" : anyOut || anyMissing || hasConfigurationIssue ? "border-red-300" : anyLow ? "border-amber-300" : "border-border"
     )}>
       {/* Item header */}
       <div className="flex items-center gap-2 px-3 py-2.5">
@@ -304,6 +323,16 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
               <AlertTriangle className="size-2.5" /> OUT OF STOCK
             </span>
           )}
+          {anyMissing && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5">
+              <AlertTriangle className="size-2.5" /> MISSING MATERIAL
+            </span>
+          )}
+          {hasConfigurationIssue && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5">
+              <AlertTriangle className="size-2.5" /> RECIPE ISSUE
+            </span>
+          )}
           {anyLow && (
             <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 flex items-center gap-0.5">
               <AlertTriangle className="size-2.5" /> LOW
@@ -317,11 +346,11 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
         </div>
       </div>
 
-      {!hasMats && recipeIssue && (
-        <div className="flex items-start gap-2 border-t border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-body text-amber-800">
+      {recipeIssue && (
+        <div className="flex items-start gap-2 border-t border-red-200 bg-red-50 px-3 py-2 text-[11px] font-body text-red-800">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <div>
-            <p className="font-bold">Recipe not shown</p>
+            <p className="font-bold">Recipe needs attention</p>
             <p>{recipeIssue} Stock will not be deducted for this item.</p>
           </div>
         </div>
@@ -334,13 +363,13 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
             onClick={() => setShowMats(v => !v)}
             className={cn(
               "w-full flex items-center justify-between px-3 py-2 text-xs font-body font-semibold active:scale-[0.99]",
-              anyOut ? "bg-red-50 text-red-700" : anyLow ? "bg-amber-50 text-amber-700" : "bg-primary/5 text-primary"
+              anyOut || anyMissing ? "bg-red-50 text-red-700" : anyLow ? "bg-amber-50 text-amber-700" : "bg-primary/5 text-primary"
             )}
           >
             <div className="flex items-center gap-1.5">
               <Calculator className="size-3.5" />
               Raw materials ({mats.length} ingredients)
-              {anyOut && <span className="text-[9px] font-bold">— check stock!</span>}
+              {(anyOut || anyMissing) && <span className="text-[9px] font-bold">- check stock list!</span>}
             </div>
             {showMats ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
@@ -353,14 +382,15 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                   return (
                     <div key={i} className={cn(
                       "flex items-center justify-between px-3 py-2",
-                      s.status === 'out' ? "bg-red-50" : s.status === 'low' ? "bg-amber-50" : "bg-background"
+                      s.status === 'out' || s.status === 'unknown' ? "bg-red-50" : s.status === 'low' ? "bg-amber-50" : "bg-background"
                     )}>
                       <div className="flex items-center gap-1.5 flex-1 min-w-0">
                         {s.status === 'out' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
+                        {s.status === 'unknown' && <AlertTriangle className="size-3 text-red-500 shrink-0" />}
                         {s.status === 'low' && <AlertTriangle className="size-3 text-amber-500 shrink-0" />}
                         <span className={cn(
                           "text-sm font-body",
-                          s.status === 'out' ? "text-red-700 font-semibold" : "text-foreground"
+                          s.status === 'out' || s.status === 'unknown' ? "text-red-700 font-semibold" : "text-foreground"
                         )}>{m.material}</span>
                         {/* Stock status badge */}
                         {s.status === 'out' && s.stock && (
@@ -369,8 +399,8 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                           </span>
                         )}
                         {s.status === 'unknown' && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border shrink-0">
-                            Not in stock list
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 shrink-0">
+                            Missing from Store inventory
                           </span>
                         )}
                         {s.status === 'low' && s.stock && (
@@ -381,7 +411,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
                       </div>
                       <span className={cn(
                         "text-sm font-body font-bold tabular-nums ml-2 shrink-0",
-                        s.status === 'out' ? "text-red-700" : "text-foreground"
+                        s.status === 'out' || s.status === 'unknown' ? "text-red-700" : "text-foreground"
                       )}>
                         {formatMaterialQuantity(m.quantity, m.unit)}
                       </span>
@@ -471,10 +501,12 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const { items: stockItems } = useStoreStockStore();
   const anyOut = useMemo(() => {
     for (const { item } of selectedEntries) {
+      if (recipeIssueForItem(item)) return true;
       const mats = matForItem(item);
+      if (mats.length === 0) return true;
       for (const m of mats) {
         const stock = stockItems.find(s => normaliseName(s.name) === normaliseName(m.material));
-        if (!stock) continue;
+        if (!stock) return true;
         let needed = m.quantity;
         const from = m.unit.toLowerCase();
         const to   = stock.unit.toLowerCase();
@@ -617,7 +649,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
           {sendError && <p className="text-xs font-body text-destructive text-center pt-1">{sendError}</p>}
           {sendNotice && <p className="rounded-xl bg-emerald-50 px-3 py-2 text-center text-xs font-bold text-emerald-700">{sendNotice}</p>}
-          {anyOut && selectedEntries.length > 0 && <p className="rounded-xl bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700">One or more selected recipes need more stock. Review the ingredient warnings before sending.</p>}
+          {anyOut && selectedEntries.length > 0 && <p className="rounded-xl bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700">One or more selected items has a missing recipe, missing raw material, or insufficient stock. Review the red warnings before sending.</p>}
 
           {!accepted ? (
             <button onClick={handleAccept} disabled={accepting}
