@@ -41,7 +41,8 @@ import {
 
 type StoreDashboardTab = 'orders' | 'history' | 'inventory' | 'suppliers' | 'invoices' | 'analytics' | 'custom' | 'closure' | 'report';
 const STORE_TABS: StoreDashboardTab[] = ['orders', 'history', 'inventory', 'suppliers', 'invoices', 'analytics', 'custom', 'closure', 'report'];
-const STORE_ORDER_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Cookies', 'Puffs', 'Bakery', 'Others'];
+const CORE_RECIPE_CATEGORIES: ProductionCategory[] = ['Sweets', 'Savouries', 'Bakery', 'Cookies', 'Others'];
+const STORE_ORDER_CATEGORIES: ProductionCategory[] = [...CORE_RECIPE_CATEGORIES.slice(0, 2), 'Cookies', 'Puffs', 'Bakery', 'Others'];
 type StoreOrderCategory = ProductionCategory;
 
 function storeOrderCategory(item: BakeryOrder['items'][number], liveItems: ReturnType<typeof useBakeryItemsStore.getState>['items']): StoreOrderCategory {
@@ -671,7 +672,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           })}
 
           {accepted && !sent && selectedEntries.length > 0 && <div className="overflow-hidden rounded-xl border border-primary/20 bg-card">
-            <div className="flex items-center justify-between bg-primary/5 px-3 py-2"><p className="text-xs font-black text-primary">Selected for Production</p><span className="text-[10px] font-bold text-primary">{selectedEntries.length} item{selectedEntries.length === 1 ? '' : 's'}</span></div>
+            <div className="flex items-center justify-between bg-primary/5 px-3 py-2"><p className="text-xs font-black text-primary">Selected for Baker / Production</p><span className="text-[10px] font-bold text-primary">{selectedEntries.length} item{selectedEntries.length === 1 ? '' : 's'}</span></div>
             <div className="overflow-x-auto"><table className="w-full min-w-[420px] text-xs">
               <thead className="bg-muted/40 text-left text-[9px] uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Category</th><th className="px-3 py-2 text-right">Quantity</th><th className="w-10"></th></tr></thead>
               <tbody>{selectedEntries.map(({ item, index }) => {

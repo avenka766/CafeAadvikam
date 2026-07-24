@@ -194,17 +194,33 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     if (!order) throw new Error('The Store order is no longer available.');
     const user = (await import('@/stores/authStore')).useAuthStore.getState().currentUser;
     const actor = user?.displayName || user?.username || 'Store';
-    const { data, error } = await supabase.rpc('send_selected_bakery_items_to_production', {
-      p_order_id: orderId,
-      p_selections: selections,
-      p_request_id: requestId,
-      p_actor: actor,
-    });
-    if (error) throw error;
-    const result = data as {
-      batches?: Array<{ orderNumber?: number; destination?: ProductionDestination; itemCount?: number }>;
-      remainingCount?: number;
-    } | null;
+    const allBaker = selections.every((selection) => selection.destination === 'baker');
+    const response = allBaker
+      ? await supabase.rpc('send_selected_bakery_items_to_baker', {
+          p_order_id: orderId,
+          p_selected_indexes: selections.map((selection) => selection.index),
+          p_request_id: requestId,
+          p_actor: actor,
+        })
+      : await supabase.rpc('send_selected_bakery_items_to_production', {
+          p_order_id: orderId,
+          p_selections: selections,
+          p_request_id: requestId,
+          p_actor: actor,
+        });
+    if (response.error) throw response.error;
+    const legacyResult = response.data as { sentOrderNumber?: number; selectedCount?: number; remainingCount?: number } | null;
+    const result = allBaker
+      ? {
+          batches: legacyResult?.sentOrderNumber
+            ? [{ orderNumber: legacyResult.sentOrderNumber, destination: 'baker' as ProductionDestination, itemCount: Number(legacyResult.selectedCount || selections.length) }]
+            : [],
+          remainingCount: Number(legacyResult?.remainingCount || 0),
+        }
+      : response.data as {
+          batches?: Array<{ orderNumber?: number; destination?: ProductionDestination; itemCount?: number }>;
+          remainingCount?: number;
+        } | null;
     const batches = (result?.batches ?? []).flatMap(batch =>
       batch.orderNumber && batch.destination
         ? [{ orderNumber: batch.orderNumber, destination: batch.destination, itemCount: Number(batch.itemCount || 0) }]

@@ -1235,7 +1235,7 @@ export default function BakerDashboard({
 
   useEffect(() => {
     fetchOrders(false, false, destination).finally(() => setInitialLoading(false));
-    const unsubscribe = subscribeOrders(destination);
+    const unsubscribe = destination === 'baker' ? subscribeOrders() : subscribeOrders(destination);
     // Realtime is the primary update path; polling only recovers a missed event.
     const id = setInterval(() => { if (!document.hidden) fetchOrders(true, false, destination); }, 15 * 60_000);
     return () => { unsubscribe(); clearInterval(id); };
@@ -1252,7 +1252,10 @@ export default function BakerDashboard({
   const refreshNow = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    try { await fetchOrders(true, true, destination); } finally { setRefreshing(false); }
+    try {
+      if (destination === 'baker') await fetchOrders(true, true);
+      else await fetchOrders(true, true, destination);
+    } finally { setRefreshing(false); }
   };
 
   return (
