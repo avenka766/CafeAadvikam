@@ -1134,6 +1134,7 @@ export default function BranchBillingProTab({
                 onPromotionChange={handlePromotionChange}
                 onCouponChange={handleCouponChange}
                 compact
+                showOffers={false}
               />
               {paymentMode === 'wallet' && walletOtherMode === 'credit' && walletRemainder > 0 && (
                 <div className="mt-2 grid grid-cols-1 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2 sm:grid-cols-2">
