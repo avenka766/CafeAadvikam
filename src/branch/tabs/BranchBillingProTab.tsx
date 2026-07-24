@@ -7,6 +7,8 @@ import {
   Trash2, WalletCards, XCircle, ClipboardList, ScanBarcode, Keyboard,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import WalletOffersPanel, { type WalletOtherMode } from '@/components/commerce/WalletOffersPanel';
+import type { PromotionCartLine, PromotionEvaluation, WalletCustomer } from '@/features/commerce/types';
 import { useAuthStore } from '@/stores/authStore';
 import { useBranchStore, type StockItem } from '../branchStore';
 import { supabase } from '@/lib/supabase';
@@ -18,7 +20,7 @@ import {
   type BranchBillItem, type BranchBillRecord,
 } from '../branchOpsStore';
 
-type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'credit';
+type PayMode = 'cash' | 'upi' | 'card' | 'split' | 'credit' | 'wallet';
 type DiscountMode = 'percent' | 'value';
 type CheckoutRpcResult = {
   billId: string;
@@ -28,6 +30,19 @@ type CheckoutRpcResult = {
   tendered: number;
   balance: number;
   creditSaleId?: string | null;
+  walletTransactionId?: string | null;
+  walletBalanceRemaining?: number | string | null;
+  promotionDiscount?: number | string | null;
+  walletCashback?: number | string | null;
+  promotionIds?: string[] | null;
+  freeItems?: Array<{
+    barcode?: number | string | null;
+    itemId?: string | null;
+    name?: string | null;
+    itemName?: string | null;
+    quantity?: number | string | null;
+    unit?: 'pcs' | 'kg' | null;
+  }> | null;
 };
 type BillingItem = {
   barcode: number;
@@ -35,6 +50,11 @@ type BillingItem = {
   price: number;
   uom: 'Nos' | 'Kgs';
   category: string;
+};
+
+const EMPTY_PROMOTION_EVALUATION: PromotionEvaluation = {
+  originalSubtotal: 0, eligibleSubtotal: 0, discount: 0, payableSubtotal: 0, cashback: 0,
+  applied: [], eligible: [], nearThreshold: null, excludedLines: [], reasons: [],
 };
 
 type Props = {
@@ -72,6 +92,7 @@ const PAYMENT_SHORTCUTS: Record<PayMode, string> = {
   card: 'F5',
   split: 'F6',
   credit: 'F7',
+  wallet: '—',
 };
 
 function unitOf(item: BillingItem): 'pcs' | 'kg' {
@@ -228,6 +249,13 @@ export default function BranchBillingProTab({
   const [creditAmountPaid, setCreditAmountPaid] = useState('');
   const [creditPaidMode, setCreditPaidMode] = useState<'cash' | 'upi' | 'card'>('cash');
   const [creditRemarks, setCreditRemarks] = useState('');
+  const [selectedWallet, setSelectedWallet] = useState<WalletCustomer | null>(null);
+  const [walletAmount, setWalletAmount] = useState(0);
+  const [walletOtherMode, setWalletOtherMode] = useState<WalletOtherMode>(null);
+  const [walletAuthorizationSecret, setWalletAuthorizationSecret] = useState('');
+  const [promotionEvaluation, setPromotionEvaluation] = useState<PromotionEvaluation>(EMPTY_PROMOTION_EVALUATION);
+  const [couponCode, setCouponCode] = useState('');
+  const checkoutIdempotencyRef = useRef<string | null>(null);
   const [discount, setDiscount] = useState('');
   const [discountMode, setDiscountMode] = useState<DiscountMode>('percent');
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -284,6 +312,34 @@ export default function BranchBillingProTab({
     return map;
   }, [branchStock]);
 
+  const promotionLines = useMemo<PromotionCartLine[]>(() => {
+    const inCart = new Set(cart.map((line) => String(line.barcode ?? line.itemName)));
+    const cartLines = cart.map((line) => {
+      const catalogItem = items.find((item) => item.barcode === line.barcode || item.name === line.itemName);
+      return {
+        id: String(line.barcode ?? line.itemName),
+        name: line.itemName,
+        category: catalogItem?.category || 'Other',
+        quantity: line.quantity,
+        unitPrice: line.price,
+        inStock: isSnbFlexibleStockItem(branch, catalogItem) || stockAvailable(branchStock, stockMap, line.itemName, line.barcode) >= line.quantity,
+      };
+    });
+    const suggestions = items
+      .filter((item) => !inCart.has(String(item.barcode)))
+      .map((item) => ({
+        id: String(item.barcode),
+        name: item.name,
+        category: item.category,
+        quantity: 0,
+        unitPrice: item.price,
+        inStock: isSnbFlexibleStockItem(branch, item) || stockAvailable(branchStock, stockMap, item.name, item.barcode) > 0,
+      }));
+    return [...cartLines, ...suggestions];
+  }, [branch, branchStock, cart, items, stockMap]);
+  const handlePromotionChange = useCallback((evaluation: PromotionEvaluation) => setPromotionEvaluation(evaluation), []);
+  const handleCouponChange = useCallback((value: string) => setCouponCode(value), []);
+
   const visibleItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((i) => {
@@ -316,19 +372,32 @@ export default function BranchBillingProTab({
     ? Math.min(subtotal, roundMoney((subtotal * clampPercentage(discountInput)) / 100))
     : Math.min(subtotal, roundMoney(discountInput));
   const discountPercent = subtotal > 0 ? roundMoney((discountValue / subtotal) * 100) : 0;
+  const promotionDiscount = Math.min(Math.max(0, subtotal - discountValue), roundMoney(promotionEvaluation.discount));
+  const totalDiscountValue = roundMoney(Math.min(subtotal, discountValue + promotionDiscount));
   const tax = useMemo(() => roundMoney(cart.reduce((s, i) => s + i.tax, 0)), [cart]);
-  const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - discountValue));
+  const amountBeforeRoundOff = roundMoney(Math.max(0, subtotal + tax - totalDiscountValue));
   const total = roundWholeRupee(amountBeforeRoundOff);
   const roundOff = roundMoney(total - amountBeforeRoundOff);
   const itemCount = cart.length;
   const creditPaid = Math.min(Number(creditAmountPaid || 0), total);
+  const walletRemainder = roundMoney(Math.max(0, total - walletAmount));
   const tendered = paymentMode === 'credit'
     ? creditPaid
     : paymentMode === 'split'
       ? Number(split.cash || 0) + Number(split.upi || 0) + Number(split.card || 0)
-      : Number(cashTendered || (paymentMode === 'cash' ? 0 : total));
+      : paymentMode === 'wallet'
+        ? total
+        : Number(cashTendered || (paymentMode === 'cash' ? 0 : total));
   const splitIsValid = paymentMode !== 'split' || roundMoney(tendered) === roundMoney(total);
-  const checkoutDisabled = saving || cart.length === 0 || !splitIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
+  const walletIsValid = paymentMode !== 'wallet' || Boolean(
+    selectedWallet
+    && selectedWallet.status === 'active'
+    && walletAmount > 0
+    && walletAmount <= selectedWallet.totalBalance
+    && walletAmount <= total
+    && (walletRemainder <= 0 || walletOtherMode)
+  );
+  const checkoutDisabled = saving || cart.length === 0 || !splitIsValid || !walletIsValid || (requiresSalesperson && !salesperson) || (paymentMode === 'cash' && Number(cashTendered || 0) < total);
   const due = Math.max(0, total - tendered);
   const balance = paymentMode === 'credit' ? Math.max(0, total - tendered) : Math.max(0, tendered - total);
   const todayBills = bills.filter((b) => b.branch === branch && new Date(b.createdAt).toDateString() === new Date().toDateString());
@@ -336,7 +405,7 @@ export default function BranchBillingProTab({
 
   useEffect(() => {
     if (paymentMode === 'upi' || paymentMode === 'card') setCashTendered(String(total));
-    if (paymentMode === 'credit') { setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); }
+    if (paymentMode === 'credit' || paymentMode === 'wallet') { setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); }
     if (paymentMode === 'split') {
       setSplit((current) => {
         const next = {
@@ -499,6 +568,14 @@ export default function BranchBillingProTab({
     if (discountMode === 'percent' && discountInput > 100) return 'Discount percentage must be between 0 and 100.';
     if (discountMode === 'value' && discountInput > subtotal) return 'Discount value cannot exceed the subtotal.';
     if (paymentMode === 'credit' && Number(creditAmountPaid || 0) > total) return 'Credit upfront amount cannot exceed bill total.';
+    if (paymentMode === 'wallet' && !selectedWallet) return 'Select a wallet customer before checkout.';
+    if (paymentMode === 'wallet' && selectedWallet?.status !== 'active') return 'This wallet is not active.';
+    if (paymentMode === 'wallet' && walletAmount <= 0) return 'Enter the wallet amount to use.';
+    if (paymentMode === 'wallet' && selectedWallet && walletAmount > selectedWallet.totalBalance) return `Wallet has only ${money(selectedWallet.totalBalance)} available.`;
+    if (paymentMode === 'wallet' && walletAmount > total) return 'Wallet amount cannot exceed the bill total.';
+    if (paymentMode === 'wallet' && walletRemainder > 0 && !walletOtherMode) return 'Select a payment mode for the remaining amount.';
+    if (paymentMode === 'wallet' && walletRemainder > 0 && walletOtherMode === 'credit' && !creditDueDate) return 'Due date is required for Wallet + Credit payment.';
+    if (paymentMode === 'wallet' && selectedWallet?.highValueAuthorizationLimit != null && selectedWallet.highValueAuthorizationLimit > 0 && walletAmount >= selectedWallet.highValueAuthorizationLimit && !walletAuthorizationSecret.trim()) return 'Admin or Owner authorization is required for this high-value wallet payment.';
     if (paymentMode === 'split' && tendered < total) return 'Split payment total is less than bill total.';
     if (paymentMode === 'split' && tendered > total) return 'Split payment cannot exceed the bill total.';
     return null;
@@ -535,6 +612,10 @@ export default function BranchBillingProTab({
       setCashTendered('');
       setSplit({ cash: '', upi: '', card: '' });
       setCreditAmountPaid('');
+    } else if (mode === 'wallet') {
+      setCashTendered('');
+      setSplit({ cash: '', upi: '', card: '' });
+      setWalletAmount((current) => Math.min(current || selectedWallet?.totalBalance || 0, total));
     } else {
       setCashTendered(String(total));
       setSplit({ cash: '', upi: '', card: '' });
@@ -588,17 +669,19 @@ export default function BranchBillingProTab({
       const canonicalSubtotal = roundMoney(canonicalItems.reduce((sum, item) => sum + item.price * item.quantity, 0));
       const canonicalTax = roundMoney(canonicalItems.reduce((sum, item) => sum + Number(item.tax || 0), 0));
       const canonicalRawDiscount = roundMoney((canonicalSubtotal * discountPercent) / 100);
-      const canonicalDiscount = Math.min(canonicalSubtotal, roundWholeRupee(canonicalRawDiscount));
-      const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalDiscount));
+      const canonicalManualDiscount = Math.min(canonicalSubtotal, roundWholeRupee(canonicalRawDiscount));
+      const canonicalPromotionDiscount = Math.min(Math.max(0, canonicalSubtotal - canonicalManualDiscount), promotionDiscount);
+      const canonicalCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + canonicalPromotionDiscount));
+      const canonicalAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - canonicalCombinedDiscount));
       const canonicalTotal = roundWholeRupee(canonicalAmountBeforeRoundOff);
       const canonicalRoundOff = roundMoney(canonicalTotal - canonicalAmountBeforeRoundOff);
       const catalogueChanged = canonicalItems.length !== cart.length || canonicalItems.some((item, index) => {
         const old = cart.find((line) => line.barcode === item.barcode) ?? cart[index];
         return !old || old.itemName !== item.itemName || roundMoney(old.price) !== roundMoney(item.price) || old.unit !== item.unit;
       });
-      if (catalogueChanged || canonicalDiscount !== discountValue || canonicalTotal !== total) {
+      if (catalogueChanged || canonicalManualDiscount !== discountValue || canonicalTotal !== total) {
         setCart(canonicalItems);
-        throw new Error('An item name or price changed in Admin. The cart has been refreshed with the current catalogue; please review and collect payment again.');
+        throw new Error('An item name, price, or offer changed. The cart has been refreshed; please review and collect payment again.');
       }
 
       const paymentRows =
@@ -610,78 +693,88 @@ export default function BranchBillingProTab({
                 { mode: 'upi', amount: checkoutSplit.upi },
                 { mode: 'card', amount: checkoutSplit.card },
               ].filter((row) => row.amount > 0)
-            : [{ mode: paymentMode, amount: total }];
+            : paymentMode === 'wallet'
+              ? []
+              : [{ mode: paymentMode, amount: total }];
 
-      const checkoutPayload = {
-        p_branch: branch,
-        p_items: canonicalItems,
-        p_payments: paymentRows,
-        p_customer_name: paymentMode === 'credit' ? creditCustomerName.trim() : null,
-        p_customer_phone: paymentMode === 'credit' ? creditCustomerMobile.trim() : null,
-        p_salesperson: billingStaff,
-        p_biller: userName,
-        p_discount: canonicalDiscount,
-        p_tax: canonicalTax,
-        p_round_off: canonicalRoundOff,
-        p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
-        p_due_date: paymentMode === 'credit' ? creditDueDate : null,
-        p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
-      };
-      const flexibleStockShortfall = branch === 'SNB' && canonicalItems.some((line) => {
-        const catalogItem = items.find((item) => item.barcode === line.barcode || item.name === line.itemName);
-        if (!isSnbFlexibleStockItem(branch, catalogItem)) return false;
-        return line.quantity > Number(stockAvailable(branchStock, stockMap, line.itemName, line.barcode));
-      });
+      const idempotencyKey = checkoutIdempotencyRef.current
+        ?? `branch-checkout:${branch}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+      checkoutIdempotencyRef.current = idempotencyKey;
+      const customerName = paymentMode === 'wallet' ? selectedWallet?.customerName ?? null : paymentMode === 'credit' ? creditCustomerName.trim() : null;
+      const customerPhone = paymentMode === 'wallet' ? selectedWallet?.mobile ?? null : paymentMode === 'credit' ? creditCustomerMobile.trim() : null;
 
-      let checkoutRpc: 'v4' | 'v3' | 'v2' | 'base' = branch === 'SNB' ? 'v4' : 'v3';
-      const checkoutResponse = branch === 'SNB'
-        ? await supabase.rpc('complete_branch_checkout_canonical_v4', {
-            ...checkoutPayload,
-            p_discount_percent: discountPercent,
+      let checkoutResponse = paymentMode === 'wallet'
+        ? await supabase.rpc('complete_branch_wallet_checkout_v1', {
+            p_branch: branch,
+            p_items: canonicalItems,
+            p_customer_name: customerName,
+            p_customer_phone: customerPhone,
+            p_salesperson: billingStaff,
+            p_biller: userName,
+            p_manual_discount: canonicalManualDiscount,
+            p_tax: canonicalTax,
+            p_round_off: canonicalRoundOff,
+            p_due_date: walletOtherMode === 'credit' ? creditDueDate || null : null,
+            p_notes: walletOtherMode === 'credit' ? creditRemarks.trim() || null : null,
+            p_wallet_id: selectedWallet!.id,
+            p_wallet_amount: roundMoney(walletAmount),
+            p_other_mode: walletOtherMode,
+            p_idempotency_key: idempotencyKey,
+            p_coupon_code: couponCode || null,
+            p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+            p_wallet_authorization_secret: walletAuthorizationSecret || null,
           })
-        : await supabase.rpc('complete_branch_checkout_canonical_v3', {
-            ...checkoutPayload,
+        : await supabase.rpc('complete_branch_promotional_checkout_v1', {
+            p_branch: branch,
+            p_items: canonicalItems,
+            p_payments: paymentRows,
+            p_customer_name: customerName,
+            p_customer_phone: customerPhone,
+            p_salesperson: billingStaff,
+            p_biller: userName,
+            p_manual_discount: canonicalManualDiscount,
+            p_tax: canonicalTax,
+            p_round_off: canonicalRoundOff,
+            p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
+            p_due_date: paymentMode === 'credit' ? creditDueDate : null,
+            p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
             p_discount_percent: discountPercent,
+            p_coupon_code: couponCode || null,
+            p_idempotency_key: idempotencyKey,
+            p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
           });
-      let { data, error: rpcError } = checkoutResponse;
-
-      // A freshly installed RPC can exist in PostgreSQL before PostgREST refreshes
-      // its schema cache. Retry v4 once, then use v3 only when the sale does not
-      // require the SNB Mix & Combo flexible-stock wrapper.
-      if (checkoutRpc === 'v4' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4')) {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v4', {
-          ...checkoutPayload,
+      if (paymentMode !== 'wallet' && checkoutResponse.error?.code === 'PGRST202') {
+        const canonicalRpcVersion = branch === 'SNB' ? 'v4' : 'v3';
+        const fallbackArgs = {
+          p_branch: branch,
+          p_items: canonicalItems,
+          p_payments: paymentRows,
+          p_customer_name: customerName,
+          p_customer_phone: customerPhone,
+          p_salesperson: billingStaff,
+          p_biller: userName,
+          p_discount: canonicalCombinedDiscount,
+          p_tax: canonicalTax,
+          p_round_off: canonicalRoundOff,
+          p_payment_type: paymentMode === 'credit' ? 'credit' : 'counter',
+          p_due_date: paymentMode === 'credit' ? creditDueDate : null,
+          p_notes: paymentMode === 'credit' ? creditRemarks.trim() || null : null,
           p_discount_percent: discountPercent,
-        }));
-        if (isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4') && !flexibleStockShortfall) {
-          checkoutRpc = 'v3';
-          ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v3', {
-            ...checkoutPayload,
-            p_discount_percent: discountPercent,
-          }));
+        };
+        checkoutResponse = canonicalRpcVersion === 'v4'
+          ? await supabase.rpc('complete_branch_checkout_canonical_v4', fallbackArgs)
+          : await supabase.rpc('complete_branch_checkout_canonical_v3', fallbackArgs);
+        if (checkoutResponse.error?.code === 'PGRST202') {
+          const { p_discount_percent: _ignoredDiscountPercent, ...legacyArgs } = fallbackArgs;
+          checkoutResponse = await supabase.rpc('complete_branch_checkout_canonical', legacyArgs);
         }
       }
-
-      if (checkoutRpc === 'v3' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v3')) {
-        checkoutRpc = 'v2';
-        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical_v2', {
-          ...checkoutPayload,
-          p_discount_percent: discountPercent,
-        }));
-      }
-      if (checkoutRpc === 'v2' && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v2')) {
-        checkoutRpc = 'base';
-        ({ data, error: rpcError } = await supabase.rpc('complete_branch_checkout_canonical', checkoutPayload));
-      }
+      const { data, error: rpcError } = checkoutResponse;
       if (rpcError) {
-        if (flexibleStockShortfall && isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical_v4')) {
-          throw new Error('SNB Mix & Combo checkout is temporarily unavailable while the Supabase API refreshes. Retry the bill once; stock and discount values have not been changed.');
-        }
-        const missingRpc = isRpcUnavailableError(rpcError, `complete_branch_checkout_canonical_${checkoutRpc}`)
-          || isRpcUnavailableError(rpcError, 'complete_branch_checkout_canonical');
+        const rpcName = paymentMode === 'wallet' ? 'complete_branch_wallet_checkout_v1' : 'complete_branch_promotional_checkout_v1';
+        const missingRpc = isRpcUnavailableError(rpcError, rpcName);
         throw new Error(missingRpc
-          ? 'Branch checkout is temporarily unavailable because the Supabase API schema cache is stale. Retry once after refreshing the dashboard.'
+          ? 'Wallet and Promotions database migration is not installed or the Supabase API schema cache is refreshing. Apply the included migration and retry.'
           : rpcError.message);
       }
       const result = data as CheckoutRpcResult;
@@ -707,16 +800,46 @@ export default function BranchBillingProTab({
       // fails (network drop, tab close), a retry would call addBill() again. By checking
       // for an existing bill with the same billNo first, the write is idempotent.
       const existingBill = bills.find(b => b.billNo === result.billNo);
+      const serverPromotionDiscount = roundMoney(Number(result.promotionDiscount ?? canonicalPromotionDiscount));
+      const serverFreeItems: BranchBillItem[] = Array.isArray(result.freeItems)
+        ? result.freeItems.map((freeItem) => ({
+            barcode: Number(freeItem.barcode ?? freeItem.itemId) || undefined,
+            itemName: String(freeItem.itemName ?? freeItem.name ?? 'Promotion free item'),
+            quantity: Number(freeItem.quantity || 0),
+            unit: freeItem.unit === 'kg' ? 'kg' : 'pcs',
+            price: 0,
+            discount: 0,
+            tax: 0,
+            lineTotal: 0,
+          })).filter((freeItem) => freeItem.quantity > 0)
+        : [];
+      const billedItems = [...canonicalItems, ...serverFreeItems];
+      const serverTotal = roundMoney(Number(result.total ?? canonicalTotal));
+      const serverCombinedDiscount = roundMoney(Math.min(canonicalSubtotal, canonicalManualDiscount + serverPromotionDiscount));
+      const serverAmountBeforeRoundOff = roundMoney(Math.max(0, canonicalSubtotal + canonicalTax - serverCombinedDiscount));
+      const walletSplit = paymentMode === 'wallet'
+        ? {
+            wallet: roundMoney(walletAmount),
+            ...(walletOtherMode && walletRemainder > 0 ? { [walletOtherMode]: walletRemainder } : {}),
+          }
+        : undefined;
       const saved = existingBill ?? addBill({
-        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: canonicalItems, subtotal: canonicalSubtotal, discount: canonicalDiscount, discountPercent, tax: canonicalTax, roundOff: canonicalRoundOff, amountBeforeRoundOff: canonicalAmountBeforeRoundOff, total: canonicalTotal,
-        tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : total,
+        branch, billNo: result.billNo, invoiceNo: result.invoiceNo, items: billedItems, subtotal: canonicalSubtotal, discount: serverCombinedDiscount, discountPercent, tax: canonicalTax, roundOff: roundMoney(serverTotal - serverAmountBeforeRoundOff), amountBeforeRoundOff: serverAmountBeforeRoundOff, total: serverTotal,
+        tendered: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? tendered : serverTotal,
         balance: paymentMode === 'cash' || paymentMode === 'split' || paymentMode === 'credit' ? balance : 0,
         paymentMode,
-        creditCustomerName: paymentMode === 'credit' ? creditCustomerName.trim() : undefined,
-        creditCustomerMobile: paymentMode === 'credit' ? creditCustomerMobile.trim() : undefined,
-        creditDueDate: paymentMode === 'credit' ? creditDueDate : undefined,
-        creditRemarks: paymentMode === 'credit' ? [creditRemarks.trim(), creditPaid > 0 ? `Upfront ${money(creditPaid)} by ${creditPaidMode.toUpperCase()}` : 'No upfront payment'].filter(Boolean).join(' - ') : undefined,
-        split: paymentMode === 'credit' && creditPaid > 0 ? { [creditPaidMode]: creditPaid } : paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : undefined,
+        creditCustomerName: paymentMode === 'credit' ? creditCustomerName.trim() : paymentMode === 'wallet' ? selectedWallet?.customerName : undefined,
+        creditCustomerMobile: paymentMode === 'credit' ? creditCustomerMobile.trim() : paymentMode === 'wallet' ? selectedWallet?.mobile : undefined,
+        creditDueDate: paymentMode === 'credit' || (paymentMode === 'wallet' && walletOtherMode === 'credit') ? creditDueDate : undefined,
+        creditRemarks: paymentMode === 'credit' ? [creditRemarks.trim(), creditPaid > 0 ? `Upfront ${money(creditPaid)} by ${creditPaidMode.toUpperCase()}` : 'No upfront payment'].filter(Boolean).join(' - ') : paymentMode === 'wallet' && walletOtherMode === 'credit' ? creditRemarks.trim() : undefined,
+        split: paymentMode === 'credit' && creditPaid > 0 ? { [creditPaidMode]: creditPaid } : paymentMode === 'split' ? { cash: Number(split.cash || 0), upi: Number(split.upi || 0), card: Number(split.card || 0) } : walletSplit,
+        walletId: paymentMode === 'wallet' ? selectedWallet?.id : undefined,
+        walletNumber: paymentMode === 'wallet' ? selectedWallet?.walletNumber : undefined,
+        walletTransactionId: paymentMode === 'wallet' ? result.walletTransactionId ?? undefined : undefined,
+        walletBalanceRemaining: paymentMode === 'wallet' ? Number(result.walletBalanceRemaining ?? 0) : undefined,
+        promotionDiscount: serverPromotionDiscount,
+        promotionIds: result.promotionIds ?? promotionEvaluation.applied.map((entry) => entry.campaignId),
+        walletCashback: Number(result.walletCashback ?? promotionEvaluation.cashback),
         salesperson: billingStaff,
         biller: userName,
         cashierUserId: currentUser?.id,
@@ -729,7 +852,8 @@ export default function BranchBillingProTab({
       } catch (printError) {
         printWarning = `Bill ${saved.billNo} was saved, but direct printing failed: ${printError instanceof Error ? printError.message : 'Unknown print error'}. Print it from History.`;
       }
-      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setDiscount('');
+      checkoutIdempotencyRef.current = null;
+      setCart([]); setCartQuantityDrafts({}); setSalesperson(''); setCashTendered(''); setSplit({ cash: '', upi: '', card: '' }); setCreditCustomerName(''); setCreditCustomerMobile(''); setCreditDueDate(''); setCreditAmountPaid(''); setCreditPaidMode('cash'); setCreditRemarks(''); setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode(''); setDiscount('');
       focusSearch(true);
       await fetchBranchData(branch);
       window.setTimeout(() => focusSearch(false), 150);
@@ -986,12 +1110,37 @@ export default function BranchBillingProTab({
             </div>
             <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 px-2.5 py-1 text-[10px] font-black">
               <span className="text-slate-600">Quantity: {itemCount} item{itemCount === 1 ? '' : 's'}</span>
-              <span className="ml-auto text-right text-slate-500">Discount -{money(discountValue)} · Before round-off {money(amountBeforeRoundOff)} · Round-off {roundOff >= 0 ? '+' : ''}{money(roundOff)}</span>
+              <span className="ml-auto text-right text-slate-500">Manual -{money(discountValue)} · Offer -{money(promotionDiscount)} · Before round-off {money(amountBeforeRoundOff)} · Round-off {roundOff >= 0 ? '+' : ''}{money(roundOff)}</span>
             </div>
-            <div className="grid grid-cols-5 gap-1 px-2.5 py-1.5">
-              {([['cash','Cash',Banknote],['upi','UPI',Smartphone],['card','Card',CreditCard],['split','Split',WalletCards],['credit','Credit',FileText]] as const).map(([key,label,Icon]) => (
+            <div className="grid grid-cols-6 gap-1 px-2.5 py-1.5">
+              {([['cash','Cash',Banknote],['upi','UPI',Smartphone],['card','Card',CreditCard],['split','Split',WalletCards],['credit','Credit',FileText],['wallet','Wallet',WalletCards]] as const).map(([key,label,Icon]) => (
                 <button key={String(key)} onClick={()=>selectPaymentMode(key as PayMode)} className={cn('rounded-xl border-2 px-1 py-1 text-[10px] font-black', paymentMode === key ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-600')}><Icon className="mx-auto mb-0.5 size-3.5"/>{String(label)}<span className="ml-1 text-[9px] font-black opacity-70">[{PAYMENT_SHORTCUTS[key as PayMode]}]</span></button>
               ))}
+            </div>
+            <div className="max-h-[42vh] overflow-y-auto px-2.5 pb-2">
+              <WalletOffersPanel
+                branch={branch}
+                lines={promotionLines}
+                taxes={tax}
+                walletEnabled={paymentMode === 'wallet'}
+                walletAmount={walletAmount}
+                otherMode={walletOtherMode}
+                selectedWallet={selectedWallet}
+                authorizationSecret={walletAuthorizationSecret}
+                onAuthorizationSecretChange={setWalletAuthorizationSecret}
+                onWalletChange={setSelectedWallet}
+                onWalletAmountChange={setWalletAmount}
+                onOtherModeChange={setWalletOtherMode}
+                onPromotionChange={handlePromotionChange}
+                onCouponChange={handleCouponChange}
+                compact
+              />
+              {paymentMode === 'wallet' && walletOtherMode === 'credit' && walletRemainder > 0 && (
+                <div className="mt-2 grid grid-cols-1 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2 sm:grid-cols-2">
+                  <label className="text-[10px] font-black uppercase text-amber-800">Credit due date<input type="date" value={creditDueDate} onChange={(event) => setCreditDueDate(event.target.value)} className="mt-1 w-full rounded-lg border bg-white p-2 text-sm" /></label>
+                  <label className="text-[10px] font-black uppercase text-amber-800">Remarks<input value={creditRemarks} onChange={(event) => setCreditRemarks(event.target.value)} placeholder="Wallet + credit remarks" className="mt-1 w-full rounded-lg border bg-white p-2 text-sm" /></label>
+                </div>
+              )}
             </div>
             {paymentMode === 'split' ? (
               <div className="space-y-1 px-4 pb-2">
@@ -1027,9 +1176,9 @@ export default function BranchBillingProTab({
             ) : null}
             {error && <p className="mx-2.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700"><AlertTriangle className="mr-1 inline size-3.5"/>{error}</p>}
             <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-stretch gap-1.5 px-2.5 py-1.5">
-              {paymentMode === 'split' || paymentMode === 'credit' ? (
+              {paymentMode === 'split' || paymentMode === 'credit' || paymentMode === 'wallet' ? (
                 <div className="flex min-w-0 items-center rounded-xl bg-slate-100 px-2 text-xs font-black text-slate-700">
-                  {paymentMode === 'split' ? `Split ${money(tendered)} / ${money(total)}` : `Credit due ${money(Math.max(0, total - creditPaid))}`}
+                  {paymentMode === 'split' ? `Split ${money(tendered)} / ${money(total)}` : paymentMode === 'wallet' ? `Wallet ${money(walletAmount)} · Other ${money(walletRemainder)}` : `Credit due ${money(Math.max(0, total - creditPaid))}`}
                 </div>
               ) : (
                 <div className="flex min-w-0 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2">

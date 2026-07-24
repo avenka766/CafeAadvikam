@@ -1361,7 +1361,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
   const [selected, setSelected] = useState<BranchBillRecord | null>(null);
   const [qtys, setQtys] = useState<Record<string, string>>({});
   const [reason, setReason] = useState('Customer return');
-  const [returnPayMode, setReturnPayMode] = useState<'cash'|'upi'|'card'|'credit_adjustment'>('cash');
+  const [returnPayMode, setReturnPayMode] = useState<'cash'|'upi'|'card'|'credit_adjustment'|'wallet'>('cash');
   const [returning, setReturning] = useState(false);
   const [returnError, setReturnError] = useState('');
 
@@ -1382,7 +1382,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
     setSelected(bill);
     setQtys({});
     setReturnError(bill ? '' : 'Bill not found.');
-    setReturnPayMode(bill?.paymentMode === 'credit' ? 'credit_adjustment' : (bill?.paymentMode === 'upi' || bill?.paymentMode === 'card' ? bill.paymentMode : 'cash'));
+    setReturnPayMode(bill?.paymentMode === 'credit' ? 'credit_adjustment' : bill?.paymentMode === 'wallet' ? 'wallet' : (bill?.paymentMode === 'upi' || bill?.paymentMode === 'card' ? bill.paymentMode : 'cash'));
   };
 
   const doReturn = async () => {
@@ -1399,7 +1399,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
       const ret = await addReturn({
         branch,
         originalBillNo: selected.billNo,
-        originalPaymentMode: selected.paymentMode === 'credit' ? 'credit' : selected.paymentMode === 'upi' || selected.paymentMode === 'card' ? selected.paymentMode : 'cash',
+        originalPaymentMode: selected.paymentMode === 'credit' ? 'credit' : selected.paymentMode === 'wallet' ? 'wallet' : selected.paymentMode === 'upi' || selected.paymentMode === 'card' ? selected.paymentMode : 'cash',
         items: lines,
         total: roundMoney(lines.reduce((sum,item)=>sum+item.lineTotal,0)),
         returnedBy: currentUser?.username || currentUser?.displayName || 'Staff',
@@ -1439,9 +1439,11 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
     }
   };
 
-  const modes: Array<{value:'cash'|'upi'|'card'|'credit_adjustment'; label:string}> = selected?.paymentMode === 'credit'
+  const modes: Array<{value:'cash'|'upi'|'card'|'credit_adjustment'|'wallet'; label:string}> = selected?.paymentMode === 'credit'
     ? [{ value:'credit_adjustment', label:'Reduce Credit' }, { value:'cash', label:'Credit + Cash' }, { value:'upi', label:'Credit + UPI' }, { value:'card', label:'Credit + Card' }]
-    : [{ value:'cash', label:'Cash' }, { value:'upi', label:'UPI' }, { value:'card', label:'Card' }];
+    : selected?.paymentMode === 'wallet'
+      ? [{ value:'wallet', label:'Refund to Wallet' }]
+      : [{ value:'cash', label:'Cash' }, { value:'upi', label:'UPI' }, { value:'card', label:'Card' }];
 
   return <div className="branch-split-workspace branch-split-workspace-tight grid h-full min-h-0 gap-2">
     <Section title="Return Bill" icon={<RotateCcw className="size-5"/>}>
@@ -1451,6 +1453,7 @@ export function ReturnsTab({ branch, branchStock }: ModuleProps) {
           <p className="font-black">{selected.billNo} - {money(selected.total)}</p>
           <p className="text-xs font-bold uppercase text-slate-500">Original payment: {selected.paymentMode}</p>
           {selected.paymentMode === 'credit' && <p className="mt-2 rounded-xl bg-amber-100 p-2 text-xs font-bold text-amber-900">The unpaid credit balance is reduced first. Select a refund mode only when the return exceeds the outstanding credit.</p>}
+          {selected.paymentMode === 'wallet' && <p className="mt-2 rounded-xl bg-emerald-100 p-2 text-xs font-bold text-emerald-900">The eligible amount will be restored to the same wallet and its original paid/promotional balance buckets.</p>}
           <div className="max-h-[24vh] overflow-y-auto pr-1">{selected.items.map((item)=><div key={item.itemName} className="mt-2 grid grid-cols-[1fr_90px] gap-2"><p className="text-sm font-bold">{item.itemName}<br/><span className="text-xs text-slate-500">Max {item.quantity} - {money(item.price)}</span></p><Input type="number" min="0" max={item.quantity} step="0.001" value={qtys[item.itemName] || ''} onChange={(e)=>setQtys({...qtys,[item.itemName]:e.target.value})}/></div>)}</div>
           <Field label="Reason for Return"><select value={reason} onChange={(e)=>setReason(e.target.value)} className="mb-2 h-9 w-full rounded-xl border border-slate-200 px-3 text-sm font-bold"><option value="">Select preset reason...</option><option value="Customer return - product defect">Product defect</option><option value="Customer return - wrong item billed">Wrong item billed</option><option value="Customer return - changed mind">Changed mind</option><option value="Customer return - duplicate bill">Duplicate bill</option><option value="Customer return - overcharge correction">Overcharge correction</option><option value="Customer return - stale/expired product">Stale/expired product</option></select><Textarea value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Or type a custom reason..."/></Field>
           <Field label="Settlement"><div className={cn('grid gap-2', modes.length===4?'grid-cols-2':'grid-cols-3')}>{modes.map((mode)=><button key={mode.value} onClick={()=>setReturnPayMode(mode.value)} className={cn('rounded-xl border-2 px-2 py-2 text-xs font-black', returnPayMode===mode.value?'border-slate-950 bg-slate-950 text-white':'border-slate-200 bg-white text-slate-600')}>{mode.label}</button>)}</div></Field>
