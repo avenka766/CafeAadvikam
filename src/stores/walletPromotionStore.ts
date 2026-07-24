@@ -159,13 +159,7 @@ function campaignFromRow(row: Record<string, unknown>): PromotionCampaign {
 type NewWalletInput = {
   customerName: string;
   mobile: string;
-  alternateMobile?: string;
-  email?: string;
-  dateOfBirth?: string;
-  anniversaryDate?: string;
   address?: string;
-  customerType: WalletCustomerType;
-  preferredBranch?: Branch | null;
   openingBalance?: number;
   notes?: string;
   status?: WalletStatus;
@@ -185,8 +179,7 @@ type CreditWalletInput = {
 };
 
 type WalletCustomerUpdateInput = {
-  customerName: string; mobile: string; alternateMobile?: string; email?: string; dateOfBirth?: string; anniversaryDate?: string;
-  address?: string; customerType: WalletCustomerType; preferredBranch?: Branch | null; notes?: string; reason: string;
+  customerName: string; mobile: string; address?: string; notes?: string; reason: string;
 };
 
 type WalletAdjustmentInput = {
@@ -311,13 +304,13 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
     const { data, error } = await supabase.rpc('create_customer_wallet_secure', {
       p_customer_name: input.customerName.trim(),
       p_mobile: mobile,
-      p_alternate_mobile: normalizePhone(input.alternateMobile || '') || null,
-      p_email: input.email?.trim() || null,
-      p_date_of_birth: input.dateOfBirth || null,
-      p_anniversary_date: input.anniversaryDate || null,
+      p_alternate_mobile: null,
+      p_email: null,
+      p_date_of_birth: null,
+      p_anniversary_date: null,
       p_address: input.address?.trim() || null,
-      p_customer_type: input.customerType,
-      p_preferred_branch: input.preferredBranch || null,
+      p_customer_type: 'Regular',
+      p_preferred_branch: null,
       p_opening_balance: amount(input.openingBalance),
       p_notes: input.notes?.trim() || null,
       p_status: input.status || 'active',
@@ -353,9 +346,8 @@ export const useWalletPromotionStore = create<WalletPromotionState>((set, get) =
     const { data, error } = await supabase.rpc('update_wallet_customer_secure', {
       p_wallet_id: walletId,
       p_customer: {
-        customerName: input.customerName.trim(), mobile: normalizePhone(input.mobile), alternateMobile: normalizePhone(input.alternateMobile || ''),
-        email: input.email?.trim() || '', dateOfBirth: input.dateOfBirth || '', anniversaryDate: input.anniversaryDate || '',
-        address: input.address?.trim() || '', customerType: input.customerType, preferredBranch: input.preferredBranch || '', notes: input.notes?.trim() || '',
+        customerName: input.customerName.trim(), mobile: normalizePhone(input.mobile),
+        address: input.address?.trim() || '', notes: input.notes?.trim() || '',
       },
       p_reason: input.reason.trim() || 'Customer details updated',
     });
