@@ -49,13 +49,15 @@ export interface CartItem {
 
 export type OrderType = 'dine_in' | 'takeaway';
 export type OrderStatus = 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled';
-export type PaymentType = 'cash' | 'upi' | 'card' | 'part_payment' | 'unpaid' | 'advance' | 'credit';
+export type PaymentType = 'cash' | 'upi' | 'card' | 'wallet' | 'part_payment' | 'unpaid' | 'advance' | 'credit';
 export type OrderSource = 'staff' | 'qr' | 'balance';
 
 export interface PaymentBreakdown {
   cash: number;
   upi: number;
   card: number;
+  wallet?: number;
+  credit?: number;
 }
 
 export interface Order {
@@ -90,6 +92,13 @@ export interface Order {
   balanceOrderId?: string;   // id of the balance-collection order row
   parcelCharges?: number;
   deliveryDate?: string;     // ISO date string — mandatory for advance orders
+  walletId?: string;
+  walletAmount?: number;
+  walletTransactionId?: string;
+  walletBalanceRemaining?: number;
+  promotionDiscount?: number;
+  promotionIds?: string[];
+  walletCashback?: number;
 }
 
 export interface MenuCategory {
