@@ -4,7 +4,7 @@ import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { supabase } from "@/lib/supabase";
 import type { Branch } from "./types";
 
-type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit";
+type PayMode = "cash" | "upi" | "card" | "split" | "bank" | "credit" | "wallet";
 const roundMoney = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const qtyValue = (value: number | string | null | undefined) => {
   const parsed = Number(value ?? 0);
@@ -57,7 +57,14 @@ export interface BranchBillRecord {
   tendered: number;
   balance: number;
   paymentMode: PayMode;
-  split?: { cash?: number; upi?: number; card?: number };
+  split?: { cash?: number; upi?: number; card?: number; wallet?: number };
+  walletId?: string;
+  walletNumber?: string;
+  walletTransactionId?: string;
+  walletBalanceRemaining?: number;
+  promotionDiscount?: number;
+  promotionIds?: string[];
+  walletCashback?: number;
   salesperson: string;
   biller: string;
   createdAt: string;
@@ -227,7 +234,7 @@ export interface ReturnRecord {
   branch: Branch;
   returnNo: string;
   originalBillNo: string;
-  originalPaymentMode?: "cash" | "upi" | "card" | "credit" | "credit_adjustment";
+  originalPaymentMode?: "cash" | "upi" | "card" | "credit" | "credit_adjustment" | "wallet";
   items: BranchBillItem[];
   total: number;
   returnedBy: string;
@@ -1454,7 +1461,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                   referenceNumber: bill.billNo,
                   remarks: bill.creditCustomerName || bill.salesperson,
                 }))
-            : bill.paymentMode === "split"
+            : bill.paymentMode === "split" || bill.paymentMode === "wallet"
               ? (
                   [
                     ["cash", bill.split?.cash ?? 0],
@@ -1470,7 +1477,7 @@ export const useBranchOpsStore = create<BranchOpsState>()(
                     amount,
                     paymentMode: mode,
                     direction: "in",
-                    purpose: "Bill collection - split",
+                    purpose: bill.paymentMode === "wallet" ? "Bill collection - wallet split" : "Bill collection - split",
                     enteredBy: bill.biller,
                     referenceNumber: bill.billNo,
                     remarks: bill.salesperson,
@@ -2160,17 +2167,40 @@ export const useBranchOpsStore = create<BranchOpsState>()(
 
         let ledgerResult: { creditAdjusted?: number; refundAmount?: number; refundMode?: string } | null = null;
         try {
-          let result = await supabase.rpc('process_branch_return_credit_safe', {
-            p_branch: ret.branch,
-            p_bill_no: ret.originalBillNo,
-            p_return_no: returnNo,
-            p_amount: ret.total,
-            p_payment_mode: requestedRefundMode,
-            p_returned_by: ret.returnedBy,
-            p_reason: ret.reason,
-            p_items: ret.items ?? [],
-          });
-          if (result.error && /process_branch_return_credit_safe|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
+          let result = requestedRefundMode === 'wallet'
+            ? await supabase.rpc('process_branch_wallet_return_v1', {
+                p_branch: ret.branch,
+                p_bill_no: ret.originalBillNo,
+                p_return_no: returnNo,
+                p_amount: ret.total,
+                p_returned_by: ret.returnedBy,
+                p_reason: ret.reason,
+                p_items: ret.items ?? [],
+                p_idempotency_key: `branch-wallet-refund:${ret.branch}:${returnNo}`,
+              })
+            : await supabase.rpc('process_branch_promotional_return_v1', {
+                p_branch: ret.branch,
+                p_bill_no: ret.originalBillNo,
+                p_return_no: returnNo,
+                p_amount: ret.total,
+                p_payment_mode: requestedRefundMode,
+                p_returned_by: ret.returnedBy,
+                p_reason: ret.reason,
+                p_items: ret.items ?? [],
+              });
+          if (requestedRefundMode !== 'wallet' && result.error && /process_branch_promotional_return_v1|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
+            result = await supabase.rpc('process_branch_return_credit_safe', {
+              p_branch: ret.branch,
+              p_bill_no: ret.originalBillNo,
+              p_return_no: returnNo,
+              p_amount: ret.total,
+              p_payment_mode: requestedRefundMode,
+              p_returned_by: ret.returnedBy,
+              p_reason: ret.reason,
+              p_items: ret.items ?? [],
+            });
+          }
+          if (requestedRefundMode !== 'wallet' && result.error && /process_branch_return_credit_safe|could not find the function|schema cache|does not exist/i.test(result.error.message ?? '')) {
             if (requestedRefundMode === 'credit_adjustment') {
               throw new Error('Credit-safe return workflow is not installed. Apply the latest branch return migration.');
             }

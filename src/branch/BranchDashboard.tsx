@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle, Banknote, Bell, Building2, CalendarClock, ClipboardCheck, CreditCard, FileClock,
   FileText, History, Landmark, Package, Receipt, RotateCcw, Settings, ShieldCheck,
-  Smartphone, Truck, UserRound, WalletCards,
+  Smartphone, Truck, UserRound, WalletCards, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -313,6 +313,16 @@ export default function BranchDashboard({ branch }: Props) {
       <div className="flex h-full min-h-0 flex-col p-1.5 sm:p-2">
         {tabStripExpanded && (
           <div className="mb-1.5 flex shrink-0 items-center gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 px-2 py-1.5 shadow-sm">
+            <button
+              type="button"
+              aria-label="Refresh branch data"
+              title="Refresh branch data"
+              onClick={() => void refreshAll()}
+              disabled={refreshing}
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] font-black text-white disabled:opacity-50"
+            >
+              <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} /> Refresh
+            </button>
             {tabs
               .filter((t) => (['bill', 'advance', 'returns', 'history', 'payment-edit', 'closure', 'alerts'] as TabId[]).includes(t.id))
               .map((t) => {

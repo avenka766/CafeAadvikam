@@ -62,17 +62,18 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
   const timeStr = printedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
 
   const totalQty = bill.items.reduce((s, i) => s + i.quantity, 0);
-  const payModeLabel = bill.paymentMode === 'split'
+  const payModeLabel = bill.paymentMode === 'split' || bill.paymentMode === 'wallet'
     ? (() => {
         const parts: string[] = [];
         if (bill.split?.cash) parts.push(`Cash ₹${Number(bill.split.cash).toFixed(2)}`);
         if (bill.split?.upi) parts.push(`UPI ₹${Number(bill.split.upi).toFixed(2)}`);
         if (bill.split?.card) parts.push(`Card ₹${Number(bill.split.card).toFixed(2)}`);
+        if (bill.split?.wallet) parts.unshift(`Wallet ₹${Number(bill.split.wallet).toFixed(2)}`);
         return parts.join(' + ');
       })()
     : bill.paymentMode.toUpperCase();
 
-  const customerNameLine = bill.paymentMode === 'credit' && bill.creditCustomerName
+  const customerNameLine = (bill.paymentMode === 'credit' || bill.paymentMode === 'wallet') && bill.creditCustomerName
     ? bill.creditCustomerName
     : '';
 
@@ -131,6 +132,8 @@ function printVrsnbReceiptBill(bill: BranchBillRecord, duplicate = false, target
     </div>
     <div class="grand"><span>Grand Total</span><span>&#x20B9;${bill.total.toFixed(2)}</span></div>
     <div class="paid-via">Paid via ${payModeLabel}</div>
+    ${bill.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${bill.walletTransactionId}</span></div><div class="row"><span>Wallet Balance</span><span>&#x20B9;${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}
+    ${Number(bill.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span>&#x20B9;${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}
     ${Number(bill.refundAmount || 0) > 0 ? `<div class="row bold"><span>Refunded via ${String(bill.refundMode || '').toUpperCase()}</span><span>&#x20B9;${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}
     <div class="dash"></div>
     <div class="footer">Thank You &amp; Visit Again...!!!</div>
@@ -151,7 +154,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
     gstin: '33AMTPR1760M1ZE',
   };
   const printedAt = new Date(bill.createdAt);
-  const paymentRows = bill.paymentMode === 'split' && bill.split
+  const paymentRows = (bill.paymentMode === 'split' || bill.paymentMode === 'wallet') && bill.split
     ? Object.entries(bill.split).filter(([, amount]) => Number(amount) > 0).map(([mode, amount]) => `<div class="pay"><span>${mode.toUpperCase()}</span><span>${Number(amount).toFixed(2)}</span></div>`).join('')
     : `<div class="pay"><span>${bill.paymentMode.toUpperCase()}</span><span>${(bill.paymentMode === 'credit' ? bill.tendered : bill.total).toFixed(2)}</span></div>`;
   const html = `<!doctype html><html><head><title>${title} ${bill.billNo}</title><style>
@@ -170,7 +173,7 @@ function printSnbCounterBill(bill: BranchBillRecord, duplicate = false, target?:
       <tr class="total-row"><td></td><td>Total</td><td class="num">${bill.items.reduce((s, i) => s + i.quantity, 0).toFixed(2)}</td><td></td><td class="num">${bill.subtotal.toFixed(2)}</td></tr>
     </tbody></table>
     <div class="summary"><div class="row"><span>${discountLabel(bill)} :</span><span>${bill.discount.toFixed(2)}</span></div><div class="row"><span>Additional Charges :</span><span>${Number(bill.additionalCharges || 0).toFixed(2)}</span></div><div class="row"><span>GST :</span><span>${bill.tax.toFixed(2)}</span></div><div class="row"><span>Amount Before Round-Off :</span><span>${(bill.amountBeforeRoundOff ?? Math.max(0, bill.subtotal + bill.tax - bill.discount)).toFixed(2)}</span></div><div class="row"><span>Round-Off :</span><span>${billRoundOff(bill) >= 0 ? '+' : ''}${billRoundOff(bill).toFixed(2)}</span></div><div class="row net"><span>Net Bill Amount :</span><span>Rs ${bill.total.toFixed(2)}</span></div></div>
-    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
+    <div class="paybox"><div class="paytitle">Payment Details</div>${paymentRows}${bill.walletTransactionId ? `<div class="pay"><span>WALLET BALANCE</span><span>${Number(bill.walletBalanceRemaining || 0).toFixed(2)}</span></div>` : ''}${Number(bill.walletCashback || 0) > 0 ? `<div class="pay"><span>WALLET CASHBACK</span><span>${Number(bill.walletCashback).toFixed(2)}</span></div>` : ''}${Number(bill.refundAmount || 0) > 0 ? `<div class="pay"><span>REFUND ${String(bill.refundMode || '').toUpperCase()}</span><span>-${Number(bill.refundAmount).toFixed(2)}</span></div>` : ''}</div>
     ${bill.paymentMode === 'credit' ? `<div class="dash"></div><div class="row"><span>Credit Customer</span><span>${bill.creditCustomerName || '-'}</span></div><div class="row"><span>Mobile</span><span>${bill.creditCustomerMobile || '-'}</span></div><div class="row"><span>Due Date</span><span>${bill.creditDueDate || '-'}</span></div><div class="row"><span>Credit Due</span><span>${bill.balance.toFixed(2)}</span></div>` : ''}
     <div class="c small">Salesperson : ${bill.salesperson}</div>
     <div class="footer">Thank you, Visit Again</div>
