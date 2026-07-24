@@ -15,6 +15,8 @@ import AdminCreditTab from '@/components/admin/AdminCreditTab';
 import AdminAdvanceTab from '@/components/admin/AdminAdvanceTab';
 import AttendanceSalary from '@/pages/AttendanceSalary';
 import AdminPlanningTab from '@/components/admin/AdminPlanningTab';
+import AdminWalletTab from '@/components/admin/AdminWalletTab';
+import AdminPromotionsTab from '@/components/admin/AdminPromotionsTab';
 import AdminInvoicesTab from '@/bakery/AdminInvoicesTab';
 import { useBranchLedger } from '@/hooks/useBranchLedger';
 import { useNotificationStore } from '@/bakery/notificationStore';
@@ -29,14 +31,14 @@ import {
   FileSpreadsheet, Filter, History, IndianRupee, Landmark, LayoutDashboard,
   Lock, Package, PackageSearch, Printer, RefreshCw, Search,
   ShieldCheck, ShoppingBag, Smartphone, Store, TrendingDown, TrendingUp,
-  Trash2, WalletCards, X,
+  Trash2, WalletCards, Gift, X,
 } from 'lucide-react';
 
 const CHART_COLORS = ['#2563eb', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2', '#ea580c'];
 const PAYMENT_COLORS = ['#16a34a', '#2563eb', '#7c3aed', '#f97316', '#dc2626'];
 
 // CHANGE 3: Removed 'stock-alerts' from AdminTab union
-type AdminTab = 'public-orders' | 'planning' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
+type AdminTab = 'public-orders' | 'planning' | 'wallet' | 'promotions' | 'overview' | 'cafe' | 'branches' | 'items' | 'daily-closure' | 'credits' | 'advance' | 'stock-disputes' | 'stock-variance' | 'waste' | 'audit' | 'invoices' | 'alerts' | 'complaints' | 'attendance';
 
 type SalesTxn = {
   id: string; branch: Branch; itemName: string; qty: number; revenue: number;
@@ -67,6 +69,8 @@ const PUBLIC_ORDER_STATUS_OPTIONS = [
 const NAV_ITEMS: Array<{ id: AdminTab; label: string; description: string; icon: ElementType; adminOnly?: boolean }> = [
   { id: 'public-orders', label: 'Online Orders', description: 'Paid landing-page orders from Razorpay', icon: Smartphone, adminOnly: true },
   { id: 'planning', label: 'Planning', description: 'Plan SNB and custom production items for Store', icon: ClipboardList, adminOnly: true },
+  { id: 'wallet', label: 'Wallet', description: 'Create prepaid wallets, credit balances and audit usage', icon: WalletCards, adminOnly: true },
+  { id: 'promotions', label: 'Promotions', description: 'Create, test, schedule and analyse promotional campaigns', icon: Gift, adminOnly: true },
   { id: 'overview', label: 'Dashboard Overview', description: 'Business KPIs, charts and reports', icon: LayoutDashboard },
   { id: 'cafe', label: 'Cafe Control', description: 'Cafe sales and payment split', icon: Store },
   { id: 'branches', label: 'Branch Sales', description: 'SNB, VRSNB and Hosur performance', icon: BarChart3 },
@@ -1525,6 +1529,8 @@ function AdminDashboard() {
   const activeContent: Record<AdminTab, ReactNode> = {
     'public-orders': PublicOrdersTab,
     planning: <AdminPlanningTab />,
+    wallet: <AdminWalletTab />,
+    promotions: <AdminPromotionsTab />,
     overview: OverviewTab,
     cafe: CafeTab,
     branches: BranchesTab,

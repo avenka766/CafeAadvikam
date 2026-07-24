@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useOrderStore } from '@/stores/orderStore';
 import { useShallow } from 'zustand/react/shallow'; // STORE-01 FIX: granular selectors
 import { useMenuStore } from '@/stores/menuStore';
@@ -26,6 +26,8 @@ import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate';
 import { useNotificationStore } from '@/bakery/notificationStore';
 import { useSearchParams } from 'react-router-dom';
+import WalletOffersPanel, { type WalletOtherMode } from '@/components/commerce/WalletOffersPanel';
+import type { PromotionCartLine, PromotionEvaluation, WalletCustomer } from '@/features/commerce/types';
 
 // -- Branch Credit Panel (Biller view - scope controlled by caller) -----------
 const ALL_BRANCHES: Branch[] = ['Cafe', 'VRSNB', 'SNB', 'Hosur'];
@@ -368,6 +370,7 @@ const PAYMENT_LABELS_PRINT: Record<string, string> = {
   part_payment: 'Split Payment',
   advance: 'Advance',
   credit: 'Credit',
+  wallet: 'Wallet',
   unpaid: 'Unpaid',
 };
 
@@ -473,6 +476,7 @@ function receiptTotals(order: Order, payable: number, extraRows = ''): string {
     <div class="row"><span></span><span>CGST@2.5 2.5%</span><span>${gst.cgst.toFixed(2)}</span></div>
     <div class="row"><span></span><span>SGST@2.5 2.5%</span><span>${gst.sgst.toFixed(2)}</span></div>
     ${parcelCharges > 0 ? `<div class="row"><span></span><span>Parcel</span><span>${parcelCharges.toFixed(2)}</span></div>` : ''}
+    ${Number(order.discount || 0) > 0 ? `<div class="row"><span></span><span>Promotion</span><span>-${Number(order.discount).toFixed(2)}</span></div>` : ''}
     ${extraRows}
     <div class="solid"></div>
     <div class="grand"><span>Grand Total</span><span>${moneyHtml(payable)}</span></div>
@@ -492,6 +496,8 @@ function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'origi
     <div class="row"><span>Cash</span><span class="b">${moneyHtml(order.paymentBreakdown.cash || 0)}</span></div>
     <div class="row"><span>UPI</span><span class="b">${moneyHtml(order.paymentBreakdown.upi || 0)}</span></div>
     <div class="row"><span>Card</span><span class="b">${moneyHtml(order.paymentBreakdown.card || 0)}</span></div>
+    ${Number(order.paymentBreakdown.wallet || 0) > 0 ? `<div class="row"><span>Wallet</span><span class="b">${moneyHtml(order.paymentBreakdown.wallet || 0)}</span></div>` : ''}
+    ${Number(order.paymentBreakdown.credit || 0) > 0 ? `<div class="row"><span>Credit</span><span class="b">${moneyHtml(order.paymentBreakdown.credit || 0)}</span></div>` : ''}
   ` : '';
   const dt = receiptDate(order.createdAt);
   printCounterSlip(`Bill ${order.orderNumber}`, `
@@ -508,6 +514,9 @@ function printPaidBill(order: Order, copyType: 'original' | 'duplicate' = 'origi
     ${receiptTotals(order, order.total)}
     <div>Paid via ${safeHtml(paidBy)}</div>
     ${breakdownRows}
+    ${order.walletTransactionId ? `<div class="row"><span>Wallet Txn</span><span>${safeHtml(order.walletTransactionId)}</span></div>` : ''}
+    ${order.walletBalanceRemaining !== undefined ? `<div class="row"><span>Wallet Balance</span><span class="b">${moneyHtml(order.walletBalanceRemaining)}</span></div>` : ''}
+    ${Number(order.walletCashback || 0) > 0 ? `<div class="row"><span>Wallet Cashback</span><span class="b">${moneyHtml(order.walletCashback || 0)}</span></div>` : ''}
     <div class="solid"></div>
     <div class="thanks">Thank You & Visit Again...!!!</div>
   `);
@@ -594,8 +603,13 @@ function printCreditBill(order: Order, phone: string, dueDate: string) {
 
 type SourceFilter = 'all' | 'staff' | 'qr';
 type DirectPaymentMethod = 'cash' | 'upi' | 'card';
-type BillPaymentMethod = DirectPaymentMethod | 'part_payment';
+type BillPaymentMethod = DirectPaymentMethod | 'part_payment' | 'wallet';
 type SplitPaymentInputs = Record<DirectPaymentMethod, string>;
+
+const EMPTY_CAFE_PROMOTION: PromotionEvaluation = {
+  originalSubtotal: 0, eligibleSubtotal: 0, discount: 0, payableSubtotal: 0, cashback: 0,
+  applied: [], eligible: [], nearThreshold: null, excludedLines: [], reasons: [],
+};
 
 // -- Advance Order Card --------------------------------------------------------
 function AdvanceOrderCard({ order }: { order: Order }) {
@@ -1440,7 +1454,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
 function NewBillPanel() {
   const { items, loadMenu } = useMenuStore();
-  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder } = useOrderStore(
+  const { cart, addToCart, updateCartQuantity, clearCart, getCartTotal, getCartCount, submitOrder, loadOrders } = useOrderStore(
     useShallow(s => ({
       cart: s.cart,
       addToCart: s.addToCart,
@@ -1449,6 +1463,7 @@ function NewBillPanel() {
       getCartTotal: s.getCartTotal,
       getCartCount: s.getCartCount,
       submitOrder: s.submitOrder,
+      loadOrders: s.loadOrders,
     }))
   );
   const { currentUser } = useAuthStore();
@@ -1470,7 +1485,14 @@ function NewBillPanel() {
   const [splitPayment, setSplitPayment] = useState<SplitPaymentInputs>({ cash: '', upi: '', card: '' });
 
   // Credit sale state
-  const [paymentMode, setPaymentMode] = useState<'regular' | 'credit'>('regular');
+  const [paymentMode, setPaymentMode] = useState<'regular' | 'credit' | 'wallet'>('regular');
+  const [selectedWallet, setSelectedWallet] = useState<WalletCustomer | null>(null);
+  const [walletAmount, setWalletAmount] = useState(0);
+  const [walletOtherMode, setWalletOtherMode] = useState<WalletOtherMode>(null);
+  const [walletAuthorizationSecret, setWalletAuthorizationSecret] = useState('');
+  const [promotionEvaluation, setPromotionEvaluation] = useState<PromotionEvaluation>(EMPTY_CAFE_PROMOTION);
+  const [couponCode, setCouponCode] = useState('');
+  const checkoutIdempotencyRef = useRef<string | null>(null);
   const [creditCustomerPhone, setCreditCustomerPhone] = useState('');
   const [creditDueDate, setCreditDueDate] = useState('');
   const [creditError, setCreditError] = useState('');
@@ -1495,6 +1517,38 @@ function NewBillPanel() {
     return filtered;
   }, [enabledItems, selectedCategory, search]);
 
+  const promotionLines = useMemo<PromotionCartLine[]>(() => {
+    const selected = new Set(cart.map((line) => line.menuItem.id));
+    const cartLines = cart.map((line) => ({
+      id: line.menuItem.id,
+      name: line.menuItem.name,
+      category: line.menuItem.category,
+      quantity: line.quantity,
+      unitPrice: line.menuItem.price,
+      inStock: true,
+    }));
+    const customLines = customItems.map((line) => ({
+      id: line.id,
+      name: line.name,
+      category: 'custom',
+      quantity: line.qty,
+      unitPrice: line.price,
+      inStock: true,
+      isCustom: true,
+    }));
+    const suggestions = enabledItems.filter((item) => !selected.has(item.id)).map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      quantity: 0,
+      unitPrice: item.price,
+      inStock: true,
+    }));
+    return [...cartLines, ...customLines, ...suggestions];
+  }, [cart, customItems, enabledItems]);
+  const handlePromotionChange = useCallback((evaluation: PromotionEvaluation) => setPromotionEvaluation(evaluation), []);
+  const handleCouponChange = useCallback((value: string) => setCouponCode(value), []);
+
   const menuTotal     = getCartTotal();
   const customTotal   = customItems.reduce((s, c) => s + c.price * c.qty, 0);
   const itemsSubtotal = menuTotal + customTotal;
@@ -1503,7 +1557,10 @@ function NewBillPanel() {
   const totalItemQty  = cart.reduce((s, c) => s + c.quantity, 0)
                       + customItems.reduce((s, c) => s + c.qty, 0);
   const parcelCharges = orderType === 'takeaway' ? totalItemQty * PARCEL_CHARGE_PER_ITEM : 0;
-  const total         = itemsSubtotal + parcelCharges;
+  const promotionDiscount = paymentMode === 'credit' ? 0 : Math.min(itemsSubtotal, Number(promotionEvaluation.discount || 0));
+  const grossTotal = itemsSubtotal + parcelCharges;
+  const total = Math.max(0, grossTotal - promotionDiscount);
+  const walletRemainder = Math.max(0, total - walletAmount);
   const cartCount     = getCartCount();
   const allEmpty      = cartCount === 0 && customItems.length === 0;
   const getQty = (id: string) => cart.find(c => c.menuItem.id === id)?.quantity ?? 0;
@@ -1547,6 +1604,7 @@ function NewBillPanel() {
     }
     setTableError(false);
     setSubmitError('');
+    setBillMethod(paymentMode === 'wallet' ? 'wallet' : billMethod === 'wallet' ? 'cash' : billMethod);
     setShowBillModal(true);
   };
 
@@ -1647,7 +1705,131 @@ function NewBillPanel() {
       return;
     }
 
-    // -- Regular order path ----------------------------------------------------
+    // -- Wallet / regular promotion-aware order path ---------------------------
+    const checkoutItems = [
+      ...cart,
+      ...customItems.map((ci) => ({
+        menuItem: { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true },
+        quantity: ci.qty,
+      })),
+    ];
+
+    if (paymentMode === 'wallet') {
+      if (!selectedWallet) { setSubmitError('Select a wallet customer.'); return; }
+      if (selectedWallet.status !== 'active') { setSubmitError('The selected wallet is not active.'); return; }
+      if (walletAmount <= 0) { setSubmitError('Enter the wallet amount to use.'); return; }
+      if (walletAmount > selectedWallet.totalBalance) { setSubmitError(`Wallet has only ${formatCurrency(selectedWallet.totalBalance)} available.`); return; }
+      if (walletAmount > total) { setSubmitError('Wallet amount cannot exceed the bill total.'); return; }
+      if (walletRemainder > 0 && !walletOtherMode) { setSubmitError('Select a payment mode for the remaining amount.'); return; }
+      if (walletRemainder > 0 && walletOtherMode === 'credit' && !creditDueDate) { setSubmitError('Due date is required for Wallet + Credit.'); return; }
+      if (selectedWallet.highValueAuthorizationLimit != null && selectedWallet.highValueAuthorizationLimit > 0 && walletAmount >= selectedWallet.highValueAuthorizationLimit && !walletAuthorizationSecret.trim()) { setSubmitError('Admin or Owner authorization is required for this high-value wallet payment.'); return; }
+      setSubmitting(true);
+      setSubmitError('');
+      const idempotencyKey = checkoutIdempotencyRef.current
+        ?? `cafe-wallet:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+      checkoutIdempotencyRef.current = idempotencyKey;
+      try {
+        const billedBy = currentUser.displayName || currentUser.username;
+        const { data, error } = await supabase.rpc('complete_cafe_wallet_checkout_v1', {
+          p_items: checkoutItems,
+          p_table_number: orderType === 'dine_in' ? tableNumber : null,
+          p_order_type: orderType,
+          p_notes: notes || null,
+          p_customer_name: selectedWallet.customerName,
+          p_biller: billedBy,
+          p_parcel_charges: parcelCharges,
+          p_wallet_id: selectedWallet.id,
+          p_wallet_amount: walletAmount,
+          p_other_mode: walletOtherMode,
+          p_idempotency_key: idempotencyKey,
+          p_coupon_code: couponCode || null,
+          p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+          p_wallet_authorization_secret: walletAuthorizationSecret || null,
+        });
+        if (error) throw new Error(error.message);
+        const result = data as {
+          orderId: string; orderNumber: number; subtotal: number; discount: number; total: number;
+          walletTransactionId?: string; walletBalanceRemaining?: number | string; cashback?: number;
+          promotionIds?: string[]; items: Order['items']; otherAmount?: number;
+        };
+        if (!result?.orderId || !result.orderNumber) throw new Error('Wallet checkout completed without an order number.');
+
+        if (walletOtherMode === 'credit' && walletRemainder > 0) {
+          const { recordCreditSale } = useBranchStore.getState();
+          const creditItems = result.items.map((line) => ({
+            itemName: line.menuItem.name,
+            quantity: line.quantity,
+            sellUnit: 'pcs' as const,
+            price: line.menuItem.price,
+            lineTotal: line.menuItem.price * line.quantity,
+          }));
+          const creditErrorMessage = await recordCreditSale('Cafe', {
+            billNo: `WALLET-Cafe-${result.orderNumber}`,
+            branch: 'Cafe',
+            customerName: selectedWallet.customerName,
+            customerPhone: selectedWallet.mobile,
+            items: creditItems,
+            subtotal: Number(result.total),
+            amountPaid: walletAmount,
+            creditAmount: walletRemainder,
+            dueDate: creditDueDate,
+            soldBy: billedBy,
+            notes: notes || undefined,
+          });
+          if (creditErrorMessage) throw new Error(creditErrorMessage);
+        }
+
+        await loadOrders(60);
+        const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
+        const printable: Order = loaded ?? {
+          id: result.orderId,
+          orderNumber: result.orderNumber,
+          tableNumber: orderType === 'dine_in' ? tableNumber ?? undefined : undefined,
+          orderType,
+          items: result.items,
+          subtotal: Number(result.subtotal),
+          discount: Number(result.discount || 0),
+          discountType: 'flat',
+          discountValue: Number(result.discount || 0),
+          total: Number(result.total),
+          status: 'served',
+          createdBy: currentUser.username,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          notes: notes || undefined,
+          customerName: selectedWallet.customerName,
+          paymentType: walletRemainder <= 0 ? 'wallet' : 'part_payment',
+          paymentBreakdown: { cash: walletOtherMode === 'cash' ? walletRemainder : 0, upi: walletOtherMode === 'upi' ? walletRemainder : 0, card: walletOtherMode === 'card' ? walletRemainder : 0, wallet: walletAmount, credit: walletOtherMode === 'credit' ? walletRemainder : 0 },
+          billedBy,
+          orderSource: 'staff',
+          parcelCharges: parcelCharges || undefined,
+          walletId: selectedWallet.id,
+          walletAmount,
+          walletTransactionId: result.walletTransactionId,
+          walletBalanceRemaining: Number(result.walletBalanceRemaining || 0),
+          promotionDiscount: Number(result.discount || 0),
+          promotionIds: result.promotionIds || [],
+          walletCashback: Number(result.cashback || 0),
+        };
+        printPaidBill({ ...printable, walletBalanceRemaining: Number(result.walletBalanceRemaining || printable.walletBalanceRemaining || 0) }, 'original');
+        checkoutIdempotencyRef.current = null;
+        clearCart();
+        setShowBillModal(false);
+        setShowSuccess(true);
+        setNotes(''); setCustomerName(''); setTableNumber(null);
+        setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
+        setSelectedWallet(null); setWalletAmount(0); setWalletOtherMode(null); setWalletAuthorizationSecret(''); setCouponCode('');
+        setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' });
+        setCreditDueDate(''); setPaymentMode('regular');
+        setTimeout(() => setShowSuccess(false), 2200);
+      } catch (err) {
+        setSubmitError(err instanceof Error ? err.message : 'Wallet checkout failed.');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     const paymentBreakdown = billMethod === 'part_payment' ? splitBreakdown : undefined;
     if (paymentBreakdown) {
       const values = Object.values(paymentBreakdown);
@@ -1665,43 +1847,72 @@ function NewBillPanel() {
       }
     }
     setSubmitting(true);
-
     setSubmitError('');
+    const idempotencyKey = checkoutIdempotencyRef.current
+      ?? `cafe-promotion:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+    checkoutIdempotencyRef.current = idempotencyKey;
     try {
-      for (const ci of customItems) {
-        const syntheticItem = { id: ci.id, name: ci.name, price: ci.price, category: 'custom', timing: 'all', enabled: true };
-        for (let i = 0; i < ci.qty; i++) addToCart(syntheticItem);
-      }
-      await new Promise(r => setTimeout(r, 0));
       const billedBy = currentUser.displayName || currentUser.username;
-      const orderId = await submitOrder({
-        tableNumber: orderType === 'dine_in' ? (tableNumber ?? undefined) : undefined,
+      const { data, error } = await supabase.rpc('complete_cafe_promotional_checkout_v1', {
+        p_items: checkoutItems,
+        p_table_number: orderType === 'dine_in' ? tableNumber : null,
+        p_order_type: orderType,
+        p_notes: notes || null,
+        p_customer_name: customerName || null,
+        p_biller: billedBy,
+        p_parcel_charges: parcelCharges,
+        p_payment_type: billMethod,
+        p_payment_breakdown: paymentBreakdown || null,
+        p_coupon_code: couponCode || null,
+        p_idempotency_key: idempotencyKey,
+        p_selected_campaign_ids: promotionEvaluation.applied.map((item) => item.campaignId),
+      });
+      if (error) throw new Error(error.message);
+      const result = data as { orderId: string; orderNumber: number; subtotal: number; discount: number; total: number; cashback?: number; promotionIds?: string[]; items: Order['items'] };
+      if (!result?.orderId || !result.orderNumber) throw new Error('Checkout completed without an order number.');
+      await loadOrders(60);
+      const loaded = useOrderStore.getState().orders.find((order) => order.id === result.orderId);
+      const printable: Order = loaded ?? {
+        id: result.orderId,
+        orderNumber: result.orderNumber,
+        tableNumber: orderType === 'dine_in' ? tableNumber ?? undefined : undefined,
         orderType,
+        items: result.items,
+        subtotal: Number(result.subtotal),
+        discount: Number(result.discount || 0),
+        discountType: 'flat',
+        discountValue: Number(result.discount || 0),
+        total: Number(result.total),
+        status: 'served',
+        createdBy: currentUser.username,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         notes: notes || undefined,
         customerName: customerName || undefined,
-        createdBy: currentUser.username,
-        orderSource: 'staff',
-        parcelCharges: parcelCharges > 0 ? parcelCharges : undefined,
         paymentType: billMethod,
         paymentBreakdown,
         billedBy,
-        status: 'served',
-      });
-      const savedOrder = useOrderStore.getState().orders.find(o => o.id === orderId);
-      if (savedOrder) printPaidBill(savedOrder, 'original');
+        orderSource: 'staff',
+        parcelCharges: parcelCharges || undefined,
+        promotionDiscount: Number(result.discount || 0),
+        promotionIds: result.promotionIds || [],
+        walletCashback: Number(result.cashback || 0),
+      };
+      printPaidBill(printable, 'original');
+      checkoutIdempotencyRef.current = null;
+      clearCart();
       setShowBillModal(false);
       setShowSuccess(true);
       setNotes(''); setCustomerName(''); setTableNumber(null);
       setCustomItems([]); setCustomName(''); setCustomPrice(''); setCustomQty('1');
-      setBillMethod('cash');
-      setSplitPayment({ cash: '', upi: '', card: '' });
+      setBillMethod('cash'); setSplitPayment({ cash: '', upi: '', card: '' }); setCouponCode('');
       setTimeout(() => setShowSuccess(false), 2200);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to submit order - please try again.';
-      setSubmitError(msg);
+      setSubmitError(err instanceof Error ? err.message : 'Failed to submit order - please try again.');
     } finally {
       setSubmitting(false);
     }
+
   };
 
   if (showSuccess) {
@@ -1754,26 +1965,34 @@ function NewBillPanel() {
           <div className="p-5 space-y-4">
             <div className="rounded-2xl border border-border bg-muted/30 p-4 space-y-2">
               <div className="flex justify-between text-sm"><span>Items</span><span className="font-black">{totalItemQty}</span></div>
+              {promotionDiscount > 0 && <div className="flex justify-between text-sm text-emerald-700"><span>Promotion</span><span className="font-black">-{formatCurrency(promotionDiscount)}</span></div>}
               {parcelCharges > 0 && <div className="flex justify-between text-sm text-amber-700"><span>Parcel charges</span><span className="font-black">{formatCurrency(parcelCharges)}</span></div>}
               <div className="flex justify-between items-center pt-2 border-t border-border"><span className="font-bold">Payable</span><span className="font-display text-3xl font-black tabular-nums">{formatCurrency(total)}</span></div>
             </div>
             <div>
               <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Payment mode</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {([
-                  { key: 'cash' as const, label: 'Cash', icon: <Banknote className="size-5" /> },
-                  { key: 'upi' as const, label: 'UPI', icon: <Smartphone className="size-5" /> },
-                  { key: 'card' as const, label: 'Card', icon: <CreditCard className="size-5" /> },
-                  { key: 'part_payment' as const, label: 'Part', icon: <Wallet className="size-5" /> },
-                ]).map(m => (
-                  <button key={m.key} type="button" onClick={() => { setBillMethod(m.key); setSubmitError(''); }}
-                    className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
-                      billMethod === m.key ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
-                    {m.icon}
-                    {m.label}
-                  </button>
-                ))}
-              </div>
+              {paymentMode === 'wallet' ? (
+                <div className="rounded-2xl border-2 border-emerald-500 bg-emerald-50 p-4 text-emerald-800">
+                  <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2 font-black"><Wallet className="size-5" />Customer Wallet</span><span className="font-black">{formatCurrency(walletAmount)}</span></div>
+                  <div className="mt-2 flex justify-between text-xs font-bold"><span>{selectedWallet?.customerName || 'No wallet selected'}</span><span>Other {formatCurrency(walletRemainder)}</span></div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {([
+                    { key: 'cash' as const, label: 'Cash', icon: <Banknote className="size-5" /> },
+                    { key: 'upi' as const, label: 'UPI', icon: <Smartphone className="size-5" /> },
+                    { key: 'card' as const, label: 'Card', icon: <CreditCard className="size-5" /> },
+                    { key: 'part_payment' as const, label: 'Part', icon: <Wallet className="size-5" /> },
+                  ]).map(m => (
+                    <button key={m.key} type="button" onClick={() => { setBillMethod(m.key); setSubmitError(''); }}
+                      className={cn('rounded-2xl border-2 py-4 text-sm font-black flex flex-col items-center gap-1.5 active:scale-95 transition-all',
+                        billMethod === m.key ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-border bg-card text-muted-foreground')}>
+                      {m.icon}
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             {billMethod === 'part_payment' && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-3">
@@ -2091,20 +2310,49 @@ function NewBillPanel() {
               </button>
             </div>
 
-            {/* -- Payment Mode: Regular vs Credit -- */}
-            <div className="flex gap-2">
-              <button onClick={() => { setPaymentMode('regular'); setCreditError(''); }}
-                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+            {/* -- Payment Mode -- */}
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => { setPaymentMode('regular'); setBillMethod('cash'); setCreditError(''); }}
+                className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
                   paymentMode === 'regular' ? 'text-primary-foreground shadow-teal' : 'bg-card border border-border text-foreground')}
                 style={paymentMode === 'regular' ? { background: 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))' } : {}}>
                 <Banknote className="size-3.5" />Regular
               </button>
-              <button onClick={() => { setPaymentMode('credit'); setCreditError(''); }}
-                className={cn('flex-1 py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+              <button onClick={() => { setPaymentMode('wallet'); setBillMethod('wallet'); setCreditError(''); }}
+                className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
+                  paymentMode === 'wallet' ? 'bg-emerald-700 text-white shadow-md' : 'bg-emerald-50 border border-emerald-200 text-emerald-800')}>
+                <Wallet className="size-3.5" />Wallet
+              </button>
+              <button onClick={() => { setPaymentMode('credit'); setBillMethod('cash'); setCreditError(''); }}
+                className={cn('py-2.5 rounded-xl text-sm font-body font-semibold transition-all active:scale-95 flex items-center justify-center gap-1.5',
                   paymentMode === 'credit' ? 'bg-red-600 text-white shadow-md' : 'bg-red-50 border border-red-200 text-red-700')}>
                 <CreditCard className="size-3.5" />Credit
               </button>
             </div>
+
+            <WalletOffersPanel
+              branch="Cafe"
+              lines={promotionLines}
+              packagingCharges={parcelCharges}
+              walletEnabled={paymentMode === 'wallet'}
+              walletAmount={walletAmount}
+              otherMode={walletOtherMode}
+              selectedWallet={selectedWallet}
+              authorizationSecret={walletAuthorizationSecret}
+              onAuthorizationSecretChange={setWalletAuthorizationSecret}
+              onWalletChange={setSelectedWallet}
+              onWalletAmountChange={setWalletAmount}
+              onOtherModeChange={setWalletOtherMode}
+              onPromotionChange={handlePromotionChange}
+              onCouponChange={handleCouponChange}
+              compact
+            />
+            {paymentMode === 'wallet' && walletOtherMode === 'credit' && walletRemainder > 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                <label className="text-[10px] font-black uppercase tracking-widest text-amber-800">Wallet + Credit due date</label>
+                <input type="date" min={businessDate()} value={creditDueDate} onChange={(event) => setCreditDueDate(event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2.5 text-sm" />
+              </div>
+            )}
 
             {/* -- Credit sale form (shown only when Credit mode is active) -- */}
             {paymentMode === 'credit' && (
@@ -2205,6 +2453,11 @@ function NewBillPanel() {
                   </div>
                 </div>
               )}
+              {promotionDiscount > 0 && (
+                <div className="flex justify-between text-xs font-body text-emerald-700 bg-emerald-50 px-2 py-1.5 rounded-lg border border-emerald-200">
+                  <span>Promotion discount</span><span className="tabular-nums font-bold">-{formatCurrency(promotionDiscount)}</span>
+                </div>
+              )}
               {parcelCharges > 0 && (
                 <div className="flex justify-between text-xs font-body text-amber-600 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-200">
                   <span className="flex items-center gap-1">Parcel ({totalItemQty} x Rs 10)</span>
@@ -2224,14 +2477,18 @@ function NewBillPanel() {
                 style={{
                   background: paymentMode === 'credit'
                     ? 'linear-gradient(135deg,#dc2626,#b91c1c)'
-                    : 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))',
+                    : paymentMode === 'wallet'
+                      ? 'linear-gradient(135deg,#047857,#065f46)'
+                      : 'linear-gradient(135deg,hsl(164 52% 28%),hsl(164 52% 20%))',
                   boxShadow: paymentMode === 'credit'
                     ? '0 4px 16px rgba(220,38,38,0.35)'
                     : undefined,
                 }}>
                 {paymentMode === 'credit'
                   ? <><CreditCard className="size-4" />{submitting ? 'Recording...' : 'Record Credit Sale'}</>
-                  : <><Receipt className="size-4" />{submitting ? 'Creating...' : 'Create Bill'}</>
+                  : paymentMode === 'wallet'
+                    ? <><Wallet className="size-4" />{submitting ? 'Processing...' : 'Pay with Wallet'}</>
+                    : <><Receipt className="size-4" />{submitting ? 'Creating...' : 'Create Bill'}</>
                 }
               </button>
             </div>
