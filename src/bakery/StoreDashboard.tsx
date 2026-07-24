@@ -72,7 +72,26 @@ function matForItem(item: BakeryOrder['items'][number]) {
       : (item.originalPcs ?? item.quantity)
     : item.quantity;
   const unit = item.dispatchUnit === 'pcs' && !recipeUsesWeight ? 'pcs' : 'kg';
-  return recipeStore.calculateMaterials(item.itemId, item.itemName, quantity, unit);
+  const materials = recipeStore.calculateMaterials(item.itemId, item.itemName, quantity, unit);
+
+  return materials.map((material, index) => {
+    if (!/^eggs?$/i.test(material.material.trim())) return material;
+
+    const recipeMaterial = recipe?.materials[index];
+    const embeddedCount = recipeMaterial?.unit.match(/(\d+(?:\.\d+)?)\s*eggs?/i);
+    const countUnit = /^(nos?|pcs?|pieces?|eggs?)$/i.test(material.unit.trim()) || Boolean(embeddedCount);
+    if (!countUnit) return material;
+
+    const scaledCount = embeddedCount && recipeMaterial?.qty
+      ? Number(embeddedCount[1]) * (material.quantity / recipeMaterial.qty)
+      : material.quantity;
+    const base = Math.floor(scaledCount);
+    const wholeEggs = scaledCount > 0
+      ? Math.max(1, base + (scaledCount - base > 0.4 ? 1 : 0))
+      : 0;
+
+    return { ...material, quantity: wholeEggs, unit: 'nos' };
+  });
 }
 
 function recipeIssueForItem(item: BakeryOrder['items'][number]): string | null {
