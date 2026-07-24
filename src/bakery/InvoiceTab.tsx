@@ -233,10 +233,11 @@ function CreateInvoiceModal({
 }) {
   const { suppliers, loaded: suppLoaded, load: loadSuppliers } = useSupplierStore();
   const { createInvoice, updateInvoice } = useInvoiceStore();
-  const { items: stockItems, addItem, updateItem } = useStoreStockStore();
+  const { items: stockItems, loaded: stockLoaded, load: loadStock, addItem, updateItem } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
   useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
+  useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
   const [supplierId, setSupplierId]   = useState(editingInvoice?.supplierId ?? '');
   const [deliveryDate, setDeliveryDate] = useState(editingInvoice?.deliveryDate ?? businessDate());
@@ -253,6 +254,16 @@ function CreateInvoiceModal({
   };
 
   const selectedSupplier = suppliers.find(s => s.id === supplierId);
+  const invoiceItemSuggestions = (query: string) => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const liveMatches = stockItems
+      .filter(item => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery))
+      .map(item => item.name);
+    const masterMatches = searchItems(query).map(item => item.item);
+    return Array.from(new Map(
+      [...liveMatches, ...masterMatches].map(name => [name.trim().toLowerCase(), name] as const),
+    ).values()).slice(0, 100);
+  };
 
   const UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
     { value: 'kg', label: 'KG' },
@@ -422,7 +433,9 @@ function CreateInvoiceModal({
                       className="w-full h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
                     />
                     <datalist id={`suggestions-${idx}`}>
-                      {searchItems(li.itemName).map(s => <option key={s.item} value={s.item} />)}
+                      {invoiceItemSuggestions(li.itemName).map(itemName => (
+                        <option key={itemName.toLowerCase()} value={itemName} />
+                      ))}
                     </datalist>
                   </div>
                   {lines.length > 1 && (

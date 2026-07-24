@@ -152,9 +152,9 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
   },
 
   createInvoice: async (data) => {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
-    const invoiceNumber = `INV-${dateStr}-${rand}`;
+    // The database trigger replaces this collision-safe placeholder with VRSNB-N.
+    const invoiceNumber = `VRSNB-PENDING-${rand}`;
 
     const { data: inserted, error } = await supabase
       .from('store_invoices')
