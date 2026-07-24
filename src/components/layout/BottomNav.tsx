@@ -184,6 +184,16 @@ export default function BottomNav() {
         icon: <LayoutDashboard className="size-5" />,
         path: "/admin-dashboard",
       },
+      {
+        label: "Wallet",
+        icon: <WalletCards className="size-5" />,
+        path: "/admin-dashboard?tab=wallet",
+      },
+      {
+        label: "Promotions",
+        icon: <BarChart3 className="size-5" />,
+        path: "/admin-dashboard?tab=promotions",
+      },
       { label: "QR", icon: <QrCode className="size-5" />, path: "/qr-menu" },
       {
         label: "Attendance",
