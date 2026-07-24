@@ -39,7 +39,7 @@ interface InvoiceState {
   loading: boolean;
   error: string | null;
   load: () => Promise<string | null>;
-  createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>) => Promise<{ id: string; invoiceNumber: string } | null>;
+  createInvoice: (data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt'>) => Promise<{ invoice: { id: string; invoiceNumber: string; syncedToStock: boolean } | null; error: string | null }>;
   updateInvoice: (id: string, data: Omit<StoreInvoice, 'id' | 'invoiceNumber' | 'status' | 'createdAt' | 'editedAt' | 'editCount'>) => Promise<string | null>;
   updateStatus: (id: string, status: InvoiceStatus, reviewNote?: string) => Promise<string | null>;
   deleteInvoice: (id: string) => Promise<void>;
@@ -77,6 +77,33 @@ function mapStatus(value: unknown): InvoiceStatus {
 function isMissingRpcError(error: { message?: string; code?: string } | null): boolean {
   if (!error) return false;
   return error.code === 'PGRST202' || /could not find the function|schema cache|does not exist/i.test(error.message ?? '');
+}
+
+function friendlyInvoiceWriteError(error: { message?: string; code?: string } | null, action: 'create' | 'update'): string {
+  const message = error?.message ?? '';
+  if (/SESSION_REQUIRED/i.test(message) || error?.code === '28000') return 'Your session has expired. Please log in again and retry.';
+  if (/ROLE_NOT_ALLOWED/i.test(message) || error?.code === '42501') return 'You do not have permission to save store invoices.';
+  if (/INVOICE_ALREADY_REVIEWED/i.test(message)) return 'This invoice was already reviewed and can no longer be edited.';
+  if (/INVOICE_NOT_FOUND/i.test(message)) return 'The invoice could not be found. Refresh the invoice list and try again.';
+  if (/SUPPLIER_NOT_FOUND/i.test(message)) return 'The selected supplier is no longer active. Choose another supplier.';
+  if (/INVALID_DELIVERY_DATE/i.test(message)) return 'Delivery date can only be today or yesterday.';
+  if (/DUPLICATE_INVOICE_ITEM/i.test(message)) return 'The same item cannot appear more than once in an invoice.';
+  if (/INVALID_INVOICE_ITEM|INVALID_INVOICE_LINES/i.test(message)) return 'One or more invoice items contain an invalid name, quantity, unit or rate.';
+  if (/STOCK_UNIT_MISMATCH:([^\n]+)/i.test(message)) {
+    const item = message.match(/STOCK_UNIT_MISMATCH:([^\n]+)/i)?.[1]?.trim();
+    return `The unit for ${item || 'an item'} does not match its inventory unit. Correct the unit and retry.`;
+  }
+  if (/STOCK_ITEM_NOT_FOUND:([^\n]+)/i.test(message)) {
+    const item = message.match(/STOCK_ITEM_NOT_FOUND:([^\n]+)/i)?.[1]?.trim();
+    return `Inventory could not be adjusted because ${item || 'an original item'} is missing from stock.`;
+  }
+  if (/INSUFFICIENT_STOCK_FOR_INVOICE_EDIT:([^\n]+)/i.test(message)) {
+    const item = message.match(/INSUFFICIENT_STOCK_FOR_INVOICE_EDIT:([^\n]+)/i)?.[1]?.trim();
+    return `The invoice cannot be reduced because some of ${item || 'the item'} has already been consumed. Correct the inventory first, then retry.`;
+  }
+  if (/GRAND_TOTAL_MISMATCH/i.test(message)) return 'The invoice total changed while saving. Review the item quantities and rates, then retry.';
+  if (/notes.*not-null|null value in column "notes"/i.test(message)) return 'The invoice notes could not be saved. Refresh the page and retry.';
+  return message || `Unable to ${action} the invoice. Please try again.`;
 }
 
 export function mapInvoiceRow(r: Record<string, unknown>): StoreInvoice {
@@ -153,45 +180,65 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
 
   createInvoice: async (data) => {
     const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase();
-    // The database trigger replaces this collision-safe placeholder with VRSNB-N.
     const invoiceNumber = `VRSNB-PENDING-${rand}`;
+    const notes = data.notes.trim();
 
-    const { data: inserted, error } = await supabase
-      .from('store_invoices')
-      .insert({
-        invoice_number: invoiceNumber,
-        supplier_id: data.supplierId,
-        supplier_name: data.supplierName,
-        delivery_date: data.deliveryDate,
-        line_items: data.lineItems,
-        grand_total: data.grandTotal,
-        status: 'pending_review',
-        notes: data.notes,
-        synced_to_stock: data.syncedToStock,
-      })
-      .select('id, invoice_number')
-      .single();
+    const secureResult = await supabase.rpc('create_store_invoice_secure', {
+      p_invoice_number: invoiceNumber,
+      p_supplier_id: data.supplierId,
+      p_supplier_name: data.supplierName,
+      p_delivery_date: data.deliveryDate,
+      p_line_items: data.lineItems,
+      p_grand_total: data.grandTotal,
+      p_notes: notes,
+    });
 
-    if (error) return null;
-    await get().load();
-    return { id: inserted.id, invoiceNumber: inserted.invoice_number };
+    if (!secureResult.error && secureResult.data) {
+      const row = secureResult.data as unknown as Record<string, unknown>;
+      await get().load();
+      return {
+        invoice: {
+          id: String(row.id ?? ''),
+          invoiceNumber: String(row.invoice_number ?? invoiceNumber),
+          syncedToStock: Boolean(row.synced_to_stock),
+        },
+        error: null,
+      };
+    }
+
+    if (isMissingRpcError(secureResult.error)) {
+      return {
+        invoice: null,
+        error: 'The secure invoice workflow is not installed in the database. Apply the latest Supabase migration before creating an invoice.',
+      };
+    }
+
+    return { invoice: null, error: friendlyInvoiceWriteError(secureResult.error, 'create') };
   },
 
   updateInvoice: async (id, data) => {
-    const editedAt = new Date().toISOString();
-    const { error } = await supabase.rpc('update_store_invoice_secure', {
+    const notes = data.notes.trim();
+    const result = await supabase.rpc('update_store_invoice_secure', {
       p_invoice_id: id,
       p_supplier_id: data.supplierId,
       p_supplier_name: data.supplierName,
       p_delivery_date: data.deliveryDate,
       p_line_items: data.lineItems,
       p_grand_total: data.grandTotal,
-      p_notes: data.notes || null,
+      p_notes: notes,
     });
 
-    // Fallback: direct update if RPC not deployed yet
-    if (error && isMissingRpcError(error)) {
-      const { error: directErr } = await supabase
+    if (result.error && isMissingRpcError(result.error)) {
+      // A direct edit is safe only when stock has never been synchronized. Once
+      // inventory was updated, the database RPC is required so invoice and stock
+      // changes happen in one transaction.
+      if (data.syncedToStock) {
+        return 'The secure invoice update is not installed in the database. Apply the latest Supabase migration before editing a stock-synced invoice.';
+      }
+
+      const currentInvoice = get().invoices.find(invoice => invoice.id === id);
+      const editedAt = new Date().toISOString();
+      const { data: updated, error: fallbackError } = await supabase
         .from('store_invoices')
         .update({
           supplier_id: data.supplierId,
@@ -199,35 +246,23 @@ export const useInvoiceStore = create<InvoiceState>((set, get) => ({
           delivery_date: data.deliveryDate,
           line_items: data.lineItems,
           grand_total: data.grandTotal,
-          notes: data.notes || null,
+          notes,
           edited_at: editedAt,
-          edit_count: supabase.rpc('', {}) as unknown as number, // will be handled by DB trigger
+          edit_count: (currentInvoice?.editCount ?? 0) + 1,
         })
         .eq('id', id)
-        .eq('status', 'pending_review');
+        .eq('status', 'pending_review')
+        .select('id')
+        .maybeSingle();
 
-      // Simpler fallback without increment
-      if (directErr) {
-        const { error: fallbackErr } = await supabase
-          .from('store_invoices')
-          .update({
-            supplier_id: data.supplierId,
-            supplier_name: data.supplierName,
-            delivery_date: data.deliveryDate,
-            line_items: data.lineItems,
-            grand_total: data.grandTotal,
-            notes: data.notes || null,
-            edited_at: editedAt,
-          })
-          .eq('id', id)
-          .eq('status', 'pending_review');
-        if (fallbackErr) return fallbackErr.message;
-      }
-    } else if (error) {
-      return error.message;
+      if (fallbackError) return friendlyInvoiceWriteError(fallbackError, 'update');
+      if (!updated) return 'This invoice is no longer pending and cannot be edited.';
+    } else if (result.error) {
+      return friendlyInvoiceWriteError(result.error, 'update');
+    } else if (!result.data) {
+      return 'The invoice could not be updated. Refresh the list and try again.';
     }
 
-    // Reload to get fresh data including edit_count
     await get().load();
     return null;
   },

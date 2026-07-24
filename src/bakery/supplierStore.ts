@@ -42,12 +42,12 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
       if (error) throw error;
       const suppliers: Supplier[] = (data ?? []).filter((r: Record<string, unknown>) => !r.archived_at).map((r: Record<string, unknown>) => ({
         id: r.id as string,
-        businessName: r.business_name as string,
-        contactName: r.contact_name as string,
-        phone: r.phone as string,
-        email: r.email as string,
-        address: r.address as string,
-        itemsSupplied: r.items_supplied as string,
+        businessName: String(r.business_name ?? ''),
+        contactName: String(r.contact_name ?? ''),
+        phone: String(r.phone ?? ''),
+        email: String(r.email ?? ''),
+        address: String(r.address ?? ''),
+        itemsSupplied: String(r.items_supplied ?? ''),
         createdAt: r.created_at as string,
         archivedAt: (r.archived_at as string | null) ?? undefined,
       }));
@@ -59,12 +59,12 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
 
   addSupplier: async (data) => {
     const { error } = await supabase.from('store_suppliers').insert({
-      business_name: data.businessName,
-      contact_name: data.contactName,
-      phone: data.phone,
-      email: data.email,
-      address: data.address,
-      items_supplied: data.itemsSupplied,
+      business_name: data.businessName.trim(),
+      contact_name: data.contactName.trim(),
+      phone: data.phone.trim(),
+      email: data.email.trim(),
+      address: data.address.trim(),
+      items_supplied: data.itemsSupplied.trim(),
     });
     if (error) return error.message;
     await get().load();
@@ -73,12 +73,12 @@ export const useSupplierStore = create<SupplierState>((set, get) => ({
 
   updateSupplier: async (id, data) => {
     const payload: Record<string, unknown> = {};
-    if (data.businessName !== undefined) payload.business_name = data.businessName;
-    if (data.contactName !== undefined) payload.contact_name = data.contactName;
-    if (data.phone !== undefined) payload.phone = data.phone;
-    if (data.email !== undefined) payload.email = data.email;
-    if (data.address !== undefined) payload.address = data.address;
-    if (data.itemsSupplied !== undefined) payload.items_supplied = data.itemsSupplied;
+    if (data.businessName !== undefined) payload.business_name = data.businessName.trim();
+    if (data.contactName !== undefined) payload.contact_name = data.contactName.trim();
+    if (data.phone !== undefined) payload.phone = data.phone.trim();
+    if (data.email !== undefined) payload.email = data.email.trim();
+    if (data.address !== undefined) payload.address = data.address.trim();
+    if (data.itemsSupplied !== undefined) payload.items_supplied = data.itemsSupplied.trim();
     const { error } = await supabase.from('store_suppliers').update(payload).eq('id', id);
     if (error) return error.message;
     await get().load();

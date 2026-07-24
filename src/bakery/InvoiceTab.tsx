@@ -2,11 +2,10 @@
 // Store Invoice Tab – create supplier delivery invoices, sync stock, send to admin.
 
 import { useState, useEffect, useMemo } from 'react';
-import { supabase } from '@/lib/supabase';
 import { businessDate } from '@/lib/businessDate'; // BUG #14 FIX: needed for synced_to_stock update after invoice created
 import {
   FileText, Plus, Trash2, Printer, Send, ChevronDown,
-  ChevronUp, CheckCircle2, Clock, X, Check, Loader2,
+  ChevronUp, CheckCircle2, X, Check, Loader2, AlertTriangle,
   Search, IndianRupee, Package,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -221,367 +220,655 @@ function InvoiceCard({ invoice, onPrint, onEdit }: { invoice: StoreInvoice; onPr
   );
 }
 
-// ─── Create Invoice Modal ─────────────────────────────────────────────────────
+// ─── Create / Edit Invoice ────────────────────────────────────────────────────
+const INVOICE_UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
+  { value: 'kg', label: 'KG' },
+  { value: 'ltr', label: 'Ltr' },
+  { value: 'pcs', label: 'Pcs' },
+  { value: 'nos', label: 'Nos' },
+  { value: 'bunch', label: 'Bunch' },
+];
+
+interface InvoiceLineDraft {
+  rowId: string;
+  itemName: string;
+  quantity: string;
+  unit: StockUnit;
+  pricePerUnit: string;
+}
+
+interface InvoiceItemSuggestion {
+  name: string;
+  unit: StockUnit;
+  category: string;
+  stockQuantity?: number;
+}
+
+function invoiceUnit(raw?: string): StockUnit {
+  const unit = (raw ?? '').trim().toLowerCase();
+  if (['l', 'lt', 'lts', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters'].includes(unit)) return 'ltr';
+  if (['pc', 'pcs', 'piece', 'pieces', 'pkt', 'pkts', 'packet', 'packets'].includes(unit)) return 'pcs';
+  if (['no', 'nos', 'number', 'numbers'].includes(unit)) return 'nos';
+  if (['bunch', 'bunches'].includes(unit)) return 'bunch';
+  return 'kg';
+}
+
+function createLineDraft(line?: InvoiceLineItem): InvoiceLineDraft {
+  return {
+    rowId: crypto.randomUUID(),
+    itemName: line?.itemName ?? '',
+    quantity: line ? String(line.quantity) : '1',
+    unit: invoiceUnit(line?.unit),
+    pricePerUnit: line ? String(line.pricePerUnit) : '',
+  };
+}
+
+function draftNumber(value: string): number {
+  if (!value.trim()) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeItemName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function formatStockQuantity(value: number): string {
+  return value.toLocaleString('en-IN', { maximumFractionDigits: 3 });
+}
+
+function InvoiceItemPicker({
+  value,
+  stockItems,
+  selectedItemNames,
+  onChange,
+  onSelect,
+}: {
+  value: string;
+  stockItems: ReturnType<typeof useStoreStockStore.getState>['items'];
+  selectedItemNames: string[];
+  onChange: (value: string) => void;
+  onSelect: (suggestion: InvoiceItemSuggestion) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const suggestions = useMemo<InvoiceItemSuggestion[]>(() => {
+    const query = normalizeItemName(value);
+    const selected = new Set(selectedItemNames.map(normalizeItemName));
+    const byName = new Map<string, InvoiceItemSuggestion>();
+
+    for (const stockItem of stockItems) {
+      const key = normalizeItemName(stockItem.name);
+      if (query && !key.includes(query)) continue;
+      byName.set(key, {
+        name: stockItem.name,
+        unit: invoiceUnit(stockItem.unit),
+        category: 'Inventory',
+        stockQuantity: stockItem.quantity,
+      });
+    }
+
+    for (const masterItem of searchItems(value)) {
+      const key = normalizeItemName(masterItem.item);
+      if (!byName.has(key)) {
+        byName.set(key, {
+          name: masterItem.item,
+          unit: invoiceUnit(masterItem.uom),
+          category: masterItem.category || 'Item Master',
+        });
+      }
+    }
+
+    return Array.from(byName.values())
+      .filter(item => !selected.has(normalizeItemName(item.name)) || normalizeItemName(item.name) === normalizeItemName(value))
+      .slice(0, 16);
+  }, [selectedItemNames, stockItems, value]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [value, suggestions.length]);
+
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-3 top-1/2 z-10 size-3.5 -translate-y-1/2 text-muted-foreground" />
+      <input
+        value={value}
+        onChange={event => { onChange(event.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={event => {
+          if (event.key === 'ArrowDown' && suggestions.length > 0) {
+            event.preventDefault();
+            setActiveIndex(index => Math.min(index + 1, suggestions.length - 1));
+          } else if (event.key === 'ArrowUp' && suggestions.length > 0) {
+            event.preventDefault();
+            setActiveIndex(index => Math.max(index - 1, 0));
+          } else if (event.key === 'Enter' && open && suggestions[activeIndex]) {
+            event.preventDefault();
+            onSelect(suggestions[activeIndex]);
+            setOpen(false);
+          } else if (event.key === 'Escape') {
+            setOpen(false);
+          }
+        }}
+        placeholder="Search item name…"
+        autoComplete="off"
+        className="h-10 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1.5 max-h-64 overflow-y-auto rounded-xl border border-border bg-background shadow-xl">
+          {suggestions.length > 0 ? suggestions.map((item, index) => (
+            <button
+              type="button"
+              key={normalizeItemName(item.name)}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => { onSelect(item); setOpen(false); }}
+              className={cn(
+                'flex w-full items-center justify-between gap-3 border-b border-border/50 px-3 py-2.5 text-left last:border-0',
+                activeIndex === index ? 'bg-primary/5' : 'hover:bg-muted/60',
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-body font-semibold text-foreground">{item.name}</p>
+                <p className="text-[10px] font-body text-muted-foreground">
+                  {item.category}
+                  {item.stockQuantity !== undefined ? ` · Stock ${formatStockQuantity(item.stockQuantity)} ${INVOICE_UNIT_OPTIONS.find(option => option.value === item.unit)?.label ?? item.unit}` : ' · Item master'}
+                </p>
+              </div>
+              <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-[10px] font-body font-bold text-muted-foreground">
+                {INVOICE_UNIT_OPTIONS.find(option => option.value === item.unit)?.label ?? item.unit}
+              </span>
+            </button>
+          )) : (
+            <div className="px-3 py-4 text-center text-xs font-body text-muted-foreground">
+              No matching item found. The typed name can still be saved as a new inventory item.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvoiceLineEditor({
+  line,
+  index,
+  stockItems,
+  selectedItemNames,
+  errors,
+  canRemove,
+  onUpdate,
+  onSelectItem,
+  onRemove,
+}: {
+  line: InvoiceLineDraft;
+  index: number;
+  stockItems: ReturnType<typeof useStoreStockStore.getState>['items'];
+  selectedItemNames: string[];
+  errors: string[];
+  canRemove: boolean;
+  onUpdate: (patch: Partial<InvoiceLineDraft>) => void;
+  onSelectItem: (suggestion: InvoiceItemSuggestion) => void;
+  onRemove: () => void;
+}) {
+  const quantity = draftNumber(line.quantity);
+  const rate = draftNumber(line.pricePerUnit);
+  const total = Number((quantity * rate).toFixed(2));
+
+  return (
+    <div className={cn(
+      'rounded-2xl border bg-card p-3 md:grid md:grid-cols-[minmax(230px,2.4fr)_minmax(90px,.7fr)_minmax(105px,.8fr)_minmax(110px,.85fr)_minmax(105px,.85fr)_40px] md:items-start md:gap-2 md:rounded-none md:border-x-0 md:border-t-0 md:p-2.5',
+      errors.length > 0 ? 'border-red-300 bg-red-50/30' : 'border-border',
+    )}>
+      <div>
+        <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Item {index + 1}</label>
+        <InvoiceItemPicker
+          value={line.itemName}
+          stockItems={stockItems}
+          selectedItemNames={selectedItemNames}
+          onChange={itemName => onUpdate({ itemName })}
+          onSelect={onSelectItem}
+        />
+      </div>
+
+      <div className="mt-2 md:mt-0">
+        <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Quantity</label>
+        <input
+          type="number"
+          min="0"
+          step="any"
+          value={line.quantity}
+          onChange={event => onUpdate({ quantity: event.target.value })}
+          placeholder="0"
+          inputMode="decimal"
+          className="h-10 w-full rounded-xl border border-border bg-background px-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+
+      <div className="mt-2 md:mt-0">
+        <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Unit</label>
+        <select
+          value={line.unit}
+          onChange={event => onUpdate({ unit: event.target.value as StockUnit })}
+          className="h-10 w-full rounded-xl border border-border bg-background px-2 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+        >
+          {INVOICE_UNIT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+
+      <div className="mt-2 md:mt-0">
+        <label className="mb-1 block text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Rate</label>
+        <div className="relative">
+          <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-body text-muted-foreground">₹</span>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            value={line.pricePerUnit}
+            onChange={event => onUpdate({ pricePerUnit: event.target.value })}
+            placeholder="0.00"
+            inputMode="decimal"
+            className="h-10 w-full rounded-xl border border-border bg-background pl-6 pr-2 text-right text-sm font-body tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+      </div>
+
+      <div className="mt-2 flex h-10 items-center justify-between rounded-xl bg-primary/5 px-3 md:mt-0 md:justify-end">
+        <span className="text-[9px] font-body font-bold uppercase text-muted-foreground md:hidden">Amount</span>
+        <span className="text-sm font-body font-bold tabular-nums text-primary">₹{total.toFixed(2)}</span>
+      </div>
+
+      <div className="mt-2 flex justify-end md:mt-1">
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={!canRemove}
+          className="flex size-9 items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-25"
+          aria-label={`Remove item ${index + 1}`}
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </div>
+
+      {errors.length > 0 && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] font-body text-red-700 md:col-span-6 md:mt-0">
+          <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+          <span>{errors.join(' ')}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CreateInvoiceModal({
   onClose,
   onCreated,
   editingInvoice,
 }: {
   onClose: () => void;
-  onCreated: (invoiceNumber: string) => void;
+  onCreated: (invoiceNumber: string, mode: 'created' | 'updated') => void;
   editingInvoice?: StoreInvoice;
 }) {
   const { suppliers, loaded: suppLoaded, load: loadSuppliers } = useSupplierStore();
   const { createInvoice, updateInvoice } = useInvoiceStore();
-  const { items: stockItems, loaded: stockLoaded, load: loadStock, addItem, updateItem } = useStoreStockStore();
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
   const { pushInvoicePending } = useNotificationStore();
 
   useEffect(() => { if (!suppLoaded) void loadSuppliers(); }, [suppLoaded, loadSuppliers]);
   useEffect(() => { if (!stockLoaded) void loadStock(); }, [stockLoaded, loadStock]);
 
-  const [supplierId, setSupplierId]   = useState(editingInvoice?.supplierId ?? '');
+  const [supplierId, setSupplierId] = useState(editingInvoice?.supplierId ?? '');
   const [deliveryDate, setDeliveryDate] = useState(editingInvoice?.deliveryDate ?? businessDate());
-  const [notes, setNotes]             = useState(editingInvoice?.notes ?? '');
-  const [lines, setLines]             = useState<InvoiceLineItem[]>(
-    editingInvoice?.lineItems ?? [{ itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 }]
-  );
-  const [saving, setSaving]   = useState(false);
-  const [error, setError]     = useState('');
+  const [notes, setNotes] = useState(editingInvoice?.notes ?? '');
+  const [lines, setLines] = useState<InvoiceLineDraft[]>(() => {
+    const initialLines = editingInvoice?.lineItems.map(createLineDraft) ?? [createLineDraft()];
+    return initialLines.length > 0 ? initialLines : [createLineDraft()];
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [lineErrors, setLineErrors] = useState<Record<string, string[]>>({});
 
-  // Reset dismissed state when item name changes
-  const handleItemNameChange = (idx: number, val: string) => {
-    updateLine(idx, 'itemName', val);
+  const selectedSupplier = suppliers.find(supplier => supplier.id === supplierId);
+  const selectedItemNames = lines.map(line => line.itemName).filter(Boolean);
+  const grandTotal = lines.reduce((sum, line) => sum + draftNumber(line.quantity) * draftNumber(line.pricePerUnit), 0);
+
+  const today = businessDate();
+  const yesterday = useMemo(() => {
+    const date = new Date(`${today}T12:00:00`);
+    date.setDate(date.getDate() - 1);
+    return date.toISOString().slice(0, 10);
+  }, [today]);
+  const minimumDate = editingInvoice && editingInvoice.deliveryDate < yesterday ? editingInvoice.deliveryDate : yesterday;
+
+  const updateLine = (rowId: string, patch: Partial<InvoiceLineDraft>) => {
+    setLines(current => current.map(line => line.rowId === rowId ? { ...line, ...patch } : line));
+    setLineErrors(current => {
+      if (!current[rowId]) return current;
+      const next = { ...current };
+      delete next[rowId];
+      return next;
+    });
+    setError('');
   };
 
-  const selectedSupplier = suppliers.find(s => s.id === supplierId);
-  const invoiceItemSuggestions = (query: string) => {
-    const normalizedQuery = query.trim().toLowerCase();
-    const liveMatches = stockItems
-      .filter(item => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery))
-      .map(item => item.name);
-    const masterMatches = searchItems(query).map(item => item.item);
-    return Array.from(new Map(
-      [...liveMatches, ...masterMatches].map(name => [name.trim().toLowerCase(), name] as const),
-    ).values()).slice(0, 100);
+  const selectItem = (rowId: string, suggestion: InvoiceItemSuggestion) => {
+    const currentLine = lines.find(line => line.rowId === rowId);
+    const duplicate = lines.find(line => line.rowId !== rowId && normalizeItemName(line.itemName) === normalizeItemName(suggestion.name));
+
+    if (duplicate && currentLine) {
+      const mergedQuantity = draftNumber(duplicate.quantity) + Math.max(1, draftNumber(currentLine.quantity));
+      setLines(current => current
+        .filter(line => line.rowId !== rowId)
+        .map(line => line.rowId === duplicate.rowId ? { ...line, quantity: String(mergedQuantity) } : line));
+      setInfo(`${suggestion.name} was already added. Its quantity has been increased instead of creating a duplicate row.`);
+      return;
+    }
+
+    updateLine(rowId, { itemName: suggestion.name, unit: suggestion.unit });
+    setInfo('');
   };
 
-  const UNIT_OPTIONS: { value: StockUnit; label: string }[] = [
-    { value: 'kg', label: 'KG' },
-    { value: 'ltr', label: 'Ltr' },
-    { value: 'pcs', label: 'Pcs' },
-    { value: 'nos', label: 'Nos' },
-    { value: 'bunch', label: 'Bunch' },
-  ];
+  const addLine = () => {
+    setLines(current => [...current, createLineDraft()]);
+    setInfo('');
+  };
 
-  const updateLine = (idx: number, key: keyof InvoiceLineItem, val: string | number) => {
-    setLines(prev => {
-      const next = [...prev];
-      const line = { ...next[idx], [key]: val };
-      line.totalPrice = Number((line.quantity * line.pricePerUnit).toFixed(2));
-      next[idx] = line;
+  const removeLine = (rowId: string) => {
+    setLines(current => current.length > 1 ? current.filter(line => line.rowId !== rowId) : current);
+    setLineErrors(current => {
+      const next = { ...current };
+      delete next[rowId];
       return next;
     });
   };
 
-  const addLine = () => {
-    setLines(prev => [...prev, { itemName: '', quantity: 1, unit: 'kg', pricePerUnit: 0, totalPrice: 0 }]);
+  const validate = (): InvoiceLineItem[] | null => {
+    setError('');
+    setInfo('');
+    const nextLineErrors: Record<string, string[]> = {};
+    const seenNames = new Set<string>();
+    const normalizedLines: InvoiceLineItem[] = [];
+
+    for (const line of lines) {
+      const errors: string[] = [];
+      const itemName = line.itemName.trim();
+      const quantity = Number(line.quantity);
+      const pricePerUnit = Number(line.pricePerUnit || '0');
+      const key = normalizeItemName(itemName);
+
+      if (!itemName) errors.push('Select or enter an item name.');
+      if (!Number.isFinite(quantity) || quantity <= 0) errors.push('Quantity must be greater than zero.');
+      if (!Number.isFinite(pricePerUnit) || pricePerUnit < 0) errors.push('Rate cannot be negative.');
+      if (itemName && seenNames.has(key)) errors.push('This item is already present in another row.');
+      if (itemName) seenNames.add(key);
+
+      if (errors.length > 0) nextLineErrors[line.rowId] = errors;
+      normalizedLines.push({
+        itemName,
+        quantity: Number.isFinite(quantity) ? quantity : 0,
+        unit: line.unit,
+        pricePerUnit: Number.isFinite(pricePerUnit) ? pricePerUnit : 0,
+        totalPrice: Number(((Number.isFinite(quantity) ? quantity : 0) * (Number.isFinite(pricePerUnit) ? pricePerUnit : 0)).toFixed(2)),
+      });
+    }
+
+    setLineErrors(nextLineErrors);
+    if (!supplierId) { setError('Select a supplier before saving the invoice.'); return null; }
+    if (!deliveryDate) { setError('Select a delivery date.'); return null; }
+    const originalOldDate = Boolean(editingInvoice && deliveryDate === editingInvoice.deliveryDate && deliveryDate < yesterday);
+    if (deliveryDate > today) { setError('Delivery date cannot be in the future.'); return null; }
+    if (deliveryDate < yesterday && !originalOldDate) { setError('Delivery date can only be today or yesterday.'); return null; }
+    if (Object.keys(nextLineErrors).length > 0) { setError('Correct the highlighted invoice items before saving.'); return null; }
+    return normalizedLines;
   };
 
-  const removeLine = (idx: number) => {
-    setLines(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  const grandTotal = lines.reduce((s, l) => s + l.totalPrice, 0);
 
   const handleSave = async () => {
-    if (!supplierId) { setError('Select a supplier'); return; }
-    if (lines.some(l => !l.itemName.trim())) { setError('All items need a name'); return; }
-    if (lines.some(l => l.quantity <= 0 || l.pricePerUnit < 0)) { setError('Check quantities and prices'); return; }
+    if (saving) return;
+    const invoiceLines = validate();
+    if (!invoiceLines) return;
 
-    // Edit mode: just update the pending invoice, no stock re-sync
-    if (editingInvoice) {
-      setSaving(true); setError('');
-      const err = await updateInvoice(editingInvoice.id, {
-        supplierId,
-        supplierName: suppliers.find(s => s.id === supplierId)?.businessName ?? editingInvoice.supplierName,
-        deliveryDate,
-        lineItems: lines,
-        grandTotal,
-        notes,
-        syncedToStock: editingInvoice.syncedToStock,
-      });
-      setSaving(false);
-      if (err) { setError(`Update failed: ${err}`); return; }
-      onCreated(editingInvoice.invoiceNumber);
-      onClose();
-      return;
-    }
+    const supplier = suppliers.find(item => item.id === supplierId);
+    if (!supplier) { setError('The selected supplier is no longer available. Refresh and select it again.'); return; }
 
-    // Date guard: no future dates, max 1 day in the past
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-    const selectedDate = new Date(deliveryDate); selectedDate.setHours(0, 0, 0, 0);
-    if (selectedDate > today) { setError('Delivery date cannot be in the future'); return; }
-    if (selectedDate < yesterday) { setError('Delivery date can only be today or yesterday'); return; }
+    setSaving(true);
+    setError('');
+    const normalizedNotes = notes.trim();
+    const normalizedGrandTotal = Number(invoiceLines.reduce((sum, line) => sum + line.totalPrice, 0).toFixed(2));
 
-    setSaving(true); setError('');
+    try {
+      if (editingInvoice) {
+        const updateError = await updateInvoice(editingInvoice.id, {
+          supplierId,
+          supplierName: supplier.businessName,
+          deliveryDate,
+          lineItems: invoiceLines,
+          grandTotal: normalizedGrandTotal,
+          notes: normalizedNotes,
+          syncedToStock: editingInvoice.syncedToStock,
+        });
+        if (updateError) { setError(updateError); return; }
 
-    // BUG #14 FIX: Create invoice FIRST (as audit trail), THEN sync stock.
-    // Previously stock was updated before the invoice was saved — if createInvoice
-    // failed, stock quantities were permanently incremented with no invoice record.
-    // On retry the stock would be incremented again (double-count).
-    const result = await createInvoice({
-      supplierId,
-      supplierName: selectedSupplier?.businessName ?? '',
-      deliveryDate,
-      lineItems: lines,
-      grandTotal,
-      notes,
-      syncedToStock: false, // will be set true after stock sync succeeds
-    });
-
-    if (!result) {
-      setSaving(false);
-      setError('Failed to save invoice. Try again.');
-      return;
-    }
-
-    // H-08 FIX: track which items failed instead of a single boolean flag.
-    // Partial sync must NOT be treated as success — show a per-item error list.
-    const syncFailedItems: string[] = [];
-    for (const li of lines) {
-      const name = li.itemName.trim();
-      const unit = li.unit as StockUnit;
-      const existing = stockItems.find(s => s.name.trim().toLowerCase() === name.toLowerCase());
-      // BUG #22 FIX: derive a sensible default threshold (10% of delivered qty, min 1)
-      // instead of hardcoding 1 for every new stock item.
-      const threshold = Math.max(1, Math.round(li.quantity * 0.1));
-      if (existing) {
-        const err = await updateItem(existing.id, { quantity: existing.quantity + li.quantity });
-        if (err) syncFailedItems.push(`${name} (${err})`);
-      } else {
-        const err = await addItem(name, unit, li.quantity, threshold);
-        if (err) syncFailedItems.push(`${name} (${err})`);
+        await loadStock();
+        try {
+          await pushInvoicePending(editingInvoice.id, editingInvoice.invoiceNumber, supplier.businessName, normalizedGrandTotal);
+        } catch (notificationError) {
+          console.warn('[InvoiceTab] Invoice updated, but the Admin notification refresh failed.', notificationError);
+        }
+        onCreated(editingInvoice.invoiceNumber, 'updated');
+        onClose();
+        return;
       }
-    }
 
-    // Mark invoice as synced (or warn if partial failure)
-    // BUG #14 FIX: update syncedToStock flag now that stock is confirmed updated
-    if (syncFailedItems.length === 0) {
-      await supabase.from('store_invoices').update({ synced_to_stock: true }).eq('id', result.id);
-      await useInvoiceStore.getState().load();
-    } else {
-      // H-08 FIX: surface per-item failures so the operator knows what to retry
-      setError(`Invoice saved, but stock sync failed for: ${syncFailedItems.join(', ')}. Please retry stock update manually.`);
+      const createResult = await createInvoice({
+        supplierId,
+        supplierName: supplier.businessName,
+        deliveryDate,
+        lineItems: invoiceLines,
+        grandTotal: normalizedGrandTotal,
+        notes: normalizedNotes,
+        syncedToStock: false,
+      });
+
+      if (!createResult.invoice) {
+        setError(createResult.error ?? 'Failed to save the invoice. Please try again.');
+        return;
+      }
+
+      if (!createResult.invoice.syncedToStock) {
+        setError('The invoice was not synchronized to inventory. Apply the latest database migration and retry.');
+        return;
+      }
+
+      await loadStock();
+
+      try {
+        await pushInvoicePending(createResult.invoice.id, createResult.invoice.invoiceNumber, supplier.businessName, normalizedGrandTotal);
+      } catch (notificationError) {
+        console.warn('[InvoiceTab] Invoice created, but the Admin notification refresh failed.', notificationError);
+      }
+      onCreated(createResult.invoice.invoiceNumber, 'created');
+      onClose();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to save the invoice. Please try again.');
+    } finally {
       setSaving(false);
-      return;
     }
-
-    setSaving(false);
-
-    // Notify admin about the new pending invoice
-    await pushInvoicePending(
-      result.id,
-      result.invoiceNumber,
-      selectedSupplier?.businessName ?? '',
-      grandTotal,
-    );
-
-    onCreated(result.invoiceNumber);
-    onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end bg-black/60 md:items-center md:justify-center md:p-4" onClick={() => { if (!saving) onClose(); }}>
       <div
-        className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-28 space-y-4 max-h-[92vh] overflow-y-auto"
-        onClick={e => e.stopPropagation()}
+        className="max-h-[94vh] w-full overflow-y-auto rounded-t-3xl bg-background md:max-w-6xl md:rounded-3xl"
+        onClick={event => event.stopPropagation()}
       >
-        <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="font-display font-bold text-lg text-foreground">{editingInvoice ? 'Edit Invoice' : 'New Invoice'}</h3>
-            <p className="text-[11px] font-body text-muted-foreground">{editingInvoice ? 'Update this pending invoice & resubmit to admin' : 'Add delivery → sync stock → send to admin'}</p>
-          </div>
-          <button onClick={onClose} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted">
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {/* ── STEP 1: Items Delivered ── */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-[10px] font-body font-bold text-muted-foreground uppercase">Items Delivered *</label>
-            <button
-              onClick={addLine}
-              className="text-[10px] font-body font-bold text-primary flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-primary/5"
-            >
-              <Plus className="size-3" /> Add Row
+        <div className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 py-4 backdrop-blur md:px-6">
+          <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border md:hidden" />
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="font-display text-lg font-bold text-foreground md:text-xl">{editingInvoice ? `Edit ${editingInvoice.invoiceNumber}` : 'New Store Invoice'}</h3>
+              <p className="text-[11px] font-body text-muted-foreground">
+                {editingInvoice ? 'Changes update the pending invoice and adjust inventory only by the quantity difference.' : 'Add supplier delivery items, update inventory and send the invoice to Admin.'}
+              </p>
+            </div>
+            <button type="button" onClick={onClose} disabled={saving} className="flex size-9 shrink-0 items-center justify-center rounded-xl hover:bg-muted disabled:opacity-50">
+              <X className="size-4" />
             </button>
           </div>
+        </div>
 
-          <div className="space-y-3">
-            {lines.map((li, idx) => (
-              <div key={idx} className="rounded-xl border border-border bg-muted/20 p-3 space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 relative">
-                    <input
-                      value={li.itemName}
-                      onChange={e => handleItemNameChange(idx, e.target.value)}
-                      placeholder="Item name…"
-                      list={`suggestions-${idx}`}
-                      className="w-full h-9 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    />
-                    <datalist id={`suggestions-${idx}`}>
-                      {invoiceItemSuggestions(li.itemName).map(itemName => (
-                        <option key={itemName.toLowerCase()} value={itemName} />
-                      ))}
-                    </datalist>
-                  </div>
-                  {lines.length > 1 && (
-                    <button onClick={() => removeLine(idx)} className="size-8 flex items-center justify-center rounded-lg hover:bg-red-50">
-                      <Trash2 className="size-3.5 text-red-400" />
-                    </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="text-[9px] font-body font-bold text-muted-foreground uppercase mb-1 block">Qty</label>
-                    <input
-                      type="number" min={0} step={0.1}
-                      value={li.quantity}
-                      onChange={e => updateLine(idx, 'quantity', parseFloat(e.target.value) || 0)}
-                      className="w-full h-9 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-body font-bold text-muted-foreground uppercase mb-1 block">Unit</label>
-                    <select
-                      value={li.unit}
-                      onChange={e => updateLine(idx, 'unit', e.target.value)}
-                      className="w-full h-9 px-2 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    >
-                      {UNIT_OPTIONS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-body font-bold text-muted-foreground uppercase mb-1 block">₹/Unit</label>
-                    <input
-                      type="number" min={0} step={0.01}
-                      value={li.pricePerUnit}
-                      onChange={e => updateLine(idx, 'pricePerUnit', parseFloat(e.target.value) || 0)}
-                      className="w-full h-9 px-2 rounded-xl border border-border bg-background text-sm font-body text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    />
-                  </div>
-                </div>
-                {li.quantity > 0 && li.pricePerUnit > 0 && (
-                  <p className="text-xs font-body text-right text-primary font-bold">
-                    Total: ₹{li.totalPrice.toFixed(2)}
-                  </p>
+        <div className="space-y-5 px-4 py-5 md:px-6">
+          <section className="rounded-2xl border border-border bg-card p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-body font-bold text-foreground">Invoice details</h4>
+                <p className="text-[10px] font-body text-muted-foreground">Choose the supplier and delivery date first.</p>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Supplier *</label>
+                <select
+                  value={supplierId}
+                  onChange={event => { setSupplierId(event.target.value); setError(''); }}
+                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="">Select supplier…</option>
+                  {suppliers.map(supplier => (
+                    <option key={supplier.id} value={supplier.id}>{supplier.businessName} – {supplier.contactName}</option>
+                  ))}
+                </select>
+                {supplierId && selectedSupplier && (
+                  <p className="mt-1 flex items-center gap-1 text-[10px] font-body text-primary"><Check className="size-3" /> {selectedSupplier.businessName}</p>
                 )}
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Grand Total */}
-        <div className="flex justify-between items-center px-3 py-3 bg-primary/5 rounded-xl border border-primary/20">
-          <span className="text-sm font-body font-bold text-foreground flex items-center gap-2">
-            <IndianRupee className="size-4 text-primary" /> Grand Total
-          </span>
-          <span className="font-display text-xl font-bold text-primary">₹{grandTotal.toFixed(2)}</span>
-        </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Delivery Date *</label>
+                <input
+                  type="date"
+                  value={deliveryDate}
+                  min={minimumDate}
+                  max={today}
+                  onChange={event => { setDeliveryDate(event.target.value); setError(''); }}
+                  className="h-11 w-full rounded-xl border border-border bg-background px-3 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <p className="mt-1 text-[10px] font-body text-muted-foreground">New dates are limited to today or yesterday.</p>
+              </div>
+            </div>
+          </section>
 
-        {/* ── STEP 2: Supplier ── */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Supplier *</label>
-          <select
-            value={supplierId}
-            onChange={e => setSupplierId(e.target.value)}
-            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-          >
-            <option value="">Select supplier…</option>
-            {suppliers.map(s => (
-              <option key={s.id} value={s.id}>{s.businessName} – {s.contactName}</option>
-            ))}
-          </select>
-          {/* If a supplier is already auto-selected from item hint, confirm it */}
-          {supplierId && selectedSupplier && (
-            <p className="text-[10px] font-body text-primary mt-1 flex items-center gap-1">
-              <Check className="size-3" /> {selectedSupplier.businessName} selected
-            </p>
+          <section className="overflow-visible rounded-2xl border border-border bg-card">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+              <div>
+                <h4 className="text-sm font-body font-bold text-foreground">Items delivered</h4>
+                <p className="text-[10px] font-body text-muted-foreground">Search inventory or the item master. Unit is filled automatically.</p>
+              </div>
+              <button
+                type="button"
+                onClick={addLine}
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-primary/25 bg-primary/5 px-3 text-xs font-body font-bold text-primary hover:bg-primary/10"
+              >
+                <Plus className="size-3.5" /> Add Item
+              </button>
+            </div>
+
+            <div className="hidden grid-cols-[minmax(230px,2.4fr)_minmax(90px,.7fr)_minmax(105px,.8fr)_minmax(110px,.85fr)_minmax(105px,.85fr)_40px] gap-2 border-b border-border bg-muted/40 px-3 py-2 text-[9px] font-body font-bold uppercase text-muted-foreground md:grid">
+              <span>Item</span><span className="text-right">Quantity</span><span>Unit</span><span className="text-right">Rate</span><span className="text-right">Amount</span><span />
+            </div>
+
+            <div className="space-y-3 p-3 md:space-y-0 md:p-0">
+              {lines.map((line, index) => (
+                <InvoiceLineEditor
+                  key={line.rowId}
+                  line={line}
+                  index={index}
+                  stockItems={stockItems}
+                  selectedItemNames={selectedItemNames.filter(name => normalizeItemName(name) !== normalizeItemName(line.itemName))}
+                  errors={lineErrors[line.rowId] ?? []}
+                  canRemove={lines.length > 1}
+                  onUpdate={patch => updateLine(line.rowId, patch)}
+                  onSelectItem={suggestion => selectItem(line.rowId, suggestion)}
+                  onRemove={() => removeLine(line.rowId)}
+                />
+              ))}
+            </div>
+          </section>
+
+          {info && (
+            <div className="flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-body text-blue-700">
+              <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" /><span>{info}</span>
+            </div>
+          )}
+
+          <section className="grid gap-4 md:grid-cols-[1fr_280px]">
+            <div>
+              <label className="mb-1.5 block text-[10px] font-body font-bold uppercase text-muted-foreground">Notes (optional)</label>
+              <textarea
+                value={notes}
+                onChange={event => { setNotes(event.target.value); setError(''); }}
+                placeholder="Remarks about this delivery…"
+                rows={3}
+                maxLength={1000}
+                className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2.5 text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+              <p className="mt-1 text-right text-[9px] font-body text-muted-foreground">{notes.length}/1000</p>
+            </div>
+
+            <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 text-sm font-body font-bold text-foreground"><IndianRupee className="size-4 text-primary" /> Grand Total</span>
+                <span className="font-display text-2xl font-bold tabular-nums text-primary">₹{grandTotal.toFixed(2)}</span>
+              </div>
+              <div className="mt-3 flex items-start gap-2 border-t border-primary/15 pt-3 text-[11px] font-body text-blue-700">
+                <Package className="mt-0.5 size-3.5 shrink-0" />
+                <span>{editingInvoice ? 'Inventory will be changed only by the difference between the original and edited quantities.' : 'Inventory is synchronized with this invoice when it is saved.'}</span>
+              </div>
+            </div>
+          </section>
+
+          {error && (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-3 text-xs font-body text-red-700">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>{error}</span>
+            </div>
           )}
         </div>
 
-        {/* Delivery date */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Delivery Date *</label>
-          <input
-            type="date"
-            value={deliveryDate}
-            min={(() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()}
-            max={businessDate()}
-            onChange={e => setDeliveryDate(e.target.value)}
-            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
-          <p className="text-[10px] font-body text-muted-foreground mt-1 flex items-center gap-1">
-            <span className="text-amber-500">⚠</span> Only today or yesterday allowed
-          </p>
+        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-4 backdrop-blur md:px-6">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button type="button" onClick={onClose} disabled={saving} className="h-11 rounded-xl border border-border px-5 text-sm font-body font-semibold text-foreground hover:bg-muted disabled:opacity-50">Cancel</button>
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={saving}
+              className="flex h-11 min-w-52 items-center justify-center gap-2 rounded-xl cafe-gradient px-5 text-sm font-body font-bold text-primary-foreground disabled:opacity-50 active:scale-[0.99]"
+            >
+              {saving ? <><Loader2 className="size-4 animate-spin" /> Saving safely…</> : editingInvoice ? <><Send className="size-4" /> Update & Resubmit</> : <><Send className="size-4" /> Save & Send to Admin</>}
+            </button>
+          </div>
         </div>
-
-        {/* Notes */}
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Notes (optional)</label>
-          <textarea
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            placeholder="Any remarks about this delivery…"
-            rows={2}
-            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
-          />
-        </div>
-
-        {/* Stock sync notice */}
-        <div className="flex items-start gap-2.5 px-3 py-2.5 bg-blue-50 border border-blue-200 rounded-xl">
-          <Package className="size-4 text-blue-600 shrink-0 mt-0.5" />
-          <p className="text-xs font-body text-blue-700">
-            <span className="font-bold">Stock Auto-Sync: </span>
-            Saving this invoice will automatically add the delivered quantities to your inventory.
-          </p>
-        </div>
-
-        {error && <p className="text-xs font-body text-destructive">{error}</p>}
-
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
-        >
-          {saving
-            ? <Loader2 className="size-4 animate-spin" />
-            : editingInvoice
-              ? <><Send className="size-4" /> Update Invoice</>
-              : <><Send className="size-4" /> Sync Stock & Send to Admin</>}
-        </button>
       </div>
     </div>
   );
 }
 
 // ─── Success Toast ────────────────────────────────────────────────────────────
-function SuccessToast({ invoiceNumber, onClose }: { invoiceNumber: string; onClose: () => void }) {
+function SuccessToast({ invoiceNumber, mode, onClose }: { invoiceNumber: string; mode: 'created' | 'updated'; onClose: () => void }) {
   useEffect(() => {
-    const t = setTimeout(onClose, 5000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(onClose, 5000);
+    return () => clearTimeout(timer);
   }, [onClose]);
   return (
-    <div className="fixed bottom-32 left-4 right-4 z-50 bg-emerald-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+    <div className="fixed bottom-32 left-4 right-4 z-50 flex items-center gap-3 rounded-2xl bg-emerald-600 px-4 py-3 text-white shadow-xl md:left-auto md:right-6 md:w-[380px]">
       <CheckCircle2 className="size-5 shrink-0" />
       <div className="flex-1">
-        <p className="text-sm font-body font-bold">{invoiceNumber} created!</p>
-        <p className="text-xs font-body opacity-80">Stock synced · Sent to admin for review</p>
+        <p className="text-sm font-body font-bold">{invoiceNumber} {mode === 'created' ? 'created' : 'updated'} successfully</p>
+        <p className="text-xs font-body opacity-80">Inventory synchronized · Sent to Admin for review</p>
       </div>
-      <button onClick={onClose}><X className="size-4 opacity-70" /></button>
+      <button type="button" onClick={onClose}><X className="size-4 opacity-70" /></button>
     </div>
   );
 }
@@ -593,7 +880,7 @@ export default function InvoiceTab() {
   const [editingInvoice, setEditingInvoice] = useState<StoreInvoice | null>(null);
   const [search, setSearch]         = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
-  const [toast, setToast]           = useState<string | null>(null);
+  const [toast, setToast] = useState<{ invoiceNumber: string; mode: 'created' | 'updated' } | null>(null);
 
   useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
 
@@ -689,7 +976,7 @@ export default function InvoiceTab() {
       {showCreate && (
         <CreateInvoiceModal
           onClose={() => setShowCreate(false)}
-          onCreated={(num) => { setToast(num); load(); }}
+          onCreated={(invoiceNumber, mode) => { setToast({ invoiceNumber, mode }); void load(); }}
         />
       )}
 
@@ -697,11 +984,11 @@ export default function InvoiceTab() {
         <CreateInvoiceModal
           editingInvoice={editingInvoice}
           onClose={() => setEditingInvoice(null)}
-          onCreated={(num) => { setToast(`${num} updated`); setEditingInvoice(null); load(); }}
+          onCreated={(invoiceNumber, mode) => { setToast({ invoiceNumber, mode }); setEditingInvoice(null); void load(); }}
         />
       )}
 
-      {toast && <SuccessToast invoiceNumber={toast} onClose={() => setToast(null)} />}
+      {toast && <SuccessToast invoiceNumber={toast.invoiceNumber} mode={toast.mode} onClose={() => setToast(null)} />}
     </div>
   );
 }

@@ -1492,6 +1492,209 @@ interface SupplierFormData {
   itemsSupplied: string;
 }
 
+interface SupplierTextFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  autoComplete?: string;
+  inputMode?: 'text' | 'email' | 'tel' | 'numeric' | 'decimal' | 'search' | 'url' | 'none';
+}
+
+function SupplierTextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = 'text',
+  autoComplete,
+  inputMode,
+}: SupplierTextFieldProps) {
+  return (
+    <div>
+      <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        inputMode={inputMode}
+        className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+    </div>
+  );
+}
+
+function splitSupplierItems(value: string): string[] {
+  return Array.from(new Map(
+    value
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .map(item => [normaliseName(item), item] as const),
+  ).values());
+}
+
+interface SupplierItemSuggestion {
+  name: string;
+  category: string;
+  unit: StockUnit;
+  inStock: boolean;
+}
+
+function SupplierItemsSelector({
+  selectedItems,
+  onChange,
+  stockItems,
+}: {
+  selectedItems: string[];
+  onChange: (items: string[]) => void;
+  stockItems: StockItem[];
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const suggestions = useMemo<SupplierItemSuggestion[]>(() => {
+    const normalizedQuery = normaliseName(query);
+    const byName = new Map<string, SupplierItemSuggestion>();
+
+    for (const stockItem of stockItems) {
+      if (normalizedQuery && !normaliseName(stockItem.name).includes(normalizedQuery)) continue;
+      byName.set(normaliseName(stockItem.name), {
+        name: stockItem.name,
+        category: 'Inventory',
+        unit: toAllowedStockUnit(stockItem.unit),
+        inStock: true,
+      });
+    }
+
+    for (const masterItem of searchItems(query)) {
+      const key = normaliseName(masterItem.item);
+      if (!byName.has(key)) {
+        byName.set(key, {
+          name: masterItem.item,
+          category: masterItem.category || 'Item Master',
+          unit: toAllowedStockUnit(masterItem.uom),
+          inStock: false,
+        });
+      }
+    }
+
+    const selected = new Set(selectedItems.map(normaliseName));
+    return Array.from(byName.values())
+      .filter(item => !selected.has(normaliseName(item.name)))
+      .slice(0, 18);
+  }, [query, selectedItems, stockItems]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query, suggestions.length]);
+
+  const addItem = (name: string) => {
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    if (!selectedItems.some(item => normaliseName(item) === normaliseName(cleanName))) {
+      onChange([...selectedItems, cleanName]);
+    }
+    setQuery('');
+    setOpen(true);
+  };
+
+  const removeItem = (name: string) => {
+    onChange(selectedItems.filter(item => normaliseName(item) !== normaliseName(name)));
+  };
+
+  return (
+    <div>
+      <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Items Supplied</label>
+      <div className="rounded-xl border border-border bg-background px-2.5 py-2 focus-within:ring-2 focus-within:ring-primary/30">
+        {selectedItems.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {selectedItems.map(item => (
+              <span key={normaliseName(item)} className="inline-flex max-w-full items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-body font-semibold text-primary">
+                <span className="truncate">{item}</span>
+                <button
+                  type="button"
+                  onClick={() => removeItem(item)}
+                  className="rounded-full p-0.5 hover:bg-primary/10"
+                  aria-label={`Remove ${item}`}
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-1 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={event => { setQuery(event.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+            onKeyDown={event => {
+              if (event.key === 'ArrowDown' && suggestions.length > 0) {
+                event.preventDefault();
+                setActiveIndex(index => Math.min(index + 1, suggestions.length - 1));
+              } else if (event.key === 'ArrowUp' && suggestions.length > 0) {
+                event.preventDefault();
+                setActiveIndex(index => Math.max(index - 1, 0));
+              } else if (event.key === 'Enter' || event.key === ',') {
+                event.preventDefault();
+                const suggested = open ? suggestions[activeIndex] : undefined;
+                addItem(suggested?.name ?? query);
+              } else if (event.key === 'Backspace' && !query && selectedItems.length > 0) {
+                removeItem(selectedItems[selectedItems.length - 1]);
+              } else if (event.key === 'Escape') {
+                setOpen(false);
+              }
+            }}
+            placeholder={selectedItems.length > 0 ? 'Add another supplied item…' : 'Type to search and select items…'}
+            className="h-8 w-full bg-transparent pl-6 pr-2 text-sm font-body outline-none"
+          />
+
+          {open && (
+            <div className="absolute left-0 right-0 top-full z-30 mt-2 max-h-60 overflow-y-auto rounded-xl border border-border bg-background shadow-xl">
+              {suggestions.length > 0 ? suggestions.map((item, index) => (
+                <button
+                  type="button"
+                  key={normaliseName(item.name)}
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => addItem(item.name)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 border-b border-border/50 px-3 py-2.5 text-left last:border-0',
+                    activeIndex === index ? 'bg-primary/5' : 'hover:bg-muted/60',
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-body font-semibold text-foreground">{item.name}</p>
+                    <p className="text-[10px] font-body text-muted-foreground">{item.category}{item.inStock ? ' · In inventory' : ' · Item master'}</p>
+                  </div>
+                  <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-[10px] font-body font-bold text-muted-foreground">{stockUnitLabel(item.unit)}</span>
+                </button>
+              )) : (
+                <button
+                  type="button"
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => addItem(query)}
+                  disabled={!query.trim()}
+                  className="w-full px-3 py-3 text-left text-xs font-body text-muted-foreground disabled:opacity-50"
+                >
+                  {query.trim() ? <>Add “<span className="font-semibold text-foreground">{query.trim()}</span>” as a custom item</> : 'No more matching items'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      <p className="mt-1 text-[10px] font-body text-muted-foreground">Choose from inventory or the item master. Press Enter to add a custom item.</p>
+    </div>
+  );
+}
+
 function SupplierModal({
   initial,
   onClose,
@@ -1499,76 +1702,109 @@ function SupplierModal({
 }: {
   initial?: Supplier;
   onClose: () => void;
-  onSave: (data: SupplierFormData) => Promise<void>;
+  onSave: (data: SupplierFormData) => Promise<string | null>;
 }) {
-  const [form, setForm] = useState<SupplierFormData>({
+  const { items: stockItems, loaded: stockLoaded, load: loadStock } = useStoreStockStore();
+  const [form, setForm] = useState<Omit<SupplierFormData, 'itemsSupplied'>>({
     businessName: initial?.businessName ?? '',
     contactName: initial?.contactName ?? '',
     phone: initial?.phone ?? '',
     email: initial?.email ?? '',
     address: initial?.address ?? '',
-    itemsSupplied: initial?.itemsSupplied ?? '',
   });
+  const [selectedItems, setSelectedItems] = useState<string[]>(() => splitSupplierItems(initial?.itemsSupplied ?? ''));
   const [saving, setSaving] = useState(false);
-  const [error, setError]   = useState('');
+  const [error, setError] = useState('');
 
-  const set = (k: keyof SupplierFormData) => (v: string) => setForm(f => ({ ...f, [k]: v }));
+  useEffect(() => {
+    if (!stockLoaded) void loadStock();
+  }, [stockLoaded, loadStock]);
+
+  const setField = useCallback((field: keyof typeof form, value: string) => {
+    setForm(current => ({ ...current, [field]: value }));
+    if (error) setError('');
+  }, [error]);
 
   const handleSave = async () => {
-    if (!form.businessName.trim()) { setError('Business name is required'); return; }
-    if (!form.phone.trim()) { setError('Phone number is required'); return; }
-    setSaving(true); setError('');
+    const businessName = form.businessName.trim();
+    const contactName = form.contactName.trim();
+    const phone = form.phone.trim();
+    const email = form.email.trim();
+
+    if (!businessName) { setError('Business name is required.'); return; }
+    if (!phone) { setError('Phone number is required.'); return; }
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (phoneDigits.length < 7 || phoneDigits.length > 15) { setError('Enter a valid phone number.'); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError('Enter a valid email address.'); return; }
+
+    setSaving(true);
+    setError('');
     try {
-      await onSave(form);
+      const saveError = await onSave({
+        businessName,
+        contactName,
+        phone,
+        email,
+        address: form.address.trim(),
+        itemsSupplied: selectedItems.join(', '),
+      });
+
+      if (saveError) {
+        setError(saveError);
+        return;
+      }
       onClose();
-    } catch {
-      setError('Save failed — please try again.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to save the supplier. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
-  const Field = ({ label, field, placeholder, type = 'text' }: { label: string; field: keyof SupplierFormData; placeholder?: string; type?: string }) => (
-    <div>
-      <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">{label}</label>
-      <input type={type} value={form[field]} onChange={e => set(field)(e.target.value)} placeholder={placeholder}
-        className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
-    </div>
-  );
-
   return (
-    <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={onClose}>
-      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-24 space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end bg-black/50" onClick={() => { if (!saving) onClose(); }}>
+      <div className="w-full bg-background rounded-t-3xl px-4 pt-5 pb-24 space-y-3 max-h-[90vh] overflow-y-auto" onClick={event => event.stopPropagation()}>
         <div className="w-10 h-1 bg-border rounded-full mx-auto -mt-1 mb-2" />
         <div className="flex items-center justify-between mb-1">
-          <h3 className="font-display font-bold text-lg text-foreground">{initial ? 'Edit Supplier' : 'Add Supplier'}</h3>
-          <button onClick={onClose} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted"><X className="size-4" /></button>
+          <div>
+            <h3 className="font-display font-bold text-lg text-foreground">{initial ? 'Edit Supplier' : 'Add Supplier'}</h3>
+            <p className="text-[11px] font-body text-muted-foreground">Contact details and supplied items</p>
+          </div>
+          <button type="button" onClick={onClose} disabled={saving} className="size-8 flex items-center justify-center rounded-xl hover:bg-muted disabled:opacity-50"><X className="size-4" /></button>
         </div>
 
-        <Field label="Business Name *" field="businessName" placeholder="e.g. Sri Ganesh Flour Mills" />
-        <Field label="Contact Name *" field="contactName" placeholder="e.g. Ravi Kumar" />
-        <Field label="Phone *" field="phone" placeholder="e.g. 9876543210" type="tel" />
-        <Field label="Email" field="email" placeholder="e.g. info@supplier.com" type="email" />
+        <SupplierTextField label="Business Name *" value={form.businessName} onChange={value => setField('businessName', value)} placeholder="e.g. Sri Ganesh Flour Mills" autoComplete="organization" />
+        <SupplierTextField label="Contact Name" value={form.contactName} onChange={value => setField('contactName', value)} placeholder="e.g. Ravi Kumar" autoComplete="name" />
+        <SupplierTextField label="Phone *" value={form.phone} onChange={value => setField('phone', value)} placeholder="e.g. 9876543210" type="tel" inputMode="tel" autoComplete="tel" />
+        <SupplierTextField label="Email" value={form.email} onChange={value => setField('email', value)} placeholder="e.g. info@supplier.com" type="email" inputMode="email" autoComplete="email" />
 
         <div>
           <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Address</label>
-          <textarea value={form.address} onChange={e => set('address')(e.target.value)}
-            placeholder="Full address…" rows={2}
-            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none" />
+          <textarea
+            value={form.address}
+            onChange={event => setField('address', event.target.value)}
+            placeholder="Full address…"
+            rows={2}
+            autoComplete="street-address"
+            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
+          />
         </div>
 
-        <div>
-          <label className="text-[10px] font-body font-bold text-muted-foreground uppercase mb-1.5 block">Items Supplied</label>
-          <input value={form.itemsSupplied} onChange={e => set('itemsSupplied')(e.target.value)}
-            placeholder="e.g. Maida, Sugar, Salt (comma-separated)"
-            className="w-full h-11 px-3 rounded-xl border border-border bg-background text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary/30" />
-          <p className="text-[10px] font-body text-muted-foreground mt-1">Separate items with commas</p>
-        </div>
+        <SupplierItemsSelector selectedItems={selectedItems} onChange={items => { setSelectedItems(items); if (error) setError(''); }} stockItems={stockItems} />
 
-        {error && <p className="text-xs font-body text-destructive">{error}</p>}
+        {error && (
+          <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-body text-red-700">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
 
-        <button onClick={handleSave} disabled={saving}
-          className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="w-full h-12 rounded-xl cafe-gradient text-primary-foreground text-sm font-body font-bold flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+        >
           {saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
           {initial ? 'Save Changes' : 'Add Supplier'}
         </button>
@@ -1663,14 +1899,14 @@ function SuppliersTab() {
       {showAdd && (
         <SupplierModal
           onClose={() => setShowAdd(false)}
-          onSave={async (data) => { await addSupplier(data); }}
+          onSave={addSupplier}
         />
       )}
       {editSupplier && (
         <SupplierModal
           initial={editSupplier}
           onClose={() => setEditSupplier(null)}
-          onSave={async (data) => { await updateSupplier(editSupplier.id, data); setEditSupplier(null); }}
+          onSave={(data) => updateSupplier(editSupplier.id, data)}
         />
       )}
     </div>
