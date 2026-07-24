@@ -102,6 +102,12 @@ function dbRowToOrder(row: Record<string, unknown>): Order {
     balanceOrderId: row.balance_order_id as string | undefined,
     parcelCharges: row.parcel_charges ? Number(row.parcel_charges) : 0,
     deliveryDate: row.delivery_date as string | undefined,
+    walletId: row.wallet_id as string | undefined,
+    walletAmount: row.wallet_amount ? Number(row.wallet_amount) : undefined,
+    walletTransactionId: row.wallet_transaction_id as string | undefined,
+    promotionDiscount: row.promotion_discount ? Number(row.promotion_discount) : undefined,
+    promotionIds: row.promotion_ids as string[] | undefined,
+    walletCashback: row.wallet_cashback ? Number(row.wallet_cashback) : undefined,
   };
 }
 
@@ -147,7 +153,7 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('orders')
-        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date')
+        .select('id, order_number, table_number, order_type, items, subtotal, discount, discount_type, discount_value, total, status, created_by, created_at, updated_at, notes, customer_name, payment_type, payment_breakdown, billed_by, cancel_reason, order_source, advance_amount, advance_paid_by, balance_due, full_amount, fully_paid_at, balance_payment_type, balance_paid_by, balance_order_id, parcel_charges, delivery_date, wallet_id, wallet_amount, wallet_transaction_id, promotion_discount, promotion_ids, wallet_cashback')
         .gte('created_at', cutoff.toISOString())
         .order('created_at', { ascending: false });
 
@@ -404,15 +410,17 @@ export const useOrderStore = create<OrderState>()((set, get) => ({
       : Number(order.total || 0);
     const audit = `[REFUND ${now}] mode=${refundMode}; amount=${refundAmount.toFixed(2)}; by=${refundedBy}; reason=${cancelReason}`;
     const notes = [order.notes, audit].filter(Boolean).join('\n');
-    const { data, error } = await supabase.rpc('refund_and_cancel_order', {
+    const { data, error } = await supabase.rpc('refund_and_cancel_order_with_wallet_v1', {
       p_order_id: orderId,
       p_expected_updated_at: order.updatedAt,
       p_username: refundedBy,
       p_password: password,
       p_cancel_reason: cancelReason,
       p_refund_audit: audit,
+      p_idempotency_key: `cafe-wallet-refund:${orderId}`,
     });
-    if (error || data !== true) {
+    const refundResult = data as { ok?: boolean } | null;
+    if (error || refundResult?.ok !== true) {
       set({ orders: prev });
       throw new Error(error?.message || 'Refund was not saved. Refresh and try again.');
     }
