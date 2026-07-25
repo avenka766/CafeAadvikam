@@ -96,6 +96,8 @@ const CHART_COLORS = ['#E07A3A', '#2563EB', '#059669', '#F59E0B', '#DC2626', '#7
 const ak = (eid: string, d: number) => `${eid}_${d}`;
 const defaultDay = (): DayAttendance => ({ present: false, half: false, woff: false, bf: false, lunch: false, dinner: false });
 const defaultDecision = (): DeductionDecision => ({ deductAdvance: false, deductOther: true, deductUniform: true, deductESI: false, deductPF: false });
+const weekOffLimit = (employee: Pick<Employee, 'department'>) =>
+  employee.department.trim().toLowerCase() === 'admin office' ? 5 : 4;
 
 // ─── Month helpers ─────────────────────────────────────────────────────────────
 function getMonthMeta(year: number, month: number) {
@@ -786,6 +788,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
     Array.from({ length: daysInMonth }, (_, i) => i + 1).filter(d => att[ak(emp.id, d)]?.woff).length,
     [emp.id, att, daysInMonth]
   );
+  const maxWeekOffs = weekOffLimit(emp);
 
   const toggleDay = (day: number) => {
     const k = ak(emp.id, day);
@@ -799,7 +802,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
       next = { ...cur, present: false, half: true, bf: false, lunch: false, dinner: false };
     } else if (cur.half) {
       // Half → Week Off (if slots remain) or Absent
-      if (woffCount < 4) {
+      if (woffCount < maxWeekOffs) {
         next = { ...cur, present: false, half: false, woff: true, bf: false, lunch: false, dinner: false };
       } else {
         next = { ...cur, present: false, half: false, woff: false, bf: false, lunch: false, dinner: false };
@@ -886,7 +889,7 @@ function AttRow({ emp, att, onUpdate, expanded, onToggle, decision, onDecisionCh
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-emerald-500 inline-block" /> Present</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-yellow-400 inline-block" /> ½ Half Day</span>
-            <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-sky-200 inline-block" /> W = Week Off ({woffCount}/4)</span>
+            <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-sky-200 inline-block" /> W = Week Off ({woffCount}/{maxWeekOffs})</span>
             <span className="flex items-center gap-1 text-[10px] font-body text-muted-foreground"><span className="size-2.5 rounded-sm bg-orange-400 inline-block" /> BF / Lunch / Dinner ₹10</span>
             <span className="ml-auto text-[10px] font-body font-bold text-orange-600">🍽 {'₹'}{canteenTotal}</span>
           </div>
@@ -1836,7 +1839,7 @@ export default function AttendanceSalary() {
         <div className="mx-4 bg-card border border-border rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h2 className="font-display font-bold text-foreground">Daily Attendance — {activeMonth.label}</h2>
-            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Meals ₹10 each. Max 4 week offs/month.</p>
+            <p className="text-[10px] font-body text-muted-foreground mt-0.5">Tap row to expand → tap day: ✓ Present → W Week Off → Absent. Meals ₹10 each. Admin Office staff can take 5 week offs; all other staff can take 4.</p>
           </div>
           {filtered.length === 0
             ? <EmptyState icon="👥" message="No employees found" sub="Add staff in Staff Management to see them here." />
