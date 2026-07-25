@@ -1737,18 +1737,20 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
 
   const saveShop = async () => {
     if (!form.shopName.trim()) throw new Error('Shop name is required.');
-    if (!cleanPhone(form.whatsappNumber)) throw new Error('WhatsApp number is required.');
+    const whatsappNumber = cleanPhone(form.whatsappNumber);
     const payload = {
       shop_name: form.shopName.trim(),
-      whatsapp_number: cleanPhone(form.whatsappNumber),
+      // A shop can be created before its WhatsApp number is known. The contact
+      // can be added later before sending bills or reminders.
+      whatsapp_number: whatsappNumber.length > 10 ? whatsappNumber.slice(-10) : whatsappNumber,
       address: form.address.trim(),
       discount_percent: Number(form.discountPercent) || 0,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
     const result = editingShopId
-      ? await supabase.from('hosur_shops').update(payload).eq('id', editingShopId)
-      : await supabase.from('hosur_shops').insert(payload);
+      ? await supabase.from('hosur_shops').update(payload).eq('id', editingShopId).select('id').single()
+      : await supabase.from('hosur_shops').insert(payload).select('id').single();
     if (result.error) throw result.error;
     setEditingShopId(null);
     setForm({ shopName: '', whatsappNumber: '', address: '', discountPercent: '' });
@@ -1857,7 +1859,7 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
           <Card className="space-y-3">
             <h3 className="font-black">{editingShopId ? 'Edit Shop' : 'Add Shop'}</h3>
             <Field label="Shop name"><input className={inputClass} value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} placeholder="Example: Sri Lakshmi Bakery" /></Field>
-            <Field label="WhatsApp number"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
+            <Field label="WhatsApp number (optional)"><input className={inputClass} value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="10 digit mobile number" /></Field>
             <Field label="Address"><textarea className={cn(inputClass, 'min-h-24 resize-none')} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Shop address" /></Field>
             <Field label="Default Discount % (optional)">
               <input
