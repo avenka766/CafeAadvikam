@@ -16,7 +16,7 @@ const ROLE_GROUPS = [
   },
   {
     label: '🥐 Bakery Workflow',
-    roles: ['receiver_vrsnb', 'receiver_snb', 'store', 'baker', 'sweet_master', 'savouries_master', 'cookies_master', 'puffs_master', 'bakery_master', 'cake_master', 'packing'] as UserRole[],
+    roles: ['receiver_vrsnb', 'receiver_snb', 'store', 'cake_master', 'packing'] as UserRole[],
   },
   {
     label: '🏬 Branch Sales',
