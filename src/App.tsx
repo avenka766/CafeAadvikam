@@ -32,8 +32,6 @@ const CafeOrderTrackingPage = lazy(() => import('@/pages/CafeOrderTrackingPage')
 const AttendanceSalary = lazy(() => import('@/pages/AttendanceSalary'));
 const OrderReceiverDashboard = lazy(() => import('@/bakery/OrderReceiverDashboard'));
 const StoreDashboard = lazy(() => import('@/bakery/StoreDashboard'));
-const BakerDashboard = lazy(() => import('@/bakery/BakerDashboard'));
-const ProductionMasterDashboard = lazy(() => import('@/bakery/ProductionMasterDashboard'));
 const CakeMasterDashboard = lazy(() => import('@/bakery/CakeMasterDashboard'));
 const PackingDashboard = lazy(() => import('@/bakery/PackingDashboard'));
 const BakeryItemManagement = lazy(() => import('@/bakery/BakeryItemManagement'));
@@ -136,8 +134,6 @@ function AppRoutes() {
         <Route path="/bakery/receive/vrsnb" element={<ProtectedRoute allowedRoles={['receiver_vrsnb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/baker"   element={<ProtectedRoute allowedRoles={['baker']}><BakerDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/production" element={<ProtectedRoute allowedRoles={['sweet_master','savouries_master','cookies_master','puffs_master','bakery_master']}><ProductionMasterDashboard /></ProtectedRoute>} />
         <Route path="/bakery/cake-master" element={<ProtectedRoute allowedRoles={['cake_master']}><CakeMasterDashboard /></ProtectedRoute>} />
         <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
         <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
