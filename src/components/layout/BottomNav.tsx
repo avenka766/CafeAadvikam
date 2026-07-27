@@ -241,28 +241,13 @@ export default function BottomNav() {
       { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/store?tab=closure" },
       { label: "Reports", icon: <BarChart3 className="size-5" />, path: "/bakery/store?tab=report" },
     );
-  } else if (currentUser.role === "baker") {
+  } else if (currentUser.role === "planner") {
     navItems.push(
-      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/baker" },
-      { label: "Corrections", icon: <RotateCcw className="size-5" />, path: "/bakery/baker?tab=corrections" },
-      { label: "Done", icon: <History className="size-5" />, path: "/bakery/baker?tab=completed" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/baker?tab=closure" },
-    );
-  } else if (["sweet_master", "savouries_master", "cookies_master", "puffs_master", "bakery_master"].includes(currentUser.role)) {
-    navItems.push(
-      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/production" },
-      { label: "Corrections", icon: <RotateCcw className="size-5" />, path: "/bakery/production?tab=corrections" },
-      { label: "Done", icon: <History className="size-5" />, path: "/bakery/production?tab=completed" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/production?tab=closure" },
-    );
-  } else if (currentUser.role === "packing") {
-    navItems.push(
-      { label: "Orders", icon: <Package className="size-5" />, path: "/bakery/packing" },
-      { label: "Transfer In", icon: <History className="size-5" />, path: "/bakery/packing?tab=transfer-in" },
-      { label: "Billing", icon: <ShoppingCart className="size-5" />, path: "/bakery/packing?tab=billing" },
-      { label: "Leftover", icon: <History className="size-5" />, path: "/bakery/packing?tab=leftover" },
-      { label: "Dispatched", icon: <History className="size-5" />, path: "/bakery/packing?tab=dispatched" },
-      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/packing?tab=closure" },
+      { label: "Orders", icon: <Flame className="size-5" />, path: "/bakery/planner" },
+      { label: "Production", icon: <Package className="size-5" />, path: "/bakery/planner" },
+      { label: "Dispatch", icon: <History className="size-5" />, path: "/bakery/planner" },
+      { label: "Hosur", icon: <ShoppingCart className="size-5" />, path: "/bakery/planner" },
+      { label: "Closure", icon: <WalletCards className="size-5" />, path: "/bakery/planner" },
     );
   } else if (currentUser.role === "branch_vrsnb") {
     navItems.push(

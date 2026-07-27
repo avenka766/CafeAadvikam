@@ -166,39 +166,21 @@ function navForRole(role?: string): NavItem[] {
         { label: 'Daily Closure', path: '/bakery/store?tab=closure', icon: <WalletCards className="size-4" />, group: 'Reports' },
         { label: 'Reports', path: '/bakery/store?tab=report', icon: <ClipboardList className="size-4" />, group: 'Reports' },
       ];
-    case 'baker':
+    case 'planner':
       return [
-        { label: 'Orders', path: '/bakery/baker', icon: <Flame className="size-4" />, group: 'Main' },
-        { label: 'Weight Corrections', path: '/bakery/baker?tab=corrections', icon: <RotateCcw className="size-4" />, group: 'Main' },
-        { label: 'Completed', path: '/bakery/baker?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
-        { label: 'Daily Closure', path: '/bakery/baker?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
-      ];
-    case 'sweet_master':
-    case 'savouries_master':
-    case 'cookies_master':
-    case 'puffs_master':
-    case 'bakery_master':
-      return [
-        { label: 'Orders', path: '/bakery/production', icon: <Flame className="size-4" />, group: 'Main' },
-        { label: 'Weight Corrections', path: '/bakery/production?tab=corrections', icon: <RotateCcw className="size-4" />, group: 'Main' },
-        { label: 'Completed', path: '/bakery/production?tab=completed', icon: <CheckCircle2 className="size-4" />, group: 'Main' },
-        { label: 'Daily Closure', path: '/bakery/production?tab=closure', icon: <BarChart3 className="size-4" />, group: 'Reports' },
+        { label: 'Incoming Orders', path: '/bakery/planner', icon: <Inbox className="size-4" />, group: 'Main' },
+        { label: 'Merged Summary', path: '/bakery/planner', icon: <ClipboardList className="size-4" />, group: 'Main' },
+        { label: 'Production Entry', path: '/bakery/planner', icon: <Flame className="size-4" />, group: 'Main' },
+        { label: 'Dispatch', path: '/bakery/planner', icon: <Truck className="size-4" />, group: 'Main' },
+        { label: 'Cake Dispatch', path: '/bakery/planner', icon: <Cake className="size-4" />, group: 'Main' },
+        { label: 'Transfer In', path: '/bakery/planner', icon: <Truck className="size-4" />, group: 'Operations' },
+        { label: 'Daily Closure', path: '/bakery/planner', icon: <ClipboardList className="size-4" />, group: 'Reports' },
+        { label: 'Leftover / Done', path: '/bakery/planner', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
       ];
     case 'cake_master':
       return [
         { label: "Today's Deliveries", path: '/bakery/cake-master', icon: <CalendarClock className="size-4" />, group: 'Main' },
         { label: 'All Orders', path: '/bakery/cake-master?tab=all', icon: <ClipboardList className="size-4" />, group: 'Main' },
-      ];
-    case 'packing':
-      return [
-        { label: 'Packing Orders / Transfer Out', path: '/bakery/packing', icon: <Package className="size-4" />, group: 'Main' },
-        { label: 'Cake Orders', path: '/bakery/packing?tab=cake-orders', icon: <Cake className="size-4" />, group: 'Main' },
-        { label: 'Corrections', path: '/bakery/packing?tab=corrections', icon: <RotateCcw className="size-4" />, group: 'Main' },
-        { label: 'Transfer In', path: '/bakery/packing?tab=transfer-in', icon: <Truck className="size-4" />, group: 'Main' },
-        { label: 'Billing', path: '/bakery/packing?tab=billing', icon: <ShoppingCart className="size-4" />, group: 'Sales' },
-        { label: 'Leftover Items', path: '/bakery/packing?tab=leftover', icon: <AlertTriangle className="size-4" />, group: 'Stock' },
-        { label: 'Dispatched', path: '/bakery/packing?tab=dispatched', icon: <Truck className="size-4" />, group: 'Stock' },
-        { label: 'Daily Closure', path: '/bakery/packing?tab=closure', icon: <ClipboardList className="size-4" />, group: 'Reports' },
       ];
     case 'receiver_vrsnb':
       return [
