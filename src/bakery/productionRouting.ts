@@ -1,25 +1,10 @@
 import type { BakeryOrderItem } from './types';
 
-export const PRODUCTION_DESTINATIONS = [
-  'sweet_master',
-  'savouries_master',
-  'cookies_master',
-  'puffs_master',
-  'bakery_master',
-  'baker',
-] as const;
-
-export type ProductionDestination = typeof PRODUCTION_DESTINATIONS[number];
+// NOTE: Production-desk destination routing (sweet_master/savouries_master/etc.)
+// was removed with the old Production stage. This file now only classifies
+// items into categories, used for grouping in Store and the Planner's
+// Merged Summary tab.
 export type ProductionCategory = 'Sweets' | 'Savouries' | 'Cookies' | 'Puffs' | 'Bakery' | 'Others';
-
-export const PRODUCTION_LABELS: Record<ProductionDestination, string> = {
-  sweet_master: 'Sweet Master',
-  savouries_master: 'Savouries Master',
-  cookies_master: 'Cookies Master',
-  puffs_master: 'Puffs Master',
-  bakery_master: 'Bakery Master',
-  baker: 'Baker',
-};
 
 export function normalizeProductionCategory(category: string | undefined, itemName: string): ProductionCategory {
   const normalizedCategory = (category || '').trim().toLowerCase();
@@ -41,20 +26,6 @@ export function normalizeProductionCategory(category: string | undefined, itemNa
   return 'Others';
 }
 
-export function destinationForCategory(category: ProductionCategory): ProductionDestination {
-  switch (category) {
-    case 'Sweets': return 'sweet_master';
-    case 'Savouries': return 'savouries_master';
-    case 'Cookies': return 'cookies_master';
-    case 'Puffs': return 'puffs_master';
-    case 'Bakery': return 'bakery_master';
-    default: return 'baker';
-  }
-}
-
-export function destinationForItem(
-  item: BakeryOrderItem,
-  category: string | undefined,
-): ProductionDestination {
-  return destinationForCategory(normalizeProductionCategory(category, item.itemName));
+export function itemCategory(item: BakeryOrderItem, liveCategory?: string): ProductionCategory {
+  return normalizeProductionCategory(liveCategory, item.itemName);
 }

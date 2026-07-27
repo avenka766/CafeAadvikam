@@ -1,10 +1,9 @@
 // src/bakery/types.ts  ← REPLACE EXISTING FILE
 
-import type { ProductionDestination } from './productionRouting';
 
-export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'baker' | 'sweet_master' | 'savouries_master' | 'cookies_master' | 'puffs_master' | 'bakery_master' | 'packing';
+export type BakeryRole = 'receiver_vrsnb' | 'receiver_snb' | 'store' | 'cake_master' | 'planner';
 
-export type WorkflowStatus = 'pending' | 'processing' | 'baking' | 'correction_required' | 'partially_packed' | 'packed' | 'dispatched';
+export type WorkflowStatus = 'pending' | 'accepted' | 'store_confirmed' | 'produced' | 'dispatched';
 
 export interface BakeryOrderItem {
   itemId: string;
@@ -42,16 +41,20 @@ export interface BakeryOrder {
   expectedOutput?: number;
   materialsCalculatedAt?: string;
   preparedItems?: PreparedItem[];
-  /** Items the baker has entered a prepared quantity for but not yet sent to packing. */
-  stagedItems?: PreparedItem[];
   sentToPackingAt?: string;
   dispatchLog?: DispatchEntry[];
   targetBranch?: Branch;
   /** Original Store order number when this is a partial batch sent to Baker. */
   storeSourceOrderNumber?: number;
   storeSendRequestId?: string;
-  /** Production desk responsible for this batch. Legacy null values belong to Baker. */
-  productionDestination?: ProductionDestination;
+  /** Planner-entered actual production quantities per item. */
+  producedItems?: PreparedItem[];
+  /** Per-branch dispatch quantities: { [branch]: { [itemId]: qty } }, auto-split, manually overridable. */
+  dispatchSplit?: Record<string, Record<string, number>>;
+  /** 'pending' = active in Planner, 'done' = fully dispatched/reconciled. */
+  leftoverStatus?: 'pending' | 'done';
+  storeConfirmedAt?: string;
+  plannerNotes?: string;
   /** U-14 FIX: special instructions or notes attached to the bakery order */
   notes?: string;
   correctionRequest?: {

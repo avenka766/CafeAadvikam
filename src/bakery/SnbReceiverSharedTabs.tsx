@@ -64,7 +64,7 @@ function StatusMessage({ error, success }: { error?: string; success?: string })
 }
 
 export function LiveOrderStatusPanel({ orders, loading, onRefresh }: { orders: BakeryOrder[]; loading: boolean; onRefresh: () => void }) {
-  const stages: BakeryOrder["status"][] = ["pending", "processing", "baking", "packed", "dispatched"];
+  const stages: BakeryOrder["status"][] = ["pending", "accepted", "store_confirmed", "produced", "dispatched"];
   const active = useMemo(
     () => [...orders].sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()),
     [orders],

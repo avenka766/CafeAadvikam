@@ -33,8 +33,6 @@ import InvoiceTab from './InvoiceTab';
 import { SNB_ITEMS } from '@/branch/snbItems';
 import { VRSNB_ITEMS } from '@/branch/vrsnbItems';
 import {
-  PRODUCTION_LABELS,
-  destinationForCategory,
   normalizeProductionCategory,
   type ProductionCategory,
 } from './productionRouting';
@@ -465,7 +463,7 @@ function ItemRow({ order, item, category, selectionEnabled = false, selected = f
 
 // ─── Order Card ──────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: BakeryOrder }) {
-  const { sendToProduction, acceptOrder } = useBakeryStore();
+  const { confirmStock, acceptOrder } = useBakeryStore();
   const { deductMaterials } = useStoreStockStore();
   const bakeryItems = useBakeryItemsStore(s => s.items);
   const currentUser = useAuthStore(s => s.currentUser);
@@ -474,7 +472,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
   const [accepting,  setAccepting]  = useState(false);
   const [accepted,   setAccepted]   = useState(order.status !== 'pending');
   const [sending,    setSending]    = useState(false);
-  const [sent,       setSent]       = useState(order.status !== 'pending' && order.status !== 'processing');
+  const [sent,       setSent]       = useState(order.status !== 'pending' && order.status !== 'accepted');
   const [sendError,  setSendError]  = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
@@ -482,7 +480,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
 
   useEffect(() => {
     setAccepted(order.status !== 'pending');
-    setSent(order.status !== 'pending' && order.status !== 'processing');
+    setSent(order.status !== 'pending' && order.status !== 'accepted');
   }, [order.status]);
 
   useEffect(() => {
@@ -545,22 +543,11 @@ function OrderCard({ order }: { order: BakeryOrder }) {
     return false;
   }, [selectedEntries, stockItems]);
 
-  const handleSendToBaker = async () => {
+  const handleConfirmStock = async () => {
     if (sent || selectedIndexes.length === 0) return;
     setSending(true); setSendError(null); setSendNotice(null);
     try {
-      const signature = [...selectedIndexes].sort((a, b) => a - b).join(',');
-      if (!sendRequest.current || sendRequest.current.signature !== signature) {
-        sendRequest.current = { signature, id: crypto.randomUUID() };
-      }
-      const selections = selectedEntries.map(({ item, index }) => {
-        const category = storeOrderCategory(item, bakeryItems);
-        return { index, destination: destinationForCategory(category) };
-      });
-      const result = await sendToProduction(order.id, selections, sendRequest.current.id);
-      setSent(result.remainingCount === 0);
-
-      // Deduct only the selected lines after the atomic Baker send succeeds.
+      // Deduct stock for the selected lines, then hand the order to Planner.
       if (allMats.length > 0) {
         const ctx: DeductionContext = {
           orderId:     order.id,
@@ -568,19 +555,17 @@ function OrderCard({ order }: { order: BakeryOrder }) {
           deductedBy:  currentUser?.displayName ?? 'Store',
         };
         const warn = await deductMaterials(
-          allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })), // BUG-FIX: pass unit
+          allMats.map(m => ({ name: m.material, qty: m.quantity, unit: m.unit })),
           ctx,
         );
         if (warn) console.warn('Stock deduction note:', warn);
       }
+      await confirmStock(order.id);
+      setSent(true);
       setSelectedIndexes([]);
-      sendRequest.current = null;
-      const destinations = result.batches.map(batch => PRODUCTION_LABELS[batch.destination]).join(', ');
-      setSendNotice(result.remainingCount > 0
-        ? `${selectedEntries.length} selected item${selectedEntries.length === 1 ? '' : 's'} sent to ${destinations}. ${result.remainingCount} item${result.remainingCount === 1 ? '' : 's'} remain in this Store order.`
-        : `All selected items were sent to ${destinations}.`);
+      setSendNotice(`${selectedEntries.length} item${selectedEntries.length === 1 ? '' : 's'} confirmed and sent to Planner for production.`);
     } catch (sendFailure) {
-      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to send selected items. Please try again.');
+      setSendError(sendFailure instanceof Error ? sendFailure.message : 'Failed to confirm stock. Please try again.');
     } finally {
       setSending(false);
     }
@@ -677,7 +662,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
               <thead className="bg-muted/40 text-left text-[9px] uppercase text-muted-foreground"><tr><th className="px-3 py-2">Item</th><th className="px-3 py-2">Category</th><th className="px-3 py-2 text-right">Quantity</th><th className="w-10"></th></tr></thead>
               <tbody>{selectedEntries.map(({ item, index }) => {
                 const category = storeOrderCategory(item, bakeryItems);
-                return <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{PRODUCTION_LABELS[destinationForCategory(category)]}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>;
+                return <tr key={`${item.itemId}-${index}`} className="border-t border-border"><td className="px-3 py-2 font-semibold">{item.itemName}</td><td className="px-3 py-2 text-muted-foreground">{category}</td><td className="px-3 py-2 text-right font-bold">{item.quantity} {item.dispatchUnit || 'kg'}</td><td className="px-2 py-1"><button type="button" onClick={() => toggleIndex(index)} title="Remove selection" className="rounded-lg p-1.5 text-muted-foreground hover:bg-red-50 hover:text-red-600"><X className="size-3.5" /></button></td></tr>;
               })}</tbody>
             </table></div>
           </div>}
@@ -694,7 +679,7 @@ function OrderCard({ order }: { order: BakeryOrder }) {
                 : <><CheckCircle2 className="size-4" /> Accept Order</>}
             </button>
           ) : (
-            <button onClick={handleSendToBaker} disabled={sending || sent || selectedEntries.length === 0}
+            <button onClick={handleConfirmStock} disabled={sending || sent || selectedEntries.length === 0}
               className={cn(
                 'w-full h-12 rounded-xl text-sm font-body font-bold flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 mt-1',
                 sent ? 'bg-emerald-100 text-emerald-700' : 'cafe-gradient text-primary-foreground shadow-md'
@@ -1244,7 +1229,7 @@ function OrdersTab() {
     return () => { unsubOrders(); unsubStock(); unsubBakeryItems(); };
   }, [fetchOrders, loadStock, loadAllItems, subscribeOrders, subscribeStock, subscribeBakeryItems]);
 
-  const pending = orders.filter(o => o.status === 'pending' || o.status === 'processing');
+  const pending = orders.filter(o => o.status === 'pending' || o.status === 'accepted');
 
   const refreshNow = async () => {
     if (refreshing) return;
@@ -1385,7 +1370,7 @@ function StoreHistoryTab() {
     return () => unsubOrders();
   }, [fetchOrders, subscribeOrders]);
 
-  const historyOrders = orders.filter(o => ['baking', 'partially_packed', 'packed', 'dispatched'].includes(o.status));
+  const historyOrders = orders.filter(o => ['store_confirmed', 'produced', 'dispatched'].includes(o.status));
 
   if (initialLoading) return <div className="flex justify-center py-16"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>;
 
@@ -2080,8 +2065,8 @@ export default function StoreDashboard() {
 
   const requestedTab = searchParams.get('tab') as StoreDashboardTab | null;
   const tab: StoreDashboardTab = requestedTab && STORE_TABS.includes(requestedTab) ? requestedTab : 'orders';
-  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'processing');
-  const sentOrders = orders.filter(o => ['baking','partially_packed','packed','dispatched'].includes(o.status));
+  const pending    = orders.filter(o => o.status === 'pending' || o.status === 'accepted');
+  const sentOrders = orders.filter(o => ['store_confirmed','produced','dispatched'].includes(o.status));
   const uniqueStockItems = useMemo(() => {
     const byName = new Map<string, typeof stockItems[number]>();
     stockItems.forEach((item) => {

@@ -3,26 +3,23 @@ import { supabase } from '@/lib/supabase';
 import { makeSingletonSubscriber } from '@/lib/realtimeChannel';
 import type { BakeryOrder, BakeryOrderItem, PreparedItem, DispatchEntry, WorkflowStatus, Branch } from './types';
 import { useNotificationStore } from './notificationStore'; // BUG #16 FIX: needed to fire baker shortage notifications
-import type { ProductionDestination } from './productionRouting';
 
 interface BakeryState {
   orders: BakeryOrder[];
   loading: boolean;
   // FIX: added `silent` param — background polls pass true so loading stays false,
   // preventing the StoreDashboard list from unmounting and resetting card state.
-  fetchOrders: (silent?: boolean, force?: boolean, destination?: ProductionDestination) => Promise<void>;
+  fetchOrders: (silent?: boolean, force?: boolean) => Promise<void>;
   submitOrder: (items: BakeryOrderItem[], createdBy: string, targetBranch: Branch, notes?: string) => Promise<void>;
   acceptOrder: (orderId: string) => Promise<void>;
   updateExpectedOutput: (orderId: string, qty: number) => Promise<void>;
-  sendToProduction: (orderId: string, selections: Array<{ index: number; destination: ProductionDestination }>, requestId: string) => Promise<{ batches: Array<{ orderNumber: number; destination: ProductionDestination; itemCount: number }>; remainingCount: number }>;
-  submitPrepared: (orderId: string, preparedItems: PreparedItem[]) => Promise<void>;
-  addStagedItem: (orderId: string, item: PreparedItem) => Promise<void>;
-  removeStagedItem: (orderId: string, itemId: string) => Promise<void>;
-  sendStagedToPacking: (orderId: string) => Promise<void>;
-  returnForCorrection: (orderId: string, itemIds: string[], reason: string) => Promise<void>;
+  confirmStock: (orderId: string) => Promise<void>;
+  recordProduction: (orderId: string, producedItems: PreparedItem[]) => Promise<void>;
+  setDispatchSplit: (orderId: string, split: Record<string, Record<string, number>>) => Promise<void>;
   submitDispatch: (orderId: string, entry: Omit<DispatchEntry, 'id'>) => Promise<void>;
   deleteDispatchEntry: (orderId: string, entryId: string) => Promise<void>;
-  subscribe: (destination?: ProductionDestination) => () => void; // returns unsubscribe fn
+  markDone: (orderId: string) => Promise<void>;
+  subscribe: () => () => void; // returns unsubscribe fn
 }
 
 export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
@@ -37,19 +34,22 @@ export function rowToOrder(d: Record<string, unknown>): BakeryOrder {
     expectedOutput: d.expected_output as number | undefined,
     materialsCalculatedAt: d.materials_calculated_at as string | undefined,
     preparedItems: (d.prepared_items as PreparedItem[]) || [],
-    stagedItems: (d.staged_items as PreparedItem[]) || [],
+    producedItems: (d.produced_items as PreparedItem[]) || [],
+    dispatchSplit: (d.dispatch_split as Record<string, Record<string, number>>) || {},
+    leftoverStatus: (d.leftover_status as 'pending' | 'done') || 'pending',
+    storeConfirmedAt: d.store_confirmed_at as string | undefined,
+    plannerNotes: d.planner_notes as string | undefined,
     sentToPackingAt: d.sent_to_packing_at as string | undefined,
     dispatchLog: (d.dispatch_log as DispatchEntry[]) || [],
     targetBranch: d.target_branch as Branch | undefined,
     storeSourceOrderNumber: d.store_source_order_number as number | undefined,
     storeSendRequestId: d.store_send_request_id as string | undefined,
-    productionDestination: (d.production_destination as ProductionDestination | null) ?? undefined,
     notes: d.notes as string | undefined, // U-14 FIX
     correctionRequest: d.correction_request as BakeryOrder['correctionRequest'],
   };
 }
 
-const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, staged_items, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, production_destination, notes, correction_request';
+const BAKERY_ORDER_COLUMNS = 'id, order_number, items, status, created_by, created_at, expected_output, materials_calculated_at, prepared_items, produced_items, dispatch_split, leftover_status, store_confirmed_at, planner_notes, sent_to_packing_at, dispatch_log, target_branch, store_source_order_number, store_send_request_id, notes, correction_request';
 let bakeryFetchInFlight: Promise<void> | null = null;
 let bakeryLastFetchedAt = 0;
 const BAKERY_FETCH_FRESH_MS = 60_000;
@@ -95,7 +95,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
   // dispatched etc.), never by date, and a bakery order moves from placed to
   // dispatched within days — so 60 days comfortably covers real operational use
   // while stopping this 15 s poll from re-fetching the entire order history forever.
-  fetchOrders: async (silent = false, force = false, destination) => {
+  fetchOrders: async (silent = false, force = false) => {
     if (bakeryFetchInFlight) return bakeryFetchInFlight;
     if (!force && silent && Date.now() - bakeryLastFetchedAt < BAKERY_FETCH_FRESH_MS) return;
 
@@ -104,16 +104,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
       try {
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - 60);
-        let query = supabase
+        const query = supabase
           .from('bakery_orders')
           .select(BAKERY_ORDER_COLUMNS)
           .gte('created_at', cutoff.toISOString())
           .order('created_at', { ascending: false });
-        if (destination) {
-          query = destination === 'baker'
-            ? query.or('production_destination.is.null,production_destination.eq.baker')
-            : query.eq('production_destination', destination);
-        }
         const { data, error } = await query;
         if (!error && data) {
           set({ orders: data.map(d => rowToOrder(d as Record<string, unknown>)) });
@@ -162,10 +157,10 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     const order = get().orders.find(o => o.id === orderId);
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ status: 'processing' })
+      .update({ status: 'accepted' })
       .eq('id', orderId);
     if (error) throw error;
-    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'processing' } : o) }));
+    set(s => ({ orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'accepted' } : o) }));
     if (order?.notes) {
       const { useAuthStore } = await import('@/stores/authStore');
       const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
@@ -189,289 +184,99 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     }));
   },
 
-  sendToProduction: async (orderId, selections, requestId) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) throw new Error('The Store order is no longer available.');
-    const user = (await import('@/stores/authStore')).useAuthStore.getState().currentUser;
-    const actor = user?.displayName || user?.username || 'Store';
-    const allBaker = selections.every((selection) => selection.destination === 'baker');
-    const response = allBaker
-      ? await supabase.rpc('send_selected_bakery_items_to_baker', {
-          p_order_id: orderId,
-          p_selected_indexes: selections.map((selection) => selection.index),
-          p_request_id: requestId,
-          p_actor: actor,
-        })
-      : await supabase.rpc('send_selected_bakery_items_to_production', {
-          p_order_id: orderId,
-          p_selections: selections,
-          p_request_id: requestId,
-          p_actor: actor,
-        });
-    if (response.error) throw response.error;
-    const legacyResult = response.data as { sentOrderNumber?: number; selectedCount?: number; remainingCount?: number } | null;
-    const result = allBaker
-      ? {
-          batches: legacyResult?.sentOrderNumber
-            ? [{ orderNumber: legacyResult.sentOrderNumber, destination: 'baker' as ProductionDestination, itemCount: Number(legacyResult.selectedCount || selections.length) }]
-            : [],
-          remainingCount: Number(legacyResult?.remainingCount || 0),
-        }
-      : response.data as {
-          batches?: Array<{ orderNumber?: number; destination?: ProductionDestination; itemCount?: number }>;
-          remainingCount?: number;
-        } | null;
-    const batches = (result?.batches ?? []).flatMap(batch =>
-      batch.orderNumber && batch.destination
-        ? [{ orderNumber: batch.orderNumber, destination: batch.destination, itemCount: Number(batch.itemCount || 0) }]
-        : []
-    );
-    if (batches.length === 0) throw new Error('Production batches were not returned.');
-    await get().fetchOrders(true);
-    if (order?.notes) {
-      const { useAuthStore } = await import('@/stores/authStore');
-      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
-      const user = useAuthStore.getState().currentUser;
-      const acceptedBy = user?.displayName || user?.username || 'Store';
-      const orderNo = order.notes.split('|')[0]?.trim();
-      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'baking', acceptedBy);
-    }
-    if (order?.targetBranch === 'VRSNB') {
-      const { useAuthStore } = await import('@/stores/authStore');
-      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
-      const user = useAuthStore.getState().currentUser;
-      const acceptedBy = user?.displayName || user?.username || 'Store';
-      const acceptedAt = new Date().toLocaleString('en-IN');
-      useBranchOpsStore.getState().addNotification({
-        branch: 'VRSNB',
-        type: 'Store Confirmation',
-        title: 'Store accepted VRSNB advance order',
-        details: `Store accepted bakery order #${order.orderNumber} by ${acceptedBy} at ${acceptedAt}. ${order.notes || ''}`,
-        raisedBy: acceptedBy,
-      });
-    }
-    if (user) {
-      const { useActivityLogStore } = await import('./activityLogStore');
-      void useActivityLogStore.getState().log({
-        staffId: user.id,
-        staffName: user.displayName,
-        role: user.role,
-        action: 'Sent Selected Items to Production',
-        detail: `Order #${order.orderNumber}: ${selections.length} item(s) sent in ${batches.length} production batch(es); ${Number(result.remainingCount || 0)} item(s) remain at Store`,
-        branch: order.targetBranch,
-      });
-    }
-    return { batches, remainingCount: Number(result.remainingCount || 0) };
-  },
-
-  submitPrepared: async (orderId, preparedItems) => {
+  // Store confirms it has deducted raw-material stock against the Planner's
+  // merged order — replaces the old "send to production" step.
+  confirmStock: async (orderId) => {
+    const now = new Date().toISOString();
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ prepared_items: preparedItems, sent_to_packing_at: new Date().toISOString(), status: 'packed' })
+      .update({ status: 'store_confirmed', store_confirmed_at: now })
+      .eq('id', orderId);
+    if (error) throw new Error('Failed to confirm stock — please try again.');
+    set(s => ({
+      orders: s.orders.map(o => o.id === orderId ? { ...o, status: 'store_confirmed', storeConfirmedAt: now } : o),
+    }));
+    const { useAuthStore } = await import('@/stores/authStore');
+    const user = useAuthStore.getState().currentUser;
+    if (user) {
+      const { useActivityLogStore } = await import('./activityLogStore');
+      const order = get().orders.find(o => o.id === orderId);
+      void useActivityLogStore.getState().log({
+        staffId: user.id, staffName: user.displayName, role: user.role,
+        action: 'Confirmed Stock', detail: `Order #${order?.orderNumber} — stock deducted by Store`,
+        branch: order?.targetBranch,
+      });
+    }
+  },
+
+  // Planner enters the actual produced quantity per item, next to the order.
+  // Replaces the old baker "submitPrepared"/staging flow.
+  recordProduction: async (orderId, producedItems) => {
+    const { error } = await supabase
+      .from('bakery_orders')
+      .update({ produced_items: producedItems, status: 'produced' })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({
-      orders: s.orders.map(o =>
-        o.id === orderId
-          ? { ...o, preparedItems, sentToPackingAt: new Date().toISOString(), status: 'packed' }
-          : o
-      ),
+      orders: s.orders.map(o => o.id === orderId ? { ...o, producedItems, status: 'produced' } : o),
     }));
 
-    // BUG #16 FIX: pushBakerShortage was defined in notificationStore but never called.
-    // Compare each prepared qty against the requested qty and notify admin of any shortfall.
     const order = get().orders.find(o => o.id === orderId);
-    const { useAuthStore } = await import('@/stores/authStore');
-    const user = useAuthStore.getState().currentUser;
-    if (order?.notes) {
-      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
-      const by = user?.displayName || user?.username || 'Baker';
-      const orderNo = order.notes.split('|')[0]?.trim();
-      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'packing', by);
-    }
     if (order) {
-      // FIX B1+B5: compare in the receiver's original unit (pcs or kg).
-      // item.quantity is always in kg (even for pcs items after conversion).
-      // For pcs items we must use originalPcs as "requested" and convert
-      // the baker's kg output → pcs so the numbers and units actually match.
       const { kgToPcs } = await import('./itemMatcher');
       const shortages = order.items
         .map(item => {
-          const prep   = preparedItems.find(p => p.itemId === item.itemId);
-          const isPcs  = item.dispatchUnit === 'pcs';
-          // requested: receiver's original entry
-          const requested = isPcs && item.originalPcs != null
-            ? item.originalPcs
-            : item.quantity;
-          // prepared: baker always submits in kg; convert to pcs if needed
-          const prepKg  = prep?.quantityPrepared ?? 0;
-          const prepared = isPcs && item.weightGrams != null
-            ? (kgToPcs(prepKg, item.weightGrams) ?? prepKg)
-            : prepKg;
-          return {
-            itemName:  item.itemName,
-            requested,
-            prepared,
-            unit: isPcs ? 'pcs' : 'kg',
-          };
+          const prod = producedItems.find(p => p.itemId === item.itemId);
+          const isPcs = item.dispatchUnit === 'pcs';
+          const requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
+          const prodKg = prod?.quantityPrepared ?? 0;
+          const produced = isPcs && item.weightGrams != null
+            ? (kgToPcs(prodKg, item.weightGrams) ?? prodKg)
+            : prodKg;
+          return { itemName: item.itemName, requested, prepared: produced, unit: isPcs ? 'pcs' : 'kg' };
         })
         .filter(x => x.prepared < x.requested - 0.001);
       if (shortages.length > 0) {
-        // Fire-and-forget — notification failure must not block the baker workflow
-        void useNotificationStore.getState()
-          .pushBakerShortage(orderId, String(order.orderNumber), shortages);
+        void useNotificationStore.getState().pushBakerShortage(orderId, String(order.orderNumber), shortages);
       }
-      // Activity log
       const { useAuthStore } = await import('@/stores/authStore');
       const user = useAuthStore.getState().currentUser;
       if (user) {
         const { useActivityLogStore } = await import('./activityLogStore');
         void useActivityLogStore.getState().log({
-          staffId:   user.id,
-          staffName: user.displayName,
-          role:      user.role,
-          action:    'Submitted Prepared Items',
-          detail:    `Order #${order.orderNumber} — ${preparedItems.length} item(s) sent to packing`,
-          branch:    order.targetBranch,
+          staffId: user.id, staffName: user.displayName, role: user.role,
+          action: 'Recorded Production', detail: `Order #${order.orderNumber} — ${producedItems.length} item(s) produced`,
+          branch: order.targetBranch,
         });
       }
     }
   },
 
-  // Baker enters a prepared qty for one item and taps "Add" — this is saved
-  // immediately (not just held in the browser) so a refresh or the 15s
-  // background poll never loses in-progress work. Does NOT touch status or
-  // send anything to packing yet.
-  addStagedItem: async (orderId, item) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) return;
-    const existing = order.stagedItems ?? [];
-    const updated = [...existing.filter(s => s.itemId !== item.itemId), item];
+  // Auto-calculated (proportional to each branch's original order share) by
+  // default in the UI; this just persists whatever split the planner confirms,
+  // whether auto or manually overridden.
+  setDispatchSplit: async (orderId, split) => {
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ staged_items: updated })
+      .update({ dispatch_split: split })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({
-      orders: s.orders.map(o => o.id === orderId ? { ...o, stagedItems: updated } : o),
+      orders: s.orders.map(o => o.id === orderId ? { ...o, dispatchSplit: split } : o),
     }));
   },
 
-  // Baker removes an item from the staged (not-yet-sent) table before sending,
-  // moving it back to "Pending".
-  removeStagedItem: async (orderId, itemId) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) return;
-    const updated = (order.stagedItems ?? []).filter(s => s.itemId !== itemId);
+  markDone: async (orderId) => {
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ staged_items: updated })
+      .update({ leftover_status: 'done' })
       .eq('id', orderId);
     if (error) throw error;
     set(s => ({
-      orders: s.orders.map(o => o.id === orderId ? { ...o, stagedItems: updated } : o),
+      orders: s.orders.map(o => o.id === orderId ? { ...o, leftoverStatus: 'done' } : o),
     }));
   },
 
-  // Sends whatever is currently staged to Packing. Items not yet staged stay
-  // pending on the order — the order only fully leaves "Orders" once every
-  // item has been sent across one or more of these batches.
-  sendStagedToPacking: async (orderId) => {
-    const order = get().orders.find(o => o.id === orderId);
-    if (!order) return;
-    const staged = order.stagedItems ?? [];
-    if (staged.length === 0) return;
-
-    const existingPrepared = order.preparedItems ?? [];
-    const mergedPrepared = [
-      ...existingPrepared.filter(p => !staged.some(s => s.itemId === p.itemId)),
-      ...staged,
-    ];
-    const isFullyPrepared = order.items.every(i => mergedPrepared.some(p => p.itemId === i.itemId));
-    const newStatus: WorkflowStatus = isFullyPrepared ? 'packed' : 'partially_packed';
-
-    const updatePayload: Record<string, unknown> = {
-      prepared_items: mergedPrepared,
-      staged_items: [],
-      status: newStatus,
-      correction_request: null,
-    };
-    const sentToPackingAt = isFullyPrepared ? new Date().toISOString() : order.sentToPackingAt;
-    if (isFullyPrepared) updatePayload.sent_to_packing_at = sentToPackingAt;
-
-    const { error } = await supabase
-      .from('bakery_orders')
-      .update(updatePayload)
-      .eq('id', orderId);
-    if (error) throw error;
-
-    set(s => ({
-      orders: s.orders.map(o =>
-        o.id === orderId
-          ? { ...o, preparedItems: mergedPrepared, stagedItems: [], status: newStatus, sentToPackingAt, correctionRequest: undefined }
-          : o
-      ),
-    }));
-
-    if (order.notes) {
-      const { useAuthStore } = await import('@/stores/authStore');
-      const { useBranchOpsStore } = await import('@/branch/branchOpsStore');
-      const user = useAuthStore.getState().currentUser;
-      const by = user?.displayName || user?.username || 'Baker';
-      const orderNo = order.notes.split('|')[0]?.trim();
-      if (orderNo) useBranchOpsStore.getState().updateAdvanceStoreStatusByOrderNo(orderNo, 'packing', by);
-    }
-
-    // Only run the shortage check once the order is fully prepared — comparing
-    // a partial batch against the full order would falsely flag every
-    // not-yet-staged item as a 100% shortage.
-    if (isFullyPrepared) {
-      const { kgToPcs } = await import('./itemMatcher');
-      const shortages = order.items
-        .map(item => {
-          const prep = mergedPrepared.find(p => p.itemId === item.itemId);
-          const isPcs = item.dispatchUnit === 'pcs';
-          const requested = isPcs && item.originalPcs != null ? item.originalPcs : item.quantity;
-          const prepKg = prep?.quantityPrepared ?? 0;
-          const prepared = isPcs && item.weightGrams != null
-            ? (kgToPcs(prepKg, item.weightGrams) ?? prepKg)
-            : prepKg;
-          return { itemName: item.itemName, requested, prepared, unit: isPcs ? 'pcs' : 'kg' };
-        })
-        .filter(x => x.prepared < x.requested - 0.001);
-      if (shortages.length > 0) {
-        void useNotificationStore.getState()
-          .pushBakerShortage(orderId, String(order.orderNumber), shortages);
-      }
-    }
-
-    const { useAuthStore } = await import('@/stores/authStore');
-    const user = useAuthStore.getState().currentUser;
-    if (user) {
-      const { useActivityLogStore } = await import('./activityLogStore');
-      void useActivityLogStore.getState().log({
-        staffId:   user.id,
-        staffName: user.displayName,
-        role:      user.role,
-        action:    'Submitted Prepared Items',
-        detail:    `Order #${order.orderNumber} — ${staged.length} item(s) sent to packing${isFullyPrepared ? ' (order complete)' : ' (partial)'}`,
-        branch:    order.targetBranch,
-      });
-    }
-  },
-
-  returnForCorrection: async (orderId, itemIds, reason) => {
-    if (itemIds.length === 0) throw new Error('Select at least one item to return.');
-    if (!reason.trim()) throw new Error('Enter the weight correction reason.');
-    const { data, error } = await supabase.rpc('return_bakery_order_for_correction_secure', {
-      p_order_id: orderId,
-      p_item_ids: itemIds,
-      p_reason: reason.trim(),
-    });
-    if (error) throw error;
-    const returned = rowToOrder(data as Record<string, unknown>);
-    set(state => ({ orders: state.orders.map(order => order.id === orderId ? returned : order) }));
-  },
 
   submitDispatch: async (orderId, entry) => {
     const newEntry: DispatchEntry = { ...entry, id: crypto.randomUUID() };
@@ -480,7 +285,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #3 FIX: fetching from DB avoids stale React state in the dispatch log.
     const { data: freshOrder, error: fetchErr } = await supabase
       .from('bakery_orders')
-      .select('dispatch_log, prepared_items, order_number, items, notes, target_branch')
+      .select('dispatch_log, produced_items, order_number, items, notes, target_branch')
       .eq('id', orderId)
       .single();
     if (fetchErr || !freshOrder) {
@@ -503,7 +308,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // FIX B7: for pcs items, compare totalDispatched (pcs) against flooredPcs
     // (Math.floor of kg→pcs conversion), NOT against raw quantityPrepared (kg).
     // Without this, 7 pcs dispatched from 1.5 kg never satisfies "7 >= 1.5" → stuck forever.
-    const preparedItems = (freshOrder.prepared_items as PreparedItem[]) || [];
+    const preparedItems = (freshOrder.produced_items as PreparedItem[]) || [];
 
     // Reuse the single fresh-order query for item metadata and notifications.
     const fullOrderData = freshOrder;
@@ -536,9 +341,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // the order (and its still-pending items) remains visible to the baker.
     const isOrderFullyPrepared = orderItems.length > 0 &&
       orderItems.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
-    const newStatus: WorkflowStatus = !isOrderFullyPrepared
-      ? 'partially_packed'
-      : allFullyDispatched ? 'dispatched' : 'packed';
+    const newStatus: WorkflowStatus = allFullyDispatched && isOrderFullyPrepared ? 'dispatched' : 'produced';
 
     const { error } = await supabase.rpc('append_bakery_dispatch_log', {
       p_order_id: orderId,
@@ -716,7 +519,7 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     // BUG #6 FIX: don't use log.length to decide status — check actual coverage.
     // If remaining dispatches still fully cover all prepared items → dispatched.
     // Otherwise (or if log is empty) → back to 'packed' so packing can continue.
-    const preparedItems = order.preparedItems || [];
+    const preparedItems = order.producedItems || [];
     const allStillCovered = updatedLog.length > 0 && preparedItems.length > 0 && preparedItems.every(p => {
       const orderItem = order.items.find(i => i.itemName === p.itemName);
       const totalDispatched = updatedLog
@@ -730,13 +533,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
     });
     const isOrderFullyPrepared = order.items.length > 0 &&
       order.items.every(oi => preparedItems.some(p => p.itemId === oi.itemId));
-    const newStatus: WorkflowStatus = !isOrderFullyPrepared
-      ? 'partially_packed'
-      : allStillCovered ? 'dispatched' : 'packed';
+    const newStatus: WorkflowStatus = allStillCovered && isOrderFullyPrepared ? 'dispatched' : 'produced';
 
     const { error } = await supabase
       .from('bakery_orders')
-      .update({ dispatch_log: updatedLog, status: newStatus })
+      .update({ dispatch_log: updatedLog, status: newStatus, leftover_status: 'pending' })
       .eq('id', orderId);
     if (error) return;
 
@@ -764,12 +565,11 @@ export const useBakeryStore = create<BakeryState>((set, get) => ({
 
   // Realtime subscription — any INSERT/UPDATE to bakery_orders triggers immediate re-fetch.
   // Returns an unsubscribe fn — call on unmount to avoid duplicate channels.
-  subscribe: (destination) => makeSingletonSubscriber(`bakery-orders-live-${destination || 'all'}`, (ch) =>
+  subscribe: () => makeSingletonSubscriber('bakery-orders-live-all', (ch) =>
     ch.on('postgres_changes', {
       event: '*',
       schema: 'public',
       table: 'bakery_orders',
-      ...(destination && destination !== 'baker' ? { filter: `production_destination=eq.${destination}` } : {}),
     },
       (payload) => {
         const event = payload as { eventType?: string; new?: Record<string, unknown>; old?: { id?: string } };

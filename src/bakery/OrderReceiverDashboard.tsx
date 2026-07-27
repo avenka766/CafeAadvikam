@@ -530,11 +530,11 @@ function statusBadgeClass(status: BakeryOrder["status"]): string {
   switch (status) {
     case "pending":
       return "bg-amber-50 text-amber-700 border-amber-200";
-    case "processing":
+    case "accepted":
       return "bg-blue-50 text-blue-700 border-blue-200";
-    case "baking":
+    case "store_confirmed":
       return "bg-orange-50 text-orange-700 border-orange-200";
-    case "packed":
+    case "produced":
       return "bg-purple-50 text-purple-700 border-purple-200";
     case "dispatched":
       return "bg-emerald-50 text-emerald-700 border-emerald-200";
@@ -546,12 +546,12 @@ function statusBadgeClass(status: BakeryOrder["status"]): string {
 function orderLocationLabel(status: BakeryOrder["status"]) {
   switch (status) {
     case "pending":
-    case "processing":
+    case "accepted":
       return "In Store";
-    case "baking":
-      return "In Baker";
-    case "packed":
-      return "In Packing";
+    case "store_confirmed":
+      return "In Production";
+    case "produced":
+      return "Ready to Dispatch";
     case "dispatched":
       return "Dispatched";
     default:
@@ -1198,7 +1198,7 @@ function PlacedOrdersPanel({
                   </span>
                 </div>
                 <div className="mt-3 grid grid-cols-5 gap-1" aria-label={`Live order status: ${orderLocationLabel(order.status)}`}>
-                  {(["pending", "processing", "baking", "packed", "dispatched"] as const).map((stage, index, stages) => {
+                  {(["pending", "accepted", "store_confirmed", "produced", "dispatched"] as const).map((stage, index, stages) => {
                     const currentIndex = stages.indexOf(order.status);
                     const complete = index <= currentIndex;
                     return (
