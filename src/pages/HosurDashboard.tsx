@@ -44,14 +44,14 @@ import { useBranchStore } from '@/branch/branchStore';
 import { useBranchCatalogStore, type BranchCatalogItem } from '@/stores/branchCatalogStore';
 import { HOSUR_VRSNB_PRICE_LIST } from '@/data/hosurVrsnbPriceList';
 
-const BRANCH = 'Hosur' as const;
+export const BRANCH = 'Hosur' as const;
 const HOSUR_UPI_ID = '328969176350835@cnrb';
 const HOSUR_PAYEE_NAME = 'Sri Nanjundeshwara Bakery';
 const TODAY_ISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 type HosurCounterStatus = { isOpen: boolean; isClosed: boolean; openingCash: number };
 
-async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterStatus> {
+export async function getHosurCounterStatus(date = TODAY_ISO()): Promise<HosurCounterStatus> {
   const { data, error } = await supabase.rpc('get_hosur_counter_status', { p_business_date: date });
   if (error) throw error;
   const status = data as {
@@ -73,7 +73,7 @@ const num = (value: number | null | undefined) =>
   Number(value ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-const cleanPhone = (value: string | null | undefined) => String(value ?? '').replace(/\D/g, '');
+export const cleanPhone = (value: string | null | undefined) => String(value ?? '').replace(/\D/g, '');
 const toDateLabel = (value?: string | null) => {
   if (!value) return '—';
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -97,10 +97,10 @@ type HosurTab =
   | 'reports'
   | 'notifications';
 
-type PaymentType = 'full' | 'credit' | 'partial';
+export type PaymentType = 'full' | 'credit' | 'partial';
 type PaymentMode = 'cash' | 'upi' | 'card' | 'bank' | 'mixed';
 type OrderStatus = 'draft' | 'pending_packing' | 'dispatched' | 'received_confirmed' | 'billing_draft' | 'billed' | 'cancelled';
-type BillStatus = 'draft' | 'confirmed' | 'paid' | 'credit_open' | 'partial_credit' | 'settled' | 'cancelled';
+export type BillStatus = 'draft' | 'confirmed' | 'paid' | 'credit_open' | 'partial_credit' | 'settled' | 'cancelled';
 type DisputeStatus = 'open' | 'approved' | 'rejected' | 'cleared' | 'resolved';
 
 interface HosurShop {
@@ -153,7 +153,7 @@ interface HosurOrderItem {
   receivedQuantity: number;
 }
 
-interface HosurBill {
+export interface HosurBill {
   id: string;
   billNo: string;
   orderId: string | null;
@@ -173,7 +173,7 @@ interface HosurBill {
   whatsappStatus: 'pending' | 'queued' | 'sent' | 'failed' | null;
 }
 
-interface HosurBillItem {
+export interface HosurBillItem {
   id: string;
   billId: string;
   itemName: string;
@@ -214,7 +214,7 @@ interface HosurCreditPayment {
   createdAt: string;
 }
 
-interface HosurWhatsappLog {
+export interface HosurWhatsappLog {
   id: string;
   shopId: string | null;
   shopName: string;
@@ -288,7 +288,7 @@ interface HosurCatalogItem {
   source: 'master' | 'shop';
 }
 
-interface PaymentDraft {
+export interface PaymentDraft {
   paidAmount: string;
   dueDate: string;
   paymentMode: PaymentMode;
@@ -300,7 +300,7 @@ const HOSUR_TABS: HosurTab[] = ['shops', 'newOrder', 'receiving', 'billing', 'cr
 const KG_ITEM_HINTS = ['biscuit', 'cake', 'chips', 'mixture', 'murk', 'nippat', 'boondhi'];
 
 function parseHosurTab(value: string | null): HosurTab {
-  return HOSUR_TABS.includes(value as HosurTab) ? value as HosurTab : 'newOrder';
+  return HOSUR_TABS.includes(value as HosurTab) ? value as HosurTab : 'shops';
 }
 
 function masterItemFor(itemName: string) {
@@ -405,7 +405,7 @@ function mapOrderItem(row: any): HosurOrderItem {
   };
 }
 
-function mapBill(row: any): HosurBill {
+export function mapBill(row: any): HosurBill {
   return {
     id: row.id,
     billNo: row.bill_no ?? '',
@@ -427,7 +427,7 @@ function mapBill(row: any): HosurBill {
   };
 }
 
-function mapBillItem(row: any): HosurBillItem {
+export function mapBillItem(row: any): HosurBillItem {
   return {
     id: row.id,
     billId: row.bill_id,
@@ -539,7 +539,7 @@ function mapNotification(row: any): AdminNotification {
   };
 }
 
-async function notifyAdmin(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
+export async function notifyAdmin(title: string, body: string, refId?: string, refLabel?: string, meta: Record<string, unknown> = {}) {
   const { error } = await supabase.from('admin_notifications').insert({
     type: 'store_item_change',
     title,
@@ -567,7 +567,7 @@ async function notifyBranch(title: string, body: string, refId?: string, refLabe
   if (error) console.error('Hosur branch notification failed:', error.message);
 }
 
-function safeMediaFileName(value: string) {
+export function safeMediaFileName(value: string) {
   return value.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'hosur-bill';
 }
 
@@ -587,7 +587,7 @@ function buildUpiPaymentUrl(amount?: number) {
   return `upi://pay?${params.toString()}`;
 }
 
-async function createWhatsappQrMedia(amount?: number, reference?: string | null) {
+export async function createWhatsappQrMedia(amount?: number, reference?: string | null) {
   const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(amount), {
     width: 720,
     margin: 2,
@@ -603,7 +603,7 @@ async function createWhatsappQrMedia(amount?: number, reference?: string | null)
   };
 }
 
-async function createWhatsappBillDocument(bill: HosurBill, items: HosurBillItem[]) {
+export async function createWhatsappBillDocument(bill: HosurBill, items: HosurBillItem[]) {
   const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
   const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
     width: 640,
@@ -676,7 +676,7 @@ async function createWhatsappBillDocument(bill: HosurBill, items: HosurBillItem[
   };
 }
 
-function base64MediaBlob(base64: string, mimeType: string) {
+export function base64MediaBlob(base64: string, mimeType: string) {
   const binary = window.atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
@@ -698,7 +698,7 @@ function canvasBlob(canvas: HTMLCanvasElement) {
   });
 }
 
-async function createWhatsappBillImage(bill: HosurBill, items: HosurBillItem[]) {
+export async function createWhatsappBillImage(bill: HosurBill, items: HosurBillItem[]) {
   const paymentAmount = bill.creditAmount > 0 ? bill.creditAmount : bill.subtotal;
   const qrDataUrl = await QRCode.toDataURL(buildUpiPaymentUrl(paymentAmount), {
     width: 720,
@@ -803,7 +803,7 @@ async function createWhatsappBillImage(bill: HosurBill, items: HosurBillItem[]) 
   return canvasBlob(canvas);
 }
 
-async function uploadWhatsappMedia(blob: Blob, fileName: string) {
+export async function uploadWhatsappMedia(blob: Blob, fileName: string) {
   const path = `bills/${TODAY_ISO()}/${Date.now()}-${crypto.randomUUID()}-${safeMediaFileName(fileName)}`;
   const { error } = await supabase.storage.from('hosur-whatsapp-media').upload(path, blob, {
     cacheControl: '3600',
@@ -816,7 +816,7 @@ async function uploadWhatsappMedia(blob: Blob, fileName: string) {
   return data.publicUrl;
 }
 
-function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
+export function buildBillMessage(bill: HosurBill, items: HosurBillItem[]) {
   const lines = items.map((item, idx) =>
     `${idx + 1}. ${item.itemName} - ${num(item.quantity)} ${item.unit} × ${money(item.unitPrice)} = ${money(item.lineTotal)}`,
   ).join('\n');
@@ -913,7 +913,7 @@ function fallbackBillNo() {
   return `${prefix}-${crypto.randomUUID().replace(/-/g, '').slice(0, 5).toUpperCase()}`;
 }
 
-async function nextBillNo() {
+export async function nextBillNo() {
   const { data, error } = await supabase.rpc('get_next_hosur_bill_number');
   return error || !data ? fallbackBillNo() : String(data);
 }
@@ -1209,9 +1209,6 @@ export default function HosurDashboard() {
 
   const tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'shops', label: 'Shop Master', icon: Store },
-    { id: 'newOrder', label: 'New Order', icon: ShoppingCart },
-    { id: 'receiving', label: 'Received From Packing', icon: PackageCheck, badge: orders.filter((o) => o.status === 'dispatched').length },
-    { id: 'billing', label: 'Billing', icon: Receipt, badge: draftBills.length },
     { id: 'credit', label: 'Credit Ledger', icon: CreditCard, badge: openCredits.length },
     { id: 'collection', label: 'Payment Collection', icon: WalletCards },
     { id: 'whatsapp', label: 'WhatsApp Logs', icon: MessageCircle, badge: failedWhatsapp.length },
@@ -1666,7 +1663,7 @@ export default function HosurDashboard() {
     <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
       <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="lg:hidden min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
+            <div className="min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
               <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
             </div>
             <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
@@ -1852,7 +1849,10 @@ function ShopMasterTab({ shops, prices, busy, withBusy, priceFor }: {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." />
+        <SectionTitle icon={<Store className="size-5" />} title="Shop Master / Customer Master" subtitle="Maintain shop WhatsApp number, address, and shop-wise price list." action={<button className={softButton} onClick={() => downloadWorkbook(`hosur-shop-master-${TODAY_ISO()}.xls`, [
+          { name: 'Shops', rows: shops.map((s) => ({ Shop: s.shopName, WhatsApp: s.whatsappNumber, Address: s.address, 'Discount %': s.discountPercent, Active: s.isActive ? 'Yes' : 'No' })) },
+          { name: 'Price Lists', rows: prices.map((p) => ({ Shop: shops.find((s) => s.id === p.shopId)?.shopName ?? '', Item: p.itemName, Unit: p.itemUnit, Price: p.unitPrice, Active: p.isActive ? 'Yes' : 'No' })) },
+        ])}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       </div>
       <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
@@ -2469,9 +2469,12 @@ function WhatsappLogsTab({ logs, busy, withBusy, sendWhatsapp }: {
   withBusy: (fn: () => Promise<void>, success?: string) => Promise<void>;
   sendWhatsapp: (args: { shopId?: string | null; shopName: string; phone: string; billId?: string | null; billNo?: string | null; messageType: HosurWhatsappLog['messageType']; body: string; retryLogId?: string }) => Promise<{ status: HosurWhatsappLog['status']; logId?: string; errorMessage?: string | null }>;
 }) {
+  const exportExcel = () => downloadWorkbook(`hosur-whatsapp-log-${TODAY_ISO()}.xls`, [
+    { name: 'WhatsApp Log', rows: logs.map((log) => ({ Shop: log.shopName, 'Bill/Type': log.billNo ?? log.messageType, Phone: log.phone, Status: log.status, 'Sent/Created': toDateTimeLabel(log.sentAt ?? log.createdAt), Error: log.errorMessage ?? '' })) },
+  ]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<MessageCircle className="size-5" />} title="WhatsApp Logs" subtitle="Success/failure status for bill and payment reminder messages. Failed messages can be retried." />
+      <SectionTitle icon={<MessageCircle className="size-5" />} title="WhatsApp Logs" subtitle="Success/failure status for bill and payment reminder messages. Failed messages can be retried." action={<button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button>} />
       <Card className="space-y-2">{logs.length === 0 ? <EmptyState icon={<MessageCircle className="size-6" />} title="No WhatsApp logs yet" /> : logs.map((log) => <div key={log.id} className="rounded-2xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-black">{log.shopName} · {log.billNo ?? log.messageType}</p><p className="text-xs text-muted-foreground">{log.phone} · {toDateTimeLabel(log.sentAt ?? log.createdAt)}</p>{log.errorMessage && <p className="mt-1 text-xs font-semibold text-red-600">{log.errorMessage}</p>}</div><div className="flex items-center gap-2"><Badge tone={statusTone(log.status)}>{log.status}</Badge>{log.status === 'failed' && <button className={softButton} disabled={busy} onClick={() => withBusy(() => sendWhatsapp({ shopId: log.shopId, shopName: log.shopName, phone: log.phone, billId: log.billId, billNo: log.billNo, messageType: log.messageType, body: log.messageBody, retryLogId: log.id }).then(() => undefined), 'WhatsApp retry completed.')}>Retry</button>}</div></div><details className="mt-2"><summary className="cursor-pointer text-xs font-black text-muted-foreground">View message</summary><pre className="mt-2 whitespace-pre-wrap rounded-xl bg-muted p-3 text-xs">{log.messageBody}</pre></details></div>)}</Card>
     </div>
   );
@@ -2485,9 +2488,12 @@ function ReminderHistoryTab({ reminders, credits, busy, withBusy, runDueReminder
   runDueReminders: () => Promise<void>;
 }) {
   const eligible = credits.filter((c) => c.dueDate && daysBetween(c.dueDate) > 0).length;
+  const exportExcel = () => downloadWorkbook(`hosur-reminders-${TODAY_ISO()}.xls`, [
+    { name: 'Reminders', rows: reminders.map((r) => ({ Shop: r.shopName, 'Reminder #': r.reminderNo, Pending: r.pendingAmount, 'Due Date': r.dueDate, 'Sent At': toDateTimeLabel(r.sentAt ?? r.createdAt), Status: r.status })) },
+  ]);
   return (
     <div className="space-y-4">
-      <SectionTitle icon={<Bell className="size-5" />} title="Payment Reminder History" subtitle="Reminder repeats every 10 days after due date until credit is cleared." action={<button className={primaryButton} disabled={busy || eligible === 0} onClick={() => withBusy(runDueReminders, 'Due reminders processed.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Due Reminders Now</button>} />
+      <SectionTitle icon={<Bell className="size-5" />} title="Payment Reminder History" subtitle="Reminder repeats every 10 days after due date until credit is cleared." action={<div className="flex gap-2"><button className={softButton} onClick={exportExcel}><FileSpreadsheet className="size-4" /> Excel Report</button><button className={primaryButton} disabled={busy || eligible === 0} onClick={() => withBusy(runDueReminders, 'Due reminders processed.')}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send Due Reminders Now</button></div>} />
       <Card className="space-y-2">{reminders.length === 0 ? <EmptyState icon={<Bell className="size-6" />} title="No reminders sent yet" /> : reminders.map((reminder) => <div key={reminder.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3"><div><p className="font-black">{reminder.shopName} · Reminder #{reminder.reminderNo}</p><p className="text-xs text-muted-foreground">Pending {money(reminder.pendingAmount)} · Due {toDateLabel(reminder.dueDate)} · Sent {toDateTimeLabel(reminder.sentAt ?? reminder.createdAt)}</p></div><Badge tone={statusTone(reminder.status)}>{reminder.status}</Badge></div>)}</Card>
     </div>
   );
@@ -2953,6 +2959,9 @@ function NotificationsTab({ notifications, busy, withBusy }: {
             {unread.length > 0 ? `${unread.length} unread notification${unread.length > 1 ? 's' : ''}` : 'All caught up'}
           </p>
         </div>
+        <button className={softButton} onClick={() => downloadWorkbook(`hosur-notifications-${TODAY_ISO()}.xls`, [
+          { name: 'Notifications', rows: notifications.map((n) => ({ Title: n.title, Body: n.body, 'Created At': toDateTimeLabel(n.createdAt), Read: n.isRead ? 'Yes' : 'No' })) },
+        ])}><FileSpreadsheet className="size-4" /> Excel Report</button>
         {unread.length > 0 && (
           <button className={softButton} disabled={busy} onClick={() => withBusy(markAllRead, 'All notifications marked as read.')}>
             <BadgeCheck className="size-4" /> Mark All Read
