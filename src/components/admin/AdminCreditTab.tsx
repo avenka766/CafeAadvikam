@@ -358,6 +358,10 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
   const [statusFilter, setStatusFilter] = useState<'all' | CreditSale['status']>('all');
   const [branchFilter, setBranchFilter] = useState<Branch | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortField, setSortField] = useState<
+    'date' | 'customer' | 'branch' | 'billNo' | 'subtotal' | 'amountPaid' | 'creditAmount' | 'status'
+  >('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   // Fetch on mount for each relevant branch
   useEffect(() => {
@@ -391,6 +395,32 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
       return true;
     });
   }, [allSales, statusFilter, branchFilter, searchQuery]);
+
+  const sorted = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      switch (sortField) {
+        case 'date':
+          return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * dir;
+        case 'customer':
+          return a.customerName.localeCompare(b.customerName) * dir;
+        case 'branch':
+          return a.branch.localeCompare(b.branch) * dir;
+        case 'billNo':
+          return (a.billNo ?? '').localeCompare(b.billNo ?? '') * dir;
+        case 'subtotal':
+          return (a.subtotal - b.subtotal) * dir;
+        case 'amountPaid':
+          return (a.amountPaid - b.amountPaid) * dir;
+        case 'creditAmount':
+          return (a.creditAmount - b.creditAmount) * dir;
+        case 'status':
+          return a.status.localeCompare(b.status) * dir;
+        default:
+          return 0;
+      }
+    });
+  }, [filtered, sortField, sortDir]);
 
   // KPI aggregates
   const totalGiven = allSales.reduce((a, s) => a + s.subtotal, 0);
@@ -429,7 +459,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
 
   const handleExcelDownload = async () => {
     const XLSX = await import('@/lib/safeSpreadsheet');
-    const rows = filtered.map(s => ({
+    const rows = sorted.map(s => ({
       'Branch':           s.branch,
       'Bill No':          s.billNo ?? '',
       'Customer Name':    s.customerName,
@@ -616,6 +646,30 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
           )}
         </div>
 
+        <div className="grid grid-cols-2 gap-2">
+          <select
+            value={sortField}
+            onChange={e => setSortField(e.target.value as typeof sortField)}
+            className="border rounded-lg px-2 py-1.5 text-sm bg-background"
+          >
+            <option value="date">Sort: Date</option>
+            <option value="customer">Sort: Customer Name</option>
+            <option value="branch">Sort: Branch</option>
+            <option value="billNo">Sort: Bill No</option>
+            <option value="subtotal">Sort: Subtotal</option>
+            <option value="amountPaid">Sort: Amount Paid</option>
+            <option value="creditAmount">Sort: Credit Due</option>
+            <option value="status">Sort: Status</option>
+          </select>
+          <button
+            onClick={() => setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))}
+            className="border rounded-lg px-2 py-1.5 text-sm bg-background flex items-center justify-center gap-1"
+          >
+            {sortDir === 'asc' ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {sortDir === 'asc' ? 'Ascending' : 'Descending'}
+          </button>
+        </div>
+
         <p className="text-xs text-muted-foreground">
           {filtered.length} records · Outstanding{' '}
           {formatCurrency(filtered.reduce((a, s) => a + s.creditAmount, 0))}
@@ -624,7 +678,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
 
       {/* ── Credit Sale List ────────────────────────────────────────────────── */}
       <div className="space-y-2">
-        {filtered.length === 0 ? (
+        {sorted.length === 0 ? (
           <div className="bg-card border border-border rounded-xl py-10 text-center">
             <Users className="size-8 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm text-muted-foreground">No credit sales found</p>
@@ -633,7 +687,7 @@ export default function AdminCreditTab({ branches, accentColor = 'text-primary' 
             </p>
           </div>
         ) : (
-          filtered.map(sale => <CreditCard key={sale.id} sale={sale} />)
+          sorted.map(sale => <CreditCard key={sale.id} sale={sale} />)
         )}
       </div>
     </div>
