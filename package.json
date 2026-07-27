@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "test:audit": "node scripts/audit-regression.mjs",
     "test:wallet-promotions": "node --no-warnings --experimental-strip-types --experimental-specifier-resolution=node scripts/wallet-promotions-regression.mjs"
   },
@@ -72,6 +73,7 @@
     "uuid": "^11.1.1",
     "vaul": "^0.9.3",
     "web-vitals": "^5.1.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8",
     "zustand": "^5.0.8"
   },
@@ -88,11 +90,13 @@
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.9",
     "globals": "^15.9.0",
+    "jsdom": "^30.0.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.11",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.0.1",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20.0.0",
