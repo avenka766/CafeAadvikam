@@ -33,12 +33,11 @@ const AttendanceSalary = lazy(() => import('@/pages/AttendanceSalary'));
 const OrderReceiverDashboard = lazy(() => import('@/bakery/OrderReceiverDashboard'));
 const StoreDashboard = lazy(() => import('@/bakery/StoreDashboard'));
 const CakeMasterDashboard = lazy(() => import('@/bakery/CakeMasterDashboard'));
-const PackingDashboard = lazy(() => import('@/bakery/PackingDashboard'));
+const PlannerDashboard = lazy(() => import('@/bakery/PlannerDashboard'));
 const BakeryItemManagement = lazy(() => import('@/bakery/BakeryItemManagement'));
 const RecipeManagement = lazy(() => import('@/bakery/RecipeManagement'));
 const VRSNBDashboard = lazy(() => import('@/pages/VRSNBDashboard'));
 const SNBDashboard = lazy(() => import('@/pages/SNBDashboard'));
-const HosurDashboard = lazy(() => import('@/pages/HosurDashboard'));
 const AdminVRSNBDashboard = lazy(() => import('@/pages/AdminVRSNBDashboard'));
 const AdminSNBDashboard = lazy(() => import('@/pages/AdminSNBDashboard'));
 const OwnerDashboard = lazy(() => import('@/pages/OwnerDashboard'));
@@ -135,13 +134,13 @@ function AppRoutes() {
         <Route path="/bakery/receive/snb"   element={<ProtectedRoute allowedRoles={['receiver_snb']}><OrderReceiverDashboard /></ProtectedRoute>} />
         <Route path="/bakery/store"   element={<ProtectedRoute allowedRoles={['store']}><StoreDashboard /></ProtectedRoute>} />
         <Route path="/bakery/cake-master" element={<ProtectedRoute allowedRoles={['cake_master']}><CakeMasterDashboard /></ProtectedRoute>} />
-        <Route path="/bakery/packing" element={<ProtectedRoute allowedRoles={['packing']}><PackingDashboard /></ProtectedRoute>} />
+        <Route path="/bakery/planner" element={<ProtectedRoute allowedRoles={['planner']}><PlannerDashboard /></ProtectedRoute>} />
         <Route path="/bakery/items"   element={<ProtectedRoute allowedRoles={['admin']}><BakeryItemManagement /></ProtectedRoute>} />
         <Route path="/bakery/recipes" element={<ProtectedRoute allowedRoles={['admin']}><RecipeManagement /></ProtectedRoute>} />
 
         <Route path="/branch/vrsnb"  element={<ProtectedRoute allowedRoles={['branch_vrsnb','admin','admin_vrsnb','owner']}><VRSNBDashboard /></ProtectedRoute>} />
         <Route path="/branch/snb"    element={<ProtectedRoute allowedRoles={['branch_snb','admin','admin_snb','owner']}><SNBDashboard /></ProtectedRoute>} />
-        <Route path="/branch/hosur"  element={<ProtectedRoute allowedRoles={['branch_hosur','admin','owner']}><HosurDashboard /></ProtectedRoute>} />
+        {/* /branch/hosur retired — Hosur billing/shops now embedded in Planner */}
 
         <Route path="/admin-vrsnb"         element={<ProtectedRoute allowedRoles={['admin_vrsnb', 'admin', 'owner']}><AdminVRSNBDashboard /></ProtectedRoute>} />
         <Route path="/admin-vrsnb/items"   element={<ProtectedRoute allowedRoles={['admin_vrsnb', 'admin', 'owner']}><VRSNBItemsPage /></ProtectedRoute>} />
