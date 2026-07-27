@@ -35,6 +35,14 @@ export const CAKE_TYPE_PRICES: CakeTypePrice[] = [
     flavours: [],
   },
   {
+    id: 'butter-eggless-birthday',
+    creamType: 'Butter Cream',
+    name: 'Birthday Eggless Cake',
+    perKg: 700,
+    halfKg: 400,
+    flavours: [],
+  },
+  {
     id: 'fresh-pastry',
     creamType: 'Fresh Cream',
     name: 'Birthday Pastry Cakes',
@@ -63,6 +71,14 @@ export const CAKE_TYPE_PRICES: CakeTypePrice[] = [
     creamType: 'Fresh Cream',
     name: 'Fondant Cakes',
     perKg: 1400,
+    flavours: [],
+  },
+  {
+    id: 'fresh-eggless-birthday',
+    creamType: 'Fresh Cream',
+    name: 'Birthday Eggless Cake (Pastry)',
+    perKg: 1000,
+    halfKg: 550,
     flavours: [],
   },
 ];
