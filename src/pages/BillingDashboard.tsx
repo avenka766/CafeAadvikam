@@ -1052,7 +1052,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
 
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(160px, 18vw, 220px)" }}>
+        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(130px, 13vw, 180px)" }}>
           <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -1229,7 +1229,7 @@ function AdvanceOrderPanel({ onCreated, advanceOrders }: { onCreated: () => void
       </div>
 
       {/* -- COL 3: Cart + Advance form --------------------- */}
-      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(300px, 26vw, 380px)" }}>
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(270px, 22vw, 340px)" }}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0" style={{ background: 'rgba(217,119,6,0.06)' }}>
           <div className="flex items-center gap-2">
             <Wallet className="size-4 text-amber-600" />
@@ -2040,7 +2040,7 @@ function NewBillPanel() {
 
       {/* -- COL 1: Category sidebar ---------------------- */}
       {itemMode === 'menu' && (
-        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(160px, 18vw, 220px)" }}>
+        <div className="biller-category-sidebar shrink-0 flex flex-col border-r border-border bg-muted/40 overflow-y-auto" style={{ width: "clamp(130px, 13vw, 180px)" }}>
           <div className="biller-category-mode px-2 py-2 border-b border-border bg-background shrink-0">
             <div className="flex gap-1 p-0.5 rounded-lg bg-muted">
               <button onClick={() => setItemMode('menu')}
@@ -2221,7 +2221,7 @@ function NewBillPanel() {
       </div>
 
       {/* -- COL 3: Bill summary ------------------------ */}
-      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(300px, 26vw, 380px)" }}>
+      <div className="biller-cart-panel shrink-0 flex flex-col border-l border-border bg-card overflow-hidden" style={{ width: "clamp(270px, 22vw, 340px)" }}>
         <div className="biller-cart-header flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30 shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingBag className="size-4 text-primary" />
