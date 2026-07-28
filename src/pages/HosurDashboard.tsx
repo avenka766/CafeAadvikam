@@ -996,7 +996,7 @@ function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: s
   );
 }
 
-export default function HosurDashboard() {
+export default function HosurDashboard({ hideNav = false }: { hideNav?: boolean } = {}) {
   const { currentUser } = useAuthStore();
   const snbCatalog = useBranchCatalogStore((state) => state.items.SNB);
   const { loadCatalog, subscribe } = useBranchCatalogStore();
@@ -1012,6 +1012,11 @@ export default function HosurDashboard() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTabState] = useState<HosurTab>(() => parseHosurTab(searchParams.get('tab')));
+  useEffect(() => {
+    const urlTab = parseHosurTab(searchParams.get('tab'));
+    if (urlTab !== tab) setTabState(urlTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1662,8 +1667,8 @@ export default function HosurDashboard() {
   return (
     <div className="dashboard-screen min-h-[calc(100dvh-72px)] min-w-0 overflow-x-hidden bg-slate-50/50">
       <main className="min-w-0 p-3 sm:p-4 md:p-5 xl:p-6">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="min-w-0 flex-1 rounded-2xl bg-slate-950 p-2 text-white overflow-x-auto">
+          <div className={cn('mb-3 flex flex-wrap items-center justify-between gap-2', hideNav && 'hidden')}>
+            <div className="min-w-0 flex-1 rounded-2xl border border-border bg-slate-50 p-2 overflow-x-auto">
               <Sidebar tabs={filteredTabs} active={tab} setActive={setTab} />
             </div>
             <button className={softButton} disabled={loading || busy} onClick={() => void refresh()}>
@@ -1698,14 +1703,13 @@ export default function HosurDashboard() {
 
 function Sidebar({ tabs, active, setActive }: { tabs: { id: HosurTab; label: string; icon: React.ElementType; badge?: number }[]; active: HosurTab; setActive: (id: HosurTab) => void }) {
   return (
-    <nav className="space-y-1">
+    <nav className="flex flex-wrap gap-1.5">
       {tabs.map((item) => (
         <button key={item.id} onClick={() => setActive(item.id)}
-          className={cn('group flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left text-sm font-black transition', active === item.id ? 'bg-emerald-600 text-white shadow-md' : 'bg-white/5 text-white/70 ring-1 ring-white/10 hover:bg-white/10 hover:text-white')}>
-          <item.icon className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{item.label}</span>
-          {(item.badge ?? 0) > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[10px]', active === item.id ? 'bg-white text-emerald-700' : 'bg-red-100 text-red-700')}>{item.badge}</span>}
-          <ChevronRight className={cn('size-3 opacity-0 transition group-hover:opacity-100', active === item.id && 'opacity-100')} />
+          className={cn('flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold transition', active === item.id ? 'bg-emerald-600 text-white shadow' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}>
+          <item.icon className="size-3.5 shrink-0" />
+          <span className="whitespace-nowrap">{item.label}</span>
+          {(item.badge ?? 0) > 0 && <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-black', active === item.id ? 'bg-white text-emerald-700' : 'bg-red-100 text-red-700')}>{item.badge}</span>}
         </button>
       ))}
     </nav>
